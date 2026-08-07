@@ -31,12 +31,35 @@ func (h *Handler) confengeOrg(c *gin.Context) (uuid.UUID, bool) {
 }
 
 // GetConfengeStatus — GET /confenge/status
-// Reports whether the feature is on (always 200 when authenticated with org).
+// Reports whether the feature is on (always 200 when authenticated with org)
+// and includes the discrete operator readiness panel.
 func (h *Handler) GetConfengeStatus(c *gin.Context) {
 	enabled := h.ConfengeService != nil && h.ConfengeService.Enabled()
 	cfg := confenge.Config{}
 	if h.ConfengeService != nil {
 		cfg = h.ConfengeService.Config()
+	}
+	emailReady := false
+	var readiness confenge.Readiness
+	if h.ConfengeService != nil {
+		orgID := middleware.GetOrganizationID(c)
+		if orgID != nil && enabled {
+			if h.EmailService != nil {
+				if res, xerr := h.EmailService.Search(c.Request.Context(), orgID.String(), "", "", "", "10", nil); xerr == nil && res != nil {
+					for _, e := range res.Data {
+						if strings.EqualFold(e.Status, "active") {
+							emailReady = true
+							break
+						}
+					}
+				}
+			}
+			readiness = h.ConfengeService.CollectReadiness(c.Request.Context(), *orgID, emailReady)
+		} else {
+			readiness = confenge.BuildReadiness(cfg, confenge.ReadinessInputs{EmailReady: emailReady})
+		}
+	} else {
+		readiness = confenge.BuildReadiness(cfg, confenge.ReadinessInputs{})
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"enabled":                 enabled,
@@ -45,6 +68,9 @@ func (h *Handler) GetConfengeStatus(c *gin.Context) {
 		"default_daily_limit":     cfg.DefaultDailyLimit,
 		"max_initial_email_words": cfg.MaxInitialEmailWords,
 		"feed_configured":         enabled && cfg.FeedURL != "",
+		"kill_switch":             !cfg.SendingAllowed(),
+		"sending_allowed":         cfg.SendingAllowed(),
+		"readiness":               readiness,
 	})
 }
 

@@ -57,6 +57,8 @@ type Config struct {
 	WhatsAppEnabled   bool
 	CrossChannelHours int
 	MaxWhatsAppWords  int
+	// SendingPaused is the env-based kill switch (see also FileKillSwitchActive).
+	SendingPaused bool
 }
 
 // LoadConfig reads CONFENGE_* env vars. Safe defaults keep the feature off.
@@ -76,6 +78,7 @@ func LoadConfig() Config {
 		WhatsAppEnabled:      envBool(EnvWhatsAppEnabled, false),
 		CrossChannelHours:    envInt(EnvCrossChannelHours, DefaultCrossChannelHours),
 		MaxWhatsAppWords:     envInt(EnvWhatsAppMaxWords, DefaultMaxWhatsAppWords),
+		SendingPaused:        envBool(EnvSendingPaused, false),
 	}
 	return cfg
 }

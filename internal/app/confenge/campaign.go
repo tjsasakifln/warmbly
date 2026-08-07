@@ -123,6 +123,9 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 	if s.cfg.AutoSendEnabled && !s.cfg.RequireHumanApproval {
 		return nil, errx.New(errx.BadRequest, "refusing enroll: auto-send without human approval is not allowed")
 	}
+	if !s.cfg.SendingAllowed() {
+		return nil, errx.New(errx.BadRequest, "sending paused (kill switch); run make confenge-resume-sending when safe")
+	}
 	if s.contacts == nil || s.campaigns == nil {
 		return nil, errx.New(errx.ServiceUnavailable, "execution services not wired")
 	}
