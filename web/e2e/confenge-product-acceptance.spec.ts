@@ -409,6 +409,8 @@ test.describe("CONFENGE product acceptance UI", () => {
     await expect(page.getByTestId("confenge-dispatch-quota")).toBeVisible();
     await expect(page.getByTestId("confenge-review-queue")).toBeVisible();
     await expect(page.getByTestId("confenge-needs-attention")).toBeVisible();
+    // Summary strip (CI static gate requires this testid string in the E2E spec).
+    await expect(page.getByTestId("confenge-stat-sent")).toBeVisible();
 
     const body = page.getByTestId("confenge-body-input");
     await expect(body).toBeVisible({ timeout: 45_000 });
