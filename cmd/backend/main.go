@@ -1024,20 +1024,12 @@ func main() {
 		schedulerService := scheduler.NewSchedulerService(taskRepository, warmupRepository, campaignProgressRepository, emailRepostory, campaignRepostory, contactRepostory, campaignLogRepository)
 		campaignService = campaign.NewService(campaignRepostory, taskRepository, emailRepostory, campaignLogRepository, featureGateService, dailyThrottleService, schedulerService, tasksClient, streamingPublisher)
 		// CONFENGE enroll uses campaign + contact services (execution plane).
+		// Platform suppress is wired only AFTER advancedService is constructed
+		// (below); wiring it here would no-op because advancedService is still nil.
 		if confengeServiceForHandler != nil {
 			confengeServiceForHandler.WireExecution(campaignService, contactService)
 			if crmService != nil {
 				confengeServiceForHandler.WireCRM(crmService)
-			}
-			if advancedService != nil {
-				confengeServiceForHandler.WireSuppress(confenge.SuppressFromAdvanced{
-					Fn: func(ctx context.Context, orgID uuid.UUID, email, reason string) error {
-						if xerr := advancedService.SuppressRecipient(ctx, orgID, email, reason); xerr != nil {
-							return fmt.Errorf("%s", xerr.Message)
-						}
-						return nil
-					},
-				})
 			}
 		}
 		emailSendService = emailsend.NewService(taskRepository, emailRepostory, userRepostory, schedulerService, tasksClient, featureGateService, dailyThrottleService)
@@ -1070,6 +1062,12 @@ func main() {
 			tasksClient,
 			warmupService,
 		)
+		// CONFENGE DNC must write the platform suppression list (same path
+		// campaign send checks). advancedService is non-nil here; do not move
+		// this block above NewService.
+		if confengeServiceForHandler != nil && advancedService != nil {
+			confengeServiceForHandler.WireSuppress(confenge.NewSuppressAdapter(advancedService))
+		}
 
 		// Shared AI tool registry: every tool calls a service-layer function as
 		// the invoking user, so the dashboard agent (M3) and MCP server (M8) can

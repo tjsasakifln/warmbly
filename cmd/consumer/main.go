@@ -352,6 +352,8 @@ func main() {
 		streamingPublisher,
 	)
 	// CONFENGE outcome sink (feature-flagged; no-op when disabled).
+	// advancedService is already constructed above; WireSuppress must run so
+	// reply-class DNC (OnClassifiedReply → NoteDNC) writes the platform list.
 	confengeCfgC := confenge.LoadConfig()
 	var confengeSvc confenge.Service
 	var confengeSink confenge.OutcomeSink
@@ -360,8 +362,9 @@ func main() {
 		if sink, ok := confengeSvc.(confenge.OutcomeSink); ok {
 			confengeSink = sink
 		}
+		confengeSvc.WireSuppress(confenge.NewSuppressAdapter(advancedService))
 		// CRM not wired on consumer (control-plane tasks/deals stay on backend);
-		// outbox + staging updates still run via OnClassifiedReply.
+		// outbox + staging updates + suppress still run via OnClassifiedReply.
 		advancedService.WireConfengeReply(confengeSvc)
 	}
 

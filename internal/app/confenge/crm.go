@@ -53,6 +53,33 @@ func (a SuppressFromAdvanced) SuppressRecipient(ctx context.Context, orgID uuid.
 	return a.Fn(ctx, orgID, email, reason)
 }
 
+// AdvancedSuppressor is the slice of advanced.Service used for DNC suppression.
+// Kept as a narrow interface so confenge does not import advanced at compile time
+// from every consumer of this package; mains pass advancedService.
+type AdvancedSuppressor interface {
+	SuppressRecipient(ctx context.Context, organizationID uuid.UUID, email, reason string) *errx.Error
+}
+
+// NewSuppressAdapter wraps an AdvancedSuppressor for WireSuppress.
+// Returns nil when adv is nil so callers can write:
+//
+//	s.WireSuppress(confenge.NewSuppressAdapter(advancedService))
+//
+// without a nil-check; WireSuppress(nil) clears the adapter (safe no-op on DNC).
+func NewSuppressAdapter(adv AdvancedSuppressor) SuppressAPI {
+	if adv == nil {
+		return nil
+	}
+	return SuppressFromAdvanced{
+		Fn: func(ctx context.Context, orgID uuid.UUID, email, reason string) error {
+			if xerr := adv.SuppressRecipient(ctx, orgID, email, reason); xerr != nil {
+				return fmt.Errorf("%s", xerr.Message)
+			}
+			return nil
+		},
+	}
+}
+
 // confengeStages is the fixed stage list. Re-bootstrap never renames human edits
 // when a pipeline with the same name already exists.
 func confengeStages() []models.CreatePipelineStage {
