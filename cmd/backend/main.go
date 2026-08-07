@@ -86,6 +86,8 @@ import (
 	warmupapp "github.com/warmbly/warmbly/internal/app/warmup"
 	"github.com/warmbly/warmbly/internal/app/warmupcontent"
 	"github.com/warmbly/warmbly/internal/app/webhook"
+	"github.com/warmbly/warmbly/internal/app/whatsapp"
+	"github.com/warmbly/warmbly/internal/app/whatsapp/evolution"
 	"github.com/warmbly/warmbly/internal/app/worker"
 	"github.com/warmbly/warmbly/internal/app/worker_orchestrator"
 	"github.com/warmbly/warmbly/internal/config"
@@ -178,6 +180,8 @@ func main() {
 	var tagService group.GroupService
 	var categoryService group.GroupService
 	var crmService crm.CRMService
+	var whatsAppService *whatsapp.Service
+	var whatsAppRepo repository.WhatsAppRepository
 	var teamService team.TeamService
 	var apiKeyService apikey.APIKeyService
 	var idempotencyService idempotencyapp.Service
@@ -993,6 +997,33 @@ func main() {
 
 		apiKeyService = apikey.NewService(cache, apiKeyRepository)
 		crmService = crm.NewService(crmRepository)
+
+		// WhatsApp channel (Evolution gateway). Disabled by default; Cloud API first.
+		waCfg := whatsapp.LoadConfig()
+		if err := waCfg.ValidateStartup(); err != nil {
+			log.Fatalf("whatsapp config: %v", err)
+		}
+		whatsapp.LogBaileysWarning(waCfg)
+		whatsAppRepo = repository.NewWhatsAppRepository(primaryDB.Pool)
+		var waProvider whatsapp.Provider
+		if waCfg.Enabled && (waCfg.Provider == whatsapp.ProviderEvolution || waCfg.Provider == "") {
+			evoClient := evolution.NewClient(evolution.ClientConfig{
+				BaseURL:    waCfg.EvolutionBaseURL,
+				APIKey:     waCfg.EvolutionAPIKey,
+				Timeout:    20 * time.Second,
+				MaxRetries: 2,
+			})
+			waProvider = evolution.NewProvider(evoClient, waCfg.EvolutionInstance)
+		}
+		if waCfg.Enabled && waCfg.Provider == whatsapp.ProviderMock {
+			waProvider = whatsapp.NewMockProvider()
+		}
+		// Template approval checked via Static catalog + DB lookups at send sites.
+		// Full repo-backed catalog is used by confenge orchestration (W2).
+		whatsAppService = whatsapp.NewService(waCfg, waProvider, whatsapp.NewStaticTemplateCatalog())
+		if waCfg.Enabled {
+			log.Printf("whatsapp channel enabled provider=%s baileys_allowed=%v auto_send=%v", waCfg.Provider, waCfg.AllowBaileys, waCfg.AutoSendEnabled)
+		}
 		teamRepository := repository.NewTeamRepository(primaryDB.Pool)
 		teamService = team.NewService(teamRepository)
 		socketService = socket.NewService(cache, tokenService)
@@ -1431,6 +1462,10 @@ func main() {
 
 		// CRM
 		CRMService: crmService,
+
+		// WhatsApp channel
+		WhatsAppService: whatsAppService,
+		WhatsAppRepo:    whatsAppRepo,
 
 		// Teams
 		TeamService: teamService,

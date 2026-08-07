@@ -53,6 +53,7 @@ import (
 	"github.com/warmbly/warmbly/internal/app/warmup"
 	"github.com/warmbly/warmbly/internal/app/warmupcontent"
 	"github.com/warmbly/warmbly/internal/app/webhook"
+	"github.com/warmbly/warmbly/internal/app/whatsapp"
 	"github.com/warmbly/warmbly/internal/app/worker"
 	"github.com/warmbly/warmbly/internal/app/worker_orchestrator"
 	"github.com/warmbly/warmbly/internal/pkg/generation"
@@ -113,9 +114,13 @@ type Handler struct {
 	// CRM
 	CRMService crm.CRMService
 
-	// CONFENGE outreach staging (extra-cli feed import). Nil or disabled when
+// CONFENGE outreach staging (extra-cli feed import). Nil or disabled when
 	// CONFENGE_OUTREACH_ENABLED is false.
 	ConfengeService confenge.Service
+
+	// WhatsApp channel (Evolution gateway; policy-gated)
+	WhatsAppService *whatsapp.Service
+	WhatsAppRepo    repository.WhatsAppRepository
 
 	// Teams
 	TeamService team.TeamService
