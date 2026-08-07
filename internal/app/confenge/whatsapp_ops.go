@@ -2,6 +2,7 @@ package confenge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -147,32 +148,45 @@ func (s *service) GenerateWhatsAppDraft(ctx context.Context, orgID, userID, acco
 		return nil, errx.New(errx.BadRequest, "whatsapp blocked by consent: "+d.Reason)
 	}
 
-	body := BuildWhatsAppCopy(acc, cand)
-	draft := &models.OutreachDraft{
-		OrganizationID:     orgID,
-		AccountID:          accountID,
-		ContactCandidateID: &cand.ID,
-		Channel:            models.OutreachChannelWhatsApp,
-		RecipientName:      cand.Name,
-		RecipientRole:      cand.Role,
-		RecipientEmail:     cand.Email,
-		RecipientPhoneE164: phone,
-		VerificationStatus: cand.VerificationStatus,
-		Subject:            "", // WhatsApp has no subject
-		BodyText:           SanitizeText(body, 2000),
-		ServiceCode:        acc.ServiceCode,
-		FactUsed:           SanitizeText(acc.FactToMention, 2000),
-		Question:           SanitizeText(acc.QuestionToAsk, 1000),
-		CTA:                SanitizeText(acc.CTA, 500),
-		Provider:           "template",
-		Model:              "whatsapp_short",
-		PromptVersion:      PromptVersion + "+wa",
-		Status:             models.OutreachDraftNeedsReview,
-		RiskClass:          "YELLOW",
-		RiskFlags:          []string{"whatsapp_channel", "requires_human_approval"},
+	evidence, _ := s.repo.ListEvidence(ctx, orgID, accountID)
+	recent := recentDraftBodies(ctx, s, orgID, accountID, models.OutreachChannelWhatsApp)
+	in := BuildGenerateInput(ChannelWhatsAppInitial, acc, cand, evidence, recent)
+	out, provider, model, genErr := s.generator().Generate(ctx, in)
+	if genErr != nil {
+		out = TemplateDraftChannel(ChannelWhatsAppInitial, acc, cand, evidence)
+		provider = "template"
+		model = "whatsapp_short"
 	}
-	ok := true
-	draft.ValidationOK = &ok
+	if out.ServiceCode == "" {
+		out.ServiceCode = acc.ServiceCode
+	}
+	if out.Channel == "" {
+		out.Channel = ChannelWhatsAppInitial
+	}
+	val := ValidateDraft(&out, acc, cand, ValidateOpts{
+		MaxWords: s.cfg.MaxWhatsAppWords, Evidence: evidence, Channel: ChannelWhatsAppInitial,
+		RecentBodies: recent, SkipEmailRecipient: true,
+	})
+	risk, flags := ClassifyRisk(acc, cand, &out, val)
+	flags = append(flags, "whatsapp_channel", "requires_human_approval")
+	if risk == "GREEN" {
+		risk = "YELLOW"
+	}
+	val.Claims = out.Claims
+	val.Rationale = out.Rationale
+	val.Channel = out.Channel
+	valJSON, _ := json.Marshal(val)
+	ok := val.OK
+	draft := &models.OutreachDraft{
+		OrganizationID: orgID, AccountID: accountID, ContactCandidateID: &cand.ID,
+		Channel: models.OutreachChannelWhatsApp, RecipientName: cand.Name, RecipientRole: cand.Role,
+		RecipientEmail: cand.Email, RecipientPhoneE164: phone, VerificationStatus: cand.VerificationStatus,
+		Subject: "", BodyText: SanitizeText(out.BodyText, 2000), ServiceCode: SanitizeText(out.ServiceCode, 100),
+		FactUsed: SanitizeText(out.FactUsed, 2000), EvidenceIDs: collectEvidenceIDs(&out),
+		Question: SanitizeText(out.Question, 1000), CTA: SanitizeText(out.CTA, 500),
+		Provider: provider, Model: model, PromptVersion: PromptVersion, ValidationJSON: valJSON,
+		ValidationOK: &ok, Status: models.OutreachDraftNeedsReview, RiskClass: risk, RiskFlags: flags,
+	}
 	if err := s.repo.UpsertDraft(ctx, draft); err != nil {
 		return nil, errx.New(errx.Internal, "failed to save whatsapp draft: "+err.Error())
 	}

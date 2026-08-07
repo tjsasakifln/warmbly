@@ -9,21 +9,32 @@ import (
 	"github.com/warmbly/warmbly/internal/models"
 )
 
-// PromptVersion tags generation prompt revisions.
-const PromptVersion = "confenge.draft.v1"
+// PromptVersion tags generation prompt revisions (see docs/confenge/copy-generation.md).
+const PromptVersion = "confenge.draft.v2"
+
+// DraftClaim is one auditable fact/phrase anchored to evidence ids.
+type DraftClaim struct {
+	Phrase      string   `json:"phrase"`
+	Fact        string   `json:"fact,omitempty"`
+	EvidenceIDs []string `json:"evidence_ids"`
+}
 
 // DraftOutput is the structured generation result (validated before save).
 type DraftOutput struct {
-	Subject     string          `json:"subject"`
-	BodyText    string          `json:"body_text"`
-	BodyHTML    string          `json:"body_html"`
-	Followups   []DraftFollowup `json:"followups"`
-	FactUsed    string          `json:"fact_used"`
-	EvidenceIDs []string        `json:"evidence_ids"`
-	ServiceCode string          `json:"service_code"`
-	Question    string          `json:"question"`
-	CTA         string          `json:"cta"`
-	RiskFlags   []string        `json:"risk_flags"`
+	Channel                string          `json:"channel,omitempty"`
+	Subject                string          `json:"subject"`
+	BodyText               string          `json:"body_text"`
+	BodyHTML               string          `json:"body_html"`
+	Followups              []DraftFollowup `json:"followups"`
+	FactUsed               string          `json:"fact_used"`
+	EvidenceIDs            []string        `json:"evidence_ids"`
+	Claims                 []DraftClaim    `json:"claims,omitempty"`
+	ServiceCode            string          `json:"service_code"`
+	Question               string          `json:"question"`
+	CTA                    string          `json:"cta"`
+	RiskFlags              []string        `json:"risk_flags"`
+	Rationale              string          `json:"rationale,omitempty"`
+	ServiceOverrideAudited bool            `json:"service_override_audited,omitempty"`
 }
 
 // DraftFollowup is one cadence follow-up in the same thread.
@@ -36,44 +47,41 @@ type DraftFollowup struct {
 
 // ValidationResult is deterministic pre-send / pre-approve checks.
 type ValidationResult struct {
-	OK       bool     `json:"ok"`
-	Errors   []string `json:"errors,omitempty"`
-	Warnings []string `json:"warnings,omitempty"`
+	OK           bool         `json:"ok"`
+	Errors       []string     `json:"errors,omitempty"`
+	Warnings     []string     `json:"warnings,omitempty"`
+	Claims       []DraftClaim `json:"claims,omitempty"`
+	Rationale    string       `json:"rationale,omitempty"`
+	Channel      string       `json:"channel,omitempty"`
+	NearDupScore float64      `json:"near_dup_score,omitempty"`
 }
 
-// Banned outreach phrases (Portuguese + known AI tells). Lowercased match.
+// ValidateOpts configures deterministic validation for a channel.
+type ValidateOpts struct {
+	MaxWords               int
+	Evidence               []models.OutreachEvidence
+	Channel                string
+	RecentBodies           []string
+	ServiceOverrideAudited bool
+	SkipEmailRecipient     bool
+}
+
 var bannedPhrases = []string{
-	"dinheiro a receber",
-	"crédito identificado",
-	"credito identificado",
-	"descobrimos um erro",
-	"há irregularidade",
-	"ha irregularidade",
-	"vocês deixaram de receber",
-	"voces deixaram de receber",
-	"sua equipe não controla",
-	"sua equipe nao controla",
-	"falta estrutura",
-	"lead quente",
-	"alta chance de conversão",
-	"alta chance de conversao",
-	"espero que esta mensagem o encontre bem",
-	"espero que esta mensagem a encontre bem",
-	"espero que este e-mail o encontre bem",
-	"i hope this email finds you",
-	"garantimos",
-	"garantia de",
-	"100% de sucesso",
+	"dinheiro a receber", "crédito identificado", "credito identificado",
+	"descobrimos um erro", "há irregularidade", "ha irregularidade",
+	"vocês deixaram de receber", "voces deixaram de receber",
+	"sua equipe não controla", "sua equipe nao controla", "falta estrutura",
+	"lead quente", "alta chance de conversão", "alta chance de conversao",
+	"espero que esta mensagem o encontre bem", "espero que esta mensagem a encontre bem",
+	"espero que este e-mail o encontre bem", "i hope this email finds you",
+	"garantimos", "garantia de", "100% de sucesso",
 }
 
-// emDash and similar are banned in outbound confenge copy.
 var emDashRe = regexp.MustCompile(`[\x{2014}\x{2013}]`)
-
-// shortURLRe catches common shorteners (tracking risk).
 var shortURLRe = regexp.MustCompile(`(?i)https?://(bit\.ly|t\.co|goo\.gl|tinyurl\.com|ow\.ly)/`)
 
 // ValidateDraft runs deterministic checks before human approval / enrollment.
-func ValidateDraft(out *DraftOutput, acc *models.OutreachAccount, cand *models.OutreachContactCandidate, maxWords int) ValidationResult {
+func ValidateDraft(out *DraftOutput, acc *models.OutreachAccount, cand *models.OutreachContactCandidate, opts ValidateOpts) ValidationResult {
 	var res ValidationResult
 	res.OK = true
 	if out == nil {
@@ -81,22 +89,44 @@ func ValidateDraft(out *DraftOutput, acc *models.OutreachAccount, cand *models.O
 		res.Errors = append(res.Errors, "empty draft")
 		return res
 	}
-	if maxWords <= 0 {
-		maxWords = DefaultMaxInitialWords
+	channel := strings.TrimSpace(out.Channel)
+	if channel == "" {
+		channel = strings.TrimSpace(opts.Channel)
 	}
+	if channel == "" {
+		channel = ChannelEmailInitial
+	}
+	res.Channel = channel
+	res.Rationale = strings.TrimSpace(out.Rationale)
+	res.Claims = out.Claims
 
-	email := ""
+	maxWords := opts.MaxWords
+	if maxWords <= 0 {
+		if IsWhatsAppChannel(channel) {
+			maxWords = DefaultMaxWhatsAppWords
+		} else {
+			maxWords = DefaultMaxInitialWords
+		}
+	}
+	isWA := IsWhatsAppChannel(channel)
+	skipEmail := opts.SkipEmailRecipient || isWA
+
 	if cand != nil {
-		email = strings.TrimSpace(cand.Email)
-		if !cand.CanEnroll() {
-			res.OK = false
-			res.Errors = append(res.Errors, "contact is not enrollable (verification, DNC, bounce, or missing email)")
+		if !skipEmail {
+			if !cand.CanEnroll() {
+				res.OK = false
+				res.Errors = append(res.Errors, "contact is not enrollable (verification, DNC, bounce, or missing email)")
+			}
+			if strings.TrimSpace(cand.Email) == "" {
+				res.OK = false
+				res.Errors = append(res.Errors, "missing recipient email")
+			}
 		}
 		if cand.DoNotContact {
 			res.OK = false
 			res.Errors = append(res.Errors, "contact is DO_NOT_CONTACT")
 		}
-		if cand.Bounced {
+		if cand.Bounced && !isWA {
 			res.OK = false
 			res.Errors = append(res.Errors, "contact address bounced")
 		}
@@ -104,17 +134,13 @@ func ValidateDraft(out *DraftOutput, acc *models.OutreachAccount, cand *models.O
 		res.OK = false
 		res.Errors = append(res.Errors, "no contact candidate")
 	}
-	if email == "" {
-		res.OK = false
-		res.Errors = append(res.Errors, "missing recipient email")
-	}
 
 	body := strings.TrimSpace(out.BodyText)
 	if body == "" {
 		res.OK = false
 		res.Errors = append(res.Errors, "empty body")
 	}
-	if strings.TrimSpace(out.Subject) == "" {
+	if !isWA && strings.TrimSpace(out.Subject) == "" {
 		res.OK = false
 		res.Errors = append(res.Errors, "empty subject")
 	}
@@ -123,7 +149,6 @@ func ValidateDraft(out *DraftOutput, acc *models.OutreachAccount, cand *models.O
 	for _, fu := range out.Followups {
 		blob += "\n" + strings.ToLower(fu.BodyText)
 	}
-
 	if emDashRe.MatchString(out.Subject + body) {
 		res.OK = false
 		res.Errors = append(res.Errors, "em dash / en dash not allowed in outreach copy")
@@ -135,14 +160,12 @@ func ValidateDraft(out *DraftOutput, acc *models.OutreachAccount, cand *models.O
 			break
 		}
 	}
-
 	for _, p := range bannedPhrases {
 		if strings.Contains(blob, p) {
 			res.OK = false
 			res.Errors = append(res.Errors, "banned phrase: "+p)
 		}
 	}
-
 	if shortURLRe.MatchString(body) {
 		res.OK = false
 		res.Errors = append(res.Errors, "shortened URLs are not allowed")
@@ -151,60 +174,213 @@ func ValidateDraft(out *DraftOutput, acc *models.OutreachAccount, cand *models.O
 		res.OK = false
 		res.Errors = append(res.Errors, "unsafe HTML (script) not allowed")
 	}
-
 	words := countWords(body)
 	if words > maxWords {
 		res.OK = false
 		res.Errors = append(res.Errors, fmt.Sprintf("body exceeds %d words (%d)", maxWords, words))
 	}
 
-	if strings.TrimSpace(out.FactUsed) == "" {
-		res.OK = false
-		res.Errors = append(res.Errors, "fact_used is required")
+	company := ""
+	if acc != nil {
+		company = firstNonEmpty(acc.NomeFantasia, acc.RazaoSocial)
 	}
-	if acc != nil && strings.TrimSpace(out.FactUsed) != "" {
-		// Fact should be grounded in account messaging or evidence synthesis.
-		grounded := strings.Contains(strings.ToLower(acc.FactToMention), strings.ToLower(out.FactUsed)) ||
-			strings.Contains(strings.ToLower(out.FactUsed), firstWords(acc.FactToMention, 4)) ||
-			strings.Contains(strings.ToLower(acc.MomentSummary), strings.ToLower(out.FactUsed))
-		if !grounded && acc.FactToMention != "" {
-			// Soft: warn if fact diverges heavily; still allow if evidence_ids present.
-			if len(out.EvidenceIDs) == 0 {
-				res.Warnings = append(res.Warnings, "fact_used may not match staging fact_to_mention and has no evidence_ids")
+	lint := LintCopy(channel, out.Subject, body, company)
+	for _, e := range lint.Errors {
+		res.OK = false
+		res.Errors = append(res.Errors, e)
+	}
+	res.Warnings = append(res.Warnings, lint.Warnings...)
+
+	knownIDs := evidenceIDSet(opts.Evidence, acc)
+	allClaimIDs := collectEvidenceIDs(out)
+	if len(allClaimIDs) == 0 && strings.TrimSpace(out.FactUsed) != "" {
+		if len(knownIDs) == 0 {
+			res.Warnings = append(res.Warnings, "fact used without evidence_ids")
+		} else {
+			res.OK = false
+			res.Errors = append(res.Errors, "fact_used present but no evidence_ids anchored")
+		}
+	}
+	for _, id := range allClaimIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if !knownIDs[id] {
+			res.OK = false
+			res.Errors = append(res.Errors, "unknown evidence_id: "+id)
+		}
+	}
+	for i, c := range out.Claims {
+		if len(c.EvidenceIDs) == 0 && len(knownIDs) > 0 {
+			res.OK = false
+			res.Errors = append(res.Errors, fmt.Sprintf("claims[%d] missing evidence_ids", i))
+		}
+		for _, id := range c.EvidenceIDs {
+			if id = strings.TrimSpace(id); id != "" && !knownIDs[id] {
+				res.OK = false
+				res.Errors = append(res.Errors, "unknown evidence_id in claim: "+id)
 			}
 		}
 	}
-	if strings.TrimSpace(out.FactUsed) != "" && len(out.EvidenceIDs) == 0 && acc != nil && len(acc.MomentEvidenceIDs) == 0 {
-		res.Warnings = append(res.Warnings, "fact used without evidence_ids")
+	if strings.TrimSpace(out.FactUsed) == "" && !isWA {
+		if len(out.Claims) == 0 {
+			res.OK = false
+			res.Errors = append(res.Errors, "fact_used is required")
+		}
 	}
 
+	override := opts.ServiceOverrideAudited || out.ServiceOverrideAudited
 	if acc != nil {
 		if sc := strings.TrimSpace(out.ServiceCode); sc != "" && acc.ServiceCode != "" && !strings.EqualFold(sc, acc.ServiceCode) {
-			res.OK = false
-			res.Errors = append(res.Errors, "service_code does not match account offer")
+			if !override {
+				res.OK = false
+				res.Errors = append(res.Errors, "service_code does not match account offer")
+			} else {
+				res.Warnings = append(res.Warnings, "service_code human override audited")
+			}
 		}
-		// More than one service mention is a warning (hard multi-service check is approximate).
 		if countServiceMentions(body) > 1 {
 			res.OK = false
 			res.Errors = append(res.Errors, "body appears to offer more than one service")
 		}
+		for _, avoid := range acc.ClaimsToAvoid {
+			avoid = strings.TrimSpace(strings.ToLower(avoid))
+			if avoid != "" && strings.Contains(blob, avoid) {
+				res.OK = false
+				res.Errors = append(res.Errors, "claims_to_avoid violated: "+avoid)
+			}
+		}
+	}
+
+	for _, e := range opts.Evidence {
+		if e.EpistemicClass != models.OutreachEpistemicCommercialHypothesis &&
+			e.EpistemicClass != models.OutreachEpistemicWeakInference &&
+			e.EpistemicClass != models.OutreachEpistemicRequiresCompanyConfirm {
+			continue
+		}
+		for _, c := range out.Claims {
+			if !containsStr(c.EvidenceIDs, e.SourceEvidenceID) {
+				continue
+			}
+			phrase := strings.ToLower(c.Phrase + " " + c.Fact)
+			if looksLikeHardAssertion(phrase) {
+				res.OK = false
+				res.Errors = append(res.Errors, "hypothesis evidence asserted as hard fact: "+e.SourceEvidenceID)
+			}
+		}
 	}
 
 	qMarks := strings.Count(body, "?")
-	if qMarks > 2 {
-		res.Warnings = append(res.Warnings, "body has multiple question marks")
+	if channel == ChannelEmailInitial {
+		if qMarks == 0 {
+			res.Warnings = append(res.Warnings, "email initial has no question mark")
+		}
+		if qMarks > 2 {
+			res.Warnings = append(res.Warnings, "body has multiple question marks")
+		}
 	}
-
+	if isWA && qMarks == 0 {
+		res.Warnings = append(res.Warnings, "whatsapp body has no question")
+	}
+	if score, hit := NearDuplicate(body, opts.RecentBodies); hit {
+		res.NearDupScore = score
+		res.Warnings = append(res.Warnings, fmt.Sprintf("near-duplicate of recent draft (jaccard=%.2f)", score))
+	} else if score > 0 {
+		res.NearDupScore = score
+	}
+	if r := strings.TrimSpace(out.Rationale); r != "" && len(r) > 20 {
+		sample := r
+		if utf8.RuneCountInString(sample) > 24 {
+			sample = string([]rune(sample)[:24])
+		}
+		if sample != "" && strings.Contains(body, sample) {
+			res.OK = false
+			res.Errors = append(res.Errors, "internal rationale leaked into body_text")
+		}
+	}
 	if !res.OK && len(res.Errors) == 0 {
 		res.Errors = append(res.Errors, "validation failed")
 	}
 	return res
 }
 
-func countWords(s string) int {
-	fields := strings.Fields(s)
-	return len(fields)
+func evidenceIDSet(evidence []models.OutreachEvidence, acc *models.OutreachAccount) map[string]bool {
+	m := make(map[string]bool)
+	for _, e := range evidence {
+		if id := strings.TrimSpace(e.SourceEvidenceID); id != "" {
+			m[id] = true
+		}
+		if e.ID.String() != "00000000-0000-0000-0000-000000000000" {
+			m[e.ID.String()] = true
+		}
+	}
+	if acc != nil {
+		for _, id := range acc.MomentEvidenceIDs {
+			if id = strings.TrimSpace(id); id != "" {
+				m[id] = true
+			}
+		}
+	}
+	return m
 }
+
+func collectEvidenceIDs(out *DraftOutput) []string {
+	if out == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var outIDs []string
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		outIDs = append(outIDs, id)
+	}
+	for _, id := range out.EvidenceIDs {
+		add(id)
+	}
+	for _, c := range out.Claims {
+		for _, id := range c.EvidenceIDs {
+			add(id)
+		}
+	}
+	return outIDs
+}
+
+func containsStr(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeHardAssertion(phrase string) bool {
+	phrase = strings.ToLower(phrase)
+	if strings.Contains(phrase, "?") ||
+		strings.Contains(phrase, "faz sentido") ||
+		strings.Contains(phrase, "hipótese") ||
+		strings.Contains(phrase, "hipotese") ||
+		strings.Contains(phrase, "parece que") ||
+		strings.Contains(phrase, "talvez") ||
+		strings.Contains(phrase, "seria o caso") ||
+		strings.Contains(phrase, "gostaria de entender") ||
+		strings.Contains(phrase, "confirmar se") {
+		return false
+	}
+	for _, h := range []string{"não têm", "nao tem", "não possui", "nao possui", "falta de", "sem equipe", "não controla", "nao controla", "é certo que", "e certo que"} {
+		if strings.Contains(phrase, h) {
+			return true
+		}
+	}
+	return false
+}
+
+func countWords(s string) int { return len(strings.Fields(s)) }
 
 func firstWords(s string, n int) string {
 	f := strings.Fields(s)
@@ -218,7 +394,6 @@ func firstWords(s string, n int) string {
 }
 
 func countServiceMentions(body string) int {
-	// Conservative: count known multi-offer patterns rather than NLP.
 	patterns := []string{"além disso oferecemos", "alem disso oferecemos", "também fazemos", "tambem fazemos", "nossos serviços incluem", "nossos servicos incluem"}
 	n := 0
 	low := strings.ToLower(body)
@@ -234,21 +409,21 @@ func countServiceMentions(body string) int {
 func ClassifyRisk(acc *models.OutreachAccount, cand *models.OutreachContactCandidate, out *DraftOutput, val ValidationResult) (class string, flags []string) {
 	flags = []string{}
 	class = "GREEN"
-
 	raise := func(to string, flag string) {
 		flags = append(flags, flag)
 		if rank(to) > rank(class) {
 			class = to
 		}
 	}
-
 	if !val.OK {
 		raise("RED", "validation_failed")
+	}
+	if val.NearDupScore >= NearDupThreshold {
+		raise("YELLOW", "near_duplicate_draft")
 	}
 	if cand != nil {
 		switch cand.VerificationStatus {
 		case models.OutreachVerifyOfficialSource, models.OutreachVerifyMultipleSources, models.OutreachVerifyPublicDocumentRecent:
-			// ok
 		case models.OutreachVerifyInstitutionalGeneric:
 			raise("YELLOW", "institutional_generic_recipient")
 		case models.OutreachVerifyPublicPossiblyStale:
@@ -290,6 +465,11 @@ func ClassifyRisk(acc *models.OutreachAccount, cand *models.OutreachContactCandi
 				break
 			}
 		}
+		for _, f := range out.RiskFlags {
+			if f != "" {
+				flags = append(flags, f)
+			}
+		}
 	}
 	if class == "GREEN" && len(flags) == 0 {
 		flags = []string{"low_send_risk"}
@@ -309,15 +489,33 @@ func rank(c string) int {
 }
 
 // TemplateDraft builds a deterministic safe draft when AI is unavailable.
-// Never marked as AI-generated approved output by callers.
 func TemplateDraft(acc *models.OutreachAccount, cand *models.OutreachContactCandidate) DraftOutput {
-	name := ""
-	role := ""
-	email := ""
+	return TemplateDraftChannel(ChannelEmailInitial, acc, cand, nil)
+}
+
+// TemplateDraftChannel builds channel-aware deterministic copy from staging only.
+func TemplateDraftChannel(channel string, acc *models.OutreachAccount, cand *models.OutreachContactCandidate, evidence []models.OutreachEvidence) DraftOutput {
+	if channel == "" {
+		channel = ChannelEmailInitial
+	}
+	if IsWhatsAppChannel(channel) {
+		body := BuildWhatsAppCopy(acc, cand)
+		fact, question, cta, sc := "", "", "", ""
+		if acc != nil {
+			fact, question, cta, sc = acc.FactToMention, acc.QuestionToAsk, acc.CTA, acc.ServiceCode
+		}
+		ids := evidenceIDsFrom(evidence, acc)
+		return DraftOutput{
+			Channel: channel, Subject: "", BodyText: body, FactUsed: fact, EvidenceIDs: ids,
+			Claims: claimsFromFact(fact, ids), ServiceCode: sc, Question: question, CTA: cta,
+			RiskFlags: []string{"template_fallback", "whatsapp_channel"},
+			Rationale: "deterministic whatsapp template from staging fact/offer/question",
+		}
+	}
+
+	name, role, email := "", "", ""
 	if cand != nil {
-		name = strings.TrimSpace(cand.Name)
-		role = strings.TrimSpace(cand.Role)
-		email = strings.TrimSpace(cand.Email)
+		name, role, email = strings.TrimSpace(cand.Name), strings.TrimSpace(cand.Role), strings.TrimSpace(cand.Email)
 	}
 	company := ""
 	if acc != nil {
@@ -329,11 +527,7 @@ func TemplateDraft(acc *models.OutreachAccount, cand *models.OutreachContactCand
 	} else if cand != nil && cand.VerificationStatus == models.OutreachVerifyInstitutionalGeneric {
 		greeting = "Olá, equipe"
 	}
-
-	fact := ""
-	question := "Faz sentido conversarmos brevemente?"
-	cta := "Posso enviar um checklist de uma página?"
-	service := ""
+	fact, question, cta, service, sc, whyNow := "", "Faz sentido conversarmos brevemente?", "Posso enviar um checklist de uma página?", "", "", ""
 	if acc != nil {
 		fact = acc.FactToMention
 		if acc.QuestionToAsk != "" {
@@ -346,45 +540,120 @@ func TemplateDraft(acc *models.OutreachAccount, cand *models.OutreachContactCand
 		if service == "" {
 			service = acc.ServiceCode
 		}
+		sc = acc.ServiceCode
+		whyNow = acc.MomentSummary
 	}
-	if fact == "" {
-		fact = "acompanhei publicações recentes relacionadas à " + company
+	ids := evidenceIDsFrom(evidence, acc)
+	weakFact := fact == "" && len(ids) == 0
+	var body, subj string
+	switch channel {
+	case ChannelEmailFollowup:
+		body = greeting + ",\n\nRetomo o contato sobre "
+		if fact != "" {
+			body += fact
+		} else if whyNow != "" {
+			body += whyNow
+		} else {
+			body += company
+		}
+		body += ".\n\n"
+		if service != "" {
+			body += "Seguimos disponíveis para " + strings.ToLower(service) + " se ainda for útil.\n\n"
+		}
+		body += question + " " + cta + "\n\nAbraço,\nTiago Sasaki\nCONFENGE"
+		subj = "Re: " + company
+		if utf8.RuneCountInString(subj) > 80 || company == "" {
+			subj = "Re: conversa anterior"
+		}
+	case ChannelReplyDraft:
+		body = greeting + ",\n\nObrigado pela resposta. "
+		if fact != "" {
+			body += "Sobre " + fact + ", "
+		}
+		if service != "" {
+			body += "posso detalhar como trabalhamos " + strings.ToLower(service) + ". "
+		}
+		body += question + " " + cta + "\n\nAbraço,\nTiago Sasaki\nCONFENGE"
+		subj = "Re: " + firstNonEmpty(company, "sua mensagem")
+	default:
+		if weakFact {
+			body = greeting + ",\n\nSou da CONFENGE. Trabalho com engenharia consultiva em contratos públicos.\n\n"
+			if service != "" {
+				body += "Para " + company + ", o ponto de entrada seria " + strings.ToLower(service) + " a partir do que vocês já publicam.\n\n"
+			}
+			body += "Há algum processo de aditivo ou reajuste em que uma leitura externa ajude agora? " + cta + "\n\nAbraço,\nTiago Sasaki\nCONFENGE"
+			if fact == "" {
+				fact = "abordagem diagnóstica sem fato público forte"
+			}
+			if question == "Faz sentido conversarmos brevemente?" {
+				question = "Há algum processo de aditivo ou reajuste em que uma leitura externa ajude agora?"
+			}
+		} else {
+			if fact == "" {
+				fact = "acompanhei publicações recentes relacionadas à " + company
+			}
+			body = greeting + ",\n\nSou da CONFENGE. Notei que " + fact + ".\n\n"
+			if service != "" {
+				body += "Ajudamos times de engenharia com " + strings.ToLower(service) + ", sempre a partir de fatos públicos e sem pressa.\n\n"
+			}
+			body += question + " " + cta + "\n\nAbraço,\nTiago Sasaki\nCONFENGE"
+		}
+		subj = "Sobre " + company
+		if company == "" || utf8.RuneCountInString(subj) > 80 {
+			subj = "Conversa rápida sobre contratos"
+		}
+		if fact != "" && hasConcreteToken(fact) {
+			subj = trimSubject("Sobre " + firstWords(fact, 6))
+		}
 	}
-
-	body := greeting + ",\n\n"
-	body += "Sou da CONFENGE. Notei que " + fact + ".\n\n"
-	if service != "" {
-		body += "Ajudamos times de engenharia com " + strings.ToLower(service) + ", sempre a partir de fatos públicos e sem pressa.\n\n"
-	}
-	body += question + " " + cta + "\n\n"
-	body += "Abraço,\nTiago Sasaki\nCONFENGE"
-
-	// Strip any accidental em dashes from inputs.
 	body = emDashRe.ReplaceAllString(body, ",")
-	subj := "Sobre " + company
-	if utf8.RuneCountInString(subj) > 80 {
-		subj = "Conversa rápida"
-	}
-
+	subj = emDashRe.ReplaceAllString(subj, ",")
 	_ = email
 	_ = role
 	return DraftOutput{
-		Subject:     subj,
-		BodyText:    body,
-		BodyHTML:    "",
-		Followups:   defaultFollowups(question),
-		FactUsed:    fact,
-		EvidenceIDs: nil,
-		ServiceCode: func() string {
-			if acc != nil {
-				return acc.ServiceCode
-			}
-			return ""
-		}(),
-		Question:  question,
-		CTA:       cta,
-		RiskFlags: []string{"template_fallback"},
+		Channel: channel, Subject: subj, BodyText: body, Followups: defaultFollowups(question),
+		FactUsed: fact, EvidenceIDs: ids, Claims: claimsFromFact(fact, ids), ServiceCode: sc,
+		Question: question, CTA: cta, RiskFlags: []string{"template_fallback"},
+		Rationale: "deterministic template from staging dossier only; no research",
 	}
+}
+
+func evidenceIDsFrom(evidence []models.OutreachEvidence, acc *models.OutreachAccount) []string {
+	seen := map[string]bool{}
+	var ids []string
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	for _, e := range evidence {
+		add(e.SourceEvidenceID)
+	}
+	if acc != nil {
+		for _, id := range acc.MomentEvidenceIDs {
+			add(id)
+		}
+	}
+	return ids
+}
+
+func claimsFromFact(fact string, ids []string) []DraftClaim {
+	fact = strings.TrimSpace(fact)
+	if fact == "" {
+		return nil
+	}
+	return []DraftClaim{{Phrase: fact, Fact: fact, EvidenceIDs: ids}}
+}
+
+func trimSubject(s string) string {
+	s = strings.TrimSpace(s)
+	if utf8.RuneCountInString(s) <= 80 {
+		return s
+	}
+	return string([]rune(s)[:77]) + "..."
 }
 
 func defaultFollowups(question string) []DraftFollowup {
@@ -417,7 +686,6 @@ func CanBatchApprove(d *models.OutreachDraft, cand *models.OutreachContactCandid
 	if !cand.CanEnroll() {
 		return false
 	}
-	// validation must be ok
 	if d.ValidationOK != nil && !*d.ValidationOK {
 		return false
 	}

@@ -69,12 +69,13 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 		draft.CreatedAt = existing.CreatedAt
 	}
 
+	recent := recentDraftBodies(ctx, s, orgID, accountID, models.OutreachChannelEmail)
+	in := BuildGenerateInput(ChannelEmailInitial, acc, cand, evidence, recent)
 	gen := s.generator()
-	out, provider, model, genErr := gen.Generate(ctx, acc, cand, evidence)
+	out, provider, model, genErr := gen.Generate(ctx, in)
 	usedTemplate := false
 	if genErr != nil {
-		// Fallback template; import/review remain usable without AI.
-		out = TemplateDraft(acc, cand)
+		out = TemplateDraftChannel(ChannelEmailInitial, acc, cand, evidence)
 		provider = "template"
 		model = "deterministic"
 		usedTemplate = true
@@ -85,8 +86,14 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 	if len(out.EvidenceIDs) == 0 && len(acc.MomentEvidenceIDs) > 0 {
 		out.EvidenceIDs = acc.MomentEvidenceIDs
 	}
+	if out.Channel == "" {
+		out.Channel = ChannelEmailInitial
+	}
 
-	val := ValidateDraft(&out, acc, cand, s.cfg.MaxInitialEmailWords)
+	val := ValidateDraft(&out, acc, cand, ValidateOpts{
+		MaxWords: s.cfg.MaxInitialEmailWords, Evidence: evidence,
+		Channel: ChannelEmailInitial, RecentBodies: recent,
+	})
 	risk, flags := ClassifyRisk(acc, cand, &out, val)
 	if usedTemplate {
 		flags = append(flags, "template_fallback")
@@ -94,16 +101,19 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 			risk = "YELLOW"
 		}
 	}
+	val.Claims = out.Claims
+	val.Rationale = out.Rationale
+	val.Channel = out.Channel
 
 	valJSON, _ := json.Marshal(val)
 	followJSON, _ := json.Marshal(out.Followups)
 	draft.Subject = SanitizeText(out.Subject, 200)
 	draft.BodyText = SanitizeText(out.BodyText, 8000)
-	draft.BodyHTML = "" // never store unsafe HTML from model raw
+	draft.BodyHTML = ""
 	draft.FollowupsJSON = followJSON
 	draft.ServiceCode = SanitizeText(out.ServiceCode, 100)
 	draft.FactUsed = SanitizeText(out.FactUsed, 2000)
-	draft.EvidenceIDs = out.EvidenceIDs
+	draft.EvidenceIDs = collectEvidenceIDs(&out)
 	draft.Question = SanitizeText(out.Question, 1000)
 	draft.CTA = SanitizeText(out.CTA, 500)
 	draft.Provider = provider
@@ -222,9 +232,13 @@ func (s *service) ReviewDraft(ctx context.Context, orgID, userID, draftID uuid.U
 		out := DraftOutput{
 			Subject: d.Subject, BodyText: d.BodyText, FactUsed: d.FactUsed,
 			ServiceCode: d.ServiceCode, EvidenceIDs: d.EvidenceIDs,
-			Question: d.Question, CTA: d.CTA,
+			Question: d.Question, CTA: d.CTA, Channel: channelKindFromDraft(d),
 		}
-		val := ValidateDraft(&out, acc, cand, s.cfg.MaxInitialEmailWords)
+		ev, _ := s.repo.ListEvidence(ctx, orgID, d.AccountID)
+		val := ValidateDraft(&out, acc, cand, ValidateOpts{
+			MaxWords: maxWordsForDraft(s, d), Evidence: ev, Channel: out.Channel,
+			SkipEmailRecipient: d.Channel == models.OutreachChannelWhatsApp,
+		})
 		risk, flags := ClassifyRisk(acc, cand, &out, val)
 		valJSON, _ := json.Marshal(val)
 		d.ValidationJSON = valJSON
@@ -242,8 +256,13 @@ func (s *service) ReviewDraft(ctx context.Context, orgID, userID, draftID uuid.U
 		out := DraftOutput{
 			Subject: d.Subject, BodyText: d.BodyText, FactUsed: d.FactUsed,
 			ServiceCode: d.ServiceCode, EvidenceIDs: d.EvidenceIDs,
+			Channel: channelKindFromDraft(d),
 		}
-		val := ValidateDraft(&out, acc, cand, s.cfg.MaxInitialEmailWords)
+		ev, _ := s.repo.ListEvidence(ctx, orgID, d.AccountID)
+		val := ValidateDraft(&out, acc, cand, ValidateOpts{
+			MaxWords: maxWordsForDraft(s, d), Evidence: ev, Channel: out.Channel,
+			SkipEmailRecipient: d.Channel == models.OutreachChannelWhatsApp,
+		})
 		if !val.OK {
 			return nil, errx.New(errx.BadRequest, "draft failed validation: "+joinErrs(val.Errors))
 		}
@@ -342,4 +361,56 @@ func stringsJoin(parts []string, sep string) string {
 // Ensure service holds optional AI provider.
 func (s *service) SetAI(p generation.Provider) {
 	s.ai = p
+}
+
+func recentDraftBodies(ctx context.Context, s *service, orgID, accountID uuid.UUID, channel string) []string {
+	if s == nil || s.repo == nil {
+		return nil
+	}
+	list, err := s.repo.ListDrafts(ctx, orgID, "", 40, 0)
+	if err != nil || len(list) == 0 {
+		return nil
+	}
+	var bodies []string
+	for _, d := range list {
+		if d.AccountID != accountID {
+			continue
+		}
+		if channel != "" && d.Channel != "" && d.Channel != channel {
+			continue
+		}
+		if b := strings.TrimSpace(d.BodyText); b != "" {
+			bodies = append(bodies, b)
+		}
+		if len(bodies) >= 8 {
+			break
+		}
+	}
+	return bodies
+}
+
+func channelKindFromDraft(d *models.OutreachDraft) string {
+	if d == nil {
+		return ChannelEmailInitial
+	}
+	if d.Channel == models.OutreachChannelWhatsApp {
+		return ChannelWhatsAppInitial
+	}
+	return ChannelEmailInitial
+}
+
+func maxWordsForDraft(s *service, d *models.OutreachDraft) int {
+	if s == nil {
+		return DefaultMaxInitialWords
+	}
+	if d != nil && d.Channel == models.OutreachChannelWhatsApp {
+		if s.cfg.MaxWhatsAppWords > 0 {
+			return s.cfg.MaxWhatsAppWords
+		}
+		return DefaultMaxWhatsAppWords
+	}
+	if s.cfg.MaxInitialEmailWords > 0 {
+		return s.cfg.MaxInitialEmailWords
+	}
+	return DefaultMaxInitialWords
 }

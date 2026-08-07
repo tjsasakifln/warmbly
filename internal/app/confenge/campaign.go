@@ -181,8 +181,12 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 	out := DraftOutput{
 		Subject: d.Subject, BodyText: d.BodyText, FactUsed: d.FactUsed,
 		ServiceCode: d.ServiceCode, EvidenceIDs: d.EvidenceIDs,
+		Channel: channelKindFromDraft(d),
 	}
-	val := ValidateDraft(&out, acc, cand, s.cfg.MaxInitialEmailWords)
+	ev, _ := s.repo.ListEvidence(ctx, orgID, d.AccountID)
+	val := ValidateDraft(&out, acc, cand, ValidateOpts{
+		MaxWords: s.cfg.MaxInitialEmailWords, Evidence: ev, Channel: out.Channel,
+	})
 	if !val.OK {
 		return nil, errx.New(errx.BadRequest, "draft failed validation: "+joinErrs(val.Errors))
 	}
