@@ -516,3 +516,46 @@ func TestGenerateReplyDraftSurfacesAwaitingApproval(t *testing.T) {
 		t.Fatal("thread/snippet required")
 	}
 }
+
+// Without WireCRM (historical consumer posture), handoff must not panic but
+// also cannot create CRM tasks — documents why consumer main must WireCRM.
+func TestHandoffWithoutWireCRMCreatesNoTasks(t *testing.T) {
+	r := newMemRepoWithSettings()
+	svc := NewService(Config{Enabled: true, DefaultDailyLimit: 10, MaxInitialEmailWords: 120}, r, nil).(*service)
+	// deliberately do NOT WireCRM
+	crm := &mockCRM{}
+	org := uuid.New()
+	accID := uuid.New()
+	cnpj := fmt.Sprintf("%014d", int(accID[0])<<24|int(accID[1])<<16|int(accID[2])<<8|int(accID[3]))
+	cnpj = (cnpj + "00000000000000")[:14]
+	_, _ = r.UpsertAccount(context.Background(), &models.OutreachAccount{
+		ID: accID, OrganizationID: org, CNPJ14: cnpj, RazaoSocial: "NoCRM", QueueState: models.OutreachQueueSent, SourceLeadID: "Lnc",
+	})
+	contactID := uuid.New()
+	_, _ = r.UpsertCandidate(context.Background(), &models.OutreachContactCandidate{
+		ID: uuid.New(), OrganizationID: org, AccountID: accID, Email: "nocrm@acme.com",
+		VerificationStatus: models.OutreachVerifyOfficialSource, Recommended: true, WarmblyContactID: &contactID,
+	})
+	_, xerr := svc.ProcessInboundHandoff(context.Background(), org, InboundHandoff{
+		Channel: models.OutreachChannelEmail, ContactEmail: "nocrm@acme.com",
+		BodyText: "Tenho interesse", ActorID: uuid.New(), IdempotencyKey: "no-crm-1",
+	})
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if crm.tasks != 0 {
+		t.Fatalf("without WireCRM expected 0 tasks, got %d", crm.tasks)
+	}
+	// Now wire and confirm tasks appear (real consumer posture after fix).
+	svc.WireCRM(crm)
+	_, xerr = svc.ProcessInboundHandoff(context.Background(), org, InboundHandoff{
+		Channel: models.OutreachChannelEmail, ContactEmail: "nocrm@acme.com",
+		BodyText: "Tenho interesse, vamos falar", ActorID: uuid.New(), IdempotencyKey: "with-crm-1",
+	})
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if crm.tasks < 1 {
+		t.Fatal("after WireCRM expected CRM task on positive interest")
+	}
+}
