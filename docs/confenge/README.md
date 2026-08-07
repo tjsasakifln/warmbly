@@ -115,6 +115,11 @@ Import query/header:
 - `?dry_run=true` — validate + count only
 - `Idempotency-Key` — same key + same payload returns prior run; different payload → `409`
 
+## Local one-command ops
+
+See [local-ops.md](./local-ops.md) for `make confenge-local`,
+preflight, import, kill switch, and the offline demo path.
+
 ## Local quickstart
 
 1. Set `CONFENGE_OUTREACH_ENABLED=true` on the backend env.

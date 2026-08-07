@@ -14,6 +14,55 @@ import {
 } from "@/lib/api/hooks/app/confenge/useConfenge";
 import type { ConfengeDraft } from "@/lib/api/models/app/confenge/Confenge";
 
+
+function readinessTone(v: string | undefined): string {
+    if (!v) return "text-slate-500";
+    if (v === "ready" || v === "just now") return "text-emerald-700";
+    if (v === "blocked_by_policy" || v === "paused") return "text-rose-700";
+    if (v === "fallback_template" || v === "not_configured") return "text-amber-700";
+    return "text-slate-600";
+}
+
+function ReadinessCard({ status }: { status: NonNullable<ReturnType<typeof useConfengeStatus>["data"]> }) {
+    const r = status.readiness;
+    if (!r) return null;
+    const rows: { label: string; value: string }[] = [
+        { label: "EMAIL", value: r.email },
+        { label: "WHATSAPP", value: r.whatsapp },
+        { label: "FEED AGE", value: r.feed_age || "unknown" },
+        { label: "OUTCOME", value: r.outcome_loop },
+        { label: "AI", value: r.ai },
+        { label: "GOVERNOR", value: `${r.governor_cap}/day` },
+        { label: "QUEUE", value: String(r.queue_count) },
+    ];
+    return (
+        <section className="rounded-md border border-slate-200 bg-white px-3 py-2.5">
+            <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Readiness</div>
+                {r.kill_switch || status.kill_switch ? (
+                    <span className="text-[10px] uppercase tracking-[0.14em] px-1.5 py-0.5 rounded bg-rose-50 text-rose-700">
+                        sending paused
+                    </span>
+                ) : (
+                    <span className="text-[10px] uppercase tracking-[0.14em] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700">
+                        sending allowed
+                    </span>
+                )}
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+                {rows.map((row) => (
+                    <div key={row.label} className="min-w-[88px]">
+                        <div className="text-[10px] uppercase tracking-[0.14em] text-slate-400">{row.label}</div>
+                        <div className={`text-[12.5px] font-medium tabular-nums ${readinessTone(row.value)}`}>
+                            {row.value}
+                        </div>
+                    </div>
+                ))}
+            </div>
+        </section>
+    );
+}
+
 export default function ConfengePage() {
     const status = useConfengeStatus();
     const enabled = !!status.data?.enabled;
@@ -98,6 +147,8 @@ export default function ConfengePage() {
                         </div>
                     ))}
                 </div>
+
+                {status.data && <ReadinessCard status={status.data} />}
 
                 <div className="grid md:grid-cols-2 gap-4">
                     <section className="rounded-md border border-slate-200 bg-white">

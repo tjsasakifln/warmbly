@@ -1,3 +1,22 @@
+export type ConfengeReadiness = {
+    email: string;
+    whatsapp: string;
+    feed_configured: boolean;
+    feed_age_seconds?: number | null;
+    feed_age: string;
+    outcome_loop: string;
+    ai: string;
+    governor_cap: number;
+    queue_count: number;
+    kill_switch: boolean;
+    sending_allowed: boolean;
+    outreach_enabled: boolean;
+    require_human_approval: boolean;
+    auto_send_enabled: boolean;
+    whatsapp_enabled: boolean;
+    whatsapp_provider?: string;
+};
+
 export type ConfengeStatus = {
     enabled: boolean;
     auto_send_enabled: boolean;
@@ -5,6 +24,9 @@ export type ConfengeStatus = {
     default_daily_limit: number;
     max_initial_email_words: number;
     feed_configured: boolean;
+    kill_switch?: boolean;
+    sending_allowed?: boolean;
+    readiness?: ConfengeReadiness;
 };
 
 export type ConfengeSummary = {

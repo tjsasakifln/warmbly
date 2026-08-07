@@ -619,6 +619,137 @@ site:
 docs:
 	cd docs && PORT=4322 pnpm dev
 
+
+# ─── CONFENGE local-first one-command ops (WSL) ─────────────────────────
+#
+# Operator path without Kafka/AWS/GCP/Stripe:
+#   cp .env.confenge.example .env.confenge
+#   make confenge-local
+#   make confenge-preflight
+#   make confenge-import FEED=internal/app/confenge/testdata/demo_3_companies.json
+#   login dev@warmbly.com / password123 → /app/confenge
+#
+# Infra: postgres redis nats mailpit. App: backend consumer worker web.
+# Kill switch: make confenge-stop-sending / confenge-resume-sending
+# Backup: make confenge-db-backup / confenge-db-restore FILE=...
+
+CONFENGE_ENV_FILE ?= .env.confenge
+CONFENGE_FEED ?= internal/app/confenge/testdata/demo_3_companies.json
+CONFENGE_BACKUP_DIR ?= data/backups
+
+# CONFENGE_DEV_ENV extends GO_DEV_ENV with outreach flags (fail-closed auto-send).
+# API binds 127.0.0.1 by default for local-safe ops (override with API_HOST=).
+CONFENGE_API_HOST ?= 127.0.0.1:8080
+CONFENGE_DEV_ENV = \
+	CONFENGE_OUTREACH_ENABLED=true \
+	CONFENGE_REQUIRE_HUMAN_APPROVAL=true \
+	CONFENGE_AUTO_SEND_ENABLED=false \
+	CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=10 \
+	CONFENGE_EXTRA_CLI_FEED_URL=file://$(CURDIR)/$(CONFENGE_FEED) \
+	CONFENGE_WHATSAPP_ENABLED=$${CONFENGE_WHATSAPP_ENABLED:-false} \
+	WHATSAPP_PROVIDER=$${WHATSAPP_PROVIDER:-mock} \
+	WHATSAPP_EVOLUTION_ALLOW_BAILEYS=false
+
+# Load optional operator env file into the shell for confenge targets.
+define confenge_source_env
+	@if [ -f "$(CONFENGE_ENV_FILE)" ]; then set -a; . ./$(CONFENGE_ENV_FILE); set +a; fi
+endef
+
+confenge-local:
+	@command -v docker >/dev/null || { echo "docker is required"; exit 1; }
+	@command -v go >/dev/null || { echo "go 1.25+ is required"; exit 1; }
+	@command -v pnpm >/dev/null || { echo "pnpm is required"; exit 1; }
+	@if [ ! -f "$(CONFENGE_ENV_FILE)" ]; then \
+		echo "No $(CONFENGE_ENV_FILE); copying from .env.confenge.example"; \
+		cp .env.confenge.example $(CONFENGE_ENV_FILE); \
+	fi
+	$(COMPOSE) up -d $(INFRA_SVCS)
+	@echo "Waiting for postgres..."
+	@until $(COMPOSE) exec -T postgres pg_isready -U warmbly >/dev/null 2>&1; do sleep 1; done
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	$(GO_DEV_ENV) $(CONFENGE_DEV_ENV) go run ./cmd/migrate
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	if [ "$(SEED)" = "true" ]; then $(GO_DEV_ENV) SEED_RICH=true SEED_FULL=true go run ./cmd/seed; fi
+	@if [ ! -d web/node_modules ]; then echo "Installing web deps..."; cd web && pnpm install; fi
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	$(GO_DEV_ENV) $(CONFENGE_DEV_ENV) go run ./cmd/confenge bootstrap || true
+	@echo ""
+	@echo "CONFENGE local stack starting (no Kafka/AWS/Stripe)."
+	@echo "Dashboard: http://localhost:5173  Login: dev@warmbly.com / password123"
+	@echo "Mailpit:   http://localhost:18025  API: http://$(CONFENGE_API_HOST)"
+	@echo "Ctrl-C stops app processes; infra stays up (make infra-down to stop)."
+	@echo ""
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	trap 'kill 0' INT TERM; \
+	$(MAKE) --no-print-directory confenge-backend & \
+	$(MAKE) --no-print-directory consumer & \
+	$(MAKE) --no-print-directory worker & \
+	$(MAKE) --no-print-directory web & \
+	wait
+
+# Backend with CONFENGE flags and local-safe bind.
+confenge-backend:
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	$(GO_DEV_ENV) \
+	$(CONFENGE_DEV_ENV) \
+	$(AI_DEV_ENV) \
+	API_HOST=$(CONFENGE_API_HOST) \
+	GIN_MODE=debug \
+	APP_URL=http://$(WEB_HOST):5173 \
+	CORS_ALLOW_ORIGINS=$(CORS_ORIGINS) \
+	WEBSOCKET_URL=ws://$(WEB_HOST):4000/socket/websocket \
+	AUTH_SECRET=local-dev-auth-secret-minimum-32-characters-long \
+	EMAIL_NAME='Warmbly Dev' \
+	EMAIL_ADDRESS=dev@warmbly.local \
+	TRACKING_DOMAIN=t.warmbly.com \
+	SMTP_HOST=$(INFRA_HOST) \
+	SMTP_PORT=11025 \
+	GEODB_PATH=data/GeoLite2-City.mmdb \
+	INTERNAL_API_TOKEN=local-dev-internal-token \
+	go run ./cmd/backend
+
+confenge-preflight:
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	$(GO_DEV_ENV) $(CONFENGE_DEV_ENV) go run ./cmd/confenge preflight
+
+confenge-bootstrap:
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	$(GO_DEV_ENV) $(CONFENGE_DEV_ENV) go run ./cmd/confenge bootstrap
+
+# FEED=path DRY_RUN=true|false (default false). Dry-run: make confenge-import DRY_RUN=true
+DRY_RUN ?= false
+confenge-import:
+	@if [ -z "$(FEED)" ] && [ -z "$(CONFENGE_FEED)" ]; then echo "Usage: make confenge-import FEED=/path/to/feed.json [DRY_RUN=true]"; exit 2; fi
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	feed="$(FEED)"; [ -n "$$feed" ] || feed="$(CONFENGE_FEED)"; \
+	dry_flag=""; [ "$(DRY_RUN)" = "true" ] && dry_flag="--dry-run"; \
+	$(GO_DEV_ENV) $(CONFENGE_DEV_ENV) go run ./cmd/confenge import --feed "$$feed" $$dry_flag
+
+confenge-stop-sending:
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	$(GO_DEV_ENV) go run ./cmd/confenge stop-sending
+
+confenge-resume-sending:
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	$(GO_DEV_ENV) go run ./cmd/confenge resume-sending
+
+confenge-db-backup:
+	@mkdir -p $(CONFENGE_BACKUP_DIR)
+	@ts=$$(date -u +%Y%m%dT%H%M%SZ); \
+	out="$(CONFENGE_BACKUP_DIR)/warmbly_dev_$$ts.sql"; \
+	$(COMPOSE) exec -T postgres pg_dump -U warmbly warmbly_dev > "$$out"; \
+	echo "Backup written to $$out"
+
+# FILE=data/backups/....sql
+confenge-db-restore:
+	@if [ -z "$(FILE)" ]; then echo "Usage: make confenge-db-restore FILE=data/backups/....sql"; exit 2; fi
+	@echo "Restoring $(FILE) into warmbly_dev (destructive to current data)..."
+	@$(COMPOSE) exec -T postgres psql -U warmbly -d warmbly_dev -c "SELECT 1" >/dev/null
+	@cat "$(FILE)" | $(COMPOSE) exec -T postgres psql -U warmbly -d warmbly_dev
+	@echo "Restore complete."
+
+.PHONY: confenge-local confenge-backend confenge-preflight confenge-bootstrap confenge-import confenge-stop-sending confenge-resume-sending confenge-db-backup confenge-db-restore
+
 # ─── admin bootstrap (local/test only) ──────────────────────────────────
 #
 # Grant a registered user platform admin access by flipping

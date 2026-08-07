@@ -25,6 +25,8 @@ type AuditLogger interface {
 type Service interface {
 	Enabled() bool
 	Config() Config
+	// CollectReadiness aggregates operator panel signals for one org.
+	CollectReadiness(ctx context.Context, orgID uuid.UUID, emailReady bool) Readiness
 
 	// ImportFromBytes validates and optionally applies a feed payload.
 	ImportFromBytes(ctx context.Context, orgID uuid.UUID, userID *uuid.UUID, raw []byte, opts ImportOptions) (*models.OutreachImportRun, *errx.Error)

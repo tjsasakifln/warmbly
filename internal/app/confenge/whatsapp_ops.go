@@ -190,6 +190,9 @@ func (s *service) SendApprovedWhatsApp(ctx context.Context, orgID, userID, draft
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, xerr
 	}
+	if !s.cfg.SendingAllowed() {
+		return nil, errx.New(errx.BadRequest, "sending paused (kill switch); run make confenge-resume-sending when safe")
+	}
 	if s.wa == nil || !s.cfg.WhatsAppEnabled {
 		return nil, errx.New(errx.ServiceUnavailable, "whatsapp transport not configured")
 	}
