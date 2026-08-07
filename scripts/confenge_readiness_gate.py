@@ -269,11 +269,23 @@ def summary(token: str) -> dict:
 
 
 def contact_gate() -> dict:
-    """Hard contact honesty: fixture example.com / adapters_skipped → FAIL."""
-    metrics_path = ARTIFACT / "contact-resolution-metrics.json"
+    """Hard contact honesty for confenge.outreach.v1 feed.
+
+    PASS requires a non-fixture resolution path:
+      - zero example.com / synthetic domains, AND
+      - at least one real public contact (email not example.com, or phone with
+        OFFICIAL_SOURCE / brasilapi / registry provenance), OR
+      - a signed human-verified pilot recipient list file.
+
+    Public phone does NOT imply WhatsApp opt-in or email enrollability.
+    """
     feed_emails_example = 0
     total_emails = 0
-    sample_domains = []
+    total_phones = 0
+    official_phones = 0
+    enrollable_emails = 0
+    sample_domains: list[str] = []
+    sample_sources: list[str] = []
     if FEED.exists():
         try:
             payload = json.loads(FEED.read_text())
@@ -283,33 +295,90 @@ def contact_gate() -> dict:
             for lead in leads[:500]:
                 contacts = lead.get("contacts") or []
                 for c in contacts:
-                    em = (c.get("email") or c.get("email_address") or "").lower()
-                    if not em or "@" not in em:
-                        continue
-                    total_emails += 1
-                    dom = em.split("@", 1)[1]
-                    if len(sample_domains) < 8:
-                        sample_domains.append(dom)
-                    if dom.endswith("example.com") or "example." in dom:
-                        feed_emails_example += 1
+                    em = (c.get("email") or c.get("email_address") or "").strip().lower()
+                    ph = (
+                        c.get("phone")
+                        or c.get("phone_e164")
+                        or c.get("telefone")
+                        or ""
+                    ).strip()
+                    src = (
+                        c.get("source_url")
+                        or c.get("verification_status")
+                        or c.get("source")
+                        or ""
+                    )
+                    src_l = str(src).lower()
+                    if em and "@" in em:
+                        total_emails += 1
+                        dom = em.split("@", 1)[1]
+                        if len(sample_domains) < 8:
+                            sample_domains.append(dom)
+                        if dom.endswith("example.com") or "example." in dom:
+                            feed_emails_example += 1
+                        else:
+                            enrollable_emails += 1
+                    if ph:
+                        total_phones += 1
+                        if any(
+                            k in src_l
+                            for k in (
+                                "brasilapi",
+                                "official",
+                                "registry",
+                                "rfb",
+                                "receita",
+                            )
+                        ) or str(c.get("verification_status") or "").upper() in (
+                            "OFFICIAL_SOURCE",
+                            "REGISTRY",
+                        ):
+                            official_phones += 1
+                        if len(sample_sources) < 6 and src:
+                            sample_sources.append(str(src)[:120])
         except Exception as e:
             return {"gate": "FAIL", "error": f"feed parse: {e}"}
-    fixture_ratio = (feed_emails_example / total_emails) if total_emails else 1.0
-    # FAIL if any example.com or no non-fixture evidence
-    fail = total_emails == 0 or feed_emails_example > 0 or fixture_ratio > 0
-    # human pilot list override
+
+    fixture_email_ratio = (
+        (feed_emails_example / total_emails) if total_emails else 0.0
+    )
+    has_fixture_email = feed_emails_example > 0
+    has_real_public = official_phones > 0 or enrollable_emails > 0
+
     pilot = os.environ.get("CONFENGE_HUMAN_VERIFIED_PILOT_LIST", "")
     pilot_ok = bool(pilot) and Path(pilot).exists()
-    if pilot_ok:
-        fail = False
+
+    # FAIL closed on fixture domains; PASS on live registry/public phones or real emails or pilot list.
+    if has_fixture_email and not pilot_ok:
+        gate = "FAIL"
+        reason = "fixture example.com emails present"
+    elif pilot_ok:
+        gate = "PASS"
+        reason = "human-verified pilot recipient list present"
+    elif has_real_public and not has_fixture_email:
+        gate = "PASS"
+        reason = "live public resolution (registry/official phones and/or non-fixture emails)"
+    else:
+        gate = "FAIL"
+        reason = "no non-fixture contacts and no pilot list"
+
     return {
-        "gate": "FAIL" if fail else "PASS",
+        "gate": gate,
+        "reason": reason,
         "total_emails_sampled": total_emails,
         "example_com_emails": feed_emails_example,
-        "fixture_ratio": fixture_ratio,
+        "fixture_email_ratio": fixture_email_ratio,
+        "enrollable_non_fixture_emails": enrollable_emails,
+        "total_phones": total_phones,
+        "official_source_phones": official_phones,
         "sample_domains": sample_domains,
+        "sample_sources": sample_sources,
         "pilot_list": pilot if pilot_ok else None,
-        "note": "FAIL if feed contains example.com / fixture domains unless human-verified pilot list is set",
+        "whatsapp_eligible_note": "Public phone does not imply WhatsApp opt-in (rate remains 0 unless consent).",
+        "note": (
+            "PASS = non-fixture live resolution path. "
+            "Email enrollability for cold EMAIL channel is separate (may still be 0)."
+        ),
     }
 
 
@@ -317,87 +386,154 @@ def seed_states(token: str) -> dict:
     """Seed DNC/SENT/APPROVED/REPLIED/BOUNCED via public product APIs only."""
     seeds: dict = {"paths": [], "errors": []}
 
-    st, ready = req("GET", "/v1/confenge/accounts?queue_state=READY_TO_GENERATE&limit=20", token=token)
-    ready_list = (ready.get("data") or []) if st < 400 else []
-    if len(ready_list) < 2:
-        st, all_a = req("GET", "/v1/confenge/accounts?limit=50", token=token)
-        pool = [
-            a
-            for a in (all_a.get("data") or [])
-            if (a.get("queue_state") or "") not in ("DO_NOT_CONTACT", "BOUNCED", "REPLIED")
-        ]
-        ready_list = ready_list + pool
+    def account_pool() -> list[dict]:
+        pool: list[dict] = []
+        for qs in (
+            "READY_TO_GENERATE",
+            "NEEDS_REVIEW",
+            "NEEDS_CONTACT",
+            "APPROVED",
+            "ENROLLED",
+        ):
+            st, res = req(
+                "GET",
+                f"/v1/confenge/accounts?queue_state={qs}&limit=30",
+                token=token,
+            )
+            if st < 400:
+                pool.extend(res.get("data") or [])
+        if len(pool) < 5:
+            st, all_a = req("GET", "/v1/confenge/accounts?limit=100", token=token)
+            if st < 400:
+                pool.extend(all_a.get("data") or [])
+        # de-dupe
+        seen: set[str] = set()
+        out: list[dict] = []
+        for a in pool:
+            aid = a.get("id")
+            if not aid or aid in seen:
+                continue
+            if (a.get("queue_state") or "") in ("DO_NOT_CONTACT", "BOUNCED", "REPLIED"):
+                continue
+            seen.add(aid)
+            out.append(a)
+        return out
+
+    ready_list = account_pool()
 
     def take() -> dict | None:
         return ready_list.pop(0) if ready_list else None
 
-    # --- SENT via plan+generate+approve+queue ---
-    a = take()
-    if a:
-        aid = a["id"]
+    def ensure_review_tp(aid: str) -> dict | None:
+        """Plan/generate until a reviewable touchpoint with body exists, or reuse review queue."""
         req("POST", f"/v1/confenge/accounts/{aid}/plan", {"channel": "EMAIL"}, token=token)
         st, tps = req("GET", f"/v1/confenge/accounts/{aid}/touchpoints", token=token)
+        list_tp = tps.get("data") or [] if st < 400 else []
         tp = next(
             (
                 t
-                for t in (tps.get("data") or [])
-                if (t.get("state") or "") in ("DUE", "NEEDS_REVIEW", "DRAFTED")
+                for t in list_tp
+                if (t.get("state") or "") in ("DUE", "NEEDS_REVIEW", "DRAFTED", "APPROVED")
             ),
             None,
         )
-        if tp:
-            if not (tp.get("body_text") or "").strip():
-                req("POST", f"/v1/confenge/touchpoints/{tp['id']}/generate", {}, token=token)
-            st, ap = req("POST", f"/v1/confenge/touchpoints/{tp['id']}/approve", {}, token=token)
-            seeds["paths"].append({"step": "approve", "status": st})
-            st, q = req("POST", f"/v1/confenge/touchpoints/{tp['id']}/queue", {}, token=token)
-            seeds["paths"].append({"step": "queue", "status": st, "body": q if st >= 400 else "ok"})
-            full = get_tp(token, tp["id"])
-            seeds["sent"] = {
-                "account_id": aid,
-                "touchpoint_id": tp["id"],
-                "state": full.get("state"),
-                "approved_content_hash": full.get("approved_content_hash"),
-                "content_hash": full.get("content_hash"),
-                "path": "POST plan → generate → approve → queue",
-            }
-        else:
-            seeds["errors"].append("no touchpoint for SENT seed")
+        if not tp:
+            # fall back to org review queue item for this account
+            st, rev = req("GET", "/v1/confenge/touchpoints/review?limit=50", token=token)
+            for t in rev.get("data") or []:
+                if t.get("account_id") == aid:
+                    tp = t
+                    break
+        if not tp:
+            return None
+        full = get_tp(token, tp["id"])
+        if not (full.get("body_text") or "").strip():
+            st_g, gen = req(
+                "POST", f"/v1/confenge/touchpoints/{tp['id']}/generate", {}, token=token
+            )
+            if st_g < 400:
+                full = gen.get("data") or get_tp(token, tp["id"])
+            else:
+                # last resort edit with safe short body if recipient exists
+                if (full.get("recipient") or "").strip():
+                    st_e, ed = req(
+                        "POST",
+                        f"/v1/confenge/touchpoints/{tp['id']}/edit",
+                        {
+                            "subject": full.get("subject") or "CONFENGE",
+                            "body_text": (
+                                "Ola, retomo com uma pergunta objetiva sobre o pacote em andamento. "
+                                "Posso enviar um recorte de auditoria de planilha/BDI se fizer sentido."
+                            ),
+                            "recipient": full.get("recipient"),
+                        },
+                        token=token,
+                    )
+                    if st_e < 400:
+                        full = ed.get("data") or get_tp(token, tp["id"])
+        if not (full.get("body_text") or "").strip() or not (full.get("recipient") or "").strip():
+            return None
+        return full
+
+    # Prefer existing review-queue touchpoints (works when READY_TO_GENERATE is empty).
+    st, rev = req("GET", "/v1/confenge/touchpoints/review?limit=50", token=token)
+    review_tps = [
+        t
+        for t in (rev.get("data") or [])
+        if (t.get("body_text") or "").strip() and (t.get("recipient") or "").strip()
+    ]
+
+    # --- SENT via plan+generate+approve+queue (or review-queue TP) ---
+    sent_tp = review_tps.pop(0) if review_tps else None
+    if not sent_tp:
+        a = take()
+        if a:
+            sent_tp = ensure_review_tp(a["id"])
+            if sent_tp:
+                sent_tp["account_id"] = a["id"]
+    if sent_tp:
+        tid = sent_tp["id"]
+        aid = sent_tp.get("account_id") or ""
+        st, ap = req("POST", f"/v1/confenge/touchpoints/{tid}/approve", {}, token=token)
+        seeds["paths"].append({"step": "approve", "status": st})
+        st, q = req("POST", f"/v1/confenge/touchpoints/{tid}/queue", {}, token=token)
+        seeds["paths"].append({"step": "queue", "status": st, "body": q if st >= 400 else "ok"})
+        full = get_tp(token, tid)
+        seeds["sent"] = {
+            "account_id": aid or full.get("account_id"),
+            "touchpoint_id": tid,
+            "state": full.get("state"),
+            "approved_content_hash": full.get("approved_content_hash"),
+            "content_hash": full.get("content_hash"),
+            "path": "POST approve → queue on reviewable TP (public product path)",
+        }
     else:
-        seeds["errors"].append("no account for SENT seed")
+        seeds["errors"].append("no touchpoint for SENT seed")
 
     # --- APPROVED (stay APPROVED, do not queue) ---
-    a = take()
-    if a:
-        aid = a["id"]
-        req("POST", f"/v1/confenge/accounts/{aid}/plan", {"channel": "EMAIL"}, token=token)
-        st, tps = req("GET", f"/v1/confenge/accounts/{aid}/touchpoints", token=token)
-        tp = next(
-            (
-                t
-                for t in (tps.get("data") or [])
-                if (t.get("state") or "") in ("DUE", "NEEDS_REVIEW", "DRAFTED")
-            ),
-            None,
-        )
-        if tp:
-            if not (tp.get("body_text") or "").strip():
-                req("POST", f"/v1/confenge/touchpoints/{tp['id']}/generate", {}, token=token)
-            st, ap = req("POST", f"/v1/confenge/touchpoints/{tp['id']}/approve", {}, token=token)
-            full = get_tp(token, tp["id"]) if st < 400 else (ap.get("data") or {})
-            seeds["approved"] = {
-                "account_id": aid,
-                "touchpoint_id": tp["id"],
-                "state": full.get("state"),
-                "approved_content_hash": full.get("approved_content_hash"),
-                "content_hash": full.get("content_hash"),
-                "path": "POST plan → generate → approve (no queue)",
-                "http_status": st,
-            }
-        else:
-            seeds["errors"].append("no touchpoint for APPROVED seed")
+    appr_tp = review_tps.pop(0) if review_tps else None
+    if not appr_tp:
+        a = take()
+        if a:
+            appr_tp = ensure_review_tp(a["id"])
+            if appr_tp:
+                appr_tp["account_id"] = a["id"]
+    if appr_tp:
+        tid = appr_tp["id"]
+        aid = appr_tp.get("account_id") or ""
+        st, ap = req("POST", f"/v1/confenge/touchpoints/{tid}/approve", {}, token=token)
+        full = get_tp(token, tid) if st < 400 else (ap.get("data") or {})
+        seeds["approved"] = {
+            "account_id": aid or full.get("account_id"),
+            "touchpoint_id": tid,
+            "state": full.get("state"),
+            "approved_content_hash": full.get("approved_content_hash"),
+            "content_hash": full.get("content_hash"),
+            "path": "POST approve (no queue) on reviewable TP",
+            "http_status": st,
+        }
     else:
-        seeds["errors"].append("no account for APPROVED seed")
+        seeds["errors"].append("no touchpoint for APPROVED seed")
 
     # --- DNC via public /dnc ---
     a = take()
@@ -509,8 +645,15 @@ def write_all(payload: dict) -> None:
             )
 
 
-def build_go_no_go(critical: dict, contact: dict, sticky_pass: bool, restart_pass: bool) -> str:
-    verdict = "NOT_READY_FOR_CONTROLLED_REAL_OUTREACH"
+def build_go_no_go(
+    critical: dict,
+    contact: dict,
+    sticky_pass: bool,
+    restart_pass: bool,
+    channel_ok: bool,
+    verdict: str,
+    blockers: list[str],
+) -> str:
     lines = [
         "# GO / NO-GO",
         "",
@@ -526,7 +669,8 @@ def build_go_no_go(critical: dict, contact: dict, sticky_pass: bool, restart_pas
         "",
         "| Gate | Status | Evidence |",
         "|------|--------|----------|",
-        f"| real contact resolution | **{contact['gate']}** | fixture example.com check; gate={contact['gate']} |",
+        f"| real contact resolution | **{contact['gate']}** | {contact.get('reason', '')} |",
+        f"| enrollable send channel | {'PASS' if channel_ok else 'FAIL'} | non-fixture emails or human pilot list |",
         f"| sticky reimport (no-burst) | {'PASS' if critical.get('no_burst_creates') else 'FAIL'} | creates after reimport |",
         f"| sticky DNC | {'PASS' if critical.get('dnc_sticky') else 'FAIL'} | public /dnc + reimport |",
         f"| sticky SENT | {'PASS' if critical.get('sent_sticky') else 'FAIL'} | approve+queue + reimport |",
@@ -542,14 +686,14 @@ def build_go_no_go(critical: dict, contact: dict, sticky_pass: bool, restart_pas
         "## Blockers",
         "",
     ]
-    if contact["gate"] != "PASS":
-        lines.append("1. **Contacts fixture-only** — feed uses example.com / simulated contacts.")
-    if not sticky_pass or not restart_pass:
-        lines.append(
-            "2. **Phase Q restart/sticky incomplete** — see restart-reimport-sticky-proof.json critical_results."
-        )
+    if blockers:
+        for i, b in enumerate(blockers, 1):
+            lines.append(f"{i}. {b}")
+    else:
+        lines.append("None (all critical gates PASS).")
     lines += [
-        "3. Human review of human-review-30.md before pilot send.",
+        "",
+        "Human review of human-review-30.md remains required before first pilot send.",
         "",
         "READY is impossible while any critical above is FAIL.",
         "",
@@ -813,8 +957,40 @@ def main() -> int:
         "note": contact.get("note"),
     }
 
+    # Operational channel: live phones alone cannot pilot EMAIL or WhatsApp without
+    # enrollable email or WA consent. READY requires a sendable channel for the pilot.
+    enrollable_emails = int(contact.get("enrollable_non_fixture_emails") or 0)
+    pilot_ok = bool(contact.get("pilot_list"))
+    channel_ok = enrollable_emails > 0 or pilot_ok
+
+    blockers: list[str] = []
+    if contact["gate"] != "PASS":
+        blockers.append("Contact resolution fixture-only or empty (example.com / no live public path)")
+    if not sticky_pass:
+        fails = [k for k, v in critical.items() if not v]
+        blockers.append(f"Phase Q sticky/restart failed: {fails}")
+    if contact["gate"] == "PASS" and not channel_ok:
+        blockers.append(
+            "Live contacts are registry phones only (no enrollable email; "
+            "public phone ≠ WhatsApp opt-in). Need verified emails or human pilot list "
+            "before controlled real outreach."
+        )
+
+    all_green = (
+        contact["gate"] == "PASS"
+        and sticky_pass
+        and restart_ok
+        and channel_ok
+        and not blockers
+    )
+    verdict = (
+        "READY_FOR_CONTROLLED_REAL_OUTREACH"
+        if all_green
+        else "NOT_READY_FOR_CONTROLLED_REAL_OUTREACH"
+    )
+
     result = {
-        "verdict": "NOT_READY_FOR_CONTROLLED_REAL_OUTREACH",
+        "verdict": verdict,
         "emitted_by": "scripts/confenge_readiness_gate.py",
         "at": now(),
         "contacts": contact,
@@ -823,15 +999,11 @@ def main() -> int:
             "critical_results": critical,
             "process_restart": restart_ok,
         },
+        "channel_ready": channel_ok,
         "playwright": "PASS",
         "governor": "PASS",
-        "blockers": [],
+        "blockers": blockers,
     }
-    if contact["gate"] != "PASS":
-        result["blockers"].append("Contact resolution fixture-only (example.com / simulation)")
-    if not sticky_pass:
-        fails = [k for k, v in critical.items() if not v]
-        result["blockers"].append(f"Phase Q sticky/restart failed: {fails}")
 
     restart_proof = {
         "pass": sticky_pass,
@@ -844,7 +1016,9 @@ def main() -> int:
         "at": now(),
     }
 
-    go_md = build_go_no_go(critical, contact, sticky_pass, restart_ok)
+    go_md = build_go_no_go(
+        critical, contact, sticky_pass, restart_ok, channel_ok, verdict, blockers
+    )
 
     write_all(
         {
