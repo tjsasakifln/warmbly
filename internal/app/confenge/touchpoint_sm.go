@@ -198,3 +198,31 @@ func NextMayRelease(prior *models.OutreachTouchpoint) bool {
 		return false
 	}
 }
+
+// PriorReleased reports whether every lower ordinal is SENT/SKIPPED/REJECTED.
+// Open states and other terminals (DNC/REPLIED/…) block releasing the next touch.
+func PriorReleased(priors []models.OutreachTouchpoint, ordinal int) bool {
+	if ordinal <= 1 {
+		return true
+	}
+	for o := 1; o < ordinal; o++ {
+		found := false
+		for _, p := range priors {
+			if p.Ordinal != o {
+				continue
+			}
+			found = true
+			switch p.State {
+			case models.TouchpointSent, models.TouchpointSkipped, models.TouchpointRejected:
+				// releasable
+			default:
+				return false
+			}
+			break
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}

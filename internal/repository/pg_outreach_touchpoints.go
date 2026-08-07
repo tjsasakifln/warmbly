@@ -273,21 +273,23 @@ func (r *outreachRepository) CancelOpenTouchpoints(ctx context.Context, orgID, a
 	return int(ct.RowsAffected()), nil
 }
 
-func (r *outreachRepository) PromoteDuePlannedTouchpoints(ctx context.Context, orgID uuid.UUID, now time.Time) (int, error) {
+func (r *outreachRepository) ListDuePlannedTouchpoints(ctx context.Context, orgID uuid.UUID, now time.Time, limit int) ([]models.OutreachTouchpoint, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	ct, err := r.db.Exec(ctx, `
-		UPDATE outreach_touchpoints SET
-			state = 'DUE',
-			updated_at = $3
-		WHERE organization_id = $1
-		  AND state = 'PLANNED'
-		  AND due_at <= $2`,
-		orgID, now, now,
-	)
-	if err != nil {
-		return 0, err
+	if limit <= 0 || limit > 500 {
+		limit = 200
 	}
-	return int(ct.RowsAffected()), nil
+	rows, err := r.db.Query(ctx, outreachTouchpointSelect+`
+		FROM outreach_touchpoints
+		WHERE organization_id=$1
+		  AND state = 'PLANNED'
+		  AND due_at <= $2
+		ORDER BY due_at ASC, ordinal ASC
+		LIMIT $3`, orgID, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return collectTouchpoints(rows)
 }

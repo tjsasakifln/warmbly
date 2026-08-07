@@ -138,8 +138,15 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 		return nil, errx.New(errx.BadRequest, "draft must be APPROVED before enrollment")
 	}
 	// Fail-closed: every CONFENGE email outbound needs a transport-valid touchpoint.
-	if _, xerr := s.requireTouchTransport(ctx, orgID, draftID); xerr != nil {
+	tpGate, xerr := s.requireTouchTransport(ctx, orgID, draftID)
+	if xerr != nil {
 		return nil, xerr
+	}
+	// Ship only the approved touchpoint payload (ignore diverged draft fields).
+	d.Subject = tpGate.Subject
+	d.BodyText = tpGate.BodyText
+	if tpGate.Recipient != "" {
+		d.RecipientEmail = tpGate.Recipient
 	}
 
 	acc, err := s.repo.GetAccount(ctx, orgID, d.AccountID)

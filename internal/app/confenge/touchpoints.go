@@ -163,13 +163,8 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	default:
 		return nil, errx.New(errx.BadRequest, "cannot generate for state "+tp.State)
 	}
-	if tp.Ordinal > 1 {
-		priors, _ := s.repo.ListTouchpoints(ctx, orgID, tp.AccountID, "", 50, 0)
-		for _, p := range priors {
-			if p.Ordinal < tp.Ordinal && IsOpen(p.State) && p.State != models.TouchpointQueued {
-				return nil, errx.New(errx.BadRequest, "prior touchpoint still awaits human decision")
-			}
-		}
+	if xerr := s.assertPriorReleased(ctx, orgID, tp); xerr != nil {
+		return nil, xerr
 	}
 	acc, err := s.repo.GetAccount(ctx, orgID, tp.AccountID)
 	if err != nil || acc == nil {
@@ -314,6 +309,9 @@ func (s *service) ApproveTouchpoint(ctx context.Context, orgID, userID, id uuid.
 	if err != nil || tp == nil {
 		return nil, errx.New(errx.NotFound, "touchpoint not found")
 	}
+	if xerr := s.assertPriorReleased(ctx, orgID, tp); xerr != nil {
+		return nil, xerr
+	}
 	acc, _ := s.repo.GetAccount(ctx, orgID, tp.AccountID)
 	if acc != nil && (acc.DoNotContact || acc.Blocked) {
 		return nil, errx.New(errx.BadRequest, "account blocked or DNC")
@@ -388,6 +386,9 @@ func (s *service) QueueTouchpoint(ctx context.Context, orgID, userID, id uuid.UU
 	tp, err := s.repo.GetTouchpoint(ctx, orgID, id)
 	if err != nil || tp == nil {
 		return nil, errx.New(errx.NotFound, "touchpoint not found")
+	}
+	if xerr := s.assertPriorReleased(ctx, orgID, tp); xerr != nil {
+		return nil, xerr
 	}
 	if err := CanTransport(tp); err != nil {
 		return nil, errx.New(errx.BadRequest, "send blocked: "+err.Error())
@@ -516,6 +517,20 @@ func AssertTransportAllowed(tp *models.OutreachTouchpoint) *errx.Error {
 	return nil
 }
 
+func (s *service) assertPriorReleased(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint) *errx.Error {
+	if tp == nil || tp.Ordinal <= 1 {
+		return nil
+	}
+	priors, err := s.repo.ListTouchpoints(ctx, orgID, tp.AccountID, "", 50, 0)
+	if err != nil {
+		return errx.New(errx.Internal, "list touchpoints failed")
+	}
+	if !PriorReleased(priors, tp.Ordinal) {
+		return errx.New(errx.BadRequest, "prior touchpoint still awaits human decision or is not releasable")
+	}
+	return nil
+}
+
 // requireTouchTransport fails closed: every CONFENGE outbound must be backed by a
 // touchpoint whose approved_content_hash matches content_hash and has human approved_by.
 // Draft-only APPROVED status is never enough.
@@ -530,12 +545,64 @@ func (s *service) requireTouchTransport(ctx context.Context, orgID, draftID uuid
 	if xerr := AssertTransportAllowed(tp); xerr != nil {
 		return nil, xerr
 	}
+	if xerr := s.assertPriorReleased(ctx, orgID, tp); xerr != nil {
+		return nil, xerr
+	}
+	// Bind live draft content to approved hash (ReviewDraft edit must not bypass).
+	d, err := s.repo.GetDraft(ctx, orgID, draftID)
+	if err != nil {
+		return nil, errx.New(errx.Internal, "load draft failed")
+	}
+	if d != nil {
+		recipient := d.RecipientEmail
+		ch := d.Channel
+		if ch == "" {
+			ch = tp.Channel
+		}
+		if ch == models.OutreachChannelWhatsApp || ch == "WHATSAPP" {
+			recipient = d.RecipientPhoneE164
+			if recipient == "" {
+				recipient = tp.Recipient
+			}
+		}
+		live := ContentHash(ch, recipient, d.Subject, d.BodyText, tp.Purpose)
+		if live != tp.ContentHash || live != tp.ApprovedContentHash {
+			return nil, errx.New(errx.BadRequest, "draft content diverged from approved touchpoint; re-approve the exact send payload")
+		}
+	}
 	return tp, nil
 }
 
-// PromoteDueTouchpoints moves PLANNED touches with due_at <= now to DUE so they
-// enter the human review queue after prior SENT/SKIP release.
+// PromoteDueTouchpoints moves PLANNED touches with due_at <= now to DUE only when
+// every lower ordinal is SENT/SKIPPED/REJECTED (never while prior awaits human).
 func (s *service) PromoteDueTouchpoints(ctx context.Context, orgID uuid.UUID) (int, error) {
-	n, err := s.repo.PromoteDuePlannedTouchpoints(ctx, orgID, time.Now().UTC())
-	return n, err
+	now := time.Now().UTC()
+	// List due-eligible planned rows via repo helper, then filter by prior release.
+	candidates, err := s.repo.ListDuePlannedTouchpoints(ctx, orgID, now, 200)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	// Cache account timelines to avoid N queries.
+	byAccount := map[uuid.UUID][]models.OutreachTouchpoint{}
+	for i := range candidates {
+		c := candidates[i]
+		priors, ok := byAccount[c.AccountID]
+		if !ok {
+			priors, err = s.repo.ListTouchpoints(ctx, orgID, c.AccountID, "", 50, 0)
+			if err != nil {
+				return n, err
+			}
+			byAccount[c.AccountID] = priors
+		}
+		if !PriorReleased(priors, c.Ordinal) {
+			continue
+		}
+		c.State = models.TouchpointDue
+		if err := s.repo.UpdateTouchpoint(ctx, &c); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
 }

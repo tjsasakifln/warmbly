@@ -303,3 +303,107 @@ func TestRequireTouchTransportNilDraftBlocks(t *testing.T) {
 		t.Fatal("missing touchpoint must block")
 	}
 }
+
+func TestPromoteDueDoesNotReleaseWhilePriorOpen(t *testing.T) {
+	repo := newMemRepo()
+	svc := testSvc(repo).(*service)
+	org, user := uuid.New(), uuid.New()
+	acc := &models.OutreachAccount{ID: uuid.New(), OrganizationID: org, CNPJ14: "11222333000200", RazaoSocial: "C", QueueState: models.OutreachQueueReadyToGenerate, SourceLeadID: "L3"}
+	_, _ = repo.UpsertAccount(context.Background(), acc)
+	cand := &models.OutreachContactCandidate{ID: uuid.New(), OrganizationID: org, AccountID: acc.ID, Email: "c@b.com", Name: "C", VerificationStatus: models.OutreachVerifyOfficialSource}
+	_, _ = repo.UpsertCandidate(context.Background(), cand)
+	list, xerr := svc.PlanAccountCadence(context.Background(), org, user, acc.ID, &cand.ID, models.OutreachChannelEmail)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	// First still open (DUE / will be needs review)
+	first, _ := repo.GetTouchpoint(context.Background(), org, list[0].ID)
+	first.State = models.TouchpointNeedsReview
+	first.BodyText = "open prior"
+	RecomputeContentHash(first)
+	_ = repo.UpdateTouchpoint(context.Background(), first)
+	// Second due_at elapsed but prior open
+	second, _ := repo.GetTouchpoint(context.Background(), org, list[1].ID)
+	second.DueAt = time.Now().UTC().Add(-time.Hour)
+	_ = repo.UpdateTouchpoint(context.Background(), second)
+
+	_, _ = svc.ListReviewTouchpoints(context.Background(), org, 50, 0)
+	re, _ := repo.GetTouchpoint(context.Background(), org, second.ID)
+	if re.State != models.TouchpointPlanned {
+		t.Fatalf("must stay PLANNED while prior open, got %s", re.State)
+	}
+	// Approve/queue next must also refuse
+	if _, xerr := svc.ApproveTouchpoint(context.Background(), org, user, second.ID); xerr == nil {
+		t.Fatal("approve next while prior open must fail")
+	}
+}
+
+func TestDraftEditAfterTouchApproveBlocksTransport(t *testing.T) {
+	repo := newMemRepo()
+	svc := testSvc(repo).(*service)
+	svc.WireExecution(&mockCampaigns{}, &mockContacts{})
+	org, user := uuid.New(), uuid.New()
+	acc := &models.OutreachAccount{ID: uuid.New(), OrganizationID: org, CNPJ14: "11222333000211", RazaoSocial: "D", NomeFantasia: "D", QueueState: models.OutreachQueueApproved, SourceLeadID: "L4", FactToMention: "fato", ServiceCode: "S"}
+	_, _ = repo.UpsertAccount(context.Background(), acc)
+	cand := &models.OutreachContactCandidate{ID: uuid.New(), OrganizationID: org, AccountID: acc.ID, Email: "d@b.com", Name: "D", VerificationStatus: models.OutreachVerifyOfficialSource}
+	_, _ = repo.UpsertCandidate(context.Background(), cand)
+	d := &models.OutreachDraft{
+		ID: uuid.New(), OrganizationID: org, AccountID: acc.ID, ContactCandidateID: &cand.ID,
+		Channel: models.OutreachChannelEmail, RecipientEmail: cand.Email,
+		Subject: "S", BodyText: "approved body text", Status: models.OutreachDraftApproved,
+		FactUsed: "fato", ServiceCode: "S", RiskClass: "GREEN", VerificationStatus: models.OutreachVerifyOfficialSource,
+	}
+	ok := true
+	d.ValidationOK = &ok
+	_ = repo.UpsertDraft(context.Background(), d)
+
+	now := time.Now().UTC()
+	tp := &models.OutreachTouchpoint{
+		OrganizationID: org, AccountID: acc.ID, Ordinal: 1, Channel: models.OutreachChannelEmail,
+		Purpose: models.TouchpointPurposeInitial, State: models.TouchpointNeedsReview,
+		Recipient: cand.Email, Subject: d.Subject, BodyText: d.BodyText, DraftID: &d.ID, IdempotencyKey: "div-tp",
+	}
+	RecomputeContentHash(tp)
+	if err := ApplyHumanApproval(tp, user, now); err != nil {
+		t.Fatal(err)
+	}
+	_ = repo.InsertTouchpoint(context.Background(), tp)
+
+	// Mutate draft after touchpoint approval (legacy ReviewDraft path)
+	newBody := "sneaky rewritten body after approve"
+	if _, xerr := svc.ReviewDraft(context.Background(), org, user, d.ID, "edit", &DraftEdit{BodyText: &newBody}); xerr != nil {
+		t.Fatal(xerr)
+	}
+	// Re-mark draft approved for enroll path (edit sets NEEDS_REVIEW)
+	d2, _ := repo.GetDraft(context.Background(), org, d.ID)
+	d2.Status = models.OutreachDraftApproved
+	_ = repo.UpsertDraft(context.Background(), d2)
+
+	if _, xerr := svc.EnrollDraft(context.Background(), org, user, d.ID); xerr == nil {
+		t.Fatal("enroll after draft divergence must block")
+	}
+	// Touchpoint approval should have been cleared by edit
+	tp2, _ := repo.GetTouchpoint(context.Background(), org, tp.ID)
+	if tp2.ApprovedContentHash != "" || tp2.ApprovedBy != nil {
+		t.Fatalf("edit must clear touchpoint approval: %+v", tp2)
+	}
+}
+
+func TestPriorReleasedHelper(t *testing.T) {
+	a := uuid.New()
+	priors := []models.OutreachTouchpoint{
+		{AccountID: a, Ordinal: 1, State: models.TouchpointNeedsReview},
+		{AccountID: a, Ordinal: 2, State: models.TouchpointPlanned},
+	}
+	if PriorReleased(priors, 2) {
+		t.Fatal("open prior must block")
+	}
+	priors[0].State = models.TouchpointSent
+	if !PriorReleased(priors, 2) {
+		t.Fatal("sent prior must release")
+	}
+	priors[0].State = models.TouchpointApproved
+	if PriorReleased(priors, 2) {
+		t.Fatal("approved prior still open for next")
+	}
+}
