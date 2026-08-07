@@ -822,3 +822,152 @@ func (h *Handler) DNCConfengeAccount(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"cancelled": n, "do_not_contact": true}})
 }
+
+// ListConfengeAttention — GET /confenge/attention?filter=needs_attention
+func (h *Handler) ListConfengeAttention(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	filter := c.Query("filter")
+	if filter == "" {
+		filter = confenge.FilterNeedsAttention
+	}
+	limit := 50
+	if raw := c.Query("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 200 {
+			errx.JSON(c, errx.New(errx.BadRequest, "limit must be between 1 and 200"))
+			return
+		}
+		limit = n
+	}
+	list, xerr := h.ConfengeService.ListAttention(c.Request.Context(), orgID, filter, limit)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": list})
+}
+
+// GetConfengeAttention — GET /confenge/attention/:id
+func (h *Handler) GetConfengeAttention(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	item, xerr := h.ConfengeService.GetAttention(c.Request.Context(), orgID, id)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": item})
+}
+
+// GenerateConfengeReplyDraft — POST /confenge/accounts/:id/generate-reply
+func (h *Handler) GenerateConfengeReplyDraft(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	accountID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	var body struct {
+		ContactCandidateID *uuid.UUID `json:"contact_candidate_id"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	d, xerr := h.ConfengeService.GenerateReplyDraft(c.Request.Context(), orgID, userID, accountID, body.ContactCandidateID)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": d})
+}
+
+// ChangeConfengeReferral — POST /confenge/accounts/:id/referral
+func (h *Handler) ChangeConfengeReferral(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	accountID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	var body struct {
+		Name  string `json:"name"`
+		Email string `json:"email"`
+		Role  string `json:"role"`
+		Phone string `json:"phone"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		errx.JSON(c, errx.ErrInvalid)
+		return
+	}
+	cand, xerr := h.ConfengeService.ChangeReferralRecipient(c.Request.Context(), orgID, userID, accountID, body.Name, body.Email, body.Role, body.Phone)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": cand})
+}
+
+// Body: {"resume_at":"2026-09-01T00:00:00Z","note":"..."} — never auto-reopens cadence.
+func (h *Handler) ResumeConfengeAccount(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	accountID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	var body struct {
+		ResumeAt string `json:"resume_at" binding:"required"`
+		Note     string `json:"note"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		errx.JSON(c, errx.ErrInvalid)
+		return
+	}
+	ts, err := time.Parse(time.RFC3339, strings.TrimSpace(body.ResumeAt))
+	if err != nil {
+		// accept date-only
+		ts, err = time.ParseInLocation("2006-01-02", strings.TrimSpace(body.ResumeAt), time.UTC)
+		if err != nil {
+			errx.JSON(c, errx.New(errx.BadRequest, "resume_at must be RFC3339 or YYYY-MM-DD"))
+			return
+		}
+	}
+	acc, xerr := h.ConfengeService.ResumeAtDate(c.Request.Context(), orgID, userID, accountID, ts.UTC(), body.Note)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": acc})
+}

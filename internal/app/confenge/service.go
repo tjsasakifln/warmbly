@@ -54,8 +54,15 @@ type Service interface {
 	WireCRM(crm CRMAPI)
 	BootstrapPipeline(ctx context.Context, orgID uuid.UUID) (*models.Pipeline, *errx.Error)
 	HandleClassifiedReply(ctx context.Context, orgID, actorID uuid.UUID, contactEmail, replyClass string, warmblyContactID *uuid.UUID) *errx.Error
-	// OnClassifiedReply is the advanced-package hook (error, not errx).
-	OnClassifiedReply(ctx context.Context, orgID uuid.UUID, contactEmail, replyClass string, contactID *uuid.UUID) error
+	// OnClassifiedReply is the advanced-package hook (error, not errx). Carries body for commercial lexicon.
+	OnClassifiedReply(ctx context.Context, orgID uuid.UUID, contactEmail, replyClass string, contactID *uuid.UUID, subject, bodyText string, actorID uuid.UUID) error
+	HandleClassifiedReplyFull(ctx context.Context, orgID, actorID uuid.UUID, contactEmail, replyClass string, warmblyContactID *uuid.UUID, subject, bodyText string, headers map[string][]string) *errx.Error
+	ProcessInboundHandoff(ctx context.Context, orgID uuid.UUID, in InboundHandoff) (*HandoffResult, *errx.Error)
+	ListAttention(ctx context.Context, orgID uuid.UUID, filter string, limit int) ([]AttentionItem, *errx.Error)
+	GetAttention(ctx context.Context, orgID, accountID uuid.UUID) (*AttentionItem, *errx.Error)
+	GenerateReplyDraft(ctx context.Context, orgID, userID, accountID uuid.UUID, contactID *uuid.UUID) (*models.OutreachDraft, *errx.Error)
+	ResumeAtDate(ctx context.Context, orgID, userID, accountID uuid.UUID, resumeAt time.Time, note string) (*models.OutreachAccount, *errx.Error)
+	ChangeReferralRecipient(ctx context.Context, orgID, userID, accountID uuid.UUID, name, email, role, phone string) (*models.OutreachContactCandidate, *errx.Error)
 
 	// WhatsApp channel ops (require WireWhatsApp + CONFENGE_WHATSAPP_ENABLED).
 	WireWhatsApp(sender WhatsAppSender, store WhatsAppStateStore)

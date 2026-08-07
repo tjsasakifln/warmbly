@@ -158,9 +158,9 @@ func jsonMarshalMap(m map[string]any) ([]byte, error) {
 	return marshalJSON(m)
 }
 
-// OnClassifiedReply implements advanced.ConfengeReplyHook.
-func (s *service) OnClassifiedReply(ctx context.Context, orgID uuid.UUID, contactEmail, replyClass string, contactID *uuid.UUID) error {
-	if xerr := s.HandleClassifiedReply(ctx, orgID, uuid.Nil, contactEmail, replyClass, contactID); xerr != nil {
+// OnClassifiedReply implements advanced.ConfengeReplyHook with subject/body for commercial lexicon.
+func (s *service) OnClassifiedReply(ctx context.Context, orgID uuid.UUID, contactEmail, replyClass string, contactID *uuid.UUID, subject, bodyText string, actorID uuid.UUID) error {
+	if xerr := s.HandleClassifiedReplyFull(ctx, orgID, actorID, contactEmail, replyClass, contactID, subject, bodyText, nil); xerr != nil {
 		return fmt.Errorf("%s", xerr.Message)
 	}
 	return nil

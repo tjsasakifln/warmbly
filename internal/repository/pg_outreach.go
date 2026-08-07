@@ -70,6 +70,11 @@ type OutreachRepository interface {
 	CancelOpenTouchpoints(ctx context.Context, orgID, accountID uuid.UUID, terminalState, stopReason string) (int, error)
 	// ListDuePlannedTouchpoints returns PLANNED rows with due_at <= now (caller filters prior release).
 	ListDuePlannedTouchpoints(ctx context.Context, orgID uuid.UUID, now time.Time, limit int) ([]models.OutreachTouchpoint, error)
+
+	// Org owner for system-created CRM tasks when inbound has no human actor.
+	GetOrgOwnerUserID(ctx context.Context, orgID uuid.UUID) (uuid.UUID, error)
+	// Latest handoff/outcome projection for cockpit confidence/snippet/thread.
+	GetLatestOutcomeForLead(ctx context.Context, orgID uuid.UUID, cnpj14, sourceLeadID, contactEmail string) (*models.OutreachOutcome, error)
 }
 
 // OutreachAccountFilter filters staged accounts.

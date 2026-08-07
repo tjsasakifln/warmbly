@@ -96,6 +96,51 @@ export type ConfengeDraft = {
     status: string;
     human_edited: boolean;
     validation_ok?: boolean;
+    channel?: string;
+    strategy_code?: string;
+};
+
+export type ConfengeAttentionFilter =
+    | "needs_attention"
+    | "awaiting_approval"
+    | "scheduled"
+    | "sent"
+    | "replied"
+    | "dnc";
+
+export type ConfengeEvidenceBrief = {
+    id: string;
+    title?: string;
+    excerpt?: string;
+    epistemic_class?: string;
+    url?: string;
+};
+
+export type ConfengeAttentionItem = {
+    account_id: string;
+    company_name: string;
+    cnpj14: string;
+    contact_name?: string;
+    contact_email?: string;
+    contact_phone?: string;
+    channel?: string;
+    service_code?: string;
+    service_name?: string;
+    fact_to_mention?: string;
+    queue_state: string;
+    commercial_state: string;
+    do_not_contact: boolean;
+    blocked: boolean;
+    intent?: string;
+    confidence?: number;
+    suggested_action?: string;
+    evidence?: ConfengeEvidenceBrief[];
+    last_snippet?: string;
+    thread_subject?: string;
+    thread?: string;
+    updated_at?: string;
+    reply_draft_id?: string;
+    resume_at?: string;
 };
 
 

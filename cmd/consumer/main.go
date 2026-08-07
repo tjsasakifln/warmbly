@@ -17,6 +17,7 @@ import (
 	jobs "github.com/warmbly/warmbly/internal/app/consumer"
 	"github.com/warmbly/warmbly/internal/app/credits"
 	"github.com/warmbly/warmbly/internal/app/creditwatch"
+	"github.com/warmbly/warmbly/internal/app/crm"
 	"github.com/warmbly/warmbly/internal/app/feature"
 	"github.com/warmbly/warmbly/internal/app/inboxagent"
 	"github.com/warmbly/warmbly/internal/app/integration"
@@ -360,8 +361,11 @@ func main() {
 		if sink, ok := confengeSvc.(confenge.OutcomeSink); ok {
 			confengeSink = sink
 		}
-		// CRM not wired on consumer (control-plane tasks/deals stay on backend);
-		// outbox + staging updates still run via OnClassifiedReply.
+		// Inbox replies are classified in THIS process (ProcessIncomingReply).
+		// Wire CRM here so applyReplyCRM can create tasks/deals on the real
+		// email handoff path; without it s.crm is nil and handoff is a silent no-op
+		// for CRM side effects. Same rationale as WireNotifier / WireRealtime.
+		confengeSvc.WireCRM(crm.NewService(crmRepo))
 		advancedService.WireConfengeReply(confengeSvc)
 	}
 
