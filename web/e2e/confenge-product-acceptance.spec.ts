@@ -45,21 +45,51 @@ test.describe("CONFENGE product acceptance UI", () => {
     const review = page.getByTestId("confenge-review-queue");
     await expect(review).toBeVisible();
 
+    // Prefer a reviewable lead if present
+    const firstLead = page.getByTestId("confenge-lead-row").first();
+    if ((await firstLead.count()) > 0) {
+      await firstLead.click();
+    }
+
     const body = page.getByTestId("confenge-body-input");
     if ((await body.count()) > 0) {
-      // Evidence
+      // Company / service / evidence surfaces
       await expect(page.getByTestId("confenge-evidence")).toBeVisible();
       await expect(page.getByTestId("confenge-recipient")).toBeVisible();
+      const service = page.getByTestId("confenge-service");
+      if ((await service.count()) > 0) {
+        await expect(service).toBeVisible();
+      }
 
-      // Edit
+      // Edit exact message text
       const current = await body.inputValue();
       await body.fill(current + "\n\n(edit for acceptance)");
 
-      // Approve & Queue
+      // Approve exact text
       const approve = page.getByTestId("confenge-approve-queue");
       await expect(approve).toBeVisible();
       if (await approve.isEnabled()) {
         await approve.click();
+        // content_hash / approved state should appear after approve
+        const approved = page.getByTestId("confenge-approved-badge");
+        if ((await approved.count()) > 0) {
+          await expect(approved).toBeVisible({ timeout: 10_000 });
+        }
+        const hash = page.getByTestId("confenge-content-hash");
+        if ((await hash.count()) > 0) {
+          await expect(hash).not.toHaveText("");
+        }
+
+        // Re-edit must invalidate prior approval
+        const afterApprove = await body.inputValue();
+        await body.fill(afterApprove + "\n(invalidates approval)");
+        if ((await approved.count()) > 0) {
+          await expect(approved).toBeHidden({ timeout: 10_000 });
+        }
+        // Re-approve
+        if (await approve.isEnabled()) {
+          await approve.click();
+        }
       }
     }
 
