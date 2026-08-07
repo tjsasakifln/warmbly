@@ -984,7 +984,10 @@ func main() {
 			log.Fatalf("confenge config: %v", err)
 		}
 		outreachRepo := repository.NewOutreachRepository(primaryDB.Pool)
-		confengeServiceForHandler = confenge.NewService(confengeCfg, outreachRepo, auditService)
+		confengeServiceForHandler = confenge.NewServiceWithAI(confengeCfg, outreachRepo, auditService, aiProvider)
+		if confengeServiceForHandler != nil && aiProvider != nil {
+			confengeServiceForHandler.SetAI(aiProvider)
+		}
 
 		apiKeyService = apikey.NewService(cache, apiKeyRepository)
 		crmService = crm.NewService(crmRepository)

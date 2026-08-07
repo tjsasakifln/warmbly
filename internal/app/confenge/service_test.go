@@ -209,6 +209,28 @@ func (m *memRepo) UpsertEvidence(ctx context.Context, e *models.OutreachEvidence
 	return true, nil
 }
 
+func (m *memRepo) UpsertDraft(ctx context.Context, d *models.OutreachDraft) error {
+	return nil
+}
+func (m *memRepo) GetDraft(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachDraft, error) {
+	return nil, nil
+}
+func (m *memRepo) GetActiveDraftForAccount(ctx context.Context, orgID, accountID uuid.UUID) (*models.OutreachDraft, error) {
+	return nil, nil
+}
+func (m *memRepo) ListDrafts(ctx context.Context, orgID uuid.UUID, status string, limit, offset int) ([]models.OutreachDraft, error) {
+	return nil, nil
+}
+func (m *memRepo) UpdateDraftStatus(ctx context.Context, d *models.OutreachDraft) error {
+	return nil
+}
+func (m *memRepo) GetOrgSettings(ctx context.Context, orgID uuid.UUID) (*models.OutreachOrgSettings, error) {
+	return nil, nil
+}
+func (m *memRepo) UpsertOrgSettings(ctx context.Context, s *models.OutreachOrgSettings) error {
+	return nil
+}
+
 func testSvc(repo repository.OutreachRepository) Service {
 	cfg := Config{
 		Enabled:              true,

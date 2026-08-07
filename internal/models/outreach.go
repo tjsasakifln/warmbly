@@ -275,3 +275,79 @@ type OutreachImportRunListResult struct {
 	Data       []OutreachImportRun `json:"data"`
 	Pagination Pagination          `json:"pagination"`
 }
+
+// Draft statuses.
+const (
+	OutreachDraftNotGenerated = "NOT_GENERATED"
+	OutreachDraftGenerating   = "GENERATING"
+	OutreachDraftNeedsReview  = "NEEDS_REVIEW"
+	OutreachDraftApproved     = "APPROVED"
+	OutreachDraftRejected     = "REJECTED"
+	OutreachDraftSkipped      = "SKIPPED"
+	OutreachDraftBlocked      = "BLOCKED"
+	OutreachDraftEnrolled     = "ENROLLED"
+	OutreachDraftSent         = "SENT"
+	OutreachDraftReplied      = "REPLIED"
+)
+
+// OutreachDraft is one generated/reviewed message for a staged account.
+type OutreachDraft struct {
+	ID                 uuid.UUID  `json:"id"`
+	OrganizationID     uuid.UUID  `json:"organization_id"`
+	AccountID          uuid.UUID  `json:"account_id"`
+	ContactCandidateID *uuid.UUID `json:"contact_candidate_id,omitempty"`
+
+	RecipientName      string `json:"recipient_name"`
+	RecipientRole      string `json:"recipient_role"`
+	RecipientEmail     string `json:"recipient_email"`
+	VerificationStatus string `json:"verification_status"`
+
+	Subject       string `json:"subject"`
+	BodyText      string `json:"body_text"`
+	BodyHTML      string `json:"body_html"`
+	FollowupsJSON []byte `json:"followups,omitempty"`
+
+	ServiceCode  string   `json:"service_code"`
+	StrategyCode string   `json:"strategy_code"`
+	FactUsed     string   `json:"fact_used"`
+	EvidenceIDs  []string `json:"evidence_ids,omitempty"`
+	Question     string   `json:"question"`
+	CTA          string   `json:"cta"`
+
+	Provider      string `json:"provider"`
+	Model         string `json:"model"`
+	PromptVersion string `json:"prompt_version"`
+	Generation    int    `json:"generation"`
+
+	ValidationJSON []byte   `json:"validation,omitempty"`
+	ValidationOK   *bool    `json:"validation_ok,omitempty"`
+	RiskClass      string   `json:"risk_class"`
+	RiskFlags      []string `json:"risk_flags,omitempty"`
+	RedTeamResult  string   `json:"red_team_result,omitempty"`
+	RedTeamReasons []string `json:"red_team_reasons,omitempty"`
+
+	Status        string     `json:"status"`
+	HumanEdited   bool       `json:"human_edited"`
+	ApprovedBy    *uuid.UUID `json:"approved_by,omitempty"`
+	ApprovedAt    *time.Time `json:"approved_at,omitempty"`
+	ReviewSeconds int        `json:"review_seconds"`
+
+	CampaignID          *uuid.UUID `json:"campaign_id,omitempty"`
+	EnrollmentContactID *uuid.UUID `json:"enrollment_contact_id,omitempty"`
+	EnrolledAt          *time.Time `json:"enrolled_at,omitempty"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+
+	// Joined for review UI
+	Account *OutreachAccount `json:"account,omitempty"`
+}
+
+// OutreachOrgSettings stores confenge campaign bootstrap pointer.
+type OutreachOrgSettings struct {
+	OrganizationID uuid.UUID  `json:"organization_id"`
+	CampaignID     *uuid.UUID `json:"campaign_id,omitempty"`
+	CampaignName   string     `json:"campaign_name"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}

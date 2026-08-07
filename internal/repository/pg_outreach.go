@@ -40,6 +40,15 @@ type OutreachRepository interface {
 	// Evidence
 	ListEvidence(ctx context.Context, orgID, accountID uuid.UUID) ([]models.OutreachEvidence, error)
 	UpsertEvidence(ctx context.Context, e *models.OutreachEvidence) (created bool, err error)
+
+	// Drafts + org settings (review / enrollment)
+	UpsertDraft(ctx context.Context, d *models.OutreachDraft) error
+	GetDraft(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachDraft, error)
+	GetActiveDraftForAccount(ctx context.Context, orgID, accountID uuid.UUID) (*models.OutreachDraft, error)
+	ListDrafts(ctx context.Context, orgID uuid.UUID, status string, limit, offset int) ([]models.OutreachDraft, error)
+	UpdateDraftStatus(ctx context.Context, d *models.OutreachDraft) error
+	GetOrgSettings(ctx context.Context, orgID uuid.UUID) (*models.OutreachOrgSettings, error)
+	UpsertOrgSettings(ctx context.Context, s *models.OutreachOrgSettings) error
 }
 
 // OutreachAccountFilter filters staged accounts.

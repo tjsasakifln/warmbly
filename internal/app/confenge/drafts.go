@@ -1,0 +1,315 @@
+package confenge
+
+import (
+	"context"
+	"encoding/json"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/warmbly/warmbly/internal/errx"
+	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/pkg/generation"
+)
+
+// GenerateDraft creates or regenerates a draft for an account using AI when
+// configured, otherwise a deterministic template (never auto-approved).
+func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uuid.UUID, contactID *uuid.UUID) (*models.OutreachDraft, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return nil, xerr
+	}
+	acc, err := s.repo.GetAccount(ctx, orgID, accountID)
+	if err != nil || acc == nil {
+		return nil, errx.New(errx.NotFound, "account not found")
+	}
+	if acc.DoNotContact || acc.Blocked {
+		return nil, errx.New(errx.BadRequest, "account is blocked or DO_NOT_CONTACT")
+	}
+
+	var cand *models.OutreachContactCandidate
+	if contactID != nil {
+		cand, err = s.repo.GetCandidate(ctx, orgID, *contactID)
+		if err != nil || cand == nil || cand.AccountID != accountID {
+			return nil, errx.New(errx.NotFound, "contact candidate not found")
+		}
+	} else {
+		list, err := s.repo.ListCandidates(ctx, orgID, accountID)
+		if err != nil {
+			return nil, errx.New(errx.Internal, "failed to list contacts")
+		}
+		cand = pickRecommended(list)
+	}
+	if cand == nil {
+		return nil, errx.New(errx.BadRequest, "no contact candidate; resolve NEEDS_CONTACT first")
+	}
+
+	evidence, err := s.repo.ListEvidence(ctx, orgID, accountID)
+	if err != nil {
+		return nil, errx.New(errx.Internal, "failed to load evidence")
+	}
+
+	existing, _ := s.repo.GetActiveDraftForAccount(ctx, orgID, accountID)
+	draft := &models.OutreachDraft{
+		OrganizationID:     orgID,
+		AccountID:          accountID,
+		ContactCandidateID: &cand.ID,
+		RecipientName:      cand.Name,
+		RecipientRole:      cand.Role,
+		RecipientEmail:     cand.Email,
+		VerificationStatus: cand.VerificationStatus,
+		Status:             models.OutreachDraftGenerating,
+		PromptVersion:      PromptVersion,
+	}
+	if existing != nil {
+		draft.ID = existing.ID
+		draft.Generation = existing.Generation + 1
+		draft.CreatedAt = existing.CreatedAt
+	}
+
+	gen := s.generator()
+	out, provider, model, genErr := gen.Generate(ctx, acc, cand, evidence)
+	usedTemplate := false
+	if genErr != nil {
+		// Fallback template; import/review remain usable without AI.
+		out = TemplateDraft(acc, cand)
+		provider = "template"
+		model = "deterministic"
+		usedTemplate = true
+	}
+	if out.ServiceCode == "" {
+		out.ServiceCode = acc.ServiceCode
+	}
+	if len(out.EvidenceIDs) == 0 && len(acc.MomentEvidenceIDs) > 0 {
+		out.EvidenceIDs = acc.MomentEvidenceIDs
+	}
+
+	val := ValidateDraft(&out, acc, cand, s.cfg.MaxInitialEmailWords)
+	risk, flags := ClassifyRisk(acc, cand, &out, val)
+	if usedTemplate {
+		flags = append(flags, "template_fallback")
+		if risk == "GREEN" {
+			risk = "YELLOW"
+		}
+	}
+
+	valJSON, _ := json.Marshal(val)
+	followJSON, _ := json.Marshal(out.Followups)
+	draft.Subject = SanitizeText(out.Subject, 200)
+	draft.BodyText = SanitizeText(out.BodyText, 8000)
+	draft.BodyHTML = "" // never store unsafe HTML from model raw
+	draft.FollowupsJSON = followJSON
+	draft.ServiceCode = SanitizeText(out.ServiceCode, 100)
+	draft.FactUsed = SanitizeText(out.FactUsed, 2000)
+	draft.EvidenceIDs = out.EvidenceIDs
+	draft.Question = SanitizeText(out.Question, 1000)
+	draft.CTA = SanitizeText(out.CTA, 500)
+	draft.Provider = provider
+	draft.Model = model
+	draft.ValidationJSON = valJSON
+	ok := val.OK
+	draft.ValidationOK = &ok
+	draft.RiskClass = risk
+	draft.RiskFlags = flags
+	draft.Status = models.OutreachDraftNeedsReview
+	if err := s.repo.UpsertDraft(ctx, draft); err != nil {
+		return nil, errx.New(errx.Internal, "failed to save draft: "+err.Error())
+	}
+
+	// Move account into review queue when machine-owned.
+	if acc.QueueState == models.OutreachQueueReadyToGenerate || acc.QueueState == models.OutreachQueueNeedsContact {
+		_ = s.repo.SetAccountHumanFlags(ctx, orgID, accountID, acc.Blocked, acc.DoNotContact, acc.BlockReason, models.OutreachQueueNeedsReview)
+	}
+
+	if s.audit != nil {
+		s.audit.LogAction(ctx, orgID, userID, models.AuditActionCreate, models.AuditEntityOutreachAccount, &accountID, "", "",
+			map[string]string{"draft_id": draft.ID.String(), "status": draft.Status, "risk": draft.RiskClass},
+			map[string]string{"provider": provider},
+		)
+	}
+	return draft, nil
+}
+
+func (s *service) generator() DraftGenerator {
+	if s.ai != nil {
+		return &AIDraftGenerator{Provider: s.ai}
+	}
+	return TemplateGenerator{}
+}
+
+func pickRecommended(list []models.OutreachContactCandidate) *models.OutreachContactCandidate {
+	var fallback *models.OutreachContactCandidate
+	for i := range list {
+		c := &list[i]
+		if c.DoNotContact || c.Bounced || c.Blocked {
+			continue
+		}
+		if c.Email == "" {
+			continue
+		}
+		if c.Recommended && c.CanEnroll() {
+			return c
+		}
+		if fallback == nil && c.CanEnroll() {
+			fallback = c
+		}
+		if fallback == nil {
+			fallback = c
+		}
+	}
+	return fallback
+}
+
+// GetDraft returns one draft by id.
+func (s *service) GetDraft(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachDraft, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return nil, xerr
+	}
+	d, err := s.repo.GetDraft(ctx, orgID, id)
+	if err != nil {
+		return nil, errx.New(errx.Internal, "failed to load draft")
+	}
+	if d == nil {
+		return nil, errx.New(errx.NotFound, "draft not found")
+	}
+	return d, nil
+}
+
+// ListDrafts lists drafts optionally filtered by status.
+func (s *service) ListDrafts(ctx context.Context, orgID uuid.UUID, status string, limit, offset int) ([]models.OutreachDraft, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return nil, xerr
+	}
+	list, err := s.repo.ListDrafts(ctx, orgID, status, limit, offset)
+	if err != nil {
+		return nil, errx.New(errx.Internal, "failed to list drafts")
+	}
+	if list == nil {
+		list = []models.OutreachDraft{}
+	}
+	return list, nil
+}
+
+// ReviewDraft applies human actions: approve, reject, skip, edit, block.
+func (s *service) ReviewDraft(ctx context.Context, orgID, userID, draftID uuid.UUID, action string, edit *DraftEdit) (*models.OutreachDraft, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return nil, xerr
+	}
+	d, err := s.repo.GetDraft(ctx, orgID, draftID)
+	if err != nil || d == nil {
+		return nil, errx.New(errx.NotFound, "draft not found")
+	}
+	switch action {
+	case "edit":
+		if edit == nil {
+			return nil, errx.New(errx.BadRequest, "edit payload required")
+		}
+		if edit.Subject != nil {
+			d.Subject = SanitizeText(*edit.Subject, 200)
+		}
+		if edit.BodyText != nil {
+			d.BodyText = SanitizeText(*edit.BodyText, 8000)
+		}
+		d.HumanEdited = true
+		// Re-validate after edit
+		acc, _ := s.repo.GetAccount(ctx, orgID, d.AccountID)
+		var cand *models.OutreachContactCandidate
+		if d.ContactCandidateID != nil {
+			cand, _ = s.repo.GetCandidate(ctx, orgID, *d.ContactCandidateID)
+		}
+		out := DraftOutput{
+			Subject: d.Subject, BodyText: d.BodyText, FactUsed: d.FactUsed,
+			ServiceCode: d.ServiceCode, EvidenceIDs: d.EvidenceIDs,
+			Question: d.Question, CTA: d.CTA,
+		}
+		val := ValidateDraft(&out, acc, cand, s.cfg.MaxInitialEmailWords)
+		risk, flags := ClassifyRisk(acc, cand, &out, val)
+		valJSON, _ := json.Marshal(val)
+		d.ValidationJSON = valJSON
+		ok := val.OK
+		d.ValidationOK = &ok
+		d.RiskClass = risk
+		d.RiskFlags = flags
+		d.Status = models.OutreachDraftNeedsReview
+	case "approve":
+		acc, _ := s.repo.GetAccount(ctx, orgID, d.AccountID)
+		var cand *models.OutreachContactCandidate
+		if d.ContactCandidateID != nil {
+			cand, _ = s.repo.GetCandidate(ctx, orgID, *d.ContactCandidateID)
+		}
+		out := DraftOutput{
+			Subject: d.Subject, BodyText: d.BodyText, FactUsed: d.FactUsed,
+			ServiceCode: d.ServiceCode, EvidenceIDs: d.EvidenceIDs,
+		}
+		val := ValidateDraft(&out, acc, cand, s.cfg.MaxInitialEmailWords)
+		if !val.OK {
+			return nil, errx.New(errx.BadRequest, "draft failed validation: "+joinErrs(val.Errors))
+		}
+		if d.Provider == "template" && s.cfg.RequireHumanApproval {
+			// Template is allowed after explicit human approve.
+		}
+		now := time.Now().UTC()
+		d.Status = models.OutreachDraftApproved
+		d.ApprovedBy = &userID
+		d.ApprovedAt = &now
+		if acc != nil {
+			_ = s.repo.SetAccountHumanFlags(ctx, orgID, d.AccountID, acc.Blocked, acc.DoNotContact, acc.BlockReason, models.OutreachQueueApproved)
+		}
+	case "reject":
+		d.Status = models.OutreachDraftRejected
+	case "skip":
+		d.Status = models.OutreachDraftSkipped
+		acc, _ := s.repo.GetAccount(ctx, orgID, d.AccountID)
+		if acc != nil {
+			_ = s.repo.SetAccountHumanFlags(ctx, orgID, d.AccountID, acc.Blocked, acc.DoNotContact, acc.BlockReason, models.OutreachQueueSkipped)
+		}
+	case "block":
+		d.Status = models.OutreachDraftBlocked
+		reason := "blocked from review"
+		if edit != nil && edit.Reason != nil {
+			reason = *edit.Reason
+		}
+		dnc := edit != nil && edit.DoNotContact
+		_ = s.repo.SetAccountHumanFlags(ctx, orgID, d.AccountID, true, dnc, reason,
+			map[bool]string{true: models.OutreachQueueDoNotContact, false: models.OutreachQueueBlocked}[dnc])
+	default:
+		return nil, errx.New(errx.BadRequest, "unknown action (approve|reject|skip|edit|block)")
+	}
+	if err := s.repo.UpsertDraft(ctx, d); err != nil {
+		return nil, errx.New(errx.Internal, "failed to update draft")
+	}
+	if s.audit != nil {
+		s.audit.LogAction(ctx, orgID, userID, models.AuditActionUpdate, models.AuditEntityOutreachAccount, &d.AccountID, "", "",
+			map[string]string{"draft_id": d.ID.String(), "action": action, "status": d.Status},
+			nil,
+		)
+	}
+	return d, nil
+}
+
+// DraftEdit is an optional body for review actions.
+type DraftEdit struct {
+	Subject      *string `json:"subject"`
+	BodyText     *string `json:"body_text"`
+	Reason       *string `json:"reason"`
+	DoNotContact bool    `json:"do_not_contact"`
+}
+
+func joinErrs(errs []string) string {
+	return stringsJoin(errs, "; ")
+}
+
+func stringsJoin(parts []string, sep string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	out := parts[0]
+	for i := 1; i < len(parts); i++ {
+		out += sep + parts[i]
+	}
+	return out
+}
+
+// Ensure service holds optional AI provider.
+func (s *service) SetAI(p generation.Provider) {
+	s.ai = p
+}

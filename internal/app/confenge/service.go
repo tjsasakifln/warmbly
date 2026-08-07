@@ -11,6 +11,7 @@ import (
 
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/pkg/generation"
 	"github.com/warmbly/warmbly/internal/repository"
 )
 
@@ -36,6 +37,13 @@ type Service interface {
 	ListAccounts(ctx context.Context, orgID uuid.UUID, filter repository.OutreachAccountFilter) ([]models.OutreachAccount, *errx.Error)
 	GetAccount(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachAccount, *errx.Error)
 	BlockAccount(ctx context.Context, orgID, userID, id uuid.UUID, reason string, dnc bool) (*models.OutreachAccount, *errx.Error)
+
+	// Drafts / review (PR2)
+	GenerateDraft(ctx context.Context, orgID, userID, accountID uuid.UUID, contactID *uuid.UUID) (*models.OutreachDraft, *errx.Error)
+	GetDraft(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachDraft, *errx.Error)
+	ListDrafts(ctx context.Context, orgID uuid.UUID, status string, limit, offset int) ([]models.OutreachDraft, *errx.Error)
+	ReviewDraft(ctx context.Context, orgID, userID, draftID uuid.UUID, action string, edit *DraftEdit) (*models.OutreachDraft, *errx.Error)
+	SetAI(p generation.Provider)
 }
 
 // ImportOptions controls dry-run, idempotency, and source tracking.
@@ -50,6 +58,7 @@ type service struct {
 	repo  repository.OutreachRepository
 	audit AuditLogger
 	fetch *FeedFetcher
+	ai    generation.Provider
 }
 
 // NewService wires confenge outreach. When cfg.Enabled is false, mutators return 404-style disabled errors.
@@ -64,6 +73,22 @@ func NewService(cfg Config, repo repository.OutreachRepository, audit AuditLogge
 			MaxBytes:     cfg.MaxFeedPayloadBytes,
 		},
 	}
+}
+
+// NewServiceWithAI wires confenge with an optional LLM provider for drafts.
+func NewServiceWithAI(cfg Config, repo repository.OutreachRepository, audit AuditLogger, ai generation.Provider) Service {
+	svc := &service{
+		cfg:   cfg,
+		repo:  repo,
+		audit: audit,
+		fetch: &FeedFetcher{
+			AllowedHosts: cfg.AllowedHosts,
+			Token:        cfg.FeedToken,
+			MaxBytes:     cfg.MaxFeedPayloadBytes,
+		},
+		ai: ai,
+	}
+	return svc
 }
 
 func (s *service) Enabled() bool  { return s.cfg.Enabled }

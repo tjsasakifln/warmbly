@@ -256,3 +256,115 @@ func queryBool(c *gin.Context, key string) bool {
 	v := strings.ToLower(strings.TrimSpace(c.Query(key)))
 	return v == "1" || v == "true" || v == "yes"
 }
+
+// ListConfengeDrafts — GET /confenge/drafts
+func (h *Handler) ListConfengeDrafts(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	limit, offset := 50, 0
+	if raw := c.Query("limit"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	if raw := c.Query("offset"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+	list, xerr := h.ConfengeService.ListDrafts(c.Request.Context(), orgID, c.Query("status"), limit, offset)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": list})
+}
+
+// GetConfengeDraft — GET /confenge/drafts/:id
+func (h *Handler) GetConfengeDraft(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	d, xerr := h.ConfengeService.GetDraft(c.Request.Context(), orgID, id)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": d})
+}
+
+// GenerateConfengeDraft — POST /confenge/accounts/:id/generate
+func (h *Handler) GenerateConfengeDraft(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	accountID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	var body struct {
+		ContactCandidateID *uuid.UUID `json:"contact_candidate_id"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	d, xerr := h.ConfengeService.GenerateDraft(c.Request.Context(), orgID, userID, accountID, body.ContactCandidateID)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": d})
+}
+
+// ReviewConfengeDraft — POST /confenge/drafts/:id/review
+// Body: {"action":"approve|reject|skip|edit|block", "subject":"...", "body_text":"...", "do_not_contact":false}
+func (h *Handler) ReviewConfengeDraft(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	var body struct {
+		Action       string  `json:"action" binding:"required"`
+		Subject      *string `json:"subject"`
+		BodyText     *string `json:"body_text"`
+		Reason       *string `json:"reason"`
+		DoNotContact bool    `json:"do_not_contact"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		errx.JSON(c, errx.ErrInvalid)
+		return
+	}
+	edit := &confenge.DraftEdit{
+		Subject: body.Subject, BodyText: body.BodyText,
+		Reason: body.Reason, DoNotContact: body.DoNotContact,
+	}
+	d, xerr := h.ConfengeService.ReviewDraft(c.Request.Context(), orgID, userID, id, body.Action, edit)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": d})
+}

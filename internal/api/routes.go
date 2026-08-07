@@ -457,12 +457,16 @@ func Run(
 				confengeGroup.GET("/accounts/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeAccount)
 				confengeGroup.GET("/import-runs", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeImportRuns)
 				confengeGroup.GET("/import-runs/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeImportRun)
+				confengeGroup.GET("/drafts", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeDrafts)
+				confengeGroup.GET("/drafts/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeDraft)
 
 				confengeWrite := confengeGroup.Group("")
 				confengeWrite.Use(m.RateLimitMiddleware(models.RateLimitWrite))
 				{
 					confengeWrite.POST("/import", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ImportConfengeFeed)
 					confengeWrite.POST("/accounts/:id/block", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.BlockConfengeAccount)
+					confengeWrite.POST("/accounts/:id/generate", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.GenerateConfengeDraft)
+					confengeWrite.POST("/drafts/:id/review", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ReviewConfengeDraft)
 				}
 			}
 

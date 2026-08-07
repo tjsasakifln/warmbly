@@ -50,6 +50,7 @@ import ReferralSettingsPage from './app/app/settings/referral/page';
 import LimitsSettingsPage from './app/app/settings/limits/page';
 import RolesSettingsPage from './app/app/settings/roles/page';
 import UniboxPage from './app/app/unibox/page';
+import ConfengePage from './app/app/confenge/page';
 import DashboardNotFound from './app/app/not-found';
 import NotFound from './app/not-found';
 
@@ -217,6 +218,10 @@ const router = createBrowserRouter([
           {
             path: "contacts",
             element: <ContactsPage />,
+          },
+          {
+            path: "confenge",
+            element: <ConfengePage />,
           },
           {
             path: "campaigns",
