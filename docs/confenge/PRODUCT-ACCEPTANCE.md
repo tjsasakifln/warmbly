@@ -1,6 +1,6 @@
 # CONFENGE product acceptance
 
-Version: 1.1  
+Version: 1.2  
 Date: 2026-08-07  
 Branch: `feat/confenge-product-acceptance`  
 Scope: prove that `extra-cli` + Warmbly form a local commercial engine for CONFENGE multichannel outreach (email + eligible WhatsApp) with factual personalization and human approval of every message.
@@ -26,6 +26,7 @@ If any surface were missing, this matrix would mark product readiness **BLOCKED*
 | Local startup | PASS | `cmd/confenge`, preflight, readiness, kill switch, `docs/confenge/local-ops.md` |
 | Security | PASS | Fail-closed flags; AI cannot approve/send; multi-tenant org scoping; no secrets in fixtures |
 | No-real-send tests | PASS | Mailpit (local/CI service) + WhatsApp mock provider + httptest outcome receiver; no real leads |
+| UI (Playwright) | PARTIAL | Spec + config ship (`web/e2e/confenge-product-acceptance.spec.ts`); **CI/static PASS** via `TestConfengeUIAcceptanceAffordancesPresent` (required data-testids + route). **Live browser run BLOCKED** in this environment: `web:5173` not listening; Playwright attempt failed with `net::ERR_ABORTED` on `/login` (captured under scratch `playwright-confenge.log`). Service E2E remains the behavioral gate for approval/quota/Needs attention. |
 
 ## Scenario bullets (20)
 
@@ -100,18 +101,59 @@ export CONFENGE_OUTCOME_WEBHOOK_SECRET=whsec_local_only_not_committed
 
 ## Playwright UI
 
-Scoped exception for this acceptance front only:
+Scoped exception for this acceptance front only.
 
-- Spec: `web/e2e/confenge-product-acceptance.spec.ts`
-- Opt-in: `CONFENGE_E2E=1` with local web+API
-- Service E2E remains the behavioral gate when browsers/stack are not up
+### What ships
+
+| Artifact | Path |
+| --- | --- |
+| Spec | `web/e2e/confenge-product-acceptance.spec.ts` |
+| Config | `web/playwright.config.ts` |
+| Dep | `@playwright/test` in `web/package.json` |
+| Static CI gate | `TestConfengeUIAcceptanceAffordancesPresent` |
+
+### UI steps covered by the spec
+
+1. Open `/app/confenge` (after login)  
+2. Review evidence (`confenge-evidence`)  
+3. Edit body (`confenge-body-input`)  
+4. Approve & Queue (`confenge-approve-queue`)  
+5. See quota (`confenge-dispatch-quota`)  
+6. See sent counter (`confenge-stat-sent`)  
+7. Optional inject reply via generate-reply API when `CONFENGE_E2E_TOKEN` + account set  
+8. See Needs attention (`confenge-needs-attention`)
+
+### Honest run status (this environment)
+
+```text
+web:DOWN on :5173
+api:up on :8080 (running binary may not expose confenge routes)
+CONFENGE_E2E=1 → FAIL page.goto /login net::ERR_ABORTED (30s timeout)
+Evidence: scratch playwright-confenge.log + ui-presence.log
+```
+
+Do **not** treat the live Playwright failure as a product logic failure. Treat it as **environment BLOCKED**. Behavioral truth for approve/quota/reply is in the Go product E2E.
+
+### Operator run (when stack is up)
+
+```bash
+# Terminal A: make infra && make backend && make web  (CONFENGE_ENABLED=true)
+cd web
+export CONFENGE_E2E=1
+export CONFENGE_E2E_BASE_URL=http://127.0.0.1:5173
+export CONFENGE_E2E_EMAIL=dev@warmbly.com
+export CONFENGE_E2E_PASSWORD=password123
+# optional reply inject:
+# export CONFENGE_E2E_TOKEN=... CONFENGE_E2E_ACCOUNT_ID=... CONFENGE_E2E_API=http://127.0.0.1:8080
+npx playwright test -c playwright.config.ts
+```
 
 ## How to re-run
 
 ```bash
 export CONFENGE_MAILPIT_SMTP=127.0.0.1:11025   # or :1025 in CI
 export CONFENGE_MAILPIT_API=http://127.0.0.1:18025  # or :8025 in CI
-go test ./internal/app/confenge/ -run 'TestProductAcceptanceMultichannelSum|TestProcessInboundHandoffCancelsOpenTouchpoints' -count=1 -v
+go test ./internal/app/confenge/ -run 'TestProductAcceptanceMultichannelSum|TestProcessInboundHandoffCancelsOpenTouchpoints|TestConfengeUIAcceptanceAffordancesPresent' -count=1 -v
 go test ./internal/app/confenge/dispatch/ -run 'TestCap10|TestRestart|TestEmailAndWhatsApp' -count=1 -v
 go test ./internal/app/confenge/ -count=1
 ```
