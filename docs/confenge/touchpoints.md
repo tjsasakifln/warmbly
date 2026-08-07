@@ -9,3 +9,13 @@ Terminals: SKIPPED, REJECTED, REPLIED, DNC, BOUNCED, CANCELLED, FAILED.
 Transport requires `approved_content_hash == content_hash` and human `approved_by`.
 Edit/regenerate clears approval. CAS on APPROVED→QUEUED. Migration `000085`.
 Cadence policy `confenge.cadence.v1` (no fixed multi-step campaign sequences).
+
+## Fail-closed transport
+
+`EnrollDraft` (email) and `SendApprovedWhatsApp` both call `requireTouchTransport`.
+A draft with status `APPROVED` but **no** linked touchpoint is refused. Linked
+touchpoints must have matching content hashes and human `approved_by`.
+
+PLANNED touches with `due_at <= now` are promoted to `DUE` when listing the
+review queue (`PromoteDuePlannedTouchpoints`), so spaced follow-ups enter the
+human queue after the prior touch is SENT/SKIPPED and the delay elapses.

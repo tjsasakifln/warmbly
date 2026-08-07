@@ -1,6 +1,6 @@
 ---
 title: CONFENGE outreach staging
-description: Import versioned commercial feeds from extra-cli into a multi-tenant staging queue without writing to the datalake.
+description: Import versioned commercial feeds, review each outbound touch with human approval, and send only after per-message approval.
 ---
 
 CONFENGE outreach is an optional, feature-flagged staging layer. It lets an organization import a versioned commercial feed (for example from `extra-cli`) into Warmbly so companies can sit in a queue even when no verified email exists yet.
@@ -15,7 +15,7 @@ Set on the backend:
 CONFENGE_OUTREACH_ENABLED=true
 ```
 
-Leave `CONFENGE_AUTO_SEND_ENABLED=false` unless you have an explicit operational policy. Human approval remains the default.
+Leave `CONFENGE_AUTO_SEND_ENABLED=false` unless you have an explicit operational policy. Human approval remains the default (`CONFENGE_REQUIRE_HUMAN_APPROVAL=true`).
 
 Optional feed source:
 
@@ -26,6 +26,26 @@ CONFENGE_EXTRA_CLI_ALLOWED_HOSTS=feed.example.com
 ```
 
 In production the feed URL must be HTTPS and the host must be on the allowlist. Local development may use a `file://` path.
+
+## Per-touch human approval (product invariant)
+
+Every CONFENGE outbound message (email or WhatsApp) requires **explicit human approval of that exact message** before it can enter the send queue. AI may generate, classify, and suggest. AI never approves and never sends.
+
+Flow:
+
+1. Plan a cadence for an account (initial touch plus spaced follow-ups).
+2. When a touch is due, generate the message text just-in-time (prior touches, outcomes, latest imported context).
+3. Human reviews the exact recipient, channel, subject/body, fact and evidence.
+4. Human edits if needed (any edit clears prior approval).
+5. Human chooses **Approve & Queue**, Skip, or DNC.
+
+Approval is **per touch**, never for a whole sequence or account. There is no “approve whole sequence” action.
+
+Transport is blocked unless the durable touchpoint has a matching content hash and a human `approved_by`. Draft-only approval is not enough to send.
+
+Cadence uses a versioned policy (`confenge.cadence.v1`): initial touch plus spaced follow-ups with no false urgency. Channel is chosen at touch time. Follow-ups are not a fixed multi-step campaign sequence that auto-fires after the first enrollment.
+
+Dominant stops: `DO_NOT_CONTACT`, opt-out, bounce, and human reply cancel open future touches atomically. Reimport does not reactivate `SENT` or `DNC` touchpoints.
 
 ## Import
 
@@ -44,7 +64,7 @@ Reimport updates machine-owned fields (priority, moment, offer, messaging, evide
 
 - human `DO_NOT_CONTACT` and block flags
 - post-send queue states (enrolled, sent, replied, and later CRM states)
-- prior approvals once those exist in later PRs
+- terminal touchpoint states (`SENT`, `DNC`, and other closed states)
 
 ## API surface
 
@@ -56,9 +76,22 @@ Reimport updates machine-owned fields (priority, moment, offer, messaging, evide
 | `GET /confenge/accounts/:id` | Company with candidates and evidence |
 | `POST /confenge/import` | Dry-run or apply feed |
 | `GET /confenge/import-runs` | Import audit history |
+| `GET /confenge/touchpoints/review` | Human review queue (due / needs review / approved) |
+| `GET /confenge/accounts/:id/touchpoints` | Account touch timeline |
+| `POST /confenge/accounts/:id/plan` | Plan cadence chain |
+| `POST /confenge/touchpoints/:id/generate` | JIT draft for a due touch |
+| `POST /confenge/touchpoints/:id/edit` | Edit (clears approval) |
+| `POST /confenge/touchpoints/:id/approve` | Human approve this touch only |
+| `POST /confenge/touchpoints/:id/decision` | Skip or reject |
+| `POST /confenge/touchpoints/:id/queue` | CAS queue then transport |
+| `POST /confenge/accounts/:id/dnc` | DNC and cancel open futures |
 
-Permissions follow contacts: view for reads, manage for import and block.
+Permissions follow contacts: view for reads, manage for import, plan, review, and send actions.
 
-## What this does not do yet
+## Dashboard
 
-Message generation, review UI, campaign enrollment, Microsoft Graph send, and outcome webhooks back to `extra-cli` ship in follow-up work. See `docs/confenge/` in the repository for architecture and upstream maintenance notes.
+The CONFENGE page is a single per-message review queue. It shows company, exact recipient (email or phone), channel, service, fact/evidence, touch ordinal, short history, and the exact send preview, with Approve & Queue, Skip, and DNC.
+
+## Architecture notes
+
+See `docs/confenge/` in the repository for feed contracts, outcomes, WhatsApp policy, and the touchpoint state machine detail (`docs/confenge/touchpoints.md`).

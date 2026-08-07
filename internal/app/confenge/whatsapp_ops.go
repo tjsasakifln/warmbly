@@ -204,10 +204,9 @@ func (s *service) SendApprovedWhatsApp(ctx context.Context, orgID, userID, draft
 	if d.Status != models.OutreachDraftApproved {
 		return nil, errx.New(errx.BadRequest, "draft must be APPROVED before WhatsApp send")
 	}
-	if tp, _ := s.repo.GetTouchpointByDraft(ctx, orgID, draftID); tp != nil {
-		if xerr := AssertTransportAllowed(tp); xerr != nil {
-			return nil, xerr
-		}
+	// Fail-closed: same per-touch invariant as email (draft-only APPROVED is not enough).
+	if _, xerr := s.requireTouchTransport(ctx, orgID, draftID); xerr != nil {
+		return nil, xerr
 	}
 	acc, err := s.repo.GetAccount(ctx, orgID, d.AccountID)
 	if err != nil || acc == nil {

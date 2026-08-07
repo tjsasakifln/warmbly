@@ -105,6 +105,8 @@ func (s *service) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, li
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, xerr
 	}
+	// Promote PLANNED touches whose due_at has arrived (spaced follow-ups).
+	_, _ = s.PromoteDueTouchpoints(ctx, orgID)
 	list, err := s.repo.ListReviewTouchpoints(ctx, orgID, limit, offset)
 	if err != nil {
 		return nil, errx.New(errx.Internal, "list review touchpoints failed")
@@ -512,4 +514,28 @@ func AssertTransportAllowed(tp *models.OutreachTouchpoint) *errx.Error {
 		return errx.New(errx.BadRequest, "CONFENGE transport blocked: "+err.Error())
 	}
 	return nil
+}
+
+// requireTouchTransport fails closed: every CONFENGE outbound must be backed by a
+// touchpoint whose approved_content_hash matches content_hash and has human approved_by.
+// Draft-only APPROVED status is never enough.
+func (s *service) requireTouchTransport(ctx context.Context, orgID, draftID uuid.UUID) (*models.OutreachTouchpoint, *errx.Error) {
+	tp, err := s.repo.GetTouchpointByDraft(ctx, orgID, draftID)
+	if err != nil {
+		return nil, errx.New(errx.Internal, "load touchpoint failed")
+	}
+	if tp == nil {
+		return nil, errx.New(errx.BadRequest, "CONFENGE transport requires an approved touchpoint; use the per-touch review queue (draft-only approval cannot send)")
+	}
+	if xerr := AssertTransportAllowed(tp); xerr != nil {
+		return nil, xerr
+	}
+	return tp, nil
+}
+
+// PromoteDueTouchpoints moves PLANNED touches with due_at <= now to DUE so they
+// enter the human review queue after prior SENT/SKIP release.
+func (s *service) PromoteDueTouchpoints(ctx context.Context, orgID uuid.UUID) (int, error) {
+	n, err := s.repo.PromoteDuePlannedTouchpoints(ctx, orgID, time.Now().UTC())
+	return n, err
 }

@@ -137,10 +137,9 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 	if d.Status != models.OutreachDraftApproved {
 		return nil, errx.New(errx.BadRequest, "draft must be APPROVED before enrollment")
 	}
-	if tp, _ := s.repo.GetTouchpointByDraft(ctx, orgID, draftID); tp != nil {
-		if xerr := AssertTransportAllowed(tp); xerr != nil {
-			return nil, xerr
-		}
+	// Fail-closed: every CONFENGE email outbound needs a transport-valid touchpoint.
+	if _, xerr := s.requireTouchTransport(ctx, orgID, draftID); xerr != nil {
+		return nil, xerr
 	}
 
 	acc, err := s.repo.GetAccount(ctx, orgID, d.AccountID)

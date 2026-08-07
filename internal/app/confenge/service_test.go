@@ -422,6 +422,26 @@ func (m *memRepo) CASQueueTouchpoint(ctx context.Context, orgID, id uuid.UUID, e
 	cp := *t
 	return &cp, nil
 }
+func (m *memRepo) PromoteDuePlannedTouchpoints(ctx context.Context, orgID uuid.UUID, now time.Time) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	n := 0
+	for _, t := range m.touchpoints {
+		if t.OrganizationID != orgID || t.State != models.TouchpointPlanned {
+			continue
+		}
+		if !t.DueAt.After(now) {
+			t.State = models.TouchpointDue
+			t.UpdatedAt = now
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (m *memRepo) CancelOpenTouchpoints(ctx context.Context, orgID, accountID uuid.UUID, terminalState, stopReason string) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

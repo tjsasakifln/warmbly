@@ -228,3 +228,78 @@ func TestCadencePolicyV1NoFalseUrgency(t *testing.T) {
 		}
 	}
 }
+
+func TestDraftOnlyEnrollBlocked(t *testing.T) {
+	repo := newMemRepo()
+	svc := testSvc(repo).(*service)
+	svc.WireExecution(&mockCampaigns{}, &mockContacts{})
+	org, user := uuid.New(), uuid.New()
+	acc := &models.OutreachAccount{ID: uuid.New(), OrganizationID: org, CNPJ14: "11222333000181", RazaoSocial: "A", QueueState: models.OutreachQueueApproved, SourceLeadID: "L"}
+	_, _ = repo.UpsertAccount(context.Background(), acc)
+	cand := &models.OutreachContactCandidate{ID: uuid.New(), OrganizationID: org, AccountID: acc.ID, Email: "a@b.com", Name: "A", VerificationStatus: models.OutreachVerifyOfficialSource}
+	_, _ = repo.UpsertCandidate(context.Background(), cand)
+	d := &models.OutreachDraft{ID: uuid.New(), OrganizationID: org, AccountID: acc.ID, ContactCandidateID: &cand.ID, Channel: models.OutreachChannelEmail, RecipientEmail: cand.Email, Subject: "S", BodyText: "B", Status: models.OutreachDraftApproved, RiskClass: "GREEN", FactUsed: "f", ServiceCode: "S", VerificationStatus: models.OutreachVerifyOfficialSource}
+	ok := true
+	d.ValidationOK = &ok
+	_ = repo.UpsertDraft(context.Background(), d)
+	if _, xerr := svc.EnrollDraft(context.Background(), org, user, d.ID); xerr == nil {
+		t.Fatal("draft-only enroll must fail")
+	}
+}
+
+func TestPromoteDuePlannedAfterPriorSent(t *testing.T) {
+	repo := newMemRepo()
+	svc := testSvc(repo).(*service)
+	org, user := uuid.New(), uuid.New()
+	acc := &models.OutreachAccount{ID: uuid.New(), OrganizationID: org, CNPJ14: "11222333000199", RazaoSocial: "B", QueueState: models.OutreachQueueReadyToGenerate, SourceLeadID: "L2"}
+	_, _ = repo.UpsertAccount(context.Background(), acc)
+	cand := &models.OutreachContactCandidate{ID: uuid.New(), OrganizationID: org, AccountID: acc.ID, Email: "b@b.com", Name: "B", VerificationStatus: models.OutreachVerifyOfficialSource}
+	_, _ = repo.UpsertCandidate(context.Background(), cand)
+	list, xerr := svc.PlanAccountCadence(context.Background(), org, user, acc.ID, &cand.ID, models.OutreachChannelEmail)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if len(list) < 2 {
+		t.Fatal("need follow-ups")
+	}
+	// Complete first touch
+	first, _ := repo.GetTouchpoint(context.Background(), org, list[0].ID)
+	first.State = models.TouchpointSent
+	now := time.Now().UTC()
+	first.SentAt = &now
+	_ = repo.UpdateTouchpoint(context.Background(), first)
+	// Next is PLANNED with future due_at — force due_at into the past to simulate scheduler
+	second, _ := repo.GetTouchpoint(context.Background(), org, list[1].ID)
+	if second.State != models.TouchpointPlanned {
+		t.Fatalf("want PLANNED got %s", second.State)
+	}
+	second.DueAt = now.Add(-time.Hour)
+	_ = repo.UpdateTouchpoint(context.Background(), second)
+	// ListReview promotes due planned into queue
+	review, xerr := svc.ListReviewTouchpoints(context.Background(), org, 50, 0)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	found := false
+	for _, tp := range review {
+		if tp.ID == second.ID && tp.State == models.TouchpointDue {
+			found = true
+		}
+	}
+	if !found {
+		// also check reload
+		re, _ := repo.GetTouchpoint(context.Background(), org, second.ID)
+		if re == nil || re.State != models.TouchpointDue {
+			t.Fatalf("expected DUE after promote, got %+v review=%d", re, len(review))
+		}
+	}
+}
+
+func TestRequireTouchTransportNilDraftBlocks(t *testing.T) {
+	repo := newMemRepo()
+	svc := testSvc(repo).(*service)
+	org := uuid.New()
+	if _, xerr := svc.requireTouchTransport(context.Background(), org, uuid.New()); xerr == nil {
+		t.Fatal("missing touchpoint must block")
+	}
+}

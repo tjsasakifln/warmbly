@@ -93,6 +93,21 @@ func TestSyntheticOperationalFlow(t *testing.T) {
 		t.Fatalf("status %s", approved.Status)
 	}
 
+	// Per-touch approval required before enroll/transport.
+	now := time.Now().UTC()
+	tp := &models.OutreachTouchpoint{
+		OrganizationID: org, AccountID: approved.AccountID, Ordinal: 1,
+		Channel: models.OutreachChannelEmail, Purpose: models.TouchpointPurposeInitial,
+		State: models.TouchpointNeedsReview, Recipient: approved.RecipientEmail,
+		Subject: approved.Subject, BodyText: approved.BodyText, DraftID: &approved.ID,
+		IdempotencyKey: "e2e-tp",
+	}
+	RecomputeContentHash(tp)
+	if err := ApplyHumanApproval(tp, user, now); err != nil {
+		t.Fatal(err)
+	}
+	_ = rf.InsertTouchpoint(context.Background(), tp)
+
 	enrolled, xerr := svc.EnrollDraft(context.Background(), org, user, draft.ID)
 	if xerr != nil {
 		t.Fatal(xerr.Message)

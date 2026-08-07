@@ -68,6 +68,8 @@ type OutreachRepository interface {
 	ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, limit, offset int) ([]models.OutreachTouchpoint, error)
 	CASQueueTouchpoint(ctx context.Context, orgID, id uuid.UUID, expectedContentHash string) (*models.OutreachTouchpoint, error)
 	CancelOpenTouchpoints(ctx context.Context, orgID, accountID uuid.UUID, terminalState, stopReason string) (int, error)
+	// PromoteDuePlannedTouchpoints: PLANNED -> DUE where due_at <= now (org-scoped).
+	PromoteDuePlannedTouchpoints(ctx context.Context, orgID uuid.UUID, now time.Time) (int, error)
 }
 
 // OutreachAccountFilter filters staged accounts.
