@@ -6,6 +6,7 @@ import {
     decideConfengeTouchpoint,
     dncConfengeAccount,
     editConfengeTouchpoint,
+    enrollConfengeDraft,
     generateConfengeDraft,
     generateConfengeTouchpoint,
     getConfengeAccount,
