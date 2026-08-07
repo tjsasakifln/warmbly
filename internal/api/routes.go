@@ -38,6 +38,10 @@ func Run(
 	// credential, resolving to one automation that runs with the JSON body.
 	r.POST("/api/v1/integrations/inbound/automation/:token", h.InboundAutomation)
 
+	// Evolution API WhatsApp webhooks (provider gateway → Warmbly). Auth is the
+	// per-instance webhook secret (Bearer or X-Webhook-Secret).
+	r.POST("/api/v1/webhooks/evolution/:instance", h.EvolutionWebhook)
+
 	// OAuth 2.1 authorization-server discovery (RFC 8414): public + unversioned.
 	r.GET("/.well-known/oauth-authorization-server", h.OAuthServerMetadata)
 
