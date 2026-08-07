@@ -99,6 +99,57 @@ func TestProcessInboundHandoffEmailCancelsQueued(t *testing.T) {
 	}
 }
 
+func TestProcessInboundHandoffCancelsOpenTouchpoints(t *testing.T) {
+	r := newMemRepoWithSettings()
+	svc := NewService(Config{Enabled: true, DefaultDailyLimit: 10, MaxInitialEmailWords: 120, RequireHumanApproval: true}, r, nil).(*service)
+	org := uuid.New()
+	accID, _ := seedHandoffAccount(t, r, org, "33444555000103", "carla@example.com")
+
+	// Planned + queued future touches must be cancelled by handoff itself.
+	for i, st := range []string{models.TouchpointPlanned, models.TouchpointQueued, models.TouchpointApproved} {
+		tp := &models.OutreachTouchpoint{
+			ID: uuid.New(), OrganizationID: org, AccountID: accID, Ordinal: i + 2,
+			Channel: models.OutreachChannelEmail, Purpose: models.TouchpointPurposeFollowUp,
+			State: st, Recipient: "carla@example.com",
+			DueAt: time.Now().UTC().Add(48 * time.Hour), IdempotencyKey: fmt.Sprintf("handoff-tp-%d", i),
+		}
+		RecomputeContentHash(tp)
+		if err := r.InsertTouchpoint(context.Background(), tp); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	res, xerr := svc.ProcessInboundHandoff(context.Background(), org, InboundHandoff{
+		Channel: models.OutreachChannelEmail, ContactEmail: "carla@example.com",
+		BodyText: "Obrigado, me ligue na semana que vem", IdempotencyKey: "test-tp-cancel-1",
+	})
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if !res.StoppedCadence {
+		t.Fatal("expected StoppedCadence")
+	}
+	open, err := r.ListTouchpoints(context.Background(), org, accID, "", 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tp := range open {
+		if models.TouchpointOpenStates[tp.State] {
+			t.Fatalf("open touchpoint still %s after handoff", tp.State)
+		}
+		if tp.State != models.TouchpointReplied && tp.StopReason != "REPLY" {
+			// terminal replied path
+			if tp.State != models.TouchpointReplied {
+				t.Fatalf("touchpoint state=%s stop=%s", tp.State, tp.StopReason)
+			}
+		}
+	}
+	acc, _ := r.GetAccount(context.Background(), org, accID)
+	if acc.QueueState != models.OutreachQueueReplied {
+		t.Fatalf("queue=%s want REPLIED for Needs attention", acc.QueueState)
+	}
+}
+
 func TestProcessInboundHandoffIdempotent(t *testing.T) {
 	r := newMemRepoWithSettings()
 	svc := NewService(Config{Enabled: true, DefaultDailyLimit: 10, MaxInitialEmailWords: 120}, r, nil).(*service)

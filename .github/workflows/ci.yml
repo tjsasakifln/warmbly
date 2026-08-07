@@ -64,6 +64,16 @@ jobs:
     needs: changes
     if: needs.changes.outputs.go-services == 'true'
     runs-on: ubuntu-latest
+    # Mailpit for CONFENGE product-acceptance email proof (SMTP + HTTP API).
+    services:
+      mailpit:
+        image: axllent/mailpit:v1.22
+        ports:
+          - 1025:1025
+          - 8025:8025
+    env:
+      CONFENGE_MAILPIT_SMTP: 127.0.0.1:1025
+      CONFENGE_MAILPIT_API: http://127.0.0.1:8025
     steps:
       - uses: actions/checkout@v4
 
@@ -87,6 +97,18 @@ jobs:
 
       - name: Verify protobuf files are up to date
         run: make check-proto
+
+      - name: Wait for Mailpit
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS "$CONFENGE_MAILPIT_API/api/v1/info" >/dev/null; then
+              echo "mailpit ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "mailpit did not become ready" >&2
+          exit 1
 
       - name: Run tests with coverage
         run: |

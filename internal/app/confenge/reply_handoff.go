@@ -89,14 +89,29 @@ func (s *service) ProcessInboundHandoff(ctx context.Context, orgID uuid.UUID, in
 	cancelled := s.cancelPendingOutbound(ctx, orgID, acc.ID)
 	queueState, blocked, dnc := queueStateForIntent(intent.Intent, acc)
 	reason := fmt.Sprintf("reply:%s:%s", channel, intent.Intent)
+	// Pause/cancel open touchpoint cadence (dominant with draft stop).
+	term, stop := models.TouchpointReplied, "REPLY"
 	if intent.Intent == IntentDoNotContact {
 		reason = "reply:DO_NOT_CONTACT"
+		term, stop = models.TouchpointDNC, "DNC"
 		if cand != nil {
 			cand.DoNotContact = true
 			cand.VerificationStatus = models.OutreachVerifyDoNotContact
 			_, _ = s.repo.UpsertCandidate(ctx, cand)
 		}
 	}
+	if nTP, err := s.repo.CancelOpenTouchpoints(ctx, orgID, acc.ID, term, stop); err == nil {
+		cancelled += nTP
+	}
+	// Drop governor-queued outbound for this recipient (email + phone).
+	phoneRef := phone
+	if phoneRef == "" && cand != nil {
+		phoneRef = cand.PhoneE164
+		if phoneRef == "" {
+			phoneRef = cand.Phone
+		}
+	}
+	s.cancelQueuedForRecipient(ctx, orgID, email, phoneRef, stop)
 	if intent.Intent == IntentOutOfOffice && queueState == "" {
 		queueState = acc.QueueState
 		if queueState == "" {
