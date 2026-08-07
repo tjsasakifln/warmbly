@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 import {
+    bootstrapConfengeCampaign,
+    enrollConfengeDraft,
     generateConfengeDraft,
     getConfengeAccount,
     getConfengeStatus,
@@ -82,5 +84,25 @@ export function useReviewConfengeDraft() {
             toast.success(`Draft ${vars.action}d`);
         },
         onError: (e: Error) => toast.error(e.message || "Review failed"),
+    });
+}
+
+export function useEnrollConfengeDraft() {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: (id: string) => enrollConfengeDraft(id),
+        onSuccess: () => {
+            void qc.invalidateQueries({ queryKey: KEY });
+            toast.success("Enrolled in CONFENGE campaign");
+        },
+        onError: (e: Error) => toast.error(e.message || "Enroll failed"),
+    });
+}
+
+export function useBootstrapConfengeCampaign() {
+    return useMutation({
+        mutationFn: () => bootstrapConfengeCampaign(),
+        onSuccess: (c) => toast.success(`Campaign ready: ${c.name}`),
+        onError: (e: Error) => toast.error(e.message || "Bootstrap failed"),
     });
 }

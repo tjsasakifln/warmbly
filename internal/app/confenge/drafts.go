@@ -3,6 +3,8 @@ package confenge
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -253,6 +255,18 @@ func (s *service) ReviewDraft(ctx context.Context, orgID, userID, draftID uuid.U
 		d.ApprovedAt = &now
 		if acc != nil {
 			_ = s.repo.SetAccountHumanFlags(ctx, orgID, d.AccountID, acc.Blocked, acc.DoNotContact, acc.BlockReason, models.OutreachQueueApproved)
+			email := ""
+			if cand != nil {
+				email = cand.Email
+			}
+			_ = s.EnqueueOutcome(ctx, orgID, models.OutreachOutcome{
+				IdempotencyKey: "lead_reviewed:" + d.ID.String(),
+				SourceLeadID:   acc.SourceLeadID,
+				CNPJ14:         acc.CNPJ14,
+				ContactEmail:   email,
+				EventType:      OutcomeLeadReviewed,
+				OccurredAt:     now,
+			})
 		}
 	case "reject":
 		d.Status = models.OutreachDraftRejected
@@ -271,6 +285,21 @@ func (s *service) ReviewDraft(ctx context.Context, orgID, userID, draftID uuid.U
 		dnc := edit != nil && edit.DoNotContact
 		_ = s.repo.SetAccountHumanFlags(ctx, orgID, d.AccountID, true, dnc, reason,
 			map[bool]string{true: models.OutreachQueueDoNotContact, false: models.OutreachQueueBlocked}[dnc])
+		if acc, _ := s.repo.GetAccount(ctx, orgID, d.AccountID); acc != nil {
+			evType := OutcomeLeadReviewed
+			if dnc {
+				evType = OutcomeDoNotContact
+			}
+			email := d.RecipientEmail
+			_ = s.EnqueueOutcome(ctx, orgID, models.OutreachOutcome{
+				IdempotencyKey: fmt.Sprintf("%s:%s", strings.ToLower(evType), d.ID.String()),
+				SourceLeadID:   acc.SourceLeadID,
+				CNPJ14:         acc.CNPJ14,
+				ContactEmail:   email,
+				EventType:      evType,
+				OccurredAt:     time.Now().UTC(),
+			})
+		}
 	default:
 		return nil, errx.New(errx.BadRequest, "unknown action (approve|reject|skip|edit|block)")
 	}

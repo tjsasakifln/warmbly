@@ -56,6 +56,7 @@ type OutreachRepository interface {
 	MarkOutcomeDelivered(ctx context.Context, orgID, id uuid.UUID) error
 	MarkOutcomeAttempt(ctx context.Context, orgID, id uuid.UUID, attempts int, next time.Time, lastErr string, dead bool) error
 	GetOutcomeByIdempotency(ctx context.Context, orgID uuid.UUID, key string) (*models.OutreachOutcome, error)
+	FindCandidateByEmail(ctx context.Context, orgID uuid.UUID, email string) (*models.OutreachContactCandidate, *models.OutreachAccount, error)
 }
 
 // OutreachAccountFilter filters staged accounts.

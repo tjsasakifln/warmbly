@@ -88,3 +88,23 @@ export async function reviewConfengeDraft(
     });
     return res.data;
 }
+
+export async function enrollConfengeDraft(id: string): Promise<ConfengeDraft> {
+    const res = await Request<{ data: ConfengeDraft }>({
+        method: "POST",
+        url: `/confenge/drafts/${id}/enroll`,
+        authorization: true,
+        data: {},
+    });
+    return res.data;
+}
+
+export async function bootstrapConfengeCampaign(): Promise<{ id: string; name: string }> {
+    const res = await Request<{ data: { id: string; name: string } }>({
+        method: "POST",
+        url: "/confenge/campaign/bootstrap",
+        authorization: true,
+        data: {},
+    });
+    return res.data;
+}

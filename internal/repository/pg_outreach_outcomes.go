@@ -117,3 +117,25 @@ func (r *outreachRepository) GetOutcomeByIdempotency(ctx context.Context, orgID 
 	}
 	return &ev, nil
 }
+
+// FindCandidateByEmail returns the recommended-or-latest candidate for an email in the org,
+// plus its account. Used to attribute replies/bounces back to confenge staging.
+func (r *outreachRepository) FindCandidateByEmail(ctx context.Context, orgID uuid.UUID, email string) (*models.OutreachContactCandidate, *models.OutreachAccount, error) {
+	row := r.db.QueryRow(ctx, outreachCandidateSelect+`
+		FROM outreach_contact_candidates
+		WHERE organization_id=$1 AND lower(email)=lower($2)
+		ORDER BY recommended DESC, updated_at DESC
+		LIMIT 1`, orgID, email)
+	c, err := scanCandidate(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	acc, err := r.GetAccount(ctx, orgID, c.AccountID)
+	if err != nil {
+		return c, nil, err
+	}
+	return c, acc, nil
+}

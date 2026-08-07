@@ -7,6 +7,8 @@ import {
     useConfengeDrafts,
     useConfengeStatus,
     useConfengeSummary,
+    useBootstrapConfengeCampaign,
+    useEnrollConfengeDraft,
     useGenerateConfengeDraft,
     useReviewConfengeDraft,
 } from "@/lib/api/hooks/app/confenge/useConfenge";
@@ -19,8 +21,11 @@ export default function ConfengePage() {
     const ready = useConfengeAccounts("READY_TO_GENERATE", enabled);
     const needsContact = useConfengeAccounts("NEEDS_CONTACT", enabled);
     const drafts = useConfengeDrafts("NEEDS_REVIEW", enabled);
+    const approved = useConfengeDrafts("APPROVED", enabled);
     const generate = useGenerateConfengeDraft();
     const review = useReviewConfengeDraft();
+    const enroll = useEnrollConfengeDraft();
+    const bootstrap = useBootstrapConfengeCampaign();
 
     const [idx, setIdx] = useState(0);
     const queue = drafts.data ?? [];
@@ -70,7 +75,16 @@ export default function ConfengePage() {
             <PageTopbar
                 eyebrow="CONFENGE"
                 subtitle="Review queue for intelligence-plane leads. Metric: commercial outcomes per human minute."
-            />
+            >
+                <button
+                    type="button"
+                    className="h-7 px-2.5 rounded-md border border-slate-200 text-[12.5px] text-slate-700 hover:bg-slate-50"
+                    disabled={bootstrap.isPending}
+                    onClick={() => bootstrap.mutate()}
+                >
+                    Bootstrap campaign
+                </button>
+            </PageTopbar>
             <div className="flex flex-col gap-4 p-4 md:p-6 max-w-6xl mx-auto w-full">
 
                 <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
@@ -138,6 +152,32 @@ export default function ConfengePage() {
                         </ul>
                     </section>
                 </div>
+
+                {(approved.data?.length ?? 0) > 0 && (
+                    <section className="rounded-md border border-slate-200 bg-white">
+                        <div className="px-3 h-10 flex items-center border-b border-slate-200 text-[12.5px] font-medium text-slate-900">
+                            Approved — ready to enroll ({approved.data?.length ?? 0})
+                        </div>
+                        <ul className="divide-y divide-slate-100">
+                            {(approved.data ?? []).map((d) => (
+                                <li key={d.id} className="px-3 py-2 flex items-center justify-between gap-2 text-[12.5px]">
+                                    <div className="min-w-0">
+                                        <div className="font-medium truncate">{d.recipient_email}</div>
+                                        <div className="text-slate-500 truncate">{d.subject}</div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        className="shrink-0 h-7 px-2 rounded-md bg-sky-600 text-white hover:bg-sky-700"
+                                        disabled={enroll.isPending}
+                                        onClick={() => enroll.mutate(d.id)}
+                                    >
+                                        Enroll
+                                    </button>
+                                </li>
+                            ))}
+                        </ul>
+                    </section>
+                )}
 
                 <section className="rounded-md border border-slate-200 bg-white">
                     <div className="px-3 h-10 flex items-center justify-between border-b border-slate-200">

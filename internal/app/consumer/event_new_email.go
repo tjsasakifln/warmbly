@@ -74,6 +74,20 @@ func (s *JobsService) HandleNewEmail(ctx context.Context, e *models.JobEventNewE
 		_ = s.AdvancedService.ProcessIncomingReply(ctx, e.Message.EmailID, e.Message)
 	}
 
+	// CONFENGE outcome loop: attribute human-looking inbound mail to staged leads.
+	if s.ConfengeOutcomes != nil && s.ConfengeOutcomes.Enabled() && e.Message != nil {
+		if account, err := s.EmailRepository.GetByID(ctx, e.Message.EmailID); err == nil && account != nil && account.OrganizationID != nil {
+			from := ""
+			if len(e.Message.FromAddr) > 0 {
+				from = e.Message.FromAddr[0]
+			}
+			_ = s.ConfengeOutcomes.NoteReply(ctx, *account.OrganizationID, from, map[string]any{
+				"subject":    e.Message.Subject,
+				"message_id": e.Message.ID.String(),
+			})
+		}
+	}
+
 	return nil
 }
 

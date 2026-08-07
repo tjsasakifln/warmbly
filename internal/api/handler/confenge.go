@@ -368,3 +368,46 @@ func (h *Handler) ReviewConfengeDraft(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"data": d})
 }
+
+// BootstrapConfengeCampaign — POST /confenge/campaign/bootstrap
+func (h *Handler) BootstrapConfengeCampaign(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	camp, xerr := h.ConfengeService.BootstrapCampaign(c.Request.Context(), orgID, userID)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": camp})
+}
+
+// EnrollConfengeDraft — POST /confenge/drafts/:id/enroll
+func (h *Handler) EnrollConfengeDraft(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	d, xerr := h.ConfengeService.EnrollDraft(c.Request.Context(), orgID, userID, id)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": d})
+}

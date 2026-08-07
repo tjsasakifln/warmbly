@@ -988,6 +988,8 @@ func main() {
 		if confengeServiceForHandler != nil && aiProvider != nil {
 			confengeServiceForHandler.SetAI(aiProvider)
 		}
+		// Async outcome outbox → extra-cli HMAC webhook (idle when URL/secret unset).
+		go confenge.NewOutcomeDeliveryWorker(outreachRepo, confengeCfg, confenge.OutcomeDeliveryOptions{}).Run(ctx)
 
 		apiKeyService = apikey.NewService(cache, apiKeyRepository)
 		crmService = crm.NewService(crmRepository)
@@ -1021,6 +1023,10 @@ func main() {
 		templateService = template.NewService(templateRepository)
 		schedulerService := scheduler.NewSchedulerService(taskRepository, warmupRepository, campaignProgressRepository, emailRepostory, campaignRepostory, contactRepostory, campaignLogRepository)
 		campaignService = campaign.NewService(campaignRepostory, taskRepository, emailRepostory, campaignLogRepository, featureGateService, dailyThrottleService, schedulerService, tasksClient, streamingPublisher)
+		// CONFENGE enroll uses campaign + contact services (execution plane).
+		if confengeServiceForHandler != nil {
+			confengeServiceForHandler.WireExecution(campaignService, contactService)
+		}
 		emailSendService = emailsend.NewService(taskRepository, emailRepostory, userRepostory, schedulerService, tasksClient, featureGateService, dailyThrottleService)
 		composeService = compose.NewService(emailRepostory, repository.NewComposeRepository(primaryDB))
 		// uniboxService is constructed here (rather than alongside the

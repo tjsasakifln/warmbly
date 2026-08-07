@@ -13,6 +13,7 @@ import (
 	"github.com/getsentry/sentry-go"
 	"github.com/warmbly/warmbly/internal/app/advanced"
 	"github.com/warmbly/warmbly/internal/app/cipher"
+	"github.com/warmbly/warmbly/internal/app/confenge"
 	jobs "github.com/warmbly/warmbly/internal/app/consumer"
 	"github.com/warmbly/warmbly/internal/app/credits"
 	"github.com/warmbly/warmbly/internal/app/creditwatch"
@@ -354,6 +355,13 @@ func main() {
 
 	eventsPublisher := events.NewPublisher(consumerBus, s3Client, consumerCodec, cipherService)
 
+	// CONFENGE outcome sink (feature-flagged; no-op when disabled).
+	confengeCfgC := confenge.LoadConfig()
+	var confengeSink confenge.OutcomeSink
+	if confengeCfgC.Enabled {
+		confengeSink = confenge.NewService(confengeCfgC, repository.NewOutreachRepository(primaryDB.Pool), nil).(confenge.OutcomeSink)
+	}
+
 	// JobsService
 	jobsService := &jobs.JobsService{
 		Bus:                         consumerBus,
@@ -372,6 +380,7 @@ func main() {
 		Publisher:                   eventsPublisher,
 		StreamingPublisher:          streamingPublisher,
 		AdvancedService:             advancedService,
+		ConfengeOutcomes:            confengeSink,
 		Cache:                       redisCache,
 		AdminRepo:                   repository.NewAdminRepository(primaryDB.Pool),
 		AssignmentService:           workerAssignmentSvc,

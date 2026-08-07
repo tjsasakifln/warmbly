@@ -45,6 +45,9 @@ type Service interface {
 	ReviewDraft(ctx context.Context, orgID, userID, draftID uuid.UUID, action string, edit *DraftEdit) (*models.OutreachDraft, *errx.Error)
 	SetAI(p generation.Provider)
 	EnqueueOutcome(ctx context.Context, orgID uuid.UUID, ev models.OutreachOutcome) *errx.Error
+	WireExecution(campaigns CampaignAPI, contacts ContactAPI)
+	BootstrapCampaign(ctx context.Context, orgID, userID uuid.UUID) (*models.Campaign, *errx.Error)
+	EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.UUID) (*models.OutreachDraft, *errx.Error)
 }
 
 // ImportOptions controls dry-run, idempotency, and source tracking.
@@ -55,11 +58,13 @@ type ImportOptions struct {
 }
 
 type service struct {
-	cfg   Config
-	repo  repository.OutreachRepository
-	audit AuditLogger
-	fetch *FeedFetcher
-	ai    generation.Provider
+	cfg       Config
+	repo      repository.OutreachRepository
+	audit     AuditLogger
+	fetch     *FeedFetcher
+	ai        generation.Provider
+	campaigns CampaignAPI
+	contacts  ContactAPI
 }
 
 // NewService wires confenge outreach. When cfg.Enabled is false, mutators return 404-style disabled errors.
@@ -212,7 +217,28 @@ func (s *service) ImportFromBytes(ctx context.Context, orgID uuid.UUID, userID *
 			map[string]string{"source_system": feed.Source.System, "source_run_id": feed.Source.RunID},
 		)
 	}
+	// One LEAD_IMPORTED summary outcome per successful apply (not dry-run).
+	if !opts.DryRun && counts.LeadsProcessed > 0 {
+		_ = s.EnqueueOutcome(ctx, orgID, models.OutreachOutcome{
+			IdempotencyKey: fmt.Sprintf("lead_imported:%s:%s", orgID, payloadHash),
+			SourceLeadID:   feed.Source.RunID,
+			EventType:      OutcomeLeadImported,
+			OccurredAt:     time.Now().UTC(),
+			Payload: mustJSON(map[string]any{
+				"creates": counts.Creates, "updates": counts.Updates,
+				"leads_processed": counts.LeadsProcessed, "payload_hash": payloadHash,
+			}),
+		})
+	}
 	return run, nil
+}
+
+func mustJSON(v any) []byte {
+	b, _ := json.Marshal(v)
+	if b == nil {
+		return []byte("{}")
+	}
+	return b
 }
 
 func (s *service) applyFeed(ctx context.Context, orgID uuid.UUID, run *models.OutreachImportRun, feed *Feed, dryRun bool) (models.OutreachImportCounts, []models.OutreachImportError, []string) {

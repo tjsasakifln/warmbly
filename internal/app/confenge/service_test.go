@@ -167,7 +167,7 @@ func (m *memRepo) UpsertCandidate(ctx context.Context, c *models.OutreachContact
 	}
 	list := m.cands[c.AccountID]
 	for i, existing := range list {
-		if existing.SourceContactID != "" && existing.SourceContactID == c.SourceContactID {
+		if existing.ID == c.ID || (existing.SourceContactID != "" && existing.SourceContactID == c.SourceContactID) {
 			if existing.DoNotContact {
 				c.DoNotContact = true
 			}
@@ -182,6 +182,16 @@ func (m *memRepo) UpsertCandidate(ctx context.Context, c *models.OutreachContact
 }
 
 func (m *memRepo) GetCandidate(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachContactCandidate, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, list := range m.cands {
+		for i := range list {
+			if list[i].ID == id && list[i].OrganizationID == orgID {
+				cp := list[i]
+				return &cp, nil
+			}
+		}
+	}
 	return nil, nil
 }
 
@@ -245,6 +255,9 @@ func (m *memRepo) MarkOutcomeAttempt(ctx context.Context, orgID, id uuid.UUID, a
 }
 func (m *memRepo) GetOutcomeByIdempotency(ctx context.Context, orgID uuid.UUID, key string) (*models.OutreachOutcome, error) {
 	return nil, nil
+}
+func (m *memRepo) FindCandidateByEmail(ctx context.Context, orgID uuid.UUID, email string) (*models.OutreachContactCandidate, *models.OutreachAccount, error) {
+	return nil, nil, nil
 }
 
 func testSvc(repo repository.OutreachRepository) Service {
