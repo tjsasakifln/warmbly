@@ -105,34 +105,13 @@ func (s *service) BootstrapCampaign(ctx context.Context, orgID, userID uuid.UUID
 	return created, nil
 }
 
+// defaultCadenceSteps is a single placeholder step for the Warmbly campaign shell.
+// CONFENGE follow-ups authority is outreach_touchpoints (per-touch human approval).
 func defaultCadenceSteps() []models.CreateSequenceInput {
-	w3, w4, w7 := 3, 4, 7
-	return []models.CreateSequenceInput{
-		{
-			Name:      "Email inicial",
-			Subject:   "{{.Company}} — conversa objetiva",
-			BodyPlain: "Ola{{if .FirstName}} {{.FirstName}}{{end}},\n\nSou da CONFENGE. Acompanhei publicacoes recentes da {{.Company}} e gostaria de entender se faz sentido uma conversa curta sobre aditivos e controle contratual.\n\nPosso enviar um checklist de uma pagina?\n\nAbraço,\nTiago Sasaki\nCONFENGE",
-			WaitAfter: &w3,
-		},
-		{
-			Name:      "Follow-up D+3",
-			Subject:   "Re: {{.Company}}",
-			BodyPlain: "Reenvio com uma pergunta mais objetiva: quem na equipe acompanha aditivos e reajustes?\n\nSe fizer sentido, respondo em poucos minutos.",
-			WaitAfter: &w4,
-		},
-		{
-			Name:      "Follow-up D+7",
-			Subject:   "Re: {{.Company}}",
-			BodyPlain: "Se nao for com voce, pode me indicar a pessoa certa de contratos ou engenharia?\n\nObrigado.",
-			WaitAfter: &w7,
-		},
-		{
-			Name:      "Encerramento D+14",
-			Subject:   "Re: {{.Company}}",
-			BodyPlain: "Encerro por aqui para nao ocupar sua caixa. Se fizer sentido no futuro, e so responder este fio.\n\nAbraço.",
-			WaitAfter: nil,
-		},
-	}
+	return []models.CreateSequenceInput{{
+		Name: "CONFENGE touch (human-approved)", Subject: "{{.Company}}",
+		BodyPlain: "<!-- body injected per approved touchpoint -->", WaitAfter: nil,
+	}}
 }
 
 // EnrollDraft promotes an APPROVED, validated draft into a Warmbly contact
@@ -157,6 +136,17 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 	}
 	if d.Status != models.OutreachDraftApproved {
 		return nil, errx.New(errx.BadRequest, "draft must be APPROVED before enrollment")
+	}
+	// Fail-closed: every CONFENGE email outbound needs a transport-valid touchpoint.
+	tpGate, xerr := s.requireTouchTransport(ctx, orgID, draftID)
+	if xerr != nil {
+		return nil, xerr
+	}
+	// Ship only the approved touchpoint payload (ignore diverged draft fields).
+	d.Subject = tpGate.Subject
+	d.BodyText = tpGate.BodyText
+	if tpGate.Recipient != "" {
+		d.RecipientEmail = tpGate.Recipient
 	}
 
 	acc, err := s.repo.GetAccount(ctx, orgID, d.AccountID)

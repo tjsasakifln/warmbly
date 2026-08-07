@@ -14,26 +14,24 @@ import (
 
 // memRepo is an in-memory OutreachRepository for unit tests of ImportFromBytes.
 type memRepo struct {
-	mu       sync.Mutex
-	runs     map[uuid.UUID]*models.OutreachImportRun
-	byIdem   map[string]*models.OutreachImportRun
-	accounts map[string]*models.OutreachAccount // org|cnpj
-	byID     map[uuid.UUID]*models.OutreachAccount
-	cands    map[uuid.UUID][]models.OutreachContactCandidate
-	evidence map[uuid.UUID][]models.OutreachEvidence
-	drafts   map[uuid.UUID]*models.OutreachDraft
-	outcomes []models.OutreachOutcome
+	mu          sync.Mutex
+	runs        map[uuid.UUID]*models.OutreachImportRun
+	byIdem      map[string]*models.OutreachImportRun
+	accounts    map[string]*models.OutreachAccount
+	byID        map[uuid.UUID]*models.OutreachAccount
+	cands       map[uuid.UUID][]models.OutreachContactCandidate
+	evidence    map[uuid.UUID][]models.OutreachEvidence
+	drafts      map[uuid.UUID]*models.OutreachDraft
+	outcomes    []models.OutreachOutcome
+	touchpoints map[uuid.UUID]*models.OutreachTouchpoint
 }
 
 func newMemRepo() *memRepo {
 	return &memRepo{
-		runs:     map[uuid.UUID]*models.OutreachImportRun{},
-		byIdem:   map[string]*models.OutreachImportRun{},
-		accounts: map[string]*models.OutreachAccount{},
-		byID:     map[uuid.UUID]*models.OutreachAccount{},
-		cands:    map[uuid.UUID][]models.OutreachContactCandidate{},
-		evidence: map[uuid.UUID][]models.OutreachEvidence{},
-		drafts:   map[uuid.UUID]*models.OutreachDraft{},
+		runs: map[uuid.UUID]*models.OutreachImportRun{}, byIdem: map[string]*models.OutreachImportRun{},
+		accounts: map[string]*models.OutreachAccount{}, byID: map[uuid.UUID]*models.OutreachAccount{},
+		cands: map[uuid.UUID][]models.OutreachContactCandidate{}, evidence: map[uuid.UUID][]models.OutreachEvidence{},
+		drafts: map[uuid.UUID]*models.OutreachDraft{}, touchpoints: map[uuid.UUID]*models.OutreachTouchpoint{},
 	}
 }
 
@@ -313,6 +311,153 @@ func (m *memRepo) FindCandidateByPhone(ctx context.Context, orgID uuid.UUID, pho
 		}
 	}
 	return nil, nil, nil
+}
+
+func (m *memRepo) InsertTouchpoint(ctx context.Context, t *models.OutreachTouchpoint) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if t.ID == uuid.Nil {
+		t.ID = uuid.New()
+	}
+	now := time.Now().UTC()
+	if t.CreatedAt.IsZero() {
+		t.CreatedAt = now
+	}
+	t.UpdatedAt = now
+	cp := *t
+	m.touchpoints[t.ID] = &cp
+	return nil
+}
+func (m *memRepo) UpdateTouchpoint(ctx context.Context, t *models.OutreachTouchpoint) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.touchpoints[t.ID]; !ok {
+		return context.Canceled
+	}
+	t.UpdatedAt = time.Now().UTC()
+	cp := *t
+	m.touchpoints[t.ID] = &cp
+	return nil
+}
+func (m *memRepo) GetTouchpoint(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachTouchpoint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t := m.touchpoints[id]
+	if t == nil || t.OrganizationID != orgID {
+		return nil, nil
+	}
+	cp := *t
+	return &cp, nil
+}
+func (m *memRepo) GetTouchpointByIdempotency(ctx context.Context, orgID uuid.UUID, key string) (*models.OutreachTouchpoint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.touchpoints {
+		if t.OrganizationID == orgID && t.IdempotencyKey == key {
+			cp := *t
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
+func (m *memRepo) GetTouchpointByDraft(ctx context.Context, orgID, draftID uuid.UUID) (*models.OutreachTouchpoint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.touchpoints {
+		if t.OrganizationID == orgID && t.DraftID != nil && *t.DraftID == draftID {
+			cp := *t
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
+func (m *memRepo) ListTouchpoints(ctx context.Context, orgID, accountID uuid.UUID, state string, limit, offset int) ([]models.OutreachTouchpoint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []models.OutreachTouchpoint
+	for _, t := range m.touchpoints {
+		if t.OrganizationID != orgID || t.AccountID != accountID {
+			continue
+		}
+		if state != "" && t.State != state {
+			continue
+		}
+		out = append(out, *t)
+	}
+	for i := 0; i < len(out); i++ {
+		for j := i + 1; j < len(out); j++ {
+			if out[j].Ordinal < out[i].Ordinal {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	return out, nil
+}
+func (m *memRepo) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, limit, offset int) ([]models.OutreachTouchpoint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	review := map[string]bool{models.TouchpointDue: true, models.TouchpointDrafted: true, models.TouchpointNeedsReview: true, models.TouchpointApproved: true}
+	var out []models.OutreachTouchpoint
+	for _, t := range m.touchpoints {
+		if t.OrganizationID == orgID && review[t.State] {
+			out = append(out, *t)
+		}
+	}
+	return out, nil
+}
+func (m *memRepo) CASQueueTouchpoint(ctx context.Context, orgID, id uuid.UUID, expectedContentHash string) (*models.OutreachTouchpoint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t := m.touchpoints[id]
+	if t == nil || t.OrganizationID != orgID || t.State != models.TouchpointApproved {
+		return nil, nil
+	}
+	if t.ContentHash != expectedContentHash || t.ApprovedContentHash != t.ContentHash || t.ApprovedBy == nil {
+		return nil, nil
+	}
+	now := time.Now().UTC()
+	t.State = models.TouchpointQueued
+	t.QueuedAt = &now
+	t.UpdatedAt = now
+	cp := *t
+	return &cp, nil
+}
+func (m *memRepo) ListDuePlannedTouchpoints(ctx context.Context, orgID uuid.UUID, now time.Time, limit int) ([]models.OutreachTouchpoint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	var out []models.OutreachTouchpoint
+	for _, t := range m.touchpoints {
+		if t.OrganizationID != orgID || t.State != models.TouchpointPlanned {
+			continue
+		}
+		if !t.DueAt.After(now) {
+			out = append(out, *t)
+		}
+	}
+	return out, nil
+}
+
+func (m *memRepo) CancelOpenTouchpoints(ctx context.Context, orgID, accountID uuid.UUID, terminalState, stopReason string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	now := time.Now().UTC()
+	for _, t := range m.touchpoints {
+		if t.OrganizationID != orgID || t.AccountID != accountID || !models.TouchpointOpenStates[t.State] {
+			continue
+		}
+		t.State = terminalState
+		t.StopReason = stopReason
+		t.ApprovedBy = nil
+		t.ApprovedAt = nil
+		t.ApprovedContentHash = ""
+		t.UpdatedAt = now
+		n++
+	}
+	return n, nil
 }
 
 func testSvc(repo repository.OutreachRepository) Service {

@@ -389,3 +389,75 @@ type OutreachOutcome struct {
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
 }
+
+// Touchpoint states (per-message human approval authority).
+const (
+	TouchpointPlanned     = "PLANNED"
+	TouchpointDue         = "DUE"
+	TouchpointDrafted     = "DRAFTED"
+	TouchpointNeedsReview = "NEEDS_REVIEW"
+	TouchpointApproved    = "APPROVED"
+	TouchpointQueued      = "QUEUED"
+	TouchpointSent        = "SENT"
+	TouchpointSkipped     = "SKIPPED"
+	TouchpointRejected    = "REJECTED"
+	TouchpointReplied     = "REPLIED"
+	TouchpointDNC         = "DNC"
+	TouchpointBounced     = "BOUNCED"
+	TouchpointCancelled   = "CANCELLED"
+	TouchpointFailed      = "FAILED"
+)
+
+const (
+	TouchpointPurposeInitial  = "INITIAL"
+	TouchpointPurposeFollowUp = "FOLLOW_UP"
+	TouchpointPurposeClose    = "CLOSE"
+	CadencePolicyVersionV1    = "confenge.cadence.v1"
+)
+
+var TouchpointOpenStates = map[string]bool{
+	TouchpointPlanned: true, TouchpointDue: true, TouchpointDrafted: true,
+	TouchpointNeedsReview: true, TouchpointApproved: true, TouchpointQueued: true,
+}
+
+var TouchpointTerminalStates = map[string]bool{
+	TouchpointSent: true, TouchpointSkipped: true, TouchpointRejected: true,
+	TouchpointReplied: true, TouchpointDNC: true, TouchpointBounced: true,
+	TouchpointCancelled: true, TouchpointFailed: true,
+}
+
+// OutreachTouchpoint is one human-gated message in a CONFENGE cadence.
+type OutreachTouchpoint struct {
+	ID                   uuid.UUID        `json:"id"`
+	OrganizationID       uuid.UUID        `json:"organization_id"`
+	AccountID            uuid.UUID        `json:"account_id"`
+	ContactCandidateID   *uuid.UUID       `json:"contact_candidate_id,omitempty"`
+	Ordinal              int              `json:"ordinal"`
+	CadenceStep          string           `json:"cadence_step"`
+	Channel              string           `json:"channel"`
+	Purpose              string           `json:"purpose"`
+	DueAt                time.Time        `json:"due_at"`
+	State                string           `json:"state"`
+	DraftID              *uuid.UUID       `json:"draft_id,omitempty"`
+	Recipient            string           `json:"recipient"`
+	Subject              string           `json:"subject"`
+	BodyText             string           `json:"body_text"`
+	ContentHash          string           `json:"content_hash"`
+	ApprovedContentHash  string           `json:"approved_content_hash"`
+	ApprovedBy           *uuid.UUID       `json:"approved_by,omitempty"`
+	ApprovedAt           *time.Time       `json:"approved_at,omitempty"`
+	QueuedAt             *time.Time       `json:"queued_at,omitempty"`
+	SentAt               *time.Time       `json:"sent_at,omitempty"`
+	ProviderMessageID    string           `json:"provider_message_id,omitempty"`
+	StopReason           string           `json:"stop_reason,omitempty"`
+	PreviousTouchpointID *uuid.UUID       `json:"previous_touchpoint_id,omitempty"`
+	IdempotencyKey       string           `json:"idempotency_key"`
+	PolicyVersion        string           `json:"policy_version"`
+	ServiceCode          string           `json:"service_code"`
+	FactUsed             string           `json:"fact_used"`
+	EvidenceIDs          []string         `json:"evidence_ids,omitempty"`
+	CreatedAt            time.Time        `json:"created_at"`
+	UpdatedAt            time.Time        `json:"updated_at"`
+	Account              *OutreachAccount `json:"account,omitempty"`
+	Draft                *OutreachDraft   `json:"draft,omitempty"`
+}

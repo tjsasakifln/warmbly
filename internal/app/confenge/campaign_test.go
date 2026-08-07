@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -26,8 +27,11 @@ func (m *mockCampaigns) Create(ctx context.Context, userID string, orgID *uuid.U
 	if data.Timezone == nil || *data.Timezone != "America/Sao_Paulo" {
 		return nil, errx.New(errx.BadRequest, "timezone")
 	}
-	if len(data.Sequences) != 4 {
-		return nil, errx.New(errx.BadRequest, "want 4 cadence steps")
+	if len(data.Sequences) != 1 {
+		return nil, errx.New(errx.BadRequest, "want 1 campaign shell step")
+	}
+	if data.Sequences[0].WaitAfter != nil {
+		return nil, errx.New(errx.BadRequest, "no wait_after")
 	}
 	c := &models.Campaign{ID: uuid.New(), Name: data.Name, Status: "draft"}
 	m.created = c
@@ -137,6 +141,7 @@ func TestEnrollApprovedHappyPath(t *testing.T) {
 	contacts := &mockContacts{}
 	svc.WireExecution(&mockCampaigns{}, contacts)
 	org := uuid.New()
+	user := uuid.New()
 	accID := uuid.New()
 	acc := &models.OutreachAccount{
 		ID: accID, OrganizationID: org, CNPJ14: "11222333000181",
@@ -161,7 +166,27 @@ func TestEnrollApprovedHappyPath(t *testing.T) {
 	d.ValidationOK = &ok
 	_ = r.UpsertDraft(context.Background(), d)
 
-	out, xerr := svc.EnrollDraft(context.Background(), org, uuid.New(), d.ID)
+	// Draft-only APPROVED must not enroll (fail-closed without touchpoint).
+	if _, xerr := svc.EnrollDraft(context.Background(), org, user, d.ID); xerr == nil {
+		t.Fatal("draft-only enroll must be blocked without touchpoint")
+	}
+
+	// Linked transport-valid touchpoint allows enroll.
+	now := time.Now().UTC()
+	tp := &models.OutreachTouchpoint{
+		OrganizationID: org, AccountID: accID, Ordinal: 1,
+		Channel: models.OutreachChannelEmail, Purpose: models.TouchpointPurposeInitial,
+		State: models.TouchpointNeedsReview, Recipient: "ana@example.com",
+		Subject: d.Subject, BodyText: d.BodyText, DraftID: &d.ID, IdempotencyKey: "enroll-tp",
+	}
+	RecomputeContentHash(tp)
+	if err := ApplyHumanApproval(tp, user, now); err != nil {
+		t.Fatal(err)
+	}
+	// CAS-queue style state used after QueueTouchpoint; transport allows APPROVED or QUEUED.
+	_ = r.InsertTouchpoint(context.Background(), tp)
+
+	out, xerr := svc.EnrollDraft(context.Background(), org, user, d.ID)
 	if xerr != nil {
 		t.Fatal(xerr.Message)
 	}
@@ -175,7 +200,7 @@ func TestEnrollApprovedHappyPath(t *testing.T) {
 		t.Fatalf("contact add: %+v", contacts.added)
 	}
 	// idempotent re-enroll
-	out2, xerr := svc.EnrollDraft(context.Background(), org, uuid.New(), d.ID)
+	out2, xerr := svc.EnrollDraft(context.Background(), org, user, d.ID)
 	if xerr != nil {
 		t.Fatal(xerr)
 	}

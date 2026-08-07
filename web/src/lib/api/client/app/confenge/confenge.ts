@@ -4,6 +4,7 @@ import type {
     ConfengeStatus,
     ConfengeSummary,
     ConfengeDispatchStatus,
+    ConfengeTouchpoint,
 } from "@/lib/api/models/app/confenge/Confenge";
 import Request from "../../Request";
 
@@ -108,6 +109,51 @@ export async function bootstrapConfengeCampaign(): Promise<{ id: string; name: s
         data: {},
     });
     return res.data;
+}
+
+export async function listConfengeReviewTouchpoints(): Promise<ConfengeTouchpoint[]> {
+  const res = await Request<{ data: ConfengeTouchpoint[] }>({ method: "GET", url: "/confenge/touchpoints/review?limit=100", authorization: true });
+  return res.data ?? [];
+}
+
+export async function planConfengeCadence(accountId: string, channel?: string): Promise<ConfengeTouchpoint[]> {
+  const res = await Request<{ data: ConfengeTouchpoint[] }>({ method: "POST", url: `/confenge/accounts/${accountId}/plan`, authorization: true, data: { channel } });
+  return res.data ?? [];
+}
+
+export async function generateConfengeTouchpoint(id: string): Promise<ConfengeTouchpoint> {
+  const res = await Request<{ data: ConfengeTouchpoint }>({ method: "POST", url: `/confenge/touchpoints/${id}/generate`, authorization: true, data: {} });
+  return res.data;
+}
+
+export async function editConfengeTouchpoint(id: string, body: { subject?: string; body_text?: string; recipient?: string }): Promise<ConfengeTouchpoint> {
+  const res = await Request<{ data: ConfengeTouchpoint }>({ method: "POST", url: `/confenge/touchpoints/${id}/edit`, authorization: true, data: body });
+  return res.data;
+}
+
+export async function approveConfengeTouchpoint(id: string): Promise<ConfengeTouchpoint> {
+  const res = await Request<{ data: ConfengeTouchpoint }>({ method: "POST", url: `/confenge/touchpoints/${id}/approve`, authorization: true, data: {} });
+  return res.data;
+}
+
+export async function queueConfengeTouchpoint(id: string): Promise<ConfengeTouchpoint> {
+  const res = await Request<{ data: ConfengeTouchpoint }>({ method: "POST", url: `/confenge/touchpoints/${id}/queue`, authorization: true, data: {} });
+  return res.data;
+}
+
+export async function decideConfengeTouchpoint(id: string, action: "skip" | "reject"): Promise<ConfengeTouchpoint> {
+  const res = await Request<{ data: ConfengeTouchpoint }>({ method: "POST", url: `/confenge/touchpoints/${id}/decision`, authorization: true, data: { action } });
+  return res.data;
+}
+
+export async function dncConfengeAccount(accountId: string): Promise<{ cancelled: number }> {
+  const res = await Request<{ data: { cancelled: number } }>({ method: "POST", url: `/confenge/accounts/${accountId}/dnc`, authorization: true, data: {} });
+  return res.data;
+}
+
+export async function listConfengeAccountTouchpoints(accountId: string): Promise<ConfengeTouchpoint[]> {
+  const res = await Request<{ data: ConfengeTouchpoint[] }>({ method: "GET", url: `/confenge/accounts/${accountId}/touchpoints`, authorization: true });
+  return res.data ?? [];
 }
 
 export async function getConfengeDispatchStatus(): Promise<ConfengeDispatchStatus> {

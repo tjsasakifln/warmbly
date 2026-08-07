@@ -223,6 +223,11 @@ func (s *service) ReviewDraft(ctx context.Context, orgID, userID, draftID uuid.U
 			d.BodyText = SanitizeText(*edit.BodyText, 8000)
 		}
 		d.HumanEdited = true
+		// Editing a draft invalidates any linked touchpoint approval.
+		if linked, _ := s.repo.GetTouchpointByDraft(ctx, orgID, draftID); linked != nil {
+			ApplyContentMutation(linked, linked.Channel, linked.Recipient, d.Subject, d.BodyText)
+			_ = s.repo.UpdateTouchpoint(ctx, linked)
+		}
 		// Re-validate after edit
 		acc, _ := s.repo.GetAccount(ctx, orgID, d.AccountID)
 		var cand *models.OutreachContactCandidate

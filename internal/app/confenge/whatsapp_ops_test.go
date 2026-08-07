@@ -159,6 +159,24 @@ func TestDecideChannelGenerateAndSend(t *testing.T) {
 	draft.Status = models.OutreachDraftApproved
 	_ = repo.UpsertDraft(context.Background(), draft)
 
+	// Draft-only APPROVED must not send.
+	if _, xerr := svc.SendApprovedWhatsApp(context.Background(), org, user, draft.ID); xerr == nil {
+		t.Fatal("draft-only WhatsApp send must be blocked without touchpoint")
+	}
+
+	// Per-touch human approval gate.
+	tp := &models.OutreachTouchpoint{
+		OrganizationID: org, AccountID: accID, Ordinal: 1,
+		Channel: models.OutreachChannelWhatsApp, Purpose: models.TouchpointPurposeInitial,
+		State: models.TouchpointNeedsReview, Recipient: draft.RecipientPhoneE164,
+		BodyText: draft.BodyText, DraftID: &draft.ID, IdempotencyKey: "wa-tp-1",
+	}
+	RecomputeContentHash(tp)
+	if err := ApplyHumanApproval(tp, user, now); err != nil {
+		t.Fatal(err)
+	}
+	_ = repo.InsertTouchpoint(context.Background(), tp)
+
 	sent, xerr := svc.SendApprovedWhatsApp(context.Background(), org, user, draft.ID)
 	if xerr != nil {
 		t.Fatalf("send: %v", xerr)
