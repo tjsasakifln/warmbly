@@ -85,7 +85,8 @@ go run ./cmd/confenge resume-sending
 - `feed_age`
 - `outcome_loop`
 - `ai` ready / fallback_template
-- `governor_cap` (default 10)
+- `governor_cap` (hourly global cap, default 10/h)
+- `campaign_daily_limit` (campaign shell ceiling, default 100)
 - `queue_count`
 - `kill_switch` / `sending_allowed`
 

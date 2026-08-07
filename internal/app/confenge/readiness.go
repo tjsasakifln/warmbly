@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
 	"github.com/warmbly/warmbly/internal/app/whatsapp"
 	"github.com/warmbly/warmbly/internal/models"
 )
@@ -23,22 +24,28 @@ const (
 
 // Readiness is the discrete operator status panel payload.
 type Readiness struct {
-	Email            string `json:"email"`
-	WhatsApp         string `json:"whatsapp"`
-	FeedConfigured   bool   `json:"feed_configured"`
-	FeedAgeSeconds   *int64 `json:"feed_age_seconds,omitempty"`
-	FeedAgeLabel     string `json:"feed_age"`
-	OutcomeLoop      string `json:"outcome_loop"`
-	AI               string `json:"ai"`
-	GovernorCap      int    `json:"governor_cap"`
-	QueueCount       int    `json:"queue_count"`
-	KillSwitch       bool   `json:"kill_switch"`
-	SendingAllowed   bool   `json:"sending_allowed"`
-	OutreachEnabled  bool   `json:"outreach_enabled"`
-	RequireHuman     bool   `json:"require_human_approval"`
-	AutoSendEnabled  bool   `json:"auto_send_enabled"`
-	WhatsAppEnabled  bool   `json:"whatsapp_enabled"`
-	WhatsAppProvider string `json:"whatsapp_provider,omitempty"`
+	Email          string `json:"email"`
+	WhatsApp       string `json:"whatsapp"`
+	FeedConfigured bool   `json:"feed_configured"`
+	FeedAgeSeconds *int64 `json:"feed_age_seconds,omitempty"`
+	FeedAgeLabel   string `json:"feed_age"`
+	OutcomeLoop    string `json:"outcome_loop"`
+	AI             string `json:"ai"`
+	// GovernorCap is the global rolling-hour outbound cap (email+WhatsApp).
+	// Primary CONFENGE pacing control (~10/h). Not the campaign daily limit.
+	GovernorCap int `json:"governor_cap"`
+	// CampaignDailyLimit is the campaign-shell daily ceiling (secondary).
+	CampaignDailyLimit int `json:"campaign_daily_limit"`
+	// EffectiveDailyCap is min(campaign daily, hourly*window hours) when computable.
+	EffectiveDailyCap int    `json:"effective_daily_cap"`
+	QueueCount        int    `json:"queue_count"`
+	KillSwitch        bool   `json:"kill_switch"`
+	SendingAllowed    bool   `json:"sending_allowed"`
+	OutreachEnabled   bool   `json:"outreach_enabled"`
+	RequireHuman      bool   `json:"require_human_approval"`
+	AutoSendEnabled   bool   `json:"auto_send_enabled"`
+	WhatsAppEnabled   bool   `json:"whatsapp_enabled"`
+	WhatsAppProvider  string `json:"whatsapp_provider,omitempty"`
 }
 
 // ReadinessInputs are optional live signals for BuildReadiness.
@@ -64,16 +71,37 @@ func BuildReadiness(cfg Config, in ReadinessInputs) Readiness {
 		waCfg = *in.WA
 	}
 
+	dcfg := dispatch.LoadConfig()
+	hourly := dcfg.SendsPerHour
+	if hourly <= 0 {
+		hourly = dispatch.DefaultSendsPerHour
+	}
+	windowHours := SendWindowHours(dcfg.WindowStart, dcfg.WindowEnd)
+	if windowHours <= 0 {
+		windowHours = 9 // 09:00–18:00 default
+	}
+	daily := cfg.DefaultDailyLimit
+	if daily < 1 {
+		daily = DefaultCampaignDailyLimit
+	}
+	hourlyDay := hourly * windowHours
+	effective := daily
+	if hourlyDay > 0 && hourlyDay < effective {
+		effective = hourlyDay
+	}
+
 	r := Readiness{
-		OutreachEnabled:  cfg.Enabled,
-		RequireHuman:     cfg.RequireHumanApproval,
-		AutoSendEnabled:  cfg.AutoSendEnabled,
-		GovernorCap:      cfg.DefaultDailyLimit,
-		FeedConfigured:   strings.TrimSpace(cfg.FeedURL) != "",
-		KillSwitch:       !cfg.SendingAllowed(),
-		SendingAllowed:   cfg.SendingAllowed(),
-		WhatsAppEnabled:  cfg.WhatsAppEnabled || waCfg.Enabled,
-		WhatsAppProvider: waCfg.Provider,
+		OutreachEnabled:    cfg.Enabled,
+		RequireHuman:       cfg.RequireHumanApproval,
+		AutoSendEnabled:    cfg.AutoSendEnabled,
+		GovernorCap:        hourly,
+		CampaignDailyLimit: daily,
+		EffectiveDailyCap:  effective,
+		FeedConfigured:     strings.TrimSpace(cfg.FeedURL) != "",
+		KillSwitch:         !cfg.SendingAllowed(),
+		SendingAllowed:     cfg.SendingAllowed(),
+		WhatsAppEnabled:    cfg.WhatsAppEnabled || waCfg.Enabled,
+		WhatsAppProvider:   waCfg.Provider,
 	}
 
 	if in.EmailReady {

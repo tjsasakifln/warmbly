@@ -41,7 +41,7 @@ Warmbly **must not**:
 | `CONFENGE_EXTRA_CLI_FEED_URL` | empty | HTTPS or `file://` feed |
 | `CONFENGE_EXTRA_CLI_FEED_TOKEN` | empty | Optional Bearer for HTTPS |
 | `CONFENGE_EXTRA_CLI_ALLOWED_HOSTS` | empty | Required in prod when feed URL set |
-| `CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT` | `10` | Future campaign bootstrap |
+| `CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT` | `100` | Campaign-shell daily ceiling (secondary; primary pace is CONFENGE_GLOBAL_SENDS_PER_HOUR=10) |
 | `CONFENGE_MAX_INITIAL_EMAIL_WORDS` | `120` | Future copy validators |
 | `CONFENGE_MAX_FEED_PAYLOAD_BYTES` | `33554432` | Import payload cap |
 

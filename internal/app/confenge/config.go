@@ -21,6 +21,11 @@ const (
 	EnvAllowedHosts      = "CONFENGE_EXTRA_CLI_ALLOWED_HOSTS"
 	EnvOutcomeWebhookURL = "CONFENGE_OUTCOME_WEBHOOK_URL"
 	EnvOutcomeWebhookSec = "CONFENGE_OUTCOME_WEBHOOK_SECRET"
+	// EnvDefaultDailyLimit is the Warmbly *campaign shell* daily cap used when
+	// bootstrapping the CONFENGE campaign. It is NOT the primary outbound
+	// governor. The global ~10 outbound/hour cap lives in
+	// CONFENGE_GLOBAL_SENDS_PER_HOUR (dispatch package). Keep this daily value
+	// high enough that it does not silently collapse capacity to ~10/day.
 	EnvDefaultDailyLimit = "CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT"
 	EnvMaxInitialWords   = "CONFENGE_MAX_INITIAL_EMAIL_WORDS"
 	EnvRequireHuman      = "CONFENGE_REQUIRE_HUMAN_APPROVAL"
@@ -32,8 +37,13 @@ const (
 )
 
 // Defaults for conservative cold outreach.
+//
+// Primary pacing: dispatch.DefaultSendsPerHour = 10 (rolling hour, email+WA).
+// Campaign daily limit is a secondary mailbox/campaign safety ceiling only.
+// Default 100 allows a full workday of ~10/h (09:00–18:00 ≈ 90 slots) without
+// the daily cap becoming the accidental binding constraint.
 const (
-	DefaultCampaignDailyLimit = 10
+	DefaultCampaignDailyLimit = 100
 	DefaultMaxInitialWords    = 120
 	DefaultMaxPayloadBytes    = 32 << 20 // 32 MiB
 	DefaultCrossChannelHours  = 24
@@ -59,6 +69,42 @@ type Config struct {
 	MaxWhatsAppWords  int
 	// SendingPaused is the env-based kill switch (see also FileKillSwitchActive).
 	SendingPaused bool
+}
+
+// SendWindowHours returns whole hours in [start, end) for HH:MM window strings.
+// Returns 0 when parse fails or the window is empty/inverted.
+func SendWindowHours(start, end string) int {
+	sh, sm, ok1 := parseHHMM(start)
+	eh, em, ok2 := parseHHMM(end)
+	if !ok1 || !ok2 {
+		return 0
+	}
+	startMin := sh*60 + sm
+	endMin := eh*60 + em
+	if endMin <= startMin {
+		return 0
+	}
+	// Floor to whole hours of capacity (partial hour still counts as available
+	// pacing slots under the hourly governor, but we keep a conservative int).
+	return (endMin - startMin) / 60
+}
+
+func parseHHMM(s string) (h, m int, ok bool) {
+	s = strings.TrimSpace(s)
+	if len(s) < 4 {
+		return 0, 0, false
+	}
+	// Accept H:MM or HH:MM
+	parts := strings.Split(s, ":")
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	hh, err1 := strconv.Atoi(parts[0])
+	mm, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil || hh < 0 || hh > 23 || mm < 0 || mm > 59 {
+		return 0, 0, false
+	}
+	return hh, mm, true
 }
 
 // LoadConfig reads CONFENGE_* env vars. Safe defaults keep the feature off.

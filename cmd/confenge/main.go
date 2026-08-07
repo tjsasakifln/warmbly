@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/warmbly/warmbly/internal/app/confenge"
+	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/repository"
 	"github.com/warmbly/warmbly/internal/seed"
@@ -194,7 +195,8 @@ func cmdBootstrap(args []string) int {
 	fmt.Println("  outreach_enabled: ", cfg.Enabled)
 	fmt.Println("  human_approval:   ", cfg.RequireHumanApproval)
 	fmt.Println("  auto_send:        ", cfg.AutoSendEnabled)
-	fmt.Println("  governor_cap:     ", cfg.DefaultDailyLimit)
+	fmt.Println("  governor_hourly:  ", dispatch.LoadConfig().SendsPerHour)
+	fmt.Println("  campaign_daily:   ", cfg.DefaultDailyLimit)
 	fmt.Println("  feed_url:         ", cfg.FeedURL)
 	fmt.Println("  active_mailboxes: ", mailboxCount)
 	fmt.Println("  kill_switch:      ", !cfg.SendingAllowed())

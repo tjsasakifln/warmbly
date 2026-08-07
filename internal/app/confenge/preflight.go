@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
 	"github.com/warmbly/warmbly/internal/app/whatsapp"
 	"github.com/warmbly/warmbly/internal/models"
 )
@@ -74,10 +75,44 @@ func RunPreflight(cfg Config, deps PreflightDeps) PreflightReport {
 		add("auto_send", CheckPass, EnvAutoSend+"=false (global auto-send off)")
 	}
 
+	// Primary governor: rolling-hour global cap (email + WhatsApp share it).
+	dcfg := dispatch.LoadConfig()
+	hourly := dcfg.SendsPerHour
+	if hourly <= 0 {
+		hourly = dispatch.DefaultSendsPerHour
+	}
+	windowH := SendWindowHours(dcfg.WindowStart, dcfg.WindowEnd)
+	if windowH <= 0 {
+		windowH = SendWindowHours(dispatch.DefaultWindowStart, dispatch.DefaultWindowEnd)
+	}
+	if windowH <= 0 {
+		windowH = 9
+	}
+	hourlyDayBudget := hourly * windowH
+
+	add("governor_hourly", CheckPass, fmt.Sprintf(
+		"%s=%d (primary CONFENGE pace; email+WhatsApp share rolling hour; gap=%ds)",
+		dispatch.EnvGlobalSendsPerHour, hourly, int(dcfg.MinGap.Seconds()),
+	))
+
 	if cfg.DefaultDailyLimit < 1 || cfg.DefaultDailyLimit > 100 {
-		add("governor", CheckFail, fmt.Sprintf("%s=%d out of range 1-100", EnvDefaultDailyLimit, cfg.DefaultDailyLimit))
+		add("campaign_daily_limit", CheckFail, fmt.Sprintf("%s=%d out of range 1-100", EnvDefaultDailyLimit, cfg.DefaultDailyLimit))
+	} else if cfg.DefaultDailyLimit < hourly {
+		// Daily cap below one hour of governor capacity is always contradictory.
+		add("campaign_daily_limit", CheckWarn, fmt.Sprintf(
+			"%s=%d < hourly governor %d: effective capacity collapses to %d/day (not ~%d/hour)",
+			EnvDefaultDailyLimit, cfg.DefaultDailyLimit, hourly, cfg.DefaultDailyLimit, hourly,
+		))
+	} else if cfg.DefaultDailyLimit < hourlyDayBudget {
+		add("campaign_daily_limit", CheckWarn, fmt.Sprintf(
+			"%s=%d < hourly×window (%d×%dh=%d): effective daily capacity is %d, not full governor day",
+			EnvDefaultDailyLimit, cfg.DefaultDailyLimit, hourly, windowH, hourlyDayBudget, cfg.DefaultDailyLimit,
+		))
 	} else {
-		add("governor", CheckPass, fmt.Sprintf("campaign daily cap %d (target band ~10)", cfg.DefaultDailyLimit))
+		add("campaign_daily_limit", CheckPass, fmt.Sprintf(
+			"%s=%d (secondary campaign shell cap; primary pace remains %d/hour)",
+			EnvDefaultDailyLimit, cfg.DefaultDailyLimit, hourly,
+		))
 	}
 
 	if !cfg.SendingAllowed() {
