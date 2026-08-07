@@ -445,6 +445,27 @@ func Run(
 				}
 			}
 
+			// CONFENGE outreach staging (extra-cli feed import). Feature-flagged
+			// server-side; status is always readable so the dashboard can hide
+			// the nav when disabled. Mutations require manage contacts.
+			confengeGroup := protected.Group("/confenge")
+			confengeGroup.Use(m.RequireOrganization())
+			{
+				confengeGroup.GET("/status", h.GetConfengeStatus)
+				confengeGroup.GET("/summary", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeSummary)
+				confengeGroup.GET("/accounts", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeAccounts)
+				confengeGroup.GET("/accounts/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeAccount)
+				confengeGroup.GET("/import-runs", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeImportRuns)
+				confengeGroup.GET("/import-runs/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeImportRun)
+
+				confengeWrite := confengeGroup.Group("")
+				confengeWrite.Use(m.RateLimitMiddleware(models.RateLimitWrite))
+				{
+					confengeWrite.POST("/import", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ImportConfengeFeed)
+					confengeWrite.POST("/accounts/:id/block", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.BlockConfengeAccount)
+				}
+			}
+
 			contacts := protected.Group("/contacts")
 			contacts.Use(m.RateLimitMiddleware(models.RateLimitWrite))
 			{

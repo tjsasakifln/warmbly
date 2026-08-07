@@ -37,6 +37,7 @@ import (
 	"github.com/warmbly/warmbly/internal/app/campaign"
 	"github.com/warmbly/warmbly/internal/app/cipher"
 	"github.com/warmbly/warmbly/internal/app/compose"
+	"github.com/warmbly/warmbly/internal/app/confenge"
 	"github.com/warmbly/warmbly/internal/app/contact"
 	"github.com/warmbly/warmbly/internal/app/credits"
 	"github.com/warmbly/warmbly/internal/app/creditwatch"
@@ -239,6 +240,7 @@ func main() {
 	var contactRepoForHandler repository.ContactRepository
 	var attachmentRepoForHandler repository.AttachmentRepository
 	var leadSyncServiceForHandler leadsync.Service
+	var confengeServiceForHandler confenge.Service
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -974,6 +976,16 @@ func main() {
 		leadSyncRepository := repository.NewLeadSyncRepository(primaryDB.Pool)
 		leadSyncServiceForHandler = leadsync.NewService(leadSyncRepository, integrationServiceForHandler, contactService)
 
+		// CONFENGE outreach staging: extra-cli feed import. Off by default
+		// (CONFENGE_OUTREACH_ENABLED=false). Fail closed on insecure prod config.
+		confengeCfg := confenge.LoadConfig()
+		if err := confengeCfg.ValidateStartup(os.Getenv("APP_ENV")); err != nil {
+			sentry.CaptureException(err)
+			log.Fatalf("confenge config: %v", err)
+		}
+		outreachRepo := repository.NewOutreachRepository(primaryDB.Pool)
+		confengeServiceForHandler = confenge.NewService(confengeCfg, outreachRepo, auditService)
+
 		apiKeyService = apikey.NewService(cache, apiKeyRepository)
 		crmService = crm.NewService(crmRepository)
 		teamRepository := repository.NewTeamRepository(primaryDB.Pool)
@@ -1469,6 +1481,9 @@ func main() {
 
 		// On-demand Google Sheets -> leads sync
 		LeadSyncService: leadSyncServiceForHandler,
+
+		// CONFENGE outreach staging (feature-flagged)
+		ConfengeService: confengeServiceForHandler,
 
 		WebsocketURI: websocketURI,
 

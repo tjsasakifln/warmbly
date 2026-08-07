@@ -13,6 +13,7 @@ import (
 	"github.com/warmbly/warmbly/internal/app/auth"
 	"github.com/warmbly/warmbly/internal/app/campaign"
 	"github.com/warmbly/warmbly/internal/app/compose"
+	"github.com/warmbly/warmbly/internal/app/confenge"
 	"github.com/warmbly/warmbly/internal/app/contact"
 	"github.com/warmbly/warmbly/internal/app/credits"
 	"github.com/warmbly/warmbly/internal/app/crm"
@@ -111,6 +112,10 @@ type Handler struct {
 
 	// CRM
 	CRMService crm.CRMService
+
+	// CONFENGE outreach staging (extra-cli feed import). Nil or disabled when
+	// CONFENGE_OUTREACH_ENABLED is false.
+	ConfengeService confenge.Service
 
 	// Teams
 	TeamService team.TeamService

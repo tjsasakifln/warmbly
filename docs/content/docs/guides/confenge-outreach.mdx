@@ -1,0 +1,64 @@
+---
+title: CONFENGE outreach staging
+description: Import versioned commercial feeds from extra-cli into a multi-tenant staging queue without writing to the datalake.
+---
+
+CONFENGE outreach is an optional, feature-flagged staging layer. It lets an organization import a versioned commercial feed (for example from `extra-cli`) into Warmbly so companies can sit in a queue even when no verified email exists yet.
+
+Warmbly stays the execution plane: contacts, mailboxes, campaigns, inbox, CRM. The intelligence plane (datalake, signals, evidence scoring) stays outside Warmbly. Warmbly never connects to that database and never writes into it.
+
+## Enable
+
+Set on the backend:
+
+```env
+CONFENGE_OUTREACH_ENABLED=true
+```
+
+Leave `CONFENGE_AUTO_SEND_ENABLED=false` unless you have an explicit operational policy. Human approval remains the default.
+
+Optional feed source:
+
+```env
+CONFENGE_EXTRA_CLI_FEED_URL=https://feed.example.com/confenge/outreach.json
+CONFENGE_EXTRA_CLI_FEED_TOKEN=
+CONFENGE_EXTRA_CLI_ALLOWED_HOSTS=feed.example.com
+```
+
+In production the feed URL must be HTTPS and the host must be on the allowlist. Local development may use a `file://` path.
+
+## Import
+
+`POST /api/v1/confenge/import` accepts:
+
+- the full feed JSON body (`schema_version: confenge.outreach.v1` or legacy shapes)
+- or `{"uri":"https://...","dry_run":true}` to fetch then import
+
+Use `?dry_run=true` for counts only (`creates`, `updates`, `unchanged`, `missing_contact`, and related fields). Send `Idempotency-Key` for safe retries.
+
+Companies without an enrollable contact enter as `NEEDS_CONTACT`. They are not discarded and are not forced into the contacts table.
+
+## Reimport rules
+
+Reimport updates machine-owned fields (priority, moment, offer, messaging, evidence). It preserves:
+
+- human `DO_NOT_CONTACT` and block flags
+- post-send queue states (enrolled, sent, replied, and later CRM states)
+- prior approvals once those exist in later PRs
+
+## API surface
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /confenge/status` | Whether the feature is on |
+| `GET /confenge/summary` | Queue counters |
+| `GET /confenge/accounts` | Staged companies |
+| `GET /confenge/accounts/:id` | Company with candidates and evidence |
+| `POST /confenge/import` | Dry-run or apply feed |
+| `GET /confenge/import-runs` | Import audit history |
+
+Permissions follow contacts: view for reads, manage for import and block.
+
+## What this does not do yet
+
+Message generation, review UI, campaign enrollment, Microsoft Graph send, and outcome webhooks back to `extra-cli` ship in follow-up work. See `docs/confenge/` in the repository for architecture and upstream maintenance notes.
