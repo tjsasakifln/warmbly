@@ -8,9 +8,12 @@ scoring, Decision & Outcome Memory).
 datalake (VPS) → extra-cli → versioned feed → Warmbly staging → review → campaign → outcomes → extra-cli
 ```
 
-This document covers **PR1**: feed contract, import, staging models, API, and
-feature flag. Message generation, review UI, campaign enrollment, and outcome
-webhooks land in follow-up PRs.
+Product acceptance matrix (email + WhatsApp sum, human approval, governor,
+outcomes): [PRODUCT-ACCEPTANCE.md](./PRODUCT-ACCEPTANCE.md).
+
+This tree also covers feed contract, import, staging models, review, WhatsApp
+orchestration, per-touch approval, dispatch governor, reply cockpit, and
+local-first ops.
 
 ## Separation of concerns
 
