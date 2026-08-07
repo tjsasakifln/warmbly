@@ -3,6 +3,7 @@ package confenge
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -153,4 +154,19 @@ func (s *service) ResumeDispatch(ctx context.Context, orgID, userID uuid.UUID) *
 			map[string]string{"action": "dispatch_resume"}, nil)
 	}
 	return nil
+}
+
+// cancelQueuedForRecipient drops queued outbound for email and/or phone (DNC/bounce/reply/opt-out).
+func (s *service) cancelQueuedForRecipient(ctx context.Context, orgID uuid.UUID, email, phone, reason string) {
+	if s == nil || s.governor == nil {
+		return
+	}
+	email = strings.TrimSpace(strings.ToLower(email))
+	phone = strings.TrimSpace(phone)
+	if email != "" {
+		_, _ = s.governor.CancelByRecipient(ctx, orgID, email, reason)
+	}
+	if phone != "" && phone != email {
+		_, _ = s.governor.CancelByRecipient(ctx, orgID, phone, reason)
+	}
 }

@@ -493,3 +493,29 @@ func TestCancelByRecipientDropsQueued(t *testing.T) {
 		t.Fatalf("sent=%d", sent)
 	}
 }
+
+func TestCancelByRecipientPhoneAndEmail(t *testing.T) {
+	clock := &FixedClock{T: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)}
+	g, _ := newTestGov(t, clock)
+	org := uuid.New()
+	ctx := context.Background()
+	email := "lead@example.com"
+	phone := "+5511999999999"
+	_ = g.Enqueue(ctx, EnqueueRequest{
+		OrganizationID: org, Channel: ChannelEmail, DraftID: uuid.New(),
+		MessageKey: "email:1", RecipientRef: email, DueAt: clock.Now(),
+	})
+	_ = g.Enqueue(ctx, EnqueueRequest{
+		OrganizationID: org, Channel: ChannelWhatsApp, DraftID: uuid.New(),
+		MessageKey: "wa:1", RecipientRef: phone, DueAt: clock.Now(),
+	})
+	// DNC by email only must not clear phone-queued WA — cancel both explicitly.
+	n1, _ := g.CancelByRecipient(ctx, org, email, "DO_NOT_CONTACT")
+	n2, _ := g.CancelByRecipient(ctx, org, phone, "DO_NOT_CONTACT")
+	if n1 != 1 || n2 != 1 {
+		t.Fatalf("cancel email=%d phone=%d", n1, n2)
+	}
+	if item, _ := g.ClaimNextQueued(ctx); item != nil {
+		t.Fatalf("queue should be empty, got %s", item.MessageKey)
+	}
+}

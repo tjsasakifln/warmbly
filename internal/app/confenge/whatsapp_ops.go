@@ -490,6 +490,8 @@ func (s *service) HandleWhatsAppInbound(ctx context.Context, orgID uuid.UUID, ev
 		email = cand.Email
 	}
 	if res.OptOut.Matched && res.OptOut.Confident {
+		// Always cancel queued WA (and email if known) by phone/email before any future reserve.
+		s.cancelQueuedForRecipient(ctx, orgID, email, phone, "whatsapp_opt_out")
 		if email != "" {
 			_ = s.NoteDNC(ctx, orgID, email, "whatsapp_opt_out:"+res.OptOut.Phrase)
 		} else if acc != nil {
@@ -510,7 +512,10 @@ func (s *service) HandleWhatsAppInbound(ctx context.Context, orgID uuid.UUID, ev
 			cand.WhatsAppConsentAt = &now
 			_, _ = s.repo.UpsertCandidate(ctx, cand)
 		}
-	} else if res.StopSequences && email != "" {
+	} else if res.StopSequences {
+		s.cancelQueuedForRecipient(ctx, orgID, email, phone, "reply")
+	}
+	if res.StopSequences && email != "" {
 		_ = s.NoteReply(ctx, orgID, email, map[string]any{
 			"channel": "WHATSAPP",
 			"text":    truncateRunes(ev.Content.Text, 500),

@@ -572,15 +572,38 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 			campaign.ID, contact.ID, sequence.ID,
 		)
 		if gerr != nil {
-			// Hard block (DNC/bounce): skip recipient, schedule next campaign tick.
+			// Hard block (DNC/bounce): advance progress so FindNextRoutedPair does not
+			// re-select this contact forever, and mark permanent block (bounce/suppress).
 			log.Info().Str("campaign_id", campaign.ID.String()).Str("contact", contact.Email).Str("reason", gerr.Error()).Msg("confenge gate blocked send")
+			if rerr := s.campaignProgressRepo.RecordEmailSent(ctx, campaign.ID, contact.ID, sequence.ID); rerr != nil {
+				log.Warn().Err(rerr).Str("campaign_id", campaign.ID.String()).Msg("confenge gate: failed to record skipped progress")
+			}
+			// bounced_at excludes the contact from further campaign routing.
+			if berr := s.campaignProgressRepo.RecordEmailBounced(ctx, campaign.ID, contact.ID, sequence.ID); berr != nil {
+				log.Warn().Err(berr).Str("campaign_id", campaign.ID.String()).Msg("confenge gate: failed to mark contact blocked")
+			}
+			if s.advanced != nil && campaign.OrganizationID != nil && contact.Email != "" {
+				_ = s.advanced.SuppressRecipient(ctx, *campaign.OrganizationID, contact.Email, "confenge_gate:"+gerr.Error(), models.DeliverabilityEventUnsubscribe)
+			}
 			_ = s.taskRepo.UpdateTaskStatusWithLock(ctx, taskID, "skipped_suppressed")
+			if s.campaignLogRepo != nil {
+				_ = s.campaignLogRepo.CreateLog(ctx, &repository.CampaignLogEntry{
+					CampaignID: campaign.ID,
+					EventType:  "suppressed",
+					Message:    fmt.Sprintf("CONFENGE gate blocked %s: %s", contact.Email, gerr.Error()),
+					Metadata:   map[string]interface{}{"reason": gerr.Error()},
+				})
+			}
 			_ = s.createCampaignTask(ctx, campaign.ID, accountID, nextTime)
 			executionStatus = "completed"
 			return nil
 		}
 		if already {
-			// Idempotent: this step already counted as successful outbound.
+			// Idempotent success: ensure progress advances even if a prior crash
+			// committed the governor slot without RecordEmailSent.
+			if rerr := s.campaignProgressRepo.RecordEmailSent(ctx, campaign.ID, contact.ID, sequence.ID); rerr != nil {
+				log.Warn().Err(rerr).Str("campaign_id", campaign.ID.String()).Msg("confenge gate: already-sent progress update failed")
+			}
 			_ = s.taskRepo.UpdateTaskStatusWithLock(ctx, taskID, "completed")
 			_ = s.createCampaignTask(ctx, campaign.ID, accountID, nextTime)
 			executionStatus = "completed"
