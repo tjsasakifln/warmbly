@@ -168,71 +168,57 @@ func ClassifyReplyForCRM(replyClass string) ReplyCRMAction {
 			TaskType:    "email",
 			QueueState:  models.OutreachQueueProposal,
 		}
+	case "won", "ganho":
+		return ReplyCRMAction{OutcomeType: OutcomeReplied, CreateTask: true, TaskTitle: "CONFENGE: interesse positivo - acompanhar (humano marca Ganho)", TaskType: "call", OpenDeal: true, QueueState: models.OutreachQueueReplied}
+	case "question", "objection", "referral_to_other_person":
+		// commercial intents
+		title := "CONFENGE: resposta - acompanhar"
+		if strings.ToLower(strings.TrimSpace(replyClass)) == "question" {
+			title = "CONFENGE: pergunta do lead - responder com fatos do dossie"
+		} else if strings.ToLower(strings.TrimSpace(replyClass)) == "objection" {
+			title = "CONFENGE: objecao - responder com fatos (sem discutir juridicamente)"
+		} else {
+			title = "CONFENGE: encaminhamento - cadastrar contato indicado"
+		}
+		return ReplyCRMAction{OutcomeType: OutcomeReplied, CreateTask: true, TaskTitle: title, TaskType: "email", QueueState: models.OutreachQueueReplied}
 	default:
 		return ReplyCRMAction{OutcomeType: OutcomeReplied, QueueState: models.OutreachQueueReplied}
 	}
 }
 
-// HandleClassifiedReply applies CRM + outbox side effects for a classified reply
-// on a confenge-staged contact. Never marks WON automatically.
+// HandleClassifiedReply routes through unified handoff. Never auto-WON.
 func (s *service) HandleClassifiedReply(ctx context.Context, orgID, actorID uuid.UUID, contactEmail, replyClass string, warmblyContactID *uuid.UUID) *errx.Error {
 	if xerr := s.requireEnabled(); xerr != nil {
-		return nil // feature off — silent
+		return nil
 	}
 	email := strings.TrimSpace(strings.ToLower(contactEmail))
 	if email == "" {
 		return nil
 	}
-	action := ClassifyReplyForCRM(replyClass)
-	cand, acc, err := s.repo.FindCandidateByEmail(ctx, orgID, email)
-	if err != nil {
-		return errx.New(errx.Internal, "lookup candidate: "+err.Error())
-	}
-	if cand == nil && warmblyContactID == nil {
-		return nil
-	}
-	cnpj, lead := "", ""
-	if acc != nil {
-		cnpj, lead = acc.CNPJ14, acc.SourceLeadID
-		if action.QueueState != "" {
-			_ = s.repo.SetAccountHumanFlags(ctx, orgID, acc.ID, acc.Blocked || action.SuppressDNC, acc.DoNotContact || action.SuppressDNC, "reply:"+replyClass, action.QueueState)
-		}
-	}
-	if action.SuppressDNC {
-		_ = s.NoteDNC(ctx, orgID, email, "reply classification: "+replyClass)
-	}
-	if action.OutcomeType != "" {
-		_ = s.EnqueueOutcome(ctx, orgID, models.OutreachOutcome{
-			IdempotencyKey: fmt.Sprintf("%s:%s:%s:%d", strings.ToLower(action.OutcomeType), orgID, email, time.Now().UTC().Truncate(time.Minute).Unix()),
-			SourceLeadID:   lead,
-			CNPJ14:         cnpj,
-			ContactEmail:   email,
-			EventType:      action.OutcomeType,
-			OccurredAt:     time.Now().UTC(),
-			Payload: mustJSON(map[string]any{
-				"reply_class": replyClass,
-			}),
-		})
-	}
+	_, xerr := s.ProcessInboundHandoff(ctx, orgID, InboundHandoff{
+		Channel: models.OutreachChannelEmail, ContactEmail: email, PreClass: replyClass,
+		IdempotencyKey:   fmt.Sprintf("classified:%s:%s:%s:%d", orgID, email, replyClass, time.Now().UTC().Truncate(time.Minute).Unix()),
+		WarmblyContactID: warmblyContactID, ActorID: actorID, OccurredAt: time.Now().UTC(),
+	})
+	return xerr
+}
+
+// applyReplyCRM creates tasks/deals only. Never Ganho.
+func (s *service) applyReplyCRM(ctx context.Context, orgID, actorID uuid.UUID, contactEmail, replyClass string, warmblyContactID *uuid.UUID, cand *models.OutreachContactCandidate, acc *models.OutreachAccount) {
 	if s.crm == nil {
-		return nil
+		return
 	}
+	action := ClassifyReplyForCRM(replyClass)
 	contactID := warmblyContactID
 	if contactID == nil && cand != nil {
 		contactID = cand.WarmblyContactID
 	}
 	if contactID == nil {
-		return nil
+		return
 	}
 	if action.CreateTask && actorID != uuid.Nil {
-		_, _ = s.crm.CreateCRMTask(ctx, orgID, actorID, &models.CreateCRMTask{
-			ContactID: contactID,
-			Title:     action.TaskTitle,
-			Type:      action.TaskType,
-			Priority:  "medium",
-		})
+		_, _ = s.crm.CreateCRMTask(ctx, orgID, actorID, &models.CreateCRMTask{ContactID: contactID, Title: action.TaskTitle, Type: action.TaskType, Priority: "medium"})
 	}
-	// Positive interest may open a deal in "Respondeu" stage — never Ganho.
 	if action.OpenDeal {
 		pipe, xerr := s.BootstrapPipeline(ctx, orgID)
 		if xerr == nil && pipe != nil {
@@ -242,17 +228,10 @@ func (s *service) HandleClassifiedReply(ctx context.Context, orgID, actorID uuid
 				if acc != nil {
 					name = firstNonEmpty(acc.NomeFantasia, acc.RazaoSocial, "CONFENGE")
 				}
-				_, _ = s.crm.CreateDeal(ctx, orgID, &models.CreateDeal{
-					PipelineID: pipe.ID,
-					StageID:    stageID,
-					ContactID:  contactID,
-					Name:       name,
-					Currency:   "BRL",
-				})
+				_, _ = s.crm.CreateDeal(ctx, orgID, &models.CreateDeal{PipelineID: pipe.ID, StageID: stageID, ContactID: contactID, Name: name, Currency: "BRL"})
 			}
 		}
 	}
-	return nil
 }
 
 func stageIDByName(p *models.Pipeline, name string) uuid.UUID {

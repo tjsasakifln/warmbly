@@ -246,7 +246,30 @@ func (m *memRepoFull) GetActiveDraftForAccount(ctx context.Context, orgID, accou
 }
 
 func (m *memRepoFull) EnqueueOutcome(ctx context.Context, ev *models.OutreachOutcome) error {
-	return nil
+	return m.memRepo.EnqueueOutcome(ctx, ev)
+}
+
+func (m *memRepoFull) GetOutcomeByIdempotency(ctx context.Context, orgID uuid.UUID, key string) (*models.OutreachOutcome, error) {
+	return m.memRepo.GetOutcomeByIdempotency(ctx, orgID, key)
+}
+
+func (m *memRepoFull) ListDrafts(ctx context.Context, orgID uuid.UUID, status string, limit, offset int) ([]models.OutreachDraft, error) {
+	var out []models.OutreachDraft
+	for _, d := range m.drafts {
+		if d.OrganizationID == orgID && (status == "" || d.Status == status) {
+			out = append(out, *d)
+		}
+	}
+	if offset > 0 {
+		if offset >= len(out) {
+			return nil, nil
+		}
+		out = out[offset:]
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func (m *memRepoFull) FindCandidateByEmail(ctx context.Context, orgID uuid.UUID, email string) (*models.OutreachContactCandidate, *models.OutreachAccount, error) {

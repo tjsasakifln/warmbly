@@ -2,6 +2,8 @@ package confenge
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,26 +16,28 @@ import (
 
 // memRepo is an in-memory OutreachRepository for unit tests of ImportFromBytes.
 type memRepo struct {
-	mu       sync.Mutex
-	runs     map[uuid.UUID]*models.OutreachImportRun
-	byIdem   map[string]*models.OutreachImportRun
-	accounts map[string]*models.OutreachAccount // org|cnpj
-	byID     map[uuid.UUID]*models.OutreachAccount
-	cands    map[uuid.UUID][]models.OutreachContactCandidate
-	evidence map[uuid.UUID][]models.OutreachEvidence
-	drafts   map[uuid.UUID]*models.OutreachDraft
-	outcomes []models.OutreachOutcome
+	mu        sync.Mutex
+	runs      map[uuid.UUID]*models.OutreachImportRun
+	byIdem    map[string]*models.OutreachImportRun
+	accounts  map[string]*models.OutreachAccount // org|cnpj
+	byID      map[uuid.UUID]*models.OutreachAccount
+	cands     map[uuid.UUID][]models.OutreachContactCandidate
+	evidence  map[uuid.UUID][]models.OutreachEvidence
+	drafts    map[uuid.UUID]*models.OutreachDraft
+	outcomes  []models.OutreachOutcome
+	outcomeBy map[string]*models.OutreachOutcome // org|idempotency
 }
 
 func newMemRepo() *memRepo {
 	return &memRepo{
-		runs:     map[uuid.UUID]*models.OutreachImportRun{},
-		byIdem:   map[string]*models.OutreachImportRun{},
-		accounts: map[string]*models.OutreachAccount{},
-		byID:     map[uuid.UUID]*models.OutreachAccount{},
-		cands:    map[uuid.UUID][]models.OutreachContactCandidate{},
-		evidence: map[uuid.UUID][]models.OutreachEvidence{},
-		drafts:   map[uuid.UUID]*models.OutreachDraft{},
+		runs:      map[uuid.UUID]*models.OutreachImportRun{},
+		byIdem:    map[string]*models.OutreachImportRun{},
+		accounts:  map[string]*models.OutreachAccount{},
+		byID:      map[uuid.UUID]*models.OutreachAccount{},
+		cands:     map[uuid.UUID][]models.OutreachContactCandidate{},
+		evidence:  map[uuid.UUID][]models.OutreachEvidence{},
+		drafts:    map[uuid.UUID]*models.OutreachDraft{},
+		outcomeBy: map[string]*models.OutreachOutcome{},
 	}
 }
 
@@ -134,7 +138,46 @@ func (m *memRepo) UpsertAccount(ctx context.Context, acc *models.OutreachAccount
 }
 
 func (m *memRepo) ListAccounts(ctx context.Context, orgID uuid.UUID, filter repository.OutreachAccountFilter) ([]models.OutreachAccount, error) {
-	return nil, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []models.OutreachAccount
+	for _, a := range m.byID {
+		if a.OrganizationID != orgID {
+			continue
+		}
+		if filter.QueueState != "" && a.QueueState != filter.QueueState {
+			continue
+		}
+		if filter.CNPJ14 != "" && a.CNPJ14 != filter.CNPJ14 {
+			continue
+		}
+		if filter.Search != "" {
+			q := strings.ToLower(filter.Search)
+			blob := strings.ToLower(a.RazaoSocial + " " + a.NomeFantasia + " " + a.CNPJ14)
+			if !strings.Contains(blob, q) {
+				continue
+			}
+		}
+		cp := *a
+		out = append(out, cp)
+	}
+	// stable-ish order by CNPJ
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = len(out)
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(out) {
+		return nil, nil
+	}
+	end := offset + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	return out[offset:end], nil
 }
 
 func (m *memRepo) CountByQueueState(ctx context.Context, orgID uuid.UUID) (*models.OutreachQueueSummary, error) {
@@ -269,7 +312,19 @@ func (m *memRepo) UpsertOrgSettings(ctx context.Context, s *models.OutreachOrgSe
 func (m *memRepo) EnqueueOutcome(ctx context.Context, ev *models.OutreachOutcome) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.outcomes = append(m.outcomes, *ev)
+	if ev.ID == uuid.Nil {
+		ev.ID = uuid.New()
+	}
+	if ev.EventID == uuid.Nil {
+		ev.EventID = uuid.New()
+	}
+	k := ev.OrganizationID.String() + "|" + ev.IdempotencyKey
+	if _, ok := m.outcomeBy[k]; ok {
+		return fmt.Errorf("duplicate outcome idempotency key")
+	}
+	cp := *ev
+	m.outcomes = append(m.outcomes, cp)
+	m.outcomeBy[k] = &cp
 	return nil
 }
 func (m *memRepo) ListPendingOutcomes(ctx context.Context, limit int) ([]models.OutreachOutcome, error) {
@@ -282,7 +337,14 @@ func (m *memRepo) MarkOutcomeAttempt(ctx context.Context, orgID, id uuid.UUID, a
 	return nil
 }
 func (m *memRepo) GetOutcomeByIdempotency(ctx context.Context, orgID uuid.UUID, key string) (*models.OutreachOutcome, error) {
-	return nil, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	o := m.outcomeBy[orgID.String()+"|"+key]
+	if o == nil {
+		return nil, nil
+	}
+	cp := *o
+	return &cp, nil
 }
 func (m *memRepo) FindCandidateByEmail(ctx context.Context, orgID uuid.UUID, email string) (*models.OutreachContactCandidate, *models.OutreachAccount, error) {
 	m.mu.Lock()

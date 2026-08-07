@@ -457,6 +457,8 @@ func Run(
 			{
 				confengeGroup.GET("/status", h.GetConfengeStatus)
 				confengeGroup.GET("/summary", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeSummary)
+				confengeGroup.GET("/attention", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeAttention)
+				confengeGroup.GET("/attention/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeAttention)
 				confengeGroup.GET("/accounts", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeAccounts)
 				confengeGroup.GET("/accounts/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeAccount)
 				confengeGroup.GET("/import-runs", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeImportRuns)
@@ -470,6 +472,9 @@ func Run(
 					confengeWrite.POST("/import", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ImportConfengeFeed)
 					confengeWrite.POST("/accounts/:id/block", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.BlockConfengeAccount)
 					confengeWrite.POST("/accounts/:id/generate", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.GenerateConfengeDraft)
+					confengeWrite.POST("/accounts/:id/generate-reply", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.GenerateConfengeReplyDraft)
+					confengeWrite.POST("/accounts/:id/resume", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ResumeConfengeAccount)
+					confengeWrite.POST("/accounts/:id/referral", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ChangeConfengeReferral)
 					confengeWrite.POST("/accounts/:id/generate-whatsapp", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.GenerateConfengeWhatsAppDraft)
 					confengeGroup.GET("/accounts/:id/channel-decision", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.DecideConfengeChannel)
 					confengeWrite.POST("/drafts/:id/review", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ReviewConfengeDraft)

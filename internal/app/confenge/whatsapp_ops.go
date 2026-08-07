@@ -439,73 +439,42 @@ func (s *service) HandleWhatsAppInbound(ctx context.Context, orgID uuid.UUID, ev
 		_ = s.waStore.UpsertContactState(ctx, &persist)
 	}
 
-	// Stop follow-ups / mark replied on confenge account + drafts.
-	if res.StopSequences && acc != nil {
-		_ = s.repo.SetAccountHumanFlags(ctx, orgID, acc.ID, acc.Blocked, acc.DoNotContact || st.DoNotContact, acc.BlockReason, models.OutreachQueueReplied)
-		// Mark WhatsApp drafts replied when possible.
-		if drafts, err := s.repo.ListDrafts(ctx, orgID, models.OutreachDraftEnrolled, 50, 0); err == nil {
-			for i := range drafts {
-				dd := drafts[i]
-				if dd.AccountID == acc.ID && (dd.Channel == models.OutreachChannelWhatsApp || dd.Channel == "WHATSAPP" || dd.RecipientPhoneE164 != "") {
-					dd.Status = models.OutreachDraftReplied
-					_ = s.repo.UpsertDraft(ctx, &dd)
-				}
-			}
-		}
-		for _, stt := range []string{models.OutreachDraftSent, models.OutreachDraftApproved} {
-			if drafts, err := s.repo.ListDrafts(ctx, orgID, stt, 50, 0); err == nil {
-				for i := range drafts {
-					dd := drafts[i]
-					if dd.AccountID == acc.ID {
-						dd.Status = models.OutreachDraftReplied
-						_ = s.repo.UpsertDraft(ctx, &dd)
-					}
-				}
-			}
-		}
-	}
-
-	// Outcomes + DNC.
+	// Unified handoff: stop cadence, classify commercial intent, sticky DNC, outcomes + CRM.
 	email := ""
 	if cand != nil {
 		email = cand.Email
 	}
-	if res.OptOut.Matched && res.OptOut.Confident {
-		if email != "" {
-			_ = s.NoteDNC(ctx, orgID, email, "whatsapp_opt_out:"+res.OptOut.Phrase)
-		} else if acc != nil {
-			_ = s.EnqueueOutcome(ctx, orgID, models.OutreachOutcome{
-				IdempotencyKey: fmt.Sprintf("wa-dnc:%s:%s", orgID, phone),
-				SourceLeadID:   acc.SourceLeadID,
-				CNPJ14:         acc.CNPJ14,
-				EventType:      OutcomeDoNotContact,
-				OccurredAt:     ev.OccurredAt,
-				Payload:        mustJSON(map[string]any{"channel": "WHATSAPP", "phrase": res.OptOut.Phrase, "phone": phone}),
-			})
-			_ = s.repo.SetAccountHumanFlags(ctx, orgID, acc.ID, true, true, "whatsapp_opt_out", models.OutreachQueueDoNotContact)
+	if res.StopSequences || (res.OptOut.Matched && res.OptOut.Confident) {
+		preClass := ""
+		if res.OptOut.Matched && res.OptOut.Confident {
+			preClass = "do_not_contact"
+			if cand != nil {
+				cand.DoNotContact = true
+				cand.WhatsAppConsentStatus = whatsapp.ConsentOptedOut
+				now := ev.OccurredAt
+				cand.WhatsAppConsentAt = &now
+				_, _ = s.repo.UpsertCandidate(ctx, cand)
+			}
 		}
+		var warmblyID *uuid.UUID
 		if cand != nil {
-			cand.DoNotContact = true
-			cand.WhatsAppConsentStatus = whatsapp.ConsentOptedOut
-			now := ev.OccurredAt
-			cand.WhatsAppConsentAt = &now
-			_, _ = s.repo.UpsertCandidate(ctx, cand)
+			warmblyID = cand.WarmblyContactID
 		}
-	} else if res.StopSequences && email != "" {
-		_ = s.NoteReply(ctx, orgID, email, map[string]any{
-			"channel": "WHATSAPP",
-			"text":    truncateRunes(ev.Content.Text, 500),
-		})
-		// Feed CRM classification path (same taxonomy as email).
-		_ = s.HandleClassifiedReply(ctx, orgID, uuid.Nil, email, "unknown", nil)
-	} else if res.StopSequences && acc != nil {
-		_ = s.EnqueueOutcome(ctx, orgID, models.OutreachOutcome{
-			IdempotencyKey: fmt.Sprintf("wa-replied:%s:%s:%s", orgID, phone, ev.ExternalMessageID),
-			SourceLeadID:   acc.SourceLeadID,
-			CNPJ14:         acc.CNPJ14,
-			EventType:      OutcomeReplied,
-			OccurredAt:     ev.OccurredAt,
-			Payload:        mustJSON(map[string]any{"channel": "WHATSAPP", "phone": phone}),
+		var accID uuid.UUID
+		if acc != nil {
+			accID = acc.ID
+		}
+		_, _ = s.ProcessInboundHandoff(ctx, orgID, InboundHandoff{
+			Channel:           models.OutreachChannelWhatsApp,
+			ContactEmail:      email,
+			ContactPhone:      phone,
+			BodyText:          ev.Content.Text,
+			PreClass:          preClass,
+			IdempotencyKey:    fmt.Sprintf("wa:%s:%s", orgID, ev.IdempotencyKey()),
+			ExternalMessageID: ev.ExternalMessageID,
+			OccurredAt:        ev.OccurredAt,
+			WarmblyContactID:  warmblyID,
+			AccountID:         accID,
 		})
 	}
 

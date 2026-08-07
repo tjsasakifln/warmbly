@@ -2,15 +2,21 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 import {
     bootstrapConfengeCampaign,
+    changeConfengeReferral,
     enrollConfengeDraft,
     generateConfengeDraft,
+    generateConfengeReplyDraft,
     getConfengeAccount,
+    getConfengeAttention,
     getConfengeStatus,
     getConfengeSummary,
     listConfengeAccounts,
+    listConfengeAttention,
     listConfengeDrafts,
+    resumeConfengeAccount,
     reviewConfengeDraft,
 } from "@/lib/api/client/app/confenge/confenge";
+import type { ConfengeAttentionFilter } from "@/lib/api/models/app/confenge/Confenge";
 
 const KEY = ["confenge"] as const;
 
@@ -104,5 +110,65 @@ export function useBootstrapConfengeCampaign() {
         mutationFn: () => bootstrapConfengeCampaign(),
         onSuccess: (c) => toast.success(`Campaign ready: ${c.name}`),
         onError: (e: Error) => toast.error(e.message || "Bootstrap failed"),
+    });
+}
+
+export function useConfengeAttention(filter: ConfengeAttentionFilter | string, enabled = true) {
+    return useQuery({
+        queryKey: [...KEY, "attention", filter],
+        queryFn: () => listConfengeAttention(filter, 100),
+        enabled,
+    });
+}
+
+export function useConfengeAttentionDetail(id: string | null) {
+    return useQuery({
+        queryKey: [...KEY, "attention-detail", id],
+        queryFn: () => getConfengeAttention(id!),
+        enabled: !!id,
+    });
+}
+
+export function useGenerateConfengeReplyDraft() {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({ accountId, contactId }: { accountId: string; contactId?: string }) =>
+            generateConfengeReplyDraft(accountId, contactId),
+        onSuccess: () => {
+            void qc.invalidateQueries({ queryKey: KEY });
+            toast.success("Reply draft ready for human review (never auto-send)");
+        },
+        onError: (e: Error) => toast.error(e.message || "Generate reply failed"),
+    });
+}
+
+export function useResumeConfengeAccount() {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({ accountId, resumeAt, note }: { accountId: string; resumeAt: string; note?: string }) =>
+            resumeConfengeAccount(accountId, resumeAt, note),
+        onSuccess: () => {
+            void qc.invalidateQueries({ queryKey: KEY });
+            toast.success("Resume date recorded (no auto-reopen)");
+        },
+        onError: (e: Error) => toast.error(e.message || "Resume failed"),
+    });
+}
+
+export function useChangeConfengeReferral() {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: (args: {
+            accountId: string;
+            name?: string;
+            email?: string;
+            role?: string;
+            phone?: string;
+        }) => changeConfengeReferral(args.accountId, args),
+        onSuccess: () => {
+            void qc.invalidateQueries({ queryKey: KEY });
+            toast.success("Referral recipient updated");
+        },
+        onError: (e: Error) => toast.error(e.message || "Referral update failed"),
     });
 }

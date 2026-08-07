@@ -1,5 +1,7 @@
 import type {
     ConfengeAccount,
+    ConfengeAttentionFilter,
+    ConfengeAttentionItem,
     ConfengeDraft,
     ConfengeStatus,
     ConfengeSummary,
@@ -105,6 +107,71 @@ export async function bootstrapConfengeCampaign(): Promise<{ id: string; name: s
         url: "/confenge/campaign/bootstrap",
         authorization: true,
         data: {},
+    });
+    return res.data;
+}
+
+export async function listConfengeAttention(
+    filter: ConfengeAttentionFilter | string = "needs_attention",
+    limit = 50,
+): Promise<ConfengeAttentionItem[]> {
+    const sp = new URLSearchParams();
+    if (filter) sp.set("filter", filter);
+    if (limit) sp.set("limit", String(limit));
+    const qs = sp.toString();
+    const res = await Request<{ data: ConfengeAttentionItem[] }>({
+        method: "GET",
+        url: `/confenge/attention${qs ? `?${qs}` : ""}`,
+        authorization: true,
+    });
+    return res.data ?? [];
+}
+
+export async function getConfengeAttention(id: string): Promise<ConfengeAttentionItem> {
+    const res = await Request<{ data: ConfengeAttentionItem }>({
+        method: "GET",
+        url: `/confenge/attention/${id}`,
+        authorization: true,
+    });
+    return res.data;
+}
+
+export async function generateConfengeReplyDraft(
+    accountId: string,
+    contactCandidateId?: string,
+): Promise<ConfengeDraft> {
+    const res = await Request<{ data: ConfengeDraft }>({
+        method: "POST",
+        url: `/confenge/accounts/${accountId}/generate-reply`,
+        authorization: true,
+        data: contactCandidateId ? { contact_candidate_id: contactCandidateId } : {},
+    });
+    return res.data;
+}
+
+export async function resumeConfengeAccount(
+    accountId: string,
+    resumeAt: string,
+    note?: string,
+): Promise<ConfengeAccount> {
+    const res = await Request<{ data: ConfengeAccount }>({
+        method: "POST",
+        url: `/confenge/accounts/${accountId}/resume`,
+        authorization: true,
+        data: { resume_at: resumeAt, note: note ?? "" },
+    });
+    return res.data;
+}
+
+export async function changeConfengeReferral(
+    accountId: string,
+    body: { name?: string; email?: string; role?: string; phone?: string },
+): Promise<ConfengeAccount> {
+    const res = await Request<{ data: ConfengeAccount }>({
+        method: "POST",
+        url: `/confenge/accounts/${accountId}/referral`,
+        authorization: true,
+        data: body,
     });
     return res.data;
 }
