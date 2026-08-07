@@ -8,8 +8,11 @@ import {
     useConfengeStatus,
     useConfengeSummary,
     useBootstrapConfengeCampaign,
+    useConfengeDispatchStatus,
     useEnrollConfengeDraft,
     useGenerateConfengeDraft,
+    usePauseConfengeDispatch,
+    useResumeConfengeDispatch,
     useReviewConfengeDraft,
 } from "@/lib/api/hooks/app/confenge/useConfenge";
 import type { ConfengeDraft } from "@/lib/api/models/app/confenge/Confenge";
@@ -26,6 +29,9 @@ export default function ConfengePage() {
     const review = useReviewConfengeDraft();
     const enroll = useEnrollConfengeDraft();
     const bootstrap = useBootstrapConfengeCampaign();
+    const dispatchStatus = useConfengeDispatchStatus(enabled);
+    const pauseDispatch = usePauseConfengeDispatch();
+    const resumeDispatch = useResumeConfengeDispatch();
 
     const [idx, setIdx] = useState(0);
     const queue = drafts.data ?? [];
@@ -76,6 +82,43 @@ export default function ConfengePage() {
                 eyebrow="CONFENGE"
                 subtitle="Review queue for intelligence-plane leads. Metric: commercial outcomes per human minute."
             >
+                {dispatchStatus.data && (
+                    <div className="flex items-center gap-2 mr-2">
+                        <span
+                            className={`h-7 px-2.5 inline-flex items-center rounded-md border text-[12.5px] tabular-nums ${
+                                dispatchStatus.data.paused
+                                    ? "border-amber-200 bg-amber-50 text-amber-800"
+                                    : "border-slate-200 bg-white text-slate-700"
+                            }`}
+                            title={
+                                dispatchStatus.data.paused
+                                    ? `Paused: ${dispatchStatus.data.pause_reason || "manual"}`
+                                    : `Next slot: ${dispatchStatus.data.next_slot_at || "available"} · queued ${dispatchStatus.data.queued_approved}`
+                            }
+                        >
+                            {dispatchStatus.data.sent_last_hour}/{dispatchStatus.data.cap} na última hora
+                        </span>
+                        {dispatchStatus.data.paused ? (
+                            <button
+                                type="button"
+                                className="h-7 px-2.5 rounded-md border border-sky-200 bg-sky-50 text-sky-700 text-[12.5px] hover:bg-sky-100"
+                                disabled={resumeDispatch.isPending}
+                                onClick={() => resumeDispatch.mutate()}
+                            >
+                                Resume
+                            </button>
+                        ) : (
+                            <button
+                                type="button"
+                                className="h-7 px-2.5 rounded-md border border-slate-200 text-[12.5px] text-slate-700 hover:bg-slate-50"
+                                disabled={pauseDispatch.isPending}
+                                onClick={() => pauseDispatch.mutate("manual_pause")}
+                            >
+                                Pause
+                            </button>
+                        )}
+                    </div>
+                )}
                 <button
                     type="button"
                     className="h-7 px-2.5 rounded-md border border-slate-200 text-[12.5px] text-slate-700 hover:bg-slate-50"

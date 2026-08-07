@@ -9,6 +9,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
 	"github.com/warmbly/warmbly/internal/app/whatsapp"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
@@ -61,6 +63,12 @@ type Service interface {
 	GenerateWhatsAppDraft(ctx context.Context, orgID, userID, accountID uuid.UUID, contactID *uuid.UUID) (*models.OutreachDraft, *errx.Error)
 	SendApprovedWhatsApp(ctx context.Context, orgID, userID, draftID uuid.UUID) (*models.OutreachDraft, *errx.Error)
 	HandleWhatsAppInbound(ctx context.Context, orgID uuid.UUID, ev whatsapp.ChannelEvent) (whatsapp.InboundResult, error)
+
+	// Global dispatch governor (email + WhatsApp shared cap).
+	WireDispatch(db *pgxpool.Pool)
+	DispatchStatus(ctx context.Context, orgID uuid.UUID) (dispatch.Status, *errx.Error)
+	PauseDispatch(ctx context.Context, orgID, userID uuid.UUID, reason string) *errx.Error
+	ResumeDispatch(ctx context.Context, orgID, userID uuid.UUID) *errx.Error
 }
 
 // ImportOptions controls dry-run, idempotency, and source tracking.
@@ -81,6 +89,7 @@ type service struct {
 	crm       CRMAPI
 	wa        WhatsAppSender
 	waStore   WhatsAppStateStore
+	governor  *dispatch.Governor
 }
 
 // NewService wires confenge outreach. When cfg.Enabled is false, mutators return 404-style disabled errors.

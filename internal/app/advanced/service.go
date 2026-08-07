@@ -43,6 +43,7 @@ type Service interface {
 	RecordInboundBounce(ctx context.Context, emailAccountID uuid.UUID, originalMessageID, failedRecipient, reason string) *errx.Error
 
 	ShouldSuppressRecipient(ctx context.Context, organizationID uuid.UUID, recipient string) (bool, string, *errx.Error)
+	SuppressRecipient(ctx context.Context, organizationID uuid.UUID, email, reason string, source models.DeliverabilityEventType) *errx.Error
 	// Unsubscribe suppresses a contact in response to a List-Unsubscribe action
 	// (one-click POST or the manual link). Always suppresses — it's an explicit
 	// recipient request, independent of the auto-suppress settings.
@@ -372,6 +373,29 @@ func (s *service) ShouldSuppressRecipient(ctx context.Context, organizationID uu
 		return false, "", nil
 	}
 	return true, entry.Reason, nil
+}
+
+// SuppressRecipient permanently suppresses an address for the organization.
+func (s *service) SuppressRecipient(ctx context.Context, organizationID uuid.UUID, email, reason string, source models.DeliverabilityEventType) *errx.Error {
+	email = strings.TrimSpace(strings.ToLower(email))
+	if email == "" {
+		return nil
+	}
+	if source == "" {
+		source = models.DeliverabilityEventUnsubscribe
+	}
+	if reason == "" {
+		reason = "suppressed"
+	}
+	if err := s.repo.UpsertSuppressedRecipient(ctx, &models.SuppressedRecipient{
+		OrganizationID: organizationID,
+		Email:          email,
+		Reason:         reason,
+		Source:         source,
+	}); err != nil {
+		return toErrx(err)
+	}
+	return nil
 }
 
 // Unsubscribe resolves the campaign + contact behind a List-Unsubscribe link and

@@ -62,3 +62,18 @@ Permissions follow contacts: view for reads, manage for import and block.
 ## What this does not do yet
 
 Message generation, review UI, campaign enrollment, Microsoft Graph send, and outcome webhooks back to `extra-cli` ship in follow-up work. See `docs/confenge/` in the repository for architecture and upstream maintenance notes.
+
+
+## Global dispatch governor
+
+CONFENGE outbound email and WhatsApp share one local rolling-hour cap (default 10 sends/hour, min gap 360s, timezone America/Sao_Paulo). The governor is the final gate before provider send: approved items that exceed capacity re-compete for future slots and never burst after restart.
+
+| Env | Default |
+| --- | --- |
+| `CONFENGE_GLOBAL_SENDS_PER_HOUR` | `10` |
+| `CONFENGE_MIN_SEND_GAP_SECONDS` | `360` |
+| `CONFENGE_SEND_TIMEZONE` | `America/Sao_Paulo` |
+| `CONFENGE_SEND_WINDOW_START` / `END` | `09:00` / `18:00` |
+| `CONFENGE_DISPATCH_PAUSED` | `false` |
+
+API: `GET /confenge/dispatch/status`, `POST /confenge/dispatch/pause`, `POST /confenge/dispatch/resume`.

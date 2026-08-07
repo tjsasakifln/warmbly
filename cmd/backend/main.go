@@ -989,6 +989,10 @@ func main() {
 		}
 		outreachRepo := repository.NewOutreachRepository(primaryDB.Pool)
 		confengeServiceForHandler = confenge.NewServiceWithAI(confengeCfg, outreachRepo, auditService, aiProvider)
+		if confengeServiceForHandler != nil {
+			// Global dispatch governor: ~10 outbound/hour shared email+WhatsApp.
+			confengeServiceForHandler.WireDispatch(primaryDB.Pool)
+		}
 		if confengeServiceForHandler != nil && aiProvider != nil {
 			confengeServiceForHandler.SetAI(aiProvider)
 		}
@@ -1242,6 +1246,12 @@ func main() {
 			trackedLinkRepository,
 			integrationServiceForHandler, // AutomationRunner for campaign run_automation steps
 		)
+		if tasksService != nil && confengeServiceForHandler != nil {
+			// CONFENGE global governor on final campaign email send path.
+			if gate, ok := confengeServiceForHandler.(tasks.ConfengeOutboundGate); ok {
+				tasksService.WireConfengeDispatch(gate)
+			}
+		}
 		// Campaign "ai" sequence steps run over the same provider + credit
 		// ledger as the automation AI nodes. Nil provider leaves them
 		// returning a clean "not available".
