@@ -114,7 +114,7 @@ type Handler struct {
 	// CRM
 	CRMService crm.CRMService
 
-// CONFENGE outreach staging (extra-cli feed import). Nil or disabled when
+	// CONFENGE outreach staging (extra-cli feed import). Nil or disabled when
 	// CONFENGE_OUTREACH_ENABLED is false.
 	ConfengeService confenge.Service
 
