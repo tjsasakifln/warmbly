@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS confenge_dispatch_queue (
     channel             text NOT NULL,
     draft_id            uuid NOT NULL,
     message_key         text NOT NULL,
+    recipient_ref       text NOT NULL DEFAULT '',
     due_at              timestamptz NOT NULL DEFAULT now(),
     priority            int NOT NULL DEFAULT 0,
     status              text NOT NULL DEFAULT 'queued',

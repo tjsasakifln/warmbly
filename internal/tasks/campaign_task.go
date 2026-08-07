@@ -563,7 +563,53 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 		Attachments:    attachmentRefs,
 	}
 
+	// CONFENGE global dispatch governor: final gate before worker/SMTP for
+	// CONFENGE-attributed campaigns (shared rolling-hour cap with WhatsApp).
+	var confengeLease uuid.UUID
+	if s.confengeGate != nil && campaign.OrganizationID != nil {
+		lease, already, deferred, nextSlot, reason, gerr := s.confengeGate.GateCampaignEmail(
+			ctx, *campaign.OrganizationID, campaign.Name, contact.Email,
+			campaign.ID, contact.ID, sequence.ID,
+		)
+		if gerr != nil {
+			// Hard block (DNC/bounce): skip recipient, schedule next campaign tick.
+			log.Info().Str("campaign_id", campaign.ID.String()).Str("contact", contact.Email).Str("reason", gerr.Error()).Msg("confenge gate blocked send")
+			_ = s.taskRepo.UpdateTaskStatusWithLock(ctx, taskID, "skipped_suppressed")
+			_ = s.createCampaignTask(ctx, campaign.ID, accountID, nextTime)
+			executionStatus = "completed"
+			return nil
+		}
+		if already {
+			// Idempotent: this step already counted as successful outbound.
+			_ = s.taskRepo.UpdateTaskStatusWithLock(ctx, taskID, "completed")
+			_ = s.createCampaignTask(ctx, campaign.ID, accountID, nextTime)
+			executionStatus = "completed"
+			return nil
+		}
+		if deferred {
+			// No slot: reschedule this campaign chain for the next free slot (no burst).
+			when := nextSlot
+			if when.IsZero() {
+				when = time.Now().UTC().Add(time.Hour)
+			}
+			if when.Before(time.Now().UTC()) {
+				when = time.Now().UTC().Add(time.Minute)
+			}
+			log.Info().Str("campaign_id", campaign.ID.String()).Str("reason", reason).Time("next_slot", when).Msg("confenge gate deferred send")
+			_ = s.taskRepo.UpdateTaskStatusWithLock(ctx, taskID, "skipped_daily_limit")
+			if cerr := s.createCampaignTask(ctx, campaign.ID, accountID, when); cerr != nil {
+				log.Warn().Err(cerr).Msg("failed to reschedule after confenge gate defer")
+			}
+			executionStatus = "completed"
+			return nil
+		}
+		confengeLease = lease
+	}
+
 	if err := s.emailSender.Send(ctx, taskID, emailMsg, *account); err != nil {
+		if confengeLease != uuid.Nil && s.confengeGate != nil {
+			s.confengeGate.ReleaseCampaignEmail(ctx, confengeLease, err.Error())
+		}
 		// Failed to send to worker, record failure
 		s.taskRepo.RecordTaskFailure(ctx, taskID, "Send failed", err.Error())
 		if s.campaignLogRepo != nil {
@@ -619,6 +665,13 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 			_ = s.taskRepo.UpdateTaskStatus(ctx, taskID, "dead_lettered")
 		}
 		return nil
+	}
+
+	// Successful outbound publish: consume CONFENGE success slot (idempotent message_key).
+	if confengeLease != uuid.Nil && s.confengeGate != nil {
+		if cerr := s.confengeGate.CommitCampaignEmail(ctx, confengeLease); cerr != nil {
+			log.Warn().Err(cerr).Str("campaign_id", campaign.ID.String()).Msg("confenge gate commit failed")
+		}
 	}
 
 	// STEP 16: Store sent email metadata (encrypted) in database

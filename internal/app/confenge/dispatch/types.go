@@ -119,6 +119,7 @@ type QueueItem struct {
 	Channel        string
 	DraftID        uuid.UUID
 	MessageKey     string
+	RecipientRef   string // email or E.164 for DNC/opt-out cancel before reserve
 	DueAt          time.Time
 	Priority       int
 	Status         string
@@ -132,6 +133,7 @@ type EnqueueRequest struct {
 	Channel        string
 	DraftID        uuid.UUID
 	MessageKey     string
+	RecipientRef   string
 	DueAt          time.Time
 	Priority       int
 }

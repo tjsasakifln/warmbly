@@ -254,7 +254,7 @@ func (s *service) SendApprovedWhatsApp(ctx context.Context, orgID, userID, draft
 	}
 
 	// Global CONFENGE dispatch governor (shared email+WA hourly cap). Final gate.
-	lease, already, xerr := s.reserveOutbound(ctx, orgID, "WHATSAPP", draftID)
+	lease, already, xerr := s.reserveOutbound(ctx, orgID, "WHATSAPP", draftID, st.PhoneE164)
 	if xerr != nil {
 		return nil, xerr
 	}

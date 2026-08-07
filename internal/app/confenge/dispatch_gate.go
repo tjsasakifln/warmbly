@@ -41,7 +41,7 @@ func (s *service) Governor() *dispatch.Governor {
 // reserveOutbound is the final gate before provider/campaign send.
 // On denial, enqueues for a future slot and returns a 429-style errx.
 // On AlreadyCommitted, returns (nil, nil) and sets already=true.
-func (s *service) reserveOutbound(ctx context.Context, orgID uuid.UUID, channel string, draftID uuid.UUID) (res *dispatch.Reservation, already bool, xerr *errx.Error) {
+func (s *service) reserveOutbound(ctx context.Context, orgID uuid.UUID, channel string, draftID uuid.UUID, recipientRef string) (res *dispatch.Reservation, already bool, xerr *errx.Error) {
 	if s.governor == nil {
 		// Fail-open only when governor not wired (unit tests of unrelated paths).
 		// Production always wires via WireDispatch.
@@ -78,6 +78,7 @@ func (s *service) reserveOutbound(ctx context.Context, orgID uuid.UUID, channel 
 			Channel:        channel,
 			DraftID:        draftID,
 			MessageKey:     key,
+			RecipientRef:   recipientRef,
 			DueAt:          due,
 		})
 		msg := fmt.Sprintf("dispatch quota full (%s); queued until %s", result.Reason, due.UTC().Format(time.RFC3339))

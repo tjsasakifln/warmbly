@@ -1246,6 +1246,12 @@ func main() {
 			trackedLinkRepository,
 			integrationServiceForHandler, // AutomationRunner for campaign run_automation steps
 		)
+		if tasksService != nil && confengeServiceForHandler != nil {
+			// CONFENGE global governor on final campaign email send path.
+			if gate, ok := confengeServiceForHandler.(tasks.ConfengeOutboundGate); ok {
+				tasksService.WireConfengeDispatch(gate)
+			}
+		}
 		// Campaign "ai" sequence steps run over the same provider + credit
 		// ledger as the automation AI nodes. Nil provider leaves them
 		// returning a clean "not available".

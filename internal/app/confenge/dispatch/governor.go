@@ -113,72 +113,20 @@ func (g *Governor) TryReserve(ctx context.Context, req ReserveRequest) (ReserveR
 		return out, nil
 	}
 
-	_, _ = g.store.ExpireStaleReservations(ctx, now)
-
-	if _, ok, err := g.store.GetSendByKey(ctx, req.MessageKey); err != nil {
-		return out, err
-	} else if ok {
-		out.Allowed = true
-		out.AlreadyCommitted = true
-		out.Reason = "already_sent"
-		out.SentLastHour = g.countSince(ctx, now.Add(-RollingWindow))
-		return out, nil
-	}
-
-	if existing, err := g.store.GetReservationByKey(ctx, req.MessageKey); err != nil {
-		return out, err
-	} else if existing != nil && existing.State == StateReserved && existing.LeaseUntil.After(now) {
-		_ = g.store.RefreshReservation(ctx, existing.ID, now.Add(g.cfg.LeaseTTL), req.WorkerToken)
-		existing.LeaseUntil = now.Add(g.cfg.LeaseTTL)
-		out.Allowed = true
-		out.Reservation = existing
-		out.Reason = "existing_lease"
-		out.SentLastHour = g.countSince(ctx, now.Add(-RollingWindow))
-		return out, nil
-	}
-
-	occupied, last, err := g.store.ListOccupied(ctx, now, RollingWindow)
+	// Full reserve decision under store serialization (multi-worker safe).
+	atomic, err := g.store.TryReserveAtomic(ctx, AtomicReserveInput{
+		Req: req, Now: now, Cap: capN, MinGap: g.cfg.MinGap,
+		LeaseTTL: g.cfg.LeaseTTL, Window: RollingWindow,
+	})
 	if err != nil {
 		return out, err
 	}
-	snap := WindowSnapshot{
-		OccupiedAt: occupied, LastOccupied: last,
-		Cap: capN, MinGap: g.cfg.MinGap, Window: RollingWindow, Now: now,
-	}
-	out.SentLastHour = snap.OccupiedCount()
-	ok, reason, next := snap.CanGrant()
-	if !ok {
-		out.Reason = reason
-		out.NextSlot = next
-		return out, nil
-	}
-
-	res := &Reservation{
-		ID: uuid.New(), OrganizationID: req.OrganizationID, Channel: req.Channel,
-		MessageKey: req.MessageKey, DraftID: req.DraftID, State: StateReserved,
-		ReservedAt: now, LeaseUntil: now.Add(g.cfg.LeaseTTL), WorkerToken: req.WorkerToken,
-	}
-	if err := g.store.InsertReservation(ctx, res); err != nil {
-		if existing, gerr := g.store.GetReservationByKey(ctx, req.MessageKey); gerr == nil && existing != nil {
-			if existing.State == StateCommitted {
-				out.Allowed = true
-				out.AlreadyCommitted = true
-				out.Reason = "already_sent"
-				return out, nil
-			}
-			if existing.State == StateReserved && existing.LeaseUntil.After(now) {
-				out.Allowed = true
-				out.Reservation = existing
-				out.Reason = "existing_lease"
-				return out, nil
-			}
-		}
-		return out, err
-	}
-	out.Allowed = true
-	out.Reservation = res
-	out.Reason = "reserved"
-	out.SentLastHour = snap.OccupiedCount() + 1
+	out.Allowed = atomic.Allowed
+	out.AlreadyCommitted = atomic.AlreadyCommitted
+	out.Reservation = atomic.Reservation
+	out.Reason = atomic.Reason
+	out.NextSlot = atomic.NextSlot
+	out.SentLastHour = atomic.SentLastHour
 	return out, nil
 }
 
@@ -200,7 +148,8 @@ func (g *Governor) Enqueue(ctx context.Context, req EnqueueRequest) error {
 	}
 	return g.store.Enqueue(ctx, &QueueItem{
 		OrganizationID: req.OrganizationID, Channel: req.Channel, DraftID: req.DraftID,
-		MessageKey: req.MessageKey, DueAt: req.DueAt.UTC(), Priority: req.Priority,
+		MessageKey: req.MessageKey, RecipientRef: req.RecipientRef,
+		DueAt: req.DueAt.UTC(), Priority: req.Priority,
 		Status: QueueQueued, CreatedAt: g.clock.Now().UTC(),
 	})
 }
@@ -294,8 +243,14 @@ func (g *Governor) RecordFailure(ctx context.Context, orgID uuid.UUID, channel, 
 	})
 }
 
-func (g *Governor) PeekNextQueued(ctx context.Context) (*QueueItem, error) {
-	return g.store.DequeueNext(ctx, g.clock.Now().UTC())
+// ClaimNextQueued transactionally claims the next fair due item (status -> reserved).
+func (g *Governor) ClaimNextQueued(ctx context.Context) (*QueueItem, error) {
+	return g.store.ClaimNextQueued(ctx, g.clock.Now().UTC())
+}
+
+// CancelByRecipient cancels queued items for a contact email/phone (DNC/opt-out/bounce).
+func (g *Governor) CancelByRecipient(ctx context.Context, orgID uuid.UUID, recipientRef, reason string) (int, error) {
+	return g.store.CancelQueueByRecipient(ctx, orgID, recipientRef, reason)
 }
 
 func (g *Governor) MarkQueue(ctx context.Context, id uuid.UUID, status, errText string) error {

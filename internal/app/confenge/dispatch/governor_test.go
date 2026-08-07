@@ -140,7 +140,7 @@ func TestRestartNoBurst(t *testing.T) {
 	g2 := NewGovernor(cfg, store, clock)
 	committed := 0
 	for i := 0; i < 20; i++ {
-		item, err := g2.PeekNextQueued(ctx)
+		item, err := g2.ClaimNextQueued(ctx)
 		if err != nil || item == nil {
 			break
 		}
@@ -151,7 +151,15 @@ func TestRestartNoBurst(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !res.Allowed {
-			// remaining stay queued — no burst
+			// Re-queue for future slot — claimed items must not free-send on denial.
+			due := res.NextSlot
+			if due.IsZero() {
+				due = clock.Now().Add(time.Minute)
+			}
+			_ = g2.Enqueue(ctx, EnqueueRequest{
+				OrganizationID: item.OrganizationID, Channel: item.Channel, DraftID: item.DraftID,
+				MessageKey: item.MessageKey, DueAt: due,
+			})
 			break
 		}
 		if err := g2.Commit(ctx, res.Reservation.ID); err != nil {
@@ -168,8 +176,8 @@ func TestRestartNoBurst(t *testing.T) {
 		t.Fatalf("expected exactly 10 after catch-up, got %d", committed)
 	}
 	queued, _ := store.CountQueued(ctx, nil)
-	if queued < 10 {
-		t.Fatalf("expected remaining backlog queued, got %d", queued)
+	if queued < 9 {
+		t.Fatalf("expected remaining backlog re-queued, got %d", queued)
 	}
 }
 
@@ -318,7 +326,7 @@ func TestDNCCancelsQueueWithoutConsumingSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Should not be dequeued
-	item, err := g.PeekNextQueued(ctx)
+	item, err := g.ClaimNextQueued(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,5 +464,32 @@ func TestStatusReports(t *testing.T) {
 	}
 	if st.Paused {
 		t.Fatal("should not be paused")
+	}
+}
+
+func TestCancelByRecipientDropsQueued(t *testing.T) {
+	clock := &FixedClock{T: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)}
+	g, store := newTestGov(t, clock)
+	org := uuid.New()
+	ctx := context.Background()
+	did := uuid.New()
+	key := MessageKeyEmail(did)
+	email := "lead@example.com"
+	_ = g.Enqueue(ctx, EnqueueRequest{
+		OrganizationID: org, Channel: ChannelEmail, DraftID: did, MessageKey: key,
+		RecipientRef: email, DueAt: clock.Now(),
+	})
+	n, err := g.CancelByRecipient(ctx, org, email, "DO_NOT_CONTACT")
+	if err != nil || n != 1 {
+		t.Fatalf("cancel n=%d err=%v", n, err)
+	}
+	item, _ := g.ClaimNextQueued(ctx)
+	if item != nil {
+		t.Fatal("DNC-cancelled item must not be claimable")
+	}
+	// No success slot consumed
+	sent, _ := store.CountSendsSince(ctx, clock.Now().Add(-RollingWindow))
+	if sent != 0 {
+		t.Fatalf("sent=%d", sent)
 	}
 }

@@ -55,9 +55,16 @@ func (m *MemoryStore) SetPaused(ctx context.Context, paused bool, reason string,
 	return nil
 }
 
-func (m *MemoryStore) ListOccupied(ctx context.Context, now time.Time, window time.Duration) ([]time.Time, time.Time, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (m *MemoryStore) expireLocked(now time.Time) {
+	for _, r := range m.reservations {
+		if r.State == StateReserved && !r.LeaseUntil.After(now) {
+			r.State = StateReleased
+			r.LastError = "lease_expired"
+		}
+	}
+}
+
+func (m *MemoryStore) occupiedLocked(now time.Time, window time.Duration) ([]time.Time, time.Time) {
 	cutoff := now.Add(-window)
 	var times []time.Time
 	var last time.Time
@@ -80,6 +87,97 @@ func (m *MemoryStore) ListOccupied(ctx context.Context, now time.Time, window ti
 			}
 		}
 	}
+	return times, last
+}
+
+// TryReserveAtomic holds the store mutex for the full decision (multi-instance safe).
+func (m *MemoryStore) TryReserveAtomic(ctx context.Context, in AtomicReserveInput) (AtomicReserveOutput, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := in.Now.UTC()
+	window := in.Window
+	if window <= 0 {
+		window = RollingWindow
+	}
+	out := AtomicReserveOutput{}
+
+	m.expireLocked(now)
+
+	if t, ok := m.sends[in.Req.MessageKey]; ok {
+		_ = t
+		out.Allowed = true
+		out.AlreadyCommitted = true
+		out.Reason = "already_sent"
+		out.SentLastHour = countTimes(m.sendTimes, now.Add(-window), now)
+		return out, nil
+	}
+
+	if existing := m.reservations[in.Req.MessageKey]; existing != nil &&
+		existing.State == StateReserved && existing.LeaseUntil.After(now) {
+		existing.LeaseUntil = now.Add(in.LeaseTTL)
+		cp := *existing
+		out.Allowed = true
+		out.Reservation = &cp
+		out.Reason = "existing_lease"
+		out.SentLastHour = countTimes(m.sendTimes, now.Add(-window), now)
+		return out, nil
+	}
+
+	occupied, last := m.occupiedLocked(now, window)
+	snap := WindowSnapshot{
+		OccupiedAt: occupied, LastOccupied: last,
+		Cap: in.Cap, MinGap: in.MinGap, Window: window, Now: now,
+	}
+	out.SentLastHour = snap.OccupiedCount()
+	ok, reason, next := snap.CanGrant()
+	if !ok {
+		out.Reason = reason
+		out.NextSlot = next
+		return out, nil
+	}
+
+	// Clear released/failed/expired row for this key.
+	if existing := m.reservations[in.Req.MessageKey]; existing != nil {
+		delete(m.byResID, existing.ID)
+		delete(m.reservations, in.Req.MessageKey)
+	}
+
+	res := &Reservation{
+		ID:             uuid.New(),
+		OrganizationID: in.Req.OrganizationID,
+		Channel:        in.Req.Channel,
+		MessageKey:     in.Req.MessageKey,
+		DraftID:        in.Req.DraftID,
+		State:          StateReserved,
+		ReservedAt:     now,
+		LeaseUntil:     now.Add(in.LeaseTTL),
+		WorkerToken:    in.Req.WorkerToken,
+	}
+	cp := *res
+	m.reservations[res.MessageKey] = &cp
+	m.byResID[cp.ID] = &cp
+	out.Allowed = true
+	out.Reservation = res
+	out.Reason = "reserved"
+	out.SentLastHour = snap.OccupiedCount() + 1
+	return out, nil
+}
+
+func countTimes(times []time.Time, since, until time.Time) int {
+	n := 0
+	for _, t := range times {
+		if !t.Before(since) && !t.After(until) {
+			n++
+		}
+	}
+	return n
+}
+
+func (m *MemoryStore) ListOccupied(ctx context.Context, now time.Time, window time.Duration) ([]time.Time, time.Time, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	times, last := m.occupiedLocked(now, window)
 	return times, last, nil
 }
 
@@ -99,27 +197,6 @@ func (m *MemoryStore) GetSendByKey(ctx context.Context, messageKey string) (time
 	defer m.mu.Unlock()
 	t, ok := m.sends[messageKey]
 	return t, ok, nil
-}
-
-func (m *MemoryStore) InsertReservation(ctx context.Context, r *Reservation) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if existing := m.reservations[r.MessageKey]; existing != nil {
-		if existing.State == StateCommitted {
-			return fmt.Errorf("message already committed")
-		}
-		if existing.State == StateReserved && existing.LeaseUntil.After(r.ReservedAt) {
-			return fmt.Errorf("active reservation exists")
-		}
-		delete(m.byResID, existing.ID)
-	}
-	if r.ID == uuid.Nil {
-		r.ID = uuid.New()
-	}
-	cp := *r
-	m.reservations[r.MessageKey] = &cp
-	m.byResID[cp.ID] = &cp
-	return nil
 }
 
 func (m *MemoryStore) RefreshReservation(ctx context.Context, id uuid.UUID, leaseUntil time.Time, workerToken string) error {
@@ -198,6 +275,7 @@ func (m *MemoryStore) Enqueue(ctx context.Context, item *QueueItem) error {
 		}
 		existing.DueAt = item.DueAt
 		existing.Priority = item.Priority
+		existing.RecipientRef = item.RecipientRef
 		existing.Status = QueueQueued
 		return nil
 	}
@@ -231,6 +309,26 @@ func (m *MemoryStore) CancelQueue(ctx context.Context, messageKey, reason string
 	return nil
 }
 
+func (m *MemoryStore) CancelQueueByRecipient(ctx context.Context, orgID uuid.UUID, recipientRef, reason string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if recipientRef == "" {
+		return 0, nil
+	}
+	n := 0
+	for _, q := range m.queue {
+		if q.OrganizationID != orgID || q.Status != QueueQueued {
+			continue
+		}
+		if q.RecipientRef == recipientRef {
+			q.Status = QueueCancelled
+			q.CancelReason = reason
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (m *MemoryStore) CountQueued(ctx context.Context, orgID *uuid.UUID) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -247,7 +345,8 @@ func (m *MemoryStore) CountQueued(ctx context.Context, orgID *uuid.UUID) (int, e
 	return n, nil
 }
 
-func (m *MemoryStore) DequeueNext(ctx context.Context, now time.Time) (*QueueItem, error) {
+// ClaimNextQueued picks the next fair due item and marks it reserved under the lock.
+func (m *MemoryStore) ClaimNextQueued(ctx context.Context, now time.Time) (*QueueItem, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var candidates []*QueueItem
@@ -270,7 +369,9 @@ func (m *MemoryStore) DequeueNext(ctx context.Context, now time.Time) (*QueueIte
 		}
 		return a.CreatedAt.Before(b.CreatedAt)
 	})
-	cp := *candidates[0]
+	chosen := candidates[0]
+	chosen.Status = QueueReserved
+	cp := *chosen
 	return &cp, nil
 }
 

@@ -117,43 +117,156 @@ func (s *PGStore) GetSendByKey(ctx context.Context, messageKey string) (time.Tim
 	return t, true, nil
 }
 
-func (s *PGStore) InsertReservation(ctx context.Context, r *Reservation) error {
-	if r.ID == uuid.Nil {
-		r.ID = uuid.New()
+func (s *PGStore) TryReserveAtomic(ctx context.Context, in AtomicReserveInput) (AtomicReserveOutput, error) {
+	out := AtomicReserveOutput{}
+	now := in.Now.UTC()
+	window := in.Window
+	if window <= 0 {
+		window = RollingWindow
 	}
+
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return err
+		return out, err
 	}
 	defer tx.Rollback(ctx)
 
+	// Global serialize: lock control row for the full decision.
 	if _, err := tx.Exec(ctx, `SELECT id FROM confenge_dispatch_control WHERE id = 1 FOR UPDATE`); err != nil {
 		if _, ierr := tx.Exec(ctx, `INSERT INTO confenge_dispatch_control (id) VALUES (1) ON CONFLICT DO NOTHING`); ierr != nil {
-			return ierr
+			return out, ierr
 		}
 		if _, err = tx.Exec(ctx, `SELECT id FROM confenge_dispatch_control WHERE id = 1 FOR UPDATE`); err != nil {
-			return err
+			return out, err
 		}
 	}
 
+	// Expire stale leases under the same lock.
+	_, _ = tx.Exec(ctx, `
+		UPDATE confenge_dispatch_reservations
+		SET state = 'released', last_error = 'lease_expired'
+		WHERE state = 'reserved' AND lease_until <= $1`, now)
+
+	// Already sent?
+	var sentAt time.Time
+	err = tx.QueryRow(ctx, `SELECT sent_at FROM confenge_dispatch_sends WHERE message_key = $1`, in.Req.MessageKey).Scan(&sentAt)
+	if err == nil {
+		out.Allowed = true
+		out.AlreadyCommitted = true
+		out.Reason = "already_sent"
+		_ = tx.QueryRow(ctx, `SELECT count(*) FROM confenge_dispatch_sends WHERE sent_at >= $1`, now.Add(-window)).Scan(&out.SentLastHour)
+		if err := tx.Commit(ctx); err != nil {
+			return out, err
+		}
+		return out, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return out, err
+	}
+
+	// Existing open lease?
+	var existing Reservation
+	var draftID *uuid.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT id, organization_id, channel, message_key, draft_id, state, reserved_at, lease_until
+		FROM confenge_dispatch_reservations WHERE message_key = $1`, in.Req.MessageKey,
+	).Scan(&existing.ID, &existing.OrganizationID, &existing.Channel, &existing.MessageKey,
+		&draftID, &existing.State, &existing.ReservedAt, &existing.LeaseUntil)
+	if err == nil && existing.State == StateReserved && existing.LeaseUntil.After(now) {
+		_, _ = tx.Exec(ctx, `UPDATE confenge_dispatch_reservations SET lease_until = $2, worker_token = COALESCE(NULLIF($3,''), worker_token) WHERE id = $1`,
+			existing.ID, now.Add(in.LeaseTTL), in.Req.WorkerToken)
+		existing.DraftID = draftID
+		existing.LeaseUntil = now.Add(in.LeaseTTL)
+		out.Allowed = true
+		out.Reservation = &existing
+		out.Reason = "existing_lease"
+		_ = tx.QueryRow(ctx, `SELECT count(*) FROM confenge_dispatch_sends WHERE sent_at >= $1`, now.Add(-window)).Scan(&out.SentLastHour)
+		if err := tx.Commit(ctx); err != nil {
+			return out, err
+		}
+		return out, nil
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return out, err
+	}
+
+	// Count occupied under lock.
+	rows, err := tx.Query(ctx, `
+		SELECT sent_at FROM confenge_dispatch_sends
+		WHERE sent_at >= $1 AND sent_at <= $2
+		UNION ALL
+		SELECT reserved_at FROM confenge_dispatch_reservations
+		WHERE state = 'reserved' AND lease_until > $2
+		  AND reserved_at >= $1 AND reserved_at <= $2`,
+		now.Add(-window), now,
+	)
+	if err != nil {
+		return out, err
+	}
+	var times []time.Time
+	var last time.Time
+	for rows.Next() {
+		var t time.Time
+		if err := rows.Scan(&t); err != nil {
+			rows.Close()
+			return out, err
+		}
+		times = append(times, t)
+		if t.After(last) {
+			last = t
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+
+	snap := WindowSnapshot{
+		OccupiedAt: times, LastOccupied: last,
+		Cap: in.Cap, MinGap: in.MinGap, Window: window, Now: now,
+	}
+	out.SentLastHour = snap.OccupiedCount()
+	ok, reason, next := snap.CanGrant()
+	if !ok {
+		out.Reason = reason
+		out.NextSlot = next
+		if err := tx.Commit(ctx); err != nil {
+			return out, err
+		}
+		return out, nil
+	}
+
+	// Clear dead reservation for this key.
 	_, _ = tx.Exec(ctx, `
 		DELETE FROM confenge_dispatch_reservations
 		WHERE message_key = $1 AND (
 			state IN ('released', 'failed')
 			OR (state = 'reserved' AND lease_until <= $2)
-		)`, r.MessageKey, r.ReservedAt)
+		)`, in.Req.MessageKey, now)
 
+	resID := uuid.New()
 	_, err = tx.Exec(ctx, `
 		INSERT INTO confenge_dispatch_reservations
 			(id, organization_id, channel, message_key, draft_id, state, reserved_at, lease_until, worker_token)
 		VALUES ($1,$2,$3,$4,$5,'reserved',$6,$7,$8)`,
-		r.ID, r.OrganizationID, r.Channel, r.MessageKey, r.DraftID,
-		r.ReservedAt, r.LeaseUntil, r.WorkerToken,
+		resID, in.Req.OrganizationID, in.Req.Channel, in.Req.MessageKey, in.Req.DraftID,
+		now, now.Add(in.LeaseTTL), in.Req.WorkerToken,
 	)
 	if err != nil {
-		return err
+		return out, err
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return out, err
+	}
+	out.Allowed = true
+	out.Reservation = &Reservation{
+		ID: resID, OrganizationID: in.Req.OrganizationID, Channel: in.Req.Channel,
+		MessageKey: in.Req.MessageKey, DraftID: in.Req.DraftID, State: StateReserved,
+		ReservedAt: now, LeaseUntil: now.Add(in.LeaseTTL), WorkerToken: in.Req.WorkerToken,
+	}
+	out.Reason = "reserved"
+	out.SentLastHour = snap.OccupiedCount() + 1
+	return out, nil
 }
 
 func (s *PGStore) RefreshReservation(ctx context.Context, id uuid.UUID, leaseUntil time.Time, workerToken string) error {
@@ -233,17 +346,18 @@ func (s *PGStore) Enqueue(ctx context.Context, item *QueueItem) error {
 	}
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO confenge_dispatch_queue
-			(id, organization_id, channel, draft_id, message_key, due_at, priority, status, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,'queued', now(), now())
+			(id, organization_id, channel, draft_id, message_key, recipient_ref, due_at, priority, status, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued', now(), now())
 		ON CONFLICT (message_key) DO UPDATE SET
 			due_at = EXCLUDED.due_at,
 			priority = EXCLUDED.priority,
+			recipient_ref = EXCLUDED.recipient_ref,
 			status = CASE
 				WHEN confenge_dispatch_queue.status IN ('sent','cancelled') THEN confenge_dispatch_queue.status
 				ELSE 'queued'
 			END,
 			updated_at = now()`,
-		item.ID, item.OrganizationID, item.Channel, item.DraftID, item.MessageKey,
+		item.ID, item.OrganizationID, item.Channel, item.DraftID, item.MessageKey, item.RecipientRef,
 		item.DueAt, item.Priority,
 	)
 	return err
@@ -257,6 +371,21 @@ func (s *PGStore) CancelQueue(ctx context.Context, messageKey, reason string) er
 	return err
 }
 
+func (s *PGStore) CancelQueueByRecipient(ctx context.Context, orgID uuid.UUID, recipientRef, reason string) (int, error) {
+	if recipientRef == "" {
+		return 0, nil
+	}
+	tag, err := s.db.Exec(ctx, `
+		UPDATE confenge_dispatch_queue
+		SET status = 'cancelled', cancel_reason = $3, updated_at = now()
+		WHERE organization_id = $1 AND recipient_ref = $2 AND status IN ('queued','reserved','failed')`,
+		orgID, recipientRef, reason)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 func (s *PGStore) CountQueued(ctx context.Context, orgID *uuid.UUID) (int, error) {
 	var n int
 	var err error
@@ -268,24 +397,40 @@ func (s *PGStore) CountQueued(ctx context.Context, orgID *uuid.UUID) (int, error
 	return n, err
 }
 
-func (s *PGStore) DequeueNext(ctx context.Context, now time.Time) (*QueueItem, error) {
+func (s *PGStore) ClaimNextQueued(ctx context.Context, now time.Time) (*QueueItem, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
 	var q QueueItem
-	err := s.db.QueryRow(ctx, `
-		SELECT id, organization_id, channel, draft_id, message_key, due_at, priority, status,
+	err = tx.QueryRow(ctx, `
+		SELECT id, organization_id, channel, draft_id, message_key, COALESCE(recipient_ref,''), due_at, priority, status,
 		       cancel_reason, last_error, created_at
 		FROM confenge_dispatch_queue
 		WHERE status = 'queued' AND due_at <= $1
 		ORDER BY due_at ASC, priority DESC, created_at ASC
 		LIMIT 1
 		FOR UPDATE SKIP LOCKED`, now,
-	).Scan(&q.ID, &q.OrganizationID, &q.Channel, &q.DraftID, &q.MessageKey, &q.DueAt,
+	).Scan(&q.ID, &q.OrganizationID, &q.Channel, &q.DraftID, &q.MessageKey, &q.RecipientRef, &q.DueAt,
 		&q.Priority, &q.Status, &q.CancelReason, &q.LastError, &q.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
+		_ = tx.Commit(ctx)
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	_, err = tx.Exec(ctx, `
+		UPDATE confenge_dispatch_queue SET status = 'reserved', updated_at = now() WHERE id = $1`, q.ID)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	q.Status = QueueReserved
 	return &q, nil
 }
 

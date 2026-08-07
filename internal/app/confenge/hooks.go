@@ -44,6 +44,9 @@ func (s *service) NoteReply(ctx context.Context, orgID uuid.UUID, contactEmail s
 		return nil // not a confenge lead
 	}
 	payload, _ := jsonMarshalMap(meta)
+	if s.governor != nil {
+		_, _ = s.governor.CancelByRecipient(ctx, orgID, email, "reply")
+	}
 	return s.enqueueErr(ctx, orgID, models.OutreachOutcome{
 		IdempotencyKey: fmt.Sprintf("replied:%s:%s:%d", orgID, email, time.Now().UTC().Truncate(time.Minute).Unix()),
 		SourceLeadID:   acc.SourceLeadID,
@@ -78,6 +81,9 @@ func (s *service) NoteBounce(ctx context.Context, orgID uuid.UUID, contactEmail,
 		cnpj, lead = acc.CNPJ14, acc.SourceLeadID
 		_ = s.repo.SetAccountHumanFlags(ctx, orgID, acc.ID, acc.Blocked, acc.DoNotContact, "bounce", models.OutreachQueueBounced)
 	}
+	if s.governor != nil {
+		_, _ = s.governor.CancelByRecipient(ctx, orgID, email, "bounce")
+	}
 	return s.enqueueErr(ctx, orgID, models.OutreachOutcome{
 		IdempotencyKey: fmt.Sprintf("bounced:%s:%s", orgID, email),
 		SourceLeadID:   lead,
@@ -111,6 +117,10 @@ func (s *service) NoteDNC(ctx context.Context, orgID uuid.UUID, contactEmail, re
 	if acc != nil {
 		cnpj, lead = acc.CNPJ14, acc.SourceLeadID
 		_ = s.repo.SetAccountHumanFlags(ctx, orgID, acc.ID, true, true, reason, models.OutreachQueueDoNotContact)
+	}
+	// Dominant block: drop any queued outbound for this recipient before a future reserve.
+	if s.governor != nil {
+		_, _ = s.governor.CancelByRecipient(ctx, orgID, email, "DO_NOT_CONTACT")
 	}
 	return s.enqueueErr(ctx, orgID, models.OutreachOutcome{
 		IdempotencyKey: fmt.Sprintf("dnc:%s:%s", orgID, email),
