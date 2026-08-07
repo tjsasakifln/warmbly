@@ -470,8 +470,11 @@ func Run(
 					confengeWrite.POST("/import", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ImportConfengeFeed)
 					confengeWrite.POST("/accounts/:id/block", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.BlockConfengeAccount)
 					confengeWrite.POST("/accounts/:id/generate", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.GenerateConfengeDraft)
+					confengeWrite.POST("/accounts/:id/generate-whatsapp", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.GenerateConfengeWhatsAppDraft)
+					confengeGroup.GET("/accounts/:id/channel-decision", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.DecideConfengeChannel)
 					confengeWrite.POST("/drafts/:id/review", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ReviewConfengeDraft)
 					confengeWrite.POST("/drafts/:id/enroll", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.EnrollConfengeDraft)
+					confengeWrite.POST("/drafts/:id/send-whatsapp", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.SendConfengeWhatsAppDraft)
 					confengeWrite.POST("/campaign/bootstrap", m.RequireAccess(models.PermManageCampaigns, models.APIPermWriteCampaigns), h.BootstrapConfengeCampaign)
 					confengeWrite.POST("/crm/bootstrap", m.RequireAccess(models.PermManageContacts, models.APIPermWriteCRM), h.BootstrapConfengePipeline)
 				}

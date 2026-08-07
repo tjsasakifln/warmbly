@@ -425,3 +425,92 @@ func (h *Handler) BootstrapConfengePipeline(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"data": pipe})
 }
+
+// DecideConfengeChannel returns the deterministic multichannel decision for an account.
+func (h *Handler) DecideConfengeChannel(c *gin.Context) {
+	if h.ConfengeService == nil {
+		errx.JSON(c, errx.New(errx.NotFound, "confenge disabled"))
+		return
+	}
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	accountID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.New(errx.BadRequest, "invalid account id"))
+		return
+	}
+	var contactID *uuid.UUID
+	if s := strings.TrimSpace(c.Query("contact_id")); s != "" {
+		id, err := uuid.Parse(s)
+		if err != nil {
+			errx.JSON(c, errx.New(errx.BadRequest, "invalid contact_id"))
+			return
+		}
+		contactID = &id
+	}
+	d, xerr := h.ConfengeService.DecideChannel(c.Request.Context(), orgID, accountID, contactID)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, d)
+}
+
+// GenerateConfengeWhatsAppDraft creates a short WhatsApp draft for human review.
+func (h *Handler) GenerateConfengeWhatsAppDraft(c *gin.Context) {
+	if h.ConfengeService == nil {
+		errx.JSON(c, errx.New(errx.NotFound, "confenge disabled"))
+		return
+	}
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, _ := c.Get("user_id")
+	uid, _ := userID.(uuid.UUID)
+	accountID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.New(errx.BadRequest, "invalid account id"))
+		return
+	}
+	var contactID *uuid.UUID
+	if s := strings.TrimSpace(c.Query("contact_id")); s != "" {
+		id, err := uuid.Parse(s)
+		if err == nil {
+			contactID = &id
+		}
+	}
+	d, xerr := h.ConfengeService.GenerateWhatsAppDraft(c.Request.Context(), orgID, uid, accountID, contactID)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, d)
+}
+
+// SendConfengeWhatsAppDraft sends an APPROVED WhatsApp draft via Evolution after policy gate.
+func (h *Handler) SendConfengeWhatsAppDraft(c *gin.Context) {
+	if h.ConfengeService == nil {
+		errx.JSON(c, errx.New(errx.NotFound, "confenge disabled"))
+		return
+	}
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, _ := c.Get("user_id")
+	uid, _ := userID.(uuid.UUID)
+	draftID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.New(errx.BadRequest, "invalid draft id"))
+		return
+	}
+	d, xerr := h.ConfengeService.SendApprovedWhatsApp(c.Request.Context(), orgID, uid, draftID)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, d)
+}

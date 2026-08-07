@@ -21,6 +21,8 @@ type memRepo struct {
 	byID     map[uuid.UUID]*models.OutreachAccount
 	cands    map[uuid.UUID][]models.OutreachContactCandidate
 	evidence map[uuid.UUID][]models.OutreachEvidence
+	drafts   map[uuid.UUID]*models.OutreachDraft
+	outcomes []models.OutreachOutcome
 }
 
 func newMemRepo() *memRepo {
@@ -31,6 +33,7 @@ func newMemRepo() *memRepo {
 		byID:     map[uuid.UUID]*models.OutreachAccount{},
 		cands:    map[uuid.UUID][]models.OutreachContactCandidate{},
 		evidence: map[uuid.UUID][]models.OutreachEvidence{},
+		drafts:   map[uuid.UUID]*models.OutreachDraft{},
 	}
 }
 
@@ -221,19 +224,41 @@ func (m *memRepo) UpsertEvidence(ctx context.Context, e *models.OutreachEvidence
 }
 
 func (m *memRepo) UpsertDraft(ctx context.Context, d *models.OutreachDraft) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if d.ID == uuid.Nil {
+		d.ID = uuid.New()
+	}
+	cp := *d
+	m.drafts[d.ID] = &cp
 	return nil
 }
 func (m *memRepo) GetDraft(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachDraft, error) {
-	return nil, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d := m.drafts[id]
+	if d == nil || d.OrganizationID != orgID {
+		return nil, nil
+	}
+	cp := *d
+	return &cp, nil
 }
 func (m *memRepo) GetActiveDraftForAccount(ctx context.Context, orgID, accountID uuid.UUID) (*models.OutreachDraft, error) {
 	return nil, nil
 }
 func (m *memRepo) ListDrafts(ctx context.Context, orgID uuid.UUID, status string, limit, offset int) ([]models.OutreachDraft, error) {
-	return nil, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []models.OutreachDraft
+	for _, d := range m.drafts {
+		if d.OrganizationID == orgID && (status == "" || d.Status == status) {
+			out = append(out, *d)
+		}
+	}
+	return out, nil
 }
 func (m *memRepo) UpdateDraftStatus(ctx context.Context, d *models.OutreachDraft) error {
-	return nil
+	return m.UpsertDraft(ctx, d)
 }
 func (m *memRepo) GetOrgSettings(ctx context.Context, orgID uuid.UUID) (*models.OutreachOrgSettings, error) {
 	return nil, nil
@@ -242,6 +267,9 @@ func (m *memRepo) UpsertOrgSettings(ctx context.Context, s *models.OutreachOrgSe
 	return nil
 }
 func (m *memRepo) EnqueueOutcome(ctx context.Context, ev *models.OutreachOutcome) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.outcomes = append(m.outcomes, *ev)
 	return nil
 }
 func (m *memRepo) ListPendingOutcomes(ctx context.Context, limit int) ([]models.OutreachOutcome, error) {
@@ -257,6 +285,33 @@ func (m *memRepo) GetOutcomeByIdempotency(ctx context.Context, orgID uuid.UUID, 
 	return nil, nil
 }
 func (m *memRepo) FindCandidateByEmail(ctx context.Context, orgID uuid.UUID, email string) (*models.OutreachContactCandidate, *models.OutreachAccount, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, list := range m.cands {
+		for i := range list {
+			c := list[i]
+			if c.OrganizationID == orgID && c.Email == email {
+				acc := m.byID[c.AccountID]
+				return &c, acc, nil
+			}
+		}
+	}
+	return nil, nil, nil
+}
+func (m *memRepo) FindCandidateByPhone(ctx context.Context, orgID uuid.UUID, phone string) (*models.OutreachContactCandidate, *models.OutreachAccount, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, list := range m.cands {
+		for i := range list {
+			c := list[i]
+			if c.OrganizationID != orgID {
+				continue
+			}
+			if c.PhoneE164 == phone || c.Phone == phone {
+				return &c, m.byID[c.AccountID], nil
+			}
+		}
+	}
 	return nil, nil, nil
 }
 

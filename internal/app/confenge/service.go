@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/warmbly/warmbly/internal/app/whatsapp"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/pkg/generation"
@@ -53,6 +54,13 @@ type Service interface {
 	HandleClassifiedReply(ctx context.Context, orgID, actorID uuid.UUID, contactEmail, replyClass string, warmblyContactID *uuid.UUID) *errx.Error
 	// OnClassifiedReply is the advanced-package hook (error, not errx).
 	OnClassifiedReply(ctx context.Context, orgID uuid.UUID, contactEmail, replyClass string, contactID *uuid.UUID) error
+
+	// WhatsApp channel ops (require WireWhatsApp + CONFENGE_WHATSAPP_ENABLED).
+	WireWhatsApp(sender WhatsAppSender, store WhatsAppStateStore)
+	DecideChannel(ctx context.Context, orgID, accountID uuid.UUID, contactID *uuid.UUID) (*ChannelDecision, *errx.Error)
+	GenerateWhatsAppDraft(ctx context.Context, orgID, userID, accountID uuid.UUID, contactID *uuid.UUID) (*models.OutreachDraft, *errx.Error)
+	SendApprovedWhatsApp(ctx context.Context, orgID, userID, draftID uuid.UUID) (*models.OutreachDraft, *errx.Error)
+	HandleWhatsAppInbound(ctx context.Context, orgID uuid.UUID, ev whatsapp.ChannelEvent) (whatsapp.InboundResult, error)
 }
 
 // ImportOptions controls dry-run, idempotency, and source tracking.
@@ -71,6 +79,8 @@ type service struct {
 	campaigns CampaignAPI
 	contacts  ContactAPI
 	crm       CRMAPI
+	wa        WhatsAppSender
+	waStore   WhatsAppStateStore
 }
 
 // NewService wires confenge outreach. When cfg.Enabled is false, mutators return 404-style disabled errors.
@@ -417,25 +427,42 @@ func leadToCandidate(orgID, accountID, runID uuid.UUID, fc FeedContact) *models.
 	vs := NormalizeVerification(fc.VerificationStatus, email)
 	dnc := vs == models.OutreachVerifyDoNotContact
 	bounced := vs == models.OutreachVerifyBounced
-	return &models.OutreachContactCandidate{
-		OrganizationID:     orgID,
-		AccountID:          accountID,
-		SourceContactID:    SanitizeText(fc.SourceContactID, 200),
-		Name:               SanitizeText(fc.Name, 300),
-		Role:               SanitizeText(fc.Role, 200),
-		Email:              email,
-		Phone:              SanitizeText(fc.Phone, 50),
-		LinkedInURL:        SanitizeText(fc.LinkedInURL, 500),
-		SourceURL:          SanitizeText(fc.SourceURL, 1000),
-		SourceDocument:     SanitizeText(fc.SourceDocument, 500),
-		SourceDate:         ParseDate(fc.SourceDate),
-		VerificationStatus: vs,
-		Confidence:         SanitizeText(fc.Confidence, 50),
-		Recommended:        fc.Recommended,
-		DoNotContact:       dnc,
-		Bounced:            bounced,
-		LastImportRunID:    &runID,
+	// Structured phone + consent facts (public number is never opt-in).
+	phoneFacts := ExtractPhoneFacts(fc)
+	rawPhone := phoneFacts.Raw
+	if rawPhone == "" {
+		rawPhone = fc.Phone
 	}
+	cand := &models.OutreachContactCandidate{
+		OrganizationID:              orgID,
+		AccountID:                   accountID,
+		SourceContactID:             SanitizeText(fc.SourceContactID, 200),
+		Name:                        SanitizeText(fc.Name, 300),
+		Role:                        SanitizeText(fc.Role, 200),
+		Email:                       email,
+		Phone:                       SanitizeText(rawPhone, 50),
+		PhoneE164:                   SanitizeText(phoneFacts.E164, 30),
+		PhoneSource:                 SanitizeText(phoneFacts.Source, 100),
+		PhoneSourceURL:              SanitizeText(phoneFacts.SourceURL, 1000),
+		WhatsAppConsentStatus:       phoneFacts.ConsentStatus,
+		WhatsAppConsentSource:       SanitizeText(phoneFacts.ConsentSource, 200),
+		WhatsAppConsentAt:           phoneFacts.ConsentAt,
+		WhatsAppConsentProvenanceOK: phoneFacts.ProvenanceOK,
+		LinkedInURL:                 SanitizeText(fc.LinkedInURL, 500),
+		SourceURL:                   SanitizeText(fc.SourceURL, 1000),
+		SourceDocument:              SanitizeText(fc.SourceDocument, 500),
+		SourceDate:                  ParseDate(fc.SourceDate),
+		VerificationStatus:          vs,
+		Confidence:                  SanitizeText(fc.Confidence, 50),
+		Recommended:                 fc.Recommended,
+		DoNotContact:                dnc,
+		Bounced:                     bounced,
+		LastImportRunID:             &runID,
+	}
+	if cand.WhatsAppConsentStatus == "" {
+		cand.WhatsAppConsentStatus = "UNKNOWN"
+	}
+	return cand
 }
 
 func leadToEvidence(orgID, accountID, runID uuid.UUID, fe FeedEvidence) *models.OutreachEvidence {

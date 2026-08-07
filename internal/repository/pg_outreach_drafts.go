@@ -57,7 +57,7 @@ func (r *outreachRepository) UpsertDraft(ctx context.Context, d *models.Outreach
 	_, err := r.db.Exec(ctx, `
 		INSERT INTO outreach_drafts (
 			id, organization_id, account_id, contact_candidate_id,
-			recipient_name, recipient_role, recipient_email, verification_status,
+			channel, recipient_name, recipient_role, recipient_email, recipient_phone_e164, verification_status,
 			subject, body_text, body_html, followups_json,
 			service_code, strategy_code, fact_used, evidence_ids, question, cta,
 			provider, model, prompt_version, generation,
@@ -67,13 +67,15 @@ func (r *outreachRepository) UpsertDraft(ctx context.Context, d *models.Outreach
 			created_at, updated_at
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-			$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37
+			$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39
 		)
 		ON CONFLICT (id) DO UPDATE SET
 			contact_candidate_id = EXCLUDED.contact_candidate_id,
+			channel = EXCLUDED.channel,
 			recipient_name = EXCLUDED.recipient_name,
 			recipient_role = EXCLUDED.recipient_role,
 			recipient_email = EXCLUDED.recipient_email,
+			recipient_phone_e164 = EXCLUDED.recipient_phone_e164,
 			verification_status = EXCLUDED.verification_status,
 			subject = EXCLUDED.subject,
 			body_text = EXCLUDED.body_text,
@@ -105,7 +107,7 @@ func (r *outreachRepository) UpsertDraft(ctx context.Context, d *models.Outreach
 			updated_at = EXCLUDED.updated_at
 	`,
 		d.ID, d.OrganizationID, d.AccountID, d.ContactCandidateID,
-		d.RecipientName, d.RecipientRole, d.RecipientEmail, d.VerificationStatus,
+		channelOrEmail(d.Channel), d.RecipientName, d.RecipientRole, d.RecipientEmail, d.RecipientPhoneE164, d.VerificationStatus,
 		d.Subject, d.BodyText, d.BodyHTML, follow,
 		d.ServiceCode, d.StrategyCode, d.FactUsed, evid, d.Question, d.CTA,
 		d.Provider, d.Model, d.PromptVersion, d.Generation,
@@ -119,7 +121,7 @@ func (r *outreachRepository) UpsertDraft(ctx context.Context, d *models.Outreach
 
 const outreachDraftSelect = `
 	SELECT id, organization_id, account_id, contact_candidate_id,
-		COALESCE(recipient_name,''), COALESCE(recipient_role,''), COALESCE(recipient_email,''), COALESCE(verification_status,''),
+		COALESCE(channel,'EMAIL'), COALESCE(recipient_name,''), COALESCE(recipient_role,''), COALESCE(recipient_email,''), COALESCE(recipient_phone_e164,''), COALESCE(verification_status,''),
 		COALESCE(subject,''), COALESCE(body_text,''), COALESCE(body_html,''), followups_json,
 		COALESCE(service_code,''), COALESCE(strategy_code,''), COALESCE(fact_used,''), evidence_ids,
 		COALESCE(question,''), COALESCE(cta,''),
@@ -134,7 +136,7 @@ func scanDraft(row scannable) (*models.OutreachDraft, error) {
 	var evid, flags, reasons []byte
 	err := row.Scan(
 		&d.ID, &d.OrganizationID, &d.AccountID, &d.ContactCandidateID,
-		&d.RecipientName, &d.RecipientRole, &d.RecipientEmail, &d.VerificationStatus,
+		&d.Channel, &d.RecipientName, &d.RecipientRole, &d.RecipientEmail, &d.RecipientPhoneE164, &d.VerificationStatus,
 		&d.Subject, &d.BodyText, &d.BodyHTML, &d.FollowupsJSON,
 		&d.ServiceCode, &d.StrategyCode, &d.FactUsed, &evid,
 		&d.Question, &d.CTA,
@@ -254,4 +256,11 @@ func (r *outreachRepository) UpsertOrgSettings(ctx context.Context, s *models.Ou
 		s.OrganizationID, s.CampaignID, s.CampaignName, s.CreatedAt, s.UpdatedAt,
 	)
 	return err
+}
+
+func channelOrEmail(ch string) string {
+	if ch == "" {
+		return "EMAIL"
+	}
+	return ch
 }

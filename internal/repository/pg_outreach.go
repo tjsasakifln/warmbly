@@ -57,6 +57,7 @@ type OutreachRepository interface {
 	MarkOutcomeAttempt(ctx context.Context, orgID, id uuid.UUID, attempts int, next time.Time, lastErr string, dead bool) error
 	GetOutcomeByIdempotency(ctx context.Context, orgID uuid.UUID, key string) (*models.OutreachOutcome, error)
 	FindCandidateByEmail(ctx context.Context, orgID uuid.UUID, email string) (*models.OutreachContactCandidate, *models.OutreachAccount, error)
+	FindCandidateByPhone(ctx context.Context, orgID uuid.UUID, phone string) (*models.OutreachContactCandidate, *models.OutreachAccount, error)
 }
 
 // OutreachAccountFilter filters staged accounts.
@@ -505,6 +506,9 @@ func (r *outreachRepository) ListCandidates(ctx context.Context, orgID, accountI
 const outreachCandidateSelect = `
 	SELECT id, organization_id, account_id, COALESCE(source_contact_id,''),
 		COALESCE(name,''), COALESCE(role,''), COALESCE(email,''), COALESCE(phone,''),
+		COALESCE(phone_e164,''), COALESCE(phone_source,''), COALESCE(phone_source_url,''),
+		COALESCE(whatsapp_consent_status,'UNKNOWN'), COALESCE(whatsapp_consent_source,''),
+		whatsapp_consent_at, COALESCE(whatsapp_consent_provenance_ok,false),
 		COALESCE(linkedin_url,''), COALESCE(source_url,''), COALESCE(source_document,''), source_date,
 		verification_status, COALESCE(confidence,''), recommended,
 		warmbly_contact_id, promoted_at, blocked, COALESCE(block_reason,''), do_not_contact, bounced,
@@ -515,6 +519,9 @@ func scanCandidate(row scannable) (*models.OutreachContactCandidate, error) {
 	err := row.Scan(
 		&c.ID, &c.OrganizationID, &c.AccountID, &c.SourceContactID,
 		&c.Name, &c.Role, &c.Email, &c.Phone,
+		&c.PhoneE164, &c.PhoneSource, &c.PhoneSourceURL,
+		&c.WhatsAppConsentStatus, &c.WhatsAppConsentSource,
+		&c.WhatsAppConsentAt, &c.WhatsAppConsentProvenanceOK,
 		&c.LinkedInURL, &c.SourceURL, &c.SourceDocument, &c.SourceDate,
 		&c.VerificationStatus, &c.Confidence, &c.Recommended,
 		&c.WarmblyContactID, &c.PromotedAt, &c.Blocked, &c.BlockReason, &c.DoNotContact, &c.Bounced,
@@ -546,21 +553,30 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 		c.CreatedAt = now
 	}
 	// Prefer unique (org, account, source_contact_id) when source id present.
+	if c.WhatsAppConsentStatus == "" {
+		c.WhatsAppConsentStatus = "UNKNOWN"
+	}
 	if c.SourceContactID != "" {
 		var created bool
 		err := r.db.QueryRow(ctx, `
 			INSERT INTO outreach_contact_candidates (
 				id, organization_id, account_id, source_contact_id,
-				name, role, email, phone, linkedin_url, source_url, source_document, source_date,
+				name, role, email, phone,
+				phone_e164, phone_source, phone_source_url,
+				whatsapp_consent_status, whatsapp_consent_source, whatsapp_consent_at, whatsapp_consent_provenance_ok,
+				linkedin_url, source_url, source_document, source_date,
 				verification_status, confidence, recommended,
 				blocked, block_reason, do_not_contact, bounced,
 				last_import_run_id, created_at, updated_at
 			) VALUES (
 				$1,$2,$3,$4,
-				$5,$6,$7,$8,$9,$10,$11,$12,
-				$13,$14,$15,
+				$5,$6,$7,$8,
+				$9,$10,$11,
+				$12,$13,$14,$15,
 				$16,$17,$18,$19,
-				$20,$21,$22
+				$20,$21,$22,
+				$23,$24,$25,$26,
+				$27,$28,$29
 			)
 			ON CONFLICT (organization_id, account_id, source_contact_id) WHERE source_contact_id <> '' DO UPDATE SET
 				name = EXCLUDED.name,
@@ -568,6 +584,28 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 				email = CASE WHEN outreach_contact_candidates.do_not_contact OR outreach_contact_candidates.bounced
 					THEN outreach_contact_candidates.email ELSE EXCLUDED.email END,
 				phone = EXCLUDED.phone,
+				phone_e164 = EXCLUDED.phone_e164,
+				phone_source = EXCLUDED.phone_source,
+				phone_source_url = EXCLUDED.phone_source_url,
+				-- sticky opt-out / DNC never softened by import
+				whatsapp_consent_status = CASE
+					WHEN outreach_contact_candidates.whatsapp_consent_status IN ('OPTED_OUT','DO_NOT_CONTACT')
+						THEN outreach_contact_candidates.whatsapp_consent_status
+					WHEN outreach_contact_candidates.do_not_contact
+						THEN outreach_contact_candidates.whatsapp_consent_status
+					ELSE EXCLUDED.whatsapp_consent_status
+				END,
+				whatsapp_consent_source = CASE
+					WHEN outreach_contact_candidates.whatsapp_consent_status IN ('OPTED_OUT','DO_NOT_CONTACT')
+						THEN outreach_contact_candidates.whatsapp_consent_source
+					ELSE EXCLUDED.whatsapp_consent_source
+				END,
+				whatsapp_consent_at = CASE
+					WHEN outreach_contact_candidates.whatsapp_consent_status IN ('OPTED_OUT','DO_NOT_CONTACT')
+						THEN outreach_contact_candidates.whatsapp_consent_at
+					ELSE EXCLUDED.whatsapp_consent_at
+				END,
+				whatsapp_consent_provenance_ok = EXCLUDED.whatsapp_consent_provenance_ok,
 				linkedin_url = EXCLUDED.linkedin_url,
 				source_url = EXCLUDED.source_url,
 				source_document = EXCLUDED.source_document,
@@ -584,7 +622,10 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 				id = outreach_contact_candidates.id
 			RETURNING (xmax = 0), id`,
 			c.ID, c.OrganizationID, c.AccountID, c.SourceContactID,
-			c.Name, c.Role, c.Email, c.Phone, c.LinkedInURL, c.SourceURL, c.SourceDocument, c.SourceDate,
+			c.Name, c.Role, c.Email, c.Phone,
+			c.PhoneE164, c.PhoneSource, c.PhoneSourceURL,
+			c.WhatsAppConsentStatus, c.WhatsAppConsentSource, c.WhatsAppConsentAt, c.WhatsAppConsentProvenanceOK,
+			c.LinkedInURL, c.SourceURL, c.SourceDocument, c.SourceDate,
 			c.VerificationStatus, c.Confidence, c.Recommended,
 			c.Blocked, c.BlockReason, c.DoNotContact, c.Bounced,
 			c.LastImportRunID, c.CreatedAt, c.UpdatedAt,
@@ -595,15 +636,21 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 	_, err := r.db.Exec(ctx, `
 		INSERT INTO outreach_contact_candidates (
 			id, organization_id, account_id, source_contact_id,
-			name, role, email, phone, linkedin_url, source_url, source_document, source_date,
+			name, role, email, phone,
+			phone_e164, phone_source, phone_source_url,
+			whatsapp_consent_status, whatsapp_consent_source, whatsapp_consent_at, whatsapp_consent_provenance_ok,
+			linkedin_url, source_url, source_document, source_date,
 			verification_status, confidence, recommended,
 			blocked, block_reason, do_not_contact, bounced,
 			last_import_run_id, created_at, updated_at
 		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29
 		)`,
 		c.ID, c.OrganizationID, c.AccountID, c.SourceContactID,
-		c.Name, c.Role, c.Email, c.Phone, c.LinkedInURL, c.SourceURL, c.SourceDocument, c.SourceDate,
+		c.Name, c.Role, c.Email, c.Phone,
+		c.PhoneE164, c.PhoneSource, c.PhoneSourceURL,
+		c.WhatsAppConsentStatus, c.WhatsAppConsentSource, c.WhatsAppConsentAt, c.WhatsAppConsentProvenanceOK,
+		c.LinkedInURL, c.SourceURL, c.SourceDocument, c.SourceDate,
 		c.VerificationStatus, c.Confidence, c.Recommended,
 		c.Blocked, c.BlockReason, c.DoNotContact, c.Bounced,
 		c.LastImportRunID, c.CreatedAt, c.UpdatedAt,

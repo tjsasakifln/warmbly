@@ -1021,6 +1021,9 @@ func main() {
 		// Template approval checked via Static catalog + DB lookups at send sites.
 		// Full repo-backed catalog is used by confenge orchestration (W2).
 		whatsAppService = whatsapp.NewService(waCfg, waProvider, whatsapp.NewStaticTemplateCatalog())
+		if confengeServiceForHandler != nil && whatsAppService != nil {
+			confengeServiceForHandler.WireWhatsApp(whatsAppService, whatsAppRepo)
+		}
 		if waCfg.Enabled {
 			log.Printf("whatsapp channel enabled provider=%s baileys_allowed=%v auto_send=%v", waCfg.Provider, waCfg.AllowBaileys, waCfg.AutoSendEnabled)
 		}

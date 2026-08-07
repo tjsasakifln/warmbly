@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -126,6 +127,41 @@ func (r *outreachRepository) FindCandidateByEmail(ctx context.Context, orgID uui
 		WHERE organization_id=$1 AND lower(email)=lower($2)
 		ORDER BY recommended DESC, updated_at DESC
 		LIMIT 1`, orgID, email)
+	c, err := scanCandidate(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	acc, err := r.GetAccount(ctx, orgID, c.AccountID)
+	if err != nil {
+		return c, nil, err
+	}
+	return c, acc, nil
+}
+
+// FindCandidateByPhone matches phone_e164 or raw phone (digits-insensitive).
+func (r *outreachRepository) FindCandidateByPhone(ctx context.Context, orgID uuid.UUID, phone string) (*models.OutreachContactCandidate, *models.OutreachAccount, error) {
+	phone = strings.TrimSpace(phone)
+	if phone == "" {
+		return nil, nil, nil
+	}
+	digits := strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, phone)
+	row := r.db.QueryRow(ctx, outreachCandidateSelect+`
+		FROM outreach_contact_candidates
+		WHERE organization_id=$1 AND (
+			phone_e164 = $2 OR phone_e164 = $3 OR phone = $2 OR phone = $3
+			OR regexp_replace(COALESCE(phone_e164,''), '[^0-9]', '', 'g') = $4
+			OR regexp_replace(COALESCE(phone,''), '[^0-9]', '', 'g') = $4
+		)
+		ORDER BY recommended DESC, updated_at DESC
+		LIMIT 1`, orgID, phone, "+"+digits, digits)
 	c, err := scanCandidate(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil, nil

@@ -55,6 +55,7 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 		OrganizationID:     orgID,
 		AccountID:          accountID,
 		ContactCandidateID: &cand.ID,
+		Channel:            models.OutreachChannelEmail,
 		RecipientName:      cand.Name,
 		RecipientRole:      cand.Role,
 		RecipientEmail:     cand.Email,
