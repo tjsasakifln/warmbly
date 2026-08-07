@@ -117,6 +117,9 @@ type Service interface {
 	// WireInboxAgent attaches the inbox agent so an inbound human reply drafts a
 	// suggested reply for review (M10). Best-effort; nil = feature off.
 	WireInboxAgent(a InboxAgent)
+	// WireConfengeReply attributes classified replies to CONFENGE staging
+	// (outcome outbox + CRM tasks/deals). Best-effort; nil = feature off.
+	WireConfengeReply(h ConfengeReplyHook)
 
 	// EmitCampaignEvent dispatches a campaign event (e.g. from a sequence
 	// "notify" action node) to customer webhooks and wired integrations.
@@ -159,6 +162,13 @@ type service struct {
 	realtime             ReplyRealtimePublisher
 	automationRunner     AutomationRunner
 	inboxAgent           InboxAgent
+	confengeReply        ConfengeReplyHook
+}
+
+// ConfengeReplyHook is implemented by the CONFENGE outreach service. Kept as a
+// narrow interface so advanced does not import the confenge package.
+type ConfengeReplyHook interface {
+	OnClassifiedReply(ctx context.Context, orgID uuid.UUID, contactEmail, replyClass string, contactID *uuid.UUID) error
 }
 
 func NewService(
@@ -893,6 +903,11 @@ func (s *service) ProcessIncomingReply(ctx context.Context, emailAccountID uuid.
 		// for every reply, so OOO/unsubscribe stay correct even when the gate
 		// skipped the model.
 		_ = s.campaignProgressRepo.RecordReplyClassification(ctx, cID, ctID, sID, replyResult.Class, replyResult.Source, replyResult.Confidence)
+
+		// CONFENGE staging: attribute the class to outbox + CRM (best-effort).
+		if s.confengeReply != nil && account.OrganizationID != nil {
+			_ = s.confengeReply.OnClassifiedReply(ctx, *account.OrganizationID, sender, replyResult.Class, &ctID)
+		}
 
 		// OOO trap fix: only a HUMAN reply stamps replied_at. An auto_reply /
 		// out_of_office must NOT count as a reply, or it would (a) trip

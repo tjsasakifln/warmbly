@@ -469,6 +469,7 @@ func Run(
 					confengeWrite.POST("/drafts/:id/review", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ReviewConfengeDraft)
 					confengeWrite.POST("/drafts/:id/enroll", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.EnrollConfengeDraft)
 					confengeWrite.POST("/campaign/bootstrap", m.RequireAccess(models.PermManageCampaigns, models.APIPermWriteCampaigns), h.BootstrapConfengeCampaign)
+					confengeWrite.POST("/crm/bootstrap", m.RequireAccess(models.PermManageContacts, models.APIPermWriteCRM), h.BootstrapConfengePipeline)
 				}
 			}
 

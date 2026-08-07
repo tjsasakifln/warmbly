@@ -351,16 +351,23 @@ func main() {
 		repository.NewAIDraftRepository(primaryDB.Pool),
 		streamingPublisher,
 	)
+	// CONFENGE outcome sink (feature-flagged; no-op when disabled).
+	confengeCfgC := confenge.LoadConfig()
+	var confengeSvc confenge.Service
+	var confengeSink confenge.OutcomeSink
+	if confengeCfgC.Enabled {
+		confengeSvc = confenge.NewService(confengeCfgC, repository.NewOutreachRepository(primaryDB.Pool), nil)
+		if sink, ok := confengeSvc.(confenge.OutcomeSink); ok {
+			confengeSink = sink
+		}
+		// CRM not wired on consumer (control-plane tasks/deals stay on backend);
+		// outbox + staging updates still run via OnClassifiedReply.
+		advancedService.WireConfengeReply(confengeSvc)
+	}
+
 	advancedService.WireInboxAgent(inboxAgentServiceC)
 
 	eventsPublisher := events.NewPublisher(consumerBus, s3Client, consumerCodec, cipherService)
-
-	// CONFENGE outcome sink (feature-flagged; no-op when disabled).
-	confengeCfgC := confenge.LoadConfig()
-	var confengeSink confenge.OutcomeSink
-	if confengeCfgC.Enabled {
-		confengeSink = confenge.NewService(confengeCfgC, repository.NewOutreachRepository(primaryDB.Pool), nil).(confenge.OutcomeSink)
-	}
 
 	// JobsService
 	jobsService := &jobs.JobsService{

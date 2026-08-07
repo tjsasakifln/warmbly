@@ -411,3 +411,17 @@ func (h *Handler) EnrollConfengeDraft(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"data": d})
 }
+
+// BootstrapConfengePipeline — POST /confenge/crm/bootstrap
+func (h *Handler) BootstrapConfengePipeline(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	pipe, xerr := h.ConfengeService.BootstrapPipeline(c.Request.Context(), orgID)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": pipe})
+}

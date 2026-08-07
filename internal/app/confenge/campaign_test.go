@@ -2,6 +2,7 @@ package confenge
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -246,4 +247,17 @@ func (m *memRepoFull) GetActiveDraftForAccount(ctx context.Context, orgID, accou
 
 func (m *memRepoFull) EnqueueOutcome(ctx context.Context, ev *models.OutreachOutcome) error {
 	return nil
+}
+
+func (m *memRepoFull) FindCandidateByEmail(ctx context.Context, orgID uuid.UUID, email string) (*models.OutreachContactCandidate, *models.OutreachAccount, error) {
+	for _, list := range m.cands {
+		for i := range list {
+			if list[i].OrganizationID == orgID && strings.EqualFold(list[i].Email, email) {
+				acc, _ := m.GetAccount(ctx, orgID, list[i].AccountID)
+				cp := list[i]
+				return &cp, acc, nil
+			}
+		}
+	}
+	return nil, nil, nil
 }

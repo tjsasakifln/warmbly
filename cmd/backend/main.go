@@ -1026,6 +1026,9 @@ func main() {
 		// CONFENGE enroll uses campaign + contact services (execution plane).
 		if confengeServiceForHandler != nil {
 			confengeServiceForHandler.WireExecution(campaignService, contactService)
+			if crmService != nil {
+				confengeServiceForHandler.WireCRM(crmService)
+			}
 		}
 		emailSendService = emailsend.NewService(taskRepository, emailRepostory, userRepostory, schedulerService, tasksClient, featureGateService, dailyThrottleService)
 		composeService = compose.NewService(emailRepostory, repository.NewComposeRepository(primaryDB))
@@ -1171,6 +1174,10 @@ func main() {
 		// agent wired onto the advanced service so any reply processed here also
 		// drafts. Paid + opt-in checked inside; nil provider leaves it inert.
 		aiDraftRepo = repository.NewAIDraftRepository(primaryDB.Pool)
+		// CONFENGE reply attribution (outbox + CRM) when outreach feature is on.
+		if confengeServiceForHandler != nil && confengeServiceForHandler.Enabled() {
+			advancedService.WireConfengeReply(confengeServiceForHandler)
+		}
 		advancedService.WireInboxAgent(inboxagent.NewService(
 			aiProvider, creditService, featureGateService,
 			organizationRepository, uniboxRepository, skillsService,
