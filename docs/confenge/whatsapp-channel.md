@@ -80,3 +80,27 @@ Domain code depends only on `whatsapp.Provider`. Evolution DTOs stay inside `evo
 3. Official templates approved for cold-start messaging
 4. Webhook URL reachable by Evolution with valid secret
 5. `CONFENGE_WHATSAPP_ENABLED=true` only after the above
+
+## CONFENGE orchestration (W2)
+
+Deterministic channel orchestrator: `internal/app/confenge/whatsapp_orchestrator.go`.
+
+| Case | Situation | Result |
+|------|-----------|--------|
+| A | Public phone, no opt-in | Email allowed; WhatsApp blocked |
+| B | Reply requests WhatsApp / opt-in with provenance | WhatsApp eligible (review gate) |
+| C | User-initiated inbound | Service window + USER_INITIATED |
+| D | Site form opt-in with provenance | Template outside window; free text inside |
+| E | Opt-out / DNC | Stop all WhatsApp automation (sticky) |
+
+Feed extension (backward compatible):
+
+```json
+{
+  "phone": "(48) 99999-9999",
+  "phone_detail": { "raw": "...", "e164": "+55...", "source_kind": "official_company_site" },
+  "whatsapp": { "consent_status": "UNKNOWN", "consent_source": null, "consent_at": null }
+}
+```
+
+extra-cli supplies facts; Warmbly applies eligibility. Migrations `000083` (channel state) and `000084` (draft channel + candidate phone/consent columns).

@@ -181,30 +181,38 @@ type OutreachAccount struct {
 
 // OutreachContactCandidate is a possible recipient before promotion to contacts.
 type OutreachContactCandidate struct {
-	ID                 uuid.UUID  `json:"id"`
-	OrganizationID     uuid.UUID  `json:"organization_id"`
-	AccountID          uuid.UUID  `json:"account_id"`
-	SourceContactID    string     `json:"source_contact_id"`
-	Name               string     `json:"name"`
-	Role               string     `json:"role"`
-	Email              string     `json:"email"`
-	Phone              string     `json:"phone"`
-	LinkedInURL        string     `json:"linkedin_url,omitempty"`
-	SourceURL          string     `json:"source_url,omitempty"`
-	SourceDocument     string     `json:"source_document,omitempty"`
-	SourceDate         *time.Time `json:"source_date,omitempty"`
-	VerificationStatus string     `json:"verification_status"`
-	Confidence         string     `json:"confidence"`
-	Recommended        bool       `json:"recommended"`
-	WarmblyContactID   *uuid.UUID `json:"warmbly_contact_id,omitempty"`
-	PromotedAt         *time.Time `json:"promoted_at,omitempty"`
-	Blocked            bool       `json:"blocked"`
-	BlockReason        string     `json:"block_reason,omitempty"`
-	DoNotContact       bool       `json:"do_not_contact"`
-	Bounced            bool       `json:"bounced"`
-	LastImportRunID    *uuid.UUID `json:"last_import_run_id,omitempty"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
+	ID              uuid.UUID `json:"id"`
+	OrganizationID  uuid.UUID `json:"organization_id"`
+	AccountID       uuid.UUID `json:"account_id"`
+	SourceContactID string    `json:"source_contact_id"`
+	Name            string    `json:"name"`
+	Role            string    `json:"role"`
+	Email           string    `json:"email"`
+	Phone           string    `json:"phone"`
+	// Structured phone + WhatsApp consent (additive; public phone is not opt-in).
+	PhoneE164                   string     `json:"phone_e164,omitempty"`
+	PhoneSource                 string     `json:"phone_source,omitempty"`
+	PhoneSourceURL              string     `json:"phone_source_url,omitempty"`
+	WhatsAppConsentStatus       string     `json:"whatsapp_consent_status,omitempty"`
+	WhatsAppConsentSource       string     `json:"whatsapp_consent_source,omitempty"`
+	WhatsAppConsentAt           *time.Time `json:"whatsapp_consent_at,omitempty"`
+	WhatsAppConsentProvenanceOK bool       `json:"whatsapp_consent_provenance_ok,omitempty"`
+	LinkedInURL                 string     `json:"linkedin_url,omitempty"`
+	SourceURL                   string     `json:"source_url,omitempty"`
+	SourceDocument              string     `json:"source_document,omitempty"`
+	SourceDate                  *time.Time `json:"source_date,omitempty"`
+	VerificationStatus          string     `json:"verification_status"`
+	Confidence                  string     `json:"confidence"`
+	Recommended                 bool       `json:"recommended"`
+	WarmblyContactID            *uuid.UUID `json:"warmbly_contact_id,omitempty"`
+	PromotedAt                  *time.Time `json:"promoted_at,omitempty"`
+	Blocked                     bool       `json:"blocked"`
+	BlockReason                 string     `json:"block_reason,omitempty"`
+	DoNotContact                bool       `json:"do_not_contact"`
+	Bounced                     bool       `json:"bounced"`
+	LastImportRunID             *uuid.UUID `json:"last_import_run_id,omitempty"`
+	CreatedAt                   time.Time  `json:"created_at"`
+	UpdatedAt                   time.Time  `json:"updated_at"`
 }
 
 // CanEnroll reports whether this candidate may be put into a campaign.
@@ -290,6 +298,12 @@ const (
 	OutreachDraftReplied      = "REPLIED"
 )
 
+// Outreach draft channels.
+const (
+	OutreachChannelEmail    = "EMAIL"
+	OutreachChannelWhatsApp = "WHATSAPP"
+)
+
 // OutreachDraft is one generated/reviewed message for a staged account.
 type OutreachDraft struct {
 	ID                 uuid.UUID  `json:"id"`
@@ -297,9 +311,12 @@ type OutreachDraft struct {
 	AccountID          uuid.UUID  `json:"account_id"`
 	ContactCandidateID *uuid.UUID `json:"contact_candidate_id,omitempty"`
 
+	// Channel is EMAIL (default) or WHATSAPP. Threads stay separate per channel.
+	Channel            string `json:"channel"`
 	RecipientName      string `json:"recipient_name"`
 	RecipientRole      string `json:"recipient_role"`
 	RecipientEmail     string `json:"recipient_email"`
+	RecipientPhoneE164 string `json:"recipient_phone_e164,omitempty"`
 	VerificationStatus string `json:"verification_status"`
 
 	Subject       string `json:"subject"`

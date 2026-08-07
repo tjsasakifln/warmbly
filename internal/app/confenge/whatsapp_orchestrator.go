@@ -10,13 +10,13 @@ import (
 
 // ChannelAction is the deterministic next action for multichannel outreach.
 const (
-	ChannelActionNone              = "NONE"
-	ChannelActionEmailOnly         = "EMAIL_ONLY"
-	ChannelActionWhatsAppBlocked   = "WHATSAPP_BLOCKED"
-	ChannelActionWhatsAppEligible  = "WHATSAPP_ELIGIBLE"
-	ChannelActionWhatsAppTemplate  = "WHATSAPP_TEMPLATE_ONLY"
-	ChannelActionWhatsAppReview    = "WHATSAPP_MANUAL_REVIEW"
-	ChannelActionStopAll           = "STOP_ALL"
+	ChannelActionNone             = "NONE"
+	ChannelActionEmailOnly        = "EMAIL_ONLY"
+	ChannelActionWhatsAppBlocked  = "WHATSAPP_BLOCKED"
+	ChannelActionWhatsAppEligible = "WHATSAPP_ELIGIBLE"
+	ChannelActionWhatsAppTemplate = "WHATSAPP_TEMPLATE_ONLY"
+	ChannelActionWhatsAppReview   = "WHATSAPP_MANUAL_REVIEW"
+	ChannelActionStopAll          = "STOP_ALL"
 	ChannelActionAwaitCooldown    = "AWAIT_CROSS_CHANNEL_COOLDOWN"
 )
 
@@ -126,12 +126,12 @@ func caseForConsent(consent string) string {
 // FeedPhone is an optional structured phone object from extra-cli (backward compatible).
 // Legacy string field FeedContact.Phone remains supported.
 type FeedPhone struct {
-	Raw        string  `json:"raw"`
-	E164       string  `json:"e164"`
-	Type       string  `json:"type"` // mobile | landline | unknown
-	SourceURL  string  `json:"source_url"`
-	SourceKind string  `json:"source_kind"`
-	Confidence string  `json:"confidence"`
+	Raw        string `json:"raw"`
+	E164       string `json:"e164"`
+	Type       string `json:"type"` // mobile | landline | unknown
+	SourceURL  string `json:"source_url"`
+	SourceKind string `json:"source_kind"`
+	Confidence string `json:"confidence"`
 }
 
 // FeedWhatsApp is optional consent facts from extra-cli. Warmbly applies policy.
@@ -146,15 +146,15 @@ type FeedWhatsApp struct {
 
 // ContactPhoneFacts is the normalized phone+consent extracted from a feed contact.
 type ContactPhoneFacts struct {
-	Raw            string
-	E164           string
-	Source         string
-	SourceURL      string
-	ConsentStatus  string
-	ConsentSource  string
-	ConsentAt      *time.Time
-	ConsentScope   string
-	ProvenanceOK   bool
+	Raw           string
+	E164          string
+	Source        string
+	SourceURL     string
+	ConsentStatus string
+	ConsentSource string
+	ConsentAt     *time.Time
+	ConsentScope  string
+	ProvenanceOK  bool
 }
 
 // ExtractPhoneFacts merges legacy phone string + optional structured objects.

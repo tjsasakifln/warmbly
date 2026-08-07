@@ -97,12 +97,12 @@ func TestCrossChannelCooldownOrchestrator(t *testing.T) {
 	now := time.Now().UTC()
 	emailAt := now.Add(-2 * time.Hour)
 	st := whatsapp.ContactChannelState{
-		PhoneE164:              "+5548999999999",
-		ConsentStatus:          whatsapp.ConsentOptedIn,
-		ConsentProvenanceOK:    true,
-		LastEmailOutboundAt:    &emailAt,
-		LastInboundAt:          &now,
-		ServiceWindowUntil:     ptrT(now.Add(20 * time.Hour)),
+		PhoneE164:           "+5548999999999",
+		ConsentStatus:       whatsapp.ConsentOptedIn,
+		ConsentProvenanceOK: true,
+		LastEmailOutboundAt: &emailAt,
+		LastInboundAt:       &now,
+		ServiceWindowUntil:  ptrT(now.Add(20 * time.Hour)),
 	}
 	d := OrchestrateChannel(true, true, st.PhoneE164, st, whatsapp.SendIntent{
 		Mode: whatsapp.ModeFreeText, Automated: true, FeatureEnabled: true, AutoSendEnabled: true,

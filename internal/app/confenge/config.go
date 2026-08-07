@@ -25,6 +25,10 @@ const (
 	EnvMaxInitialWords   = "CONFENGE_MAX_INITIAL_EMAIL_WORDS"
 	EnvRequireHuman      = "CONFENGE_REQUIRE_HUMAN_APPROVAL"
 	EnvMaxPayloadBytes   = "CONFENGE_MAX_FEED_PAYLOAD_BYTES"
+	// WhatsApp orchestration (channel flags also live in whatsapp.Config).
+	EnvWhatsAppEnabled   = "CONFENGE_WHATSAPP_ENABLED"
+	EnvCrossChannelHours = "CONFENGE_CROSS_CHANNEL_MIN_INTERVAL_HOURS"
+	EnvWhatsAppMaxWords  = "CONFENGE_MAX_WHATSAPP_WORDS"
 )
 
 // Defaults for conservative cold outreach.
@@ -32,6 +36,8 @@ const (
 	DefaultCampaignDailyLimit = 10
 	DefaultMaxInitialWords    = 120
 	DefaultMaxPayloadBytes    = 32 << 20 // 32 MiB
+	DefaultCrossChannelHours  = 24
+	DefaultMaxWhatsAppWords   = 70
 )
 
 // Config is runtime configuration for the confenge outreach feature.
@@ -47,6 +53,10 @@ type Config struct {
 	MaxInitialEmailWords int
 	RequireHumanApproval bool
 	MaxFeedPayloadBytes  int64
+	// WhatsApp commercial orchestration (transport flags: whatsapp.LoadConfig).
+	WhatsAppEnabled   bool
+	CrossChannelHours int
+	MaxWhatsAppWords  int
 }
 
 // LoadConfig reads CONFENGE_* env vars. Safe defaults keep the feature off.
@@ -63,6 +73,9 @@ func LoadConfig() Config {
 		MaxInitialEmailWords: envInt(EnvMaxInitialWords, DefaultMaxInitialWords),
 		RequireHumanApproval: envBool(EnvRequireHuman, true),
 		MaxFeedPayloadBytes:  int64(envInt(EnvMaxPayloadBytes, DefaultMaxPayloadBytes)),
+		WhatsAppEnabled:      envBool(EnvWhatsAppEnabled, false),
+		CrossChannelHours:    envInt(EnvCrossChannelHours, DefaultCrossChannelHours),
+		MaxWhatsAppWords:     envInt(EnvWhatsAppMaxWords, DefaultMaxWhatsAppWords),
 	}
 	return cfg
 }

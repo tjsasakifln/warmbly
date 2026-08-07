@@ -100,19 +100,23 @@ type FeedMessaging struct {
 }
 
 // FeedContact is a candidate recipient (may lack email).
+// Phone remains a legacy string; PhoneObj + WhatsApp are optional additive
+// fields for structured provenance (backward compatible with older feeds).
 type FeedContact struct {
-	SourceContactID    string `json:"source_contact_id"`
-	Name               string `json:"name"`
-	Role               string `json:"role"`
-	Email              string `json:"email"`
-	Phone              string `json:"phone"`
-	LinkedInURL        string `json:"linkedin_url"`
-	SourceURL          string `json:"source_url"`
-	SourceDocument     string `json:"source_document"`
-	SourceDate         string `json:"source_date"`
-	VerificationStatus string `json:"verification_status"`
-	Confidence         string `json:"confidence"`
-	Recommended        bool   `json:"recommended"`
+	SourceContactID    string        `json:"source_contact_id"`
+	Name               string        `json:"name"`
+	Role               string        `json:"role"`
+	Email              string        `json:"email"`
+	Phone              string        `json:"phone"`
+	PhoneObj           *FeedPhone    `json:"phone_detail,omitempty"`
+	WhatsApp           *FeedWhatsApp `json:"whatsapp,omitempty"`
+	LinkedInURL        string        `json:"linkedin_url"`
+	SourceURL          string        `json:"source_url"`
+	SourceDocument     string        `json:"source_document"`
+	SourceDate         string        `json:"source_date"`
+	VerificationStatus string        `json:"verification_status"`
+	Confidence         string        `json:"confidence"`
+	Recommended        bool          `json:"recommended"`
 }
 
 // FeedEvidence is one evidence item (text only; HTML stripped on import).
