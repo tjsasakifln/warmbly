@@ -19,12 +19,12 @@ import (
 // EvolutionWebhook is the public ingress for Evolution API events.
 // POST /api/v1/webhooks/evolution/:instance
 //
-// Auth: Authorization Bearer <secret> or X-Webhook-Secret, matched against
-// the instance's stored secret (or WHATSAPP_WEBHOOK_SECRET when single-tenant).
-// Body is size-limited; duplicates are idempotent on provider event id.
+// Auth: Authorization Bearer <secret> or X-Webhook-Secret.
+// Requires a mapped whatsapp_instances row (organization binding). Production
+// never silently drops CRM effects into "lab_mode".
 func (h *Handler) EvolutionWebhook(c *gin.Context) {
 	if h.WhatsAppService == nil || !h.WhatsAppService.Config().Enabled {
-		c.JSON(http.StatusNotFound, gin.H{"error": "whatsapp channel disabled"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "whatsapp channel disabled", "code": "disabled"})
 		return
 	}
 	cfg := h.WhatsAppService.Config()
@@ -38,45 +38,42 @@ func (h *Handler) EvolutionWebhook(c *gin.Context) {
 	if maxBytes <= 0 {
 		maxBytes = whatsapp.DefaultMaxWebhookBytes
 	}
-	// Prefer Content-Length check before reading.
 	if c.Request.ContentLength > maxBytes {
 		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "payload too large", "code": "payload_too_large"})
 		return
 	}
 
-	secret := cfg.WebhookSecret
-	var orgID uuid.UUID
-	if h.WhatsAppRepo != nil {
-		inst, xerr := h.WhatsAppRepo.GetInstanceByName(c.Request.Context(), whatsapp.ProviderEvolution, instance)
-		if xerr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "lookup failed", "code": "internal"})
-			return
-		}
-		if inst == nil {
-			// Fall back to configured default instance only.
-			if cfg.EvolutionInstance == "" || !strings.EqualFold(instance, cfg.EvolutionInstance) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "instance not mapped", "code": "instance_mismatch"})
-				return
-			}
-			// Single-tenant: org mapping deferred; require global secret.
-		} else {
-			orgID = inst.OrganizationID
-			if inst.WebhookSecret != "" {
-				secret = inst.WebhookSecret
-			}
-			// Baileys mode must not be used in production; warn only.
-			if inst.IntegrationMode == "WHATSAPP-BAILEYS" && cfg.IsProduction() {
-				log.Error().Str("instance", instance).Msg("rejecting baileys instance webhook in production")
-				c.JSON(http.StatusForbidden, gin.H{"error": "baileys disabled in production", "code": "baileys_forbidden"})
-				return
-			}
-		}
-	} else if cfg.EvolutionInstance != "" && !strings.EqualFold(instance, cfg.EvolutionInstance) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "instance not mapped", "code": "instance_mismatch"})
+	if h.WhatsAppRepo == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "whatsapp repository unavailable", "code": "no_repo"})
 		return
 	}
 
-	auth := whatsapp.WebhookAuth{Secret: secret, InstanceAllow: "", MaxBytes: maxBytes}
+	inst, xerr := h.WhatsAppRepo.GetInstanceByName(c.Request.Context(), whatsapp.ProviderEvolution, instance)
+	if xerr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "lookup failed", "code": "internal"})
+		return
+	}
+	if inst == nil {
+		// Fail closed: unmapped instance never reaches CRM/outcomes.
+		c.JSON(http.StatusNotFound, gin.H{"error": "instance not mapped", "code": "instance_mismatch"})
+		return
+	}
+	orgID := inst.OrganizationID
+	secret := inst.WebhookSecret
+	if secret == "" {
+		secret = cfg.WebhookSecret
+	}
+	if secret == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "webhook secret not configured", "code": "missing_secret"})
+		return
+	}
+	if inst.IntegrationMode == "WHATSAPP-BAILEYS" && cfg.IsProduction() {
+		log.Error().Str("instance", instance).Msg("rejecting baileys instance webhook in production")
+		c.JSON(http.StatusForbidden, gin.H{"error": "baileys disabled in production", "code": "baileys_forbidden"})
+		return
+	}
+
+	auth := whatsapp.WebhookAuth{Secret: secret, MaxBytes: maxBytes}
 	if err := auth.ValidateHeaders(
 		c.GetHeader("Authorization"),
 		c.GetHeader("X-Webhook-Secret"),
@@ -106,103 +103,61 @@ func (h *Handler) EvolutionWebhook(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "malformed payload", "code": "malformed"})
 		return
 	}
-	if ev.Instance == "" {
-		ev.Instance = instance
-	}
-	if !strings.EqualFold(ev.Instance, instance) && ev.Instance != "" {
-		// Path instance is authoritative for mapping.
-		ev.Instance = instance
-	}
+	ev.Instance = instance
+	ev.OrganizationID = orgID
 	if ev.EventType == whatsapp.EventUnsupported {
 		c.JSON(http.StatusOK, gin.H{"received": true, "ignored": true})
 		return
 	}
 
-	// Persist idempotency when org is known.
-	if orgID != uuid.Nil && h.WhatsAppRepo != nil {
-		sum := sha256.Sum256(body)
-		inserted, xerr := h.WhatsAppRepo.InsertWebhookEvent(
-			c.Request.Context(), orgID, whatsapp.ProviderEvolution,
-			ev.IdempotencyKey(), ev.EventType, ev.ExternalMessageID, hex.EncodeToString(sum[:]),
-		)
-		if xerr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "idempotency failed", "code": "internal"})
-			return
-		}
-		if !inserted {
-			c.JSON(http.StatusOK, gin.H{"received": true, "duplicate": true})
-			return
-		}
-		ev.OrganizationID = orgID
-
-		// Load or create contact channel state by phone.
-		phone := ev.FromE164
-		if phone == "" {
-			phone = ev.ToE164
-		}
-		var state *models.WhatsAppContactState
-		if phone != "" {
-			state, _ = h.WhatsAppRepo.GetContactStateByPhone(c.Request.Context(), orgID, phone)
-		}
-		domainState := modelsToDomainState(state, orgID)
-		if domainState.PhoneE164 == "" {
-			domainState.PhoneE164 = phone
-		}
-
-		inRes, _ := h.WhatsAppService.ProcessInbound(c.Request.Context(), &domainState, ev)
-		if inRes.Duplicate {
-			c.JSON(http.StatusOK, gin.H{"received": true, "duplicate": true})
-			return
-		}
-
-		// Persist inbound message.
-		if ev.EventType == whatsapp.EventMessageReceived {
-			msg := &models.WhatsAppMessage{
-				OrganizationID:    orgID,
-				ThreadKey:         phone,
-				Direction:         "inbound",
-				Channel:           whatsapp.ChannelWhatsApp,
-				Provider:          whatsapp.ProviderEvolution,
-				ProviderMessageID: ev.ExternalMessageID,
-				IdempotencyKey:    ev.IdempotencyKey(),
-				BodyText:          ev.Content.Text,
-				Status:            "received",
-				OccurredAt:        ev.OccurredAt,
-			}
-			if state != nil && state.ContactID != nil {
-				msg.ContactID = state.ContactID
-			}
-			_, _ = h.WhatsAppRepo.InsertMessage(c.Request.Context(), msg)
-
-			// Persist updated consent / service window.
-			persistState := domainToModelsState(domainState, state)
-			persistState.OrganizationID = orgID
-			if state != nil {
-				persistState.ID = state.ID
-				persistState.ContactID = state.ContactID
-			}
-			_ = h.WhatsAppRepo.UpsertContactState(c.Request.Context(), &persistState)
-		}
-
-		c.JSON(http.StatusOK, gin.H{
-			"received":       true,
-			"event_type":     ev.EventType,
-			"stop_sequences": inRes.StopSequences,
-			"needs_review":   inRes.NeedsHumanReview,
-			"opt_out":        inRes.OptOut.Matched && inRes.OptOut.Confident,
-		})
+	sum := sha256.Sum256(body)
+	inserted, xerr := h.WhatsAppRepo.InsertWebhookEvent(
+		c.Request.Context(), orgID, whatsapp.ProviderEvolution,
+		ev.IdempotencyKey(), ev.EventType, ev.ExternalMessageID, hex.EncodeToString(sum[:]),
+	)
+	if xerr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "idempotency failed", "code": "internal"})
+		return
+	}
+	if !inserted {
+		c.JSON(http.StatusOK, gin.H{"received": true, "duplicate": true})
 		return
 	}
 
-	// No org mapping: still ack valid authenticated events (single-node lab).
-	// In-process idempotency only.
-	var domainState whatsapp.ContactChannelState
+	// Fallback without confenge: persist message + open service window only.
+	phone := ev.FromE164
+	if phone == "" {
+		phone = ev.ToE164
+	}
+	domainState := whatsapp.ContactChannelState{OrganizationID: orgID, PhoneE164: phone, ConsentStatus: whatsapp.ConsentUnknown}
+	if st, _ := h.WhatsAppRepo.GetContactStateByPhone(c.Request.Context(), orgID, phone); st != nil {
+		domainState = modelsToDomainState(st, orgID)
+	}
 	inRes, _ := h.WhatsAppService.ProcessInbound(c.Request.Context(), &domainState, ev)
+	if !inRes.Duplicate && ev.EventType == whatsapp.EventMessageReceived {
+		msg := &models.WhatsAppMessage{
+			OrganizationID:    orgID,
+			ThreadKey:         phone,
+			Direction:         "inbound",
+			Channel:           whatsapp.ChannelWhatsApp,
+			Provider:          whatsapp.ProviderEvolution,
+			ProviderMessageID: ev.ExternalMessageID,
+			IdempotencyKey:    ev.IdempotencyKey(),
+			BodyText:          ev.Content.Text,
+			Status:            "received",
+			OccurredAt:        ev.OccurredAt,
+		}
+		_, _ = h.WhatsAppRepo.InsertMessage(c.Request.Context(), msg)
+		persist := domainToModelsState(domainState, nil)
+		persist.OrganizationID = orgID
+		_ = h.WhatsAppRepo.UpsertContactState(c.Request.Context(), &persist)
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"received":   true,
-		"event_type": ev.EventType,
-		"duplicate":  inRes.Duplicate,
-		"lab_mode":   true,
+		"received":       true,
+		"event_type":     ev.EventType,
+		"stop_sequences": inRes.StopSequences,
+		"opt_out":        inRes.OptOut.Matched && inRes.OptOut.Confident,
+		"duplicate":      inRes.Duplicate,
 	})
 }
 
