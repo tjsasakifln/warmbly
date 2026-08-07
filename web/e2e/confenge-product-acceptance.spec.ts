@@ -157,7 +157,7 @@ test.describe("CONFENGE product acceptance UI", () => {
         a.status === "READY_TO_GENERATE" ||
         a.queue_state === "NEEDS_REVIEW",
     );
-    let accountId = process.env.CONFENGE_E2E_ACCOUNT_ID || ready?.id || "";
+    const accountId = process.env.CONFENGE_E2E_ACCOUNT_ID || ready?.id || "";
     if (accountId) {
       // plan + generate touchpoint
       await fetch(`${API}/v1/confenge/accounts/${accountId}/plan`, {
