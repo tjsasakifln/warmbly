@@ -244,19 +244,70 @@ func (s *service) ResumeAtDate(ctx context.Context, orgID, userID, accountID uui
 	acc.CommercialState = IntentNotNow
 	acc.BlockReason = fmt.Sprintf("resume_at:%s", resumeAt.UTC().Format("2006-01-02"))
 	acc.HumanOverride = true
+	// Explicit future touch stays approval-gated: account enters NEEDS_REVIEW with a draft.
 	if acc.QueueState != models.OutreachQueueDoNotContact {
-		if resumeAt.After(time.Now().UTC().Add(24 * time.Hour)) {
-			acc.QueueState = models.OutreachQueueReplied
-		} else {
-			acc.QueueState = models.OutreachQueueReadyToGenerate
-		}
+		acc.QueueState = models.OutreachQueueNeedsReview
 	}
 	if _, err := s.repo.UpsertAccount(ctx, acc); err != nil {
 		return nil, errx.New(errx.Internal, "failed to update account")
 	}
-	_ = s.EnqueueOutcome(ctx, orgID, models.OutreachOutcome{IdempotencyKey: fmt.Sprintf("resume:%s:%s:%s", orgID, accountID, resumeAt.UTC().Format("2006-01-02")), SourceLeadID: acc.SourceLeadID, CNPJ14: acc.CNPJ14, EventType: OutcomeReplied, OccurredAt: time.Now().UTC(), Payload: mustJSON(map[string]any{"action": "resume_at", "resume_at": resumeAt.UTC().Format(time.RFC3339), "note": truncateRunes(note, 500), "requires": "human_approval", "auto_reopen": false})})
+
+	// Build an explicit future touchpoint draft (never auto-send / auto-reopen cadence).
+	var cand *models.OutreachContactCandidate
+	if list, lerr := s.repo.ListCandidates(ctx, orgID, accountID); lerr == nil {
+		cand = pickRecommendedAny(list)
+		if cand == nil && len(list) > 0 {
+			cand = &list[0]
+		}
+	}
+	dateStr := resumeAt.UTC().Format("2006-01-02")
+	subject := "Retomar contato em " + dateStr
+	body := "Toque futuro agendado para " + dateStr + ".\n\n"
+	body += "Este rascunho exige aprovacao humana antes de qualquer envio. A cadencia automatica NAO foi reaberta.\n"
+	if strings.TrimSpace(note) != "" {
+		body += "\nNota do operador: " + SanitizeText(note, 500) + "\n"
+	}
+	if acc.FactToMention != "" {
+		body += "\nFato do dossie: " + SanitizeText(acc.FactToMention, 500) + "\n"
+	}
+	draft := &models.OutreachDraft{
+		OrganizationID: orgID, AccountID: accountID,
+		Channel: models.OutreachChannelEmail,
+		Subject: subject, BodyText: body,
+		ServiceCode: acc.ServiceCode, FactUsed: SanitizeText(acc.FactToMention, 2000),
+		Provider: "template", Model: "resume_at", PromptVersion: PromptVersion + ".resume",
+		StrategyCode: "RESUME_AT:" + dateStr,
+		Status:       models.OutreachDraftNeedsReview,
+		RiskClass:    "YELLOW",
+		RiskFlags:    []string{"resume_scheduled", "requires_human_approval", "never_auto_send", "no_auto_reopen"},
+	}
+	ok := true
+	draft.ValidationOK = &ok
+	if cand != nil {
+		draft.ContactCandidateID = &cand.ID
+		draft.RecipientName = cand.Name
+		draft.RecipientRole = cand.Role
+		draft.RecipientEmail = cand.Email
+		draft.RecipientPhoneE164 = firstNonEmpty(cand.PhoneE164, cand.Phone)
+		draft.VerificationStatus = cand.VerificationStatus
+	}
+	_ = s.repo.UpsertDraft(ctx, draft)
+
+	_ = s.EnqueueOutcome(ctx, orgID, models.OutreachOutcome{
+		IdempotencyKey: fmt.Sprintf("resume:%s:%s:%s", orgID, accountID, dateStr),
+		SourceLeadID:   acc.SourceLeadID, CNPJ14: acc.CNPJ14, EventType: OutcomeReplied,
+		OccurredAt: time.Now().UTC(),
+		Payload: mustJSON(map[string]any{
+			"action": "resume_at", "resume_at": resumeAt.UTC().Format(time.RFC3339),
+			"note": truncateRunes(note, 500), "requires": "human_approval", "auto_reopen": false,
+			"draft_id": draft.ID.String(), "explicit_touchpoint": true,
+		}),
+	})
 	if s.audit != nil {
-		s.audit.LogAction(ctx, orgID, userID, models.AuditActionUpdate, models.AuditEntityOutreachAccount, &accountID, "", "", map[string]string{"action": "resume_at", "resume_at": resumeAt.UTC().Format("2006-01-02")}, map[string]string{"note": truncateRunes(note, 200)})
+		s.audit.LogAction(ctx, orgID, userID, models.AuditActionUpdate, models.AuditEntityOutreachAccount, &accountID, "", "",
+			map[string]string{"action": "resume_at", "resume_at": dateStr, "draft_id": draft.ID.String()},
+			map[string]string{"note": truncateRunes(note, 200)},
+		)
 	}
 	return acc, nil
 }

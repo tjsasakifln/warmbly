@@ -26,6 +26,7 @@ type memRepo struct {
 	drafts    map[uuid.UUID]*models.OutreachDraft
 	outcomes  []models.OutreachOutcome
 	outcomeBy map[string]*models.OutreachOutcome // org|idempotency
+	orgOwner  map[uuid.UUID]uuid.UUID
 }
 
 func newMemRepo() *memRepo {
@@ -38,6 +39,7 @@ func newMemRepo() *memRepo {
 		evidence:  map[uuid.UUID][]models.OutreachEvidence{},
 		drafts:    map[uuid.UUID]*models.OutreachDraft{},
 		outcomeBy: map[string]*models.OutreachOutcome{},
+		orgOwner:  map[uuid.UUID]uuid.UUID{},
 	}
 }
 
@@ -375,6 +377,48 @@ func (m *memRepo) FindCandidateByPhone(ctx context.Context, orgID uuid.UUID, pho
 		}
 	}
 	return nil, nil, nil
+}
+
+func (m *memRepo) GetOrgOwnerUserID(ctx context.Context, orgID uuid.UUID) (uuid.UUID, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if id, ok := m.orgOwner[orgID]; ok {
+		return id, nil
+	}
+	// Default: synthesize stable owner for tests so CRM tasks can be created without an explicit actor.
+	id := uuid.New()
+	m.orgOwner[orgID] = id
+	return id, nil
+}
+
+func (m *memRepo) GetLatestOutcomeForLead(ctx context.Context, orgID uuid.UUID, cnpj14, sourceLeadID, contactEmail string) (*models.OutreachOutcome, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var best *models.OutreachOutcome
+	for i := range m.outcomes {
+		o := m.outcomes[i]
+		if o.OrganizationID != orgID {
+			continue
+		}
+		match := false
+		if cnpj14 != "" && o.CNPJ14 == cnpj14 {
+			match = true
+		}
+		if sourceLeadID != "" && o.SourceLeadID == sourceLeadID {
+			match = true
+		}
+		if contactEmail != "" && strings.EqualFold(o.ContactEmail, contactEmail) {
+			match = true
+		}
+		if !match {
+			continue
+		}
+		if best == nil || o.OccurredAt.After(best.OccurredAt) {
+			cp := o
+			best = &cp
+		}
+	}
+	return best, nil
 }
 
 func testSvc(repo repository.OutreachRepository) Service {

@@ -10,9 +10,11 @@ import {
     useConfengeStatus,
     useConfengeSummary,
     useBootstrapConfengeCampaign,
+    useChangeConfengeReferral,
     useEnrollConfengeDraft,
     useGenerateConfengeDraft,
     useGenerateConfengeReplyDraft,
+    useResumeConfengeAccount,
     useReviewConfengeDraft,
 } from "@/lib/api/hooks/app/confenge/useConfenge";
 import type {
@@ -42,11 +44,18 @@ export default function ConfengePage() {
     const review = useReviewConfengeDraft();
     const enroll = useEnrollConfengeDraft();
     const bootstrap = useBootstrapConfengeCampaign();
+    const resume = useResumeConfengeAccount();
+    const referral = useChangeConfengeReferral();
 
     const [filter, setFilter] = useState<ConfengeAttentionFilter>("needs_attention");
     const attention = useConfengeAttention(filter, enabled);
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const detail = useConfengeAttentionDetail(selectedId);
+    const [resumeAt, setResumeAt] = useState("");
+    const [resumeNote, setResumeNote] = useState("");
+    const [refName, setRefName] = useState("");
+    const [refEmail, setRefEmail] = useState("");
+    const [refRole, setRefRole] = useState("");
 
     useEffect(() => {
         const list = attention.data ?? [];
@@ -225,7 +234,7 @@ export default function ConfengePage() {
                                         <Field
                                             label="Confidence"
                                             value={
-                                                item.confidence != null
+                                                item.confidence != null && item.confidence > 0
                                                     ? String(Math.round(item.confidence * 100) / 100)
                                                     : "—"
                                             }
@@ -234,6 +243,15 @@ export default function ConfengePage() {
                                     </div>
                                     <Field label="Suggested action" value={item.suggested_action || "—"} />
                                     <Field label="Fact / evidence anchor" value={item.fact_to_mention || "—"} />
+                                    <Field
+                                        label="Thread"
+                                        value={
+                                            [item.thread_subject, item.thread || item.last_snippet]
+                                                .filter(Boolean)
+                                                .join(" — ") || "—"
+                                        }
+                                    />
+                                    {item.resume_at ? <Field label="Resume at" value={item.resume_at} /> : null}
                                     {!!item.evidence?.length && (
                                         <div>
                                             <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500 mb-1">
@@ -276,8 +294,99 @@ export default function ConfengePage() {
                                             </span>
                                         )}
                                     </div>
+
+                                    {/* Resume on date X — explicit future touch, still human-approved */}
+                                    <div className="rounded-md border border-slate-100 p-2 space-y-1.5">
+                                        <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                                            Resume on date (no auto-reopen)
+                                        </div>
+                                        <div className="flex flex-wrap gap-1.5 items-center">
+                                            <input
+                                                type="date"
+                                                value={resumeAt}
+                                                onChange={(e) => setResumeAt(e.target.value)}
+                                                className="h-7 rounded-md border border-slate-200 px-2 text-[12.5px] focus:border-sky-400 focus:ring-1 focus:ring-sky-100 outline-none"
+                                            />
+                                            <input
+                                                type="text"
+                                                placeholder="Note (optional)"
+                                                value={resumeNote}
+                                                onChange={(e) => setResumeNote(e.target.value)}
+                                                className="h-7 flex-1 min-w-[120px] rounded-md border border-slate-200 px-2 text-[12.5px] focus:border-sky-400 focus:ring-1 focus:ring-sky-100 outline-none"
+                                            />
+                                            <button
+                                                type="button"
+                                                disabled={
+                                                    resume.isPending ||
+                                                    !resumeAt ||
+                                                    item.do_not_contact
+                                                }
+                                                onClick={() =>
+                                                    resume.mutate({
+                                                        accountId: item.account_id,
+                                                        resumeAt,
+                                                        note: resumeNote,
+                                                    })
+                                                }
+                                                className="h-7 px-2.5 rounded-md border border-slate-200 text-[12.5px] text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                                            >
+                                                Schedule resume draft
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* Referral recipient swap — timeline retained */}
+                                    <div className="rounded-md border border-slate-100 p-2 space-y-1.5">
+                                        <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                                            Referral recipient (keep timeline)
+                                        </div>
+                                        <div className="grid sm:grid-cols-3 gap-1.5">
+                                            <input
+                                                type="text"
+                                                placeholder="Name"
+                                                value={refName}
+                                                onChange={(e) => setRefName(e.target.value)}
+                                                className="h-7 rounded-md border border-slate-200 px-2 text-[12.5px] focus:border-sky-400 focus:ring-1 focus:ring-sky-100 outline-none"
+                                            />
+                                            <input
+                                                type="email"
+                                                placeholder="Email"
+                                                value={refEmail}
+                                                onChange={(e) => setRefEmail(e.target.value)}
+                                                className="h-7 rounded-md border border-slate-200 px-2 text-[12.5px] focus:border-sky-400 focus:ring-1 focus:ring-sky-100 outline-none"
+                                            />
+                                            <input
+                                                type="text"
+                                                placeholder="Role"
+                                                value={refRole}
+                                                onChange={(e) => setRefRole(e.target.value)}
+                                                className="h-7 rounded-md border border-slate-200 px-2 text-[12.5px] focus:border-sky-400 focus:ring-1 focus:ring-sky-100 outline-none"
+                                            />
+                                        </div>
+                                        <button
+                                            type="button"
+                                            disabled={
+                                                referral.isPending ||
+                                                item.do_not_contact ||
+                                                (!refEmail.trim() && !refName.trim())
+                                            }
+                                            onClick={() =>
+                                                referral.mutate({
+                                                    accountId: item.account_id,
+                                                    name: refName,
+                                                    email: refEmail,
+                                                    role: refRole,
+                                                })
+                                            }
+                                            className="h-7 px-2.5 rounded-md border border-slate-200 text-[12.5px] text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                                        >
+                                            Update recipient
+                                        </button>
+                                    </div>
+
                                     <p className="text-[11px] text-slate-400">
-                                        Drafts land in Needs review. AI never auto-sends or marks Ganho.
+                                        Reply/resume drafts land in Awaiting approval. AI never auto-sends or
+                                        marks Ganho.
                                     </p>
                                 </>
                             )}

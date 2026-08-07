@@ -52,8 +52,9 @@ type Service interface {
 	WireCRM(crm CRMAPI)
 	BootstrapPipeline(ctx context.Context, orgID uuid.UUID) (*models.Pipeline, *errx.Error)
 	HandleClassifiedReply(ctx context.Context, orgID, actorID uuid.UUID, contactEmail, replyClass string, warmblyContactID *uuid.UUID) *errx.Error
-	// OnClassifiedReply is the advanced-package hook (error, not errx).
-	OnClassifiedReply(ctx context.Context, orgID uuid.UUID, contactEmail, replyClass string, contactID *uuid.UUID) error
+	// OnClassifiedReply is the advanced-package hook (error, not errx). Carries body for commercial lexicon.
+	OnClassifiedReply(ctx context.Context, orgID uuid.UUID, contactEmail, replyClass string, contactID *uuid.UUID, subject, bodyText string, actorID uuid.UUID) error
+	HandleClassifiedReplyFull(ctx context.Context, orgID, actorID uuid.UUID, contactEmail, replyClass string, warmblyContactID *uuid.UUID, subject, bodyText string, headers map[string][]string) *errx.Error
 	ProcessInboundHandoff(ctx context.Context, orgID uuid.UUID, in InboundHandoff) (*HandoffResult, *errx.Error)
 	ListAttention(ctx context.Context, orgID uuid.UUID, filter string, limit int) ([]AttentionItem, *errx.Error)
 	GetAttention(ctx context.Context, orgID, accountID uuid.UUID) (*AttentionItem, *errx.Error)

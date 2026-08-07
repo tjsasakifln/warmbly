@@ -2,6 +2,7 @@ package confenge
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -354,4 +355,164 @@ func TestOOOWithoutDateDoesNotInventResume(t *testing.T) {
 		t.Fatalf("suggested action invented date: %s", res.Intent.SuggestedAction)
 	}
 	_ = accID
+}
+
+func TestApplyReplyCRMCreatesTaskWithoutActor(t *testing.T) {
+	r := newMemRepoWithSettings()
+	svc := NewService(Config{Enabled: true, DefaultDailyLimit: 10, MaxInitialEmailWords: 120}, r, nil).(*service)
+	crm := &mockCRM{}
+	svc.WireCRM(crm)
+	org := uuid.New()
+	// ensure owner exists for Nil actor path
+	owner, _ := r.GetOrgOwnerUserID(context.Background(), org)
+	if owner == uuid.Nil {
+		t.Fatal("owner")
+	}
+	accID := uuid.New()
+	cnpj := fmt.Sprintf("%014d", int(accID[0])<<24|int(accID[1])<<16|int(accID[2])<<8|int(accID[3]))
+	cnpj = (cnpj + "00000000000000")[:14]
+	_, _ = r.UpsertAccount(context.Background(), &models.OutreachAccount{
+		ID: accID, OrganizationID: org, CNPJ14: cnpj, RazaoSocial: "ACME", QueueState: models.OutreachQueueSent, SourceLeadID: "L1",
+	})
+	contactID := uuid.New()
+	_, _ = r.UpsertCandidate(context.Background(), &models.OutreachContactCandidate{
+		ID: uuid.New(), OrganizationID: org, AccountID: accID, Email: "ana@acme.com",
+		VerificationStatus: models.OutreachVerifyOfficialSource, Recommended: true, WarmblyContactID: &contactID,
+	})
+	// Production path: ActorID is Nil
+	_, xerr := svc.ProcessInboundHandoff(context.Background(), org, InboundHandoff{
+		Channel: models.OutreachChannelEmail, ContactEmail: "ana@acme.com",
+		BodyText: "Tenho interesse, vamos agendar", ActorID: uuid.Nil, IdempotencyKey: "nil-actor-1",
+	})
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if crm.tasks < 1 {
+		t.Fatal("expected CRM task even when ActorID is Nil (org owner fallback)")
+	}
+}
+
+func TestEmailBodyDrivesCommercialLexiconDNC(t *testing.T) {
+	r := newMemRepoWithSettings()
+	svc := NewService(Config{Enabled: true, DefaultDailyLimit: 10, MaxInitialEmailWords: 120}, r, nil).(*service)
+	org := uuid.New()
+	accID := uuid.New()
+	cnpj := fmt.Sprintf("%014d", int(accID[0])<<24|int(accID[1])<<16|int(accID[2])<<8|int(accID[3]))
+	cnpj = (cnpj + "00000000000000")[:14]
+	_, _ = r.UpsertAccount(context.Background(), &models.OutreachAccount{
+		ID: accID, OrganizationID: org, CNPJ14: cnpj, RazaoSocial: "X", QueueState: models.OutreachQueueSent, SourceLeadID: "Ldnc",
+	})
+	_, _ = r.UpsertCandidate(context.Background(), &models.OutreachContactCandidate{
+		ID: uuid.New(), OrganizationID: org, AccountID: accID, Email: "dncbody@acme.com",
+		VerificationStatus: models.OutreachVerifyOfficialSource, Recommended: true,
+	})
+	// PreClass unknown, but body has DNC — lexicon must win
+	res, xerr := svc.ProcessInboundHandoff(context.Background(), org, InboundHandoff{
+		Channel: models.OutreachChannelEmail, ContactEmail: "dncbody@acme.com",
+		Subject: "Re: convite", BodyText: "Please remove me and do not contact again",
+		PreClass: replyclassify.ClassUnknown, IdempotencyKey: "body-dnc-1",
+	})
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if res.Intent.Intent != IntentDoNotContact {
+		t.Fatalf("intent=%s want DNC from body", res.Intent.Intent)
+	}
+}
+
+func TestResumeAtDateCreatesApprovalDraft(t *testing.T) {
+	r := newMemRepoWithSettings()
+	svc := NewService(Config{Enabled: true, DefaultDailyLimit: 10, MaxInitialEmailWords: 120}, r, nil).(*service)
+	org, user := uuid.New(), uuid.New()
+	accID := uuid.New()
+	cnpj := fmt.Sprintf("%014d", int(accID[0])<<24|int(accID[1])<<16|int(accID[2])<<8|int(accID[3]))
+	cnpj = (cnpj + "00000000000000")[:14]
+	_, _ = r.UpsertAccount(context.Background(), &models.OutreachAccount{
+		ID: accID, OrganizationID: org, CNPJ14: cnpj, RazaoSocial: "Y", QueueState: models.OutreachQueueReplied, SourceLeadID: "Lr",
+	})
+	_, _ = r.UpsertCandidate(context.Background(), &models.OutreachContactCandidate{
+		ID: uuid.New(), OrganizationID: org, AccountID: accID, Email: "r@acme.com",
+		VerificationStatus: models.OutreachVerifyOfficialSource, Recommended: true,
+	})
+	future := time.Now().UTC().Add(96 * time.Hour)
+	acc, xerr := svc.ResumeAtDate(context.Background(), org, user, accID, future, "depois das ferias")
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if acc.QueueState != models.OutreachQueueNeedsReview {
+		t.Fatalf("queue=%s want NEEDS_REVIEW", acc.QueueState)
+	}
+	drafts, _ := r.ListDrafts(context.Background(), org, models.OutreachDraftNeedsReview, 20, 0)
+	found := false
+	for _, d := range drafts {
+		if d.AccountID == accID && strings.HasPrefix(d.StrategyCode, "RESUME_AT:") {
+			found = true
+			if !containsFlag(d.RiskFlags, "never_auto_send") || !containsFlag(d.RiskFlags, "requires_human_approval") {
+				t.Fatalf("flags=%v", d.RiskFlags)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected explicit resume draft subject to approval")
+	}
+}
+
+func TestGenerateReplyDraftSurfacesAwaitingApproval(t *testing.T) {
+	r := newMemRepoWithSettings()
+	svc := NewService(Config{Enabled: true, DefaultDailyLimit: 10, MaxInitialEmailWords: 120}, r, nil).(*service)
+	org, user := uuid.New(), uuid.New()
+	accID := uuid.New()
+	cnpj := fmt.Sprintf("%014d", int(accID[0])<<24|int(accID[1])<<16|int(accID[2])<<8|int(accID[3]))
+	cnpj = (cnpj + "00000000000000")[:14]
+	_, _ = r.UpsertAccount(context.Background(), &models.OutreachAccount{
+		ID: accID, OrganizationID: org, CNPJ14: cnpj, RazaoSocial: "Z", QueueState: models.OutreachQueueReplied,
+		CommercialState: IntentQuestion, SourceLeadID: "Lq",
+	})
+	_, _ = r.UpsertCandidate(context.Background(), &models.OutreachContactCandidate{
+		ID: uuid.New(), OrganizationID: org, AccountID: accID, Email: "q@acme.com", Name: "Q",
+		VerificationStatus: models.OutreachVerifyOfficialSource, Recommended: true,
+	})
+	// Seed handoff outcome for confidence/snippet
+	_ = r.EnqueueOutcome(context.Background(), &models.OutreachOutcome{
+		OrganizationID: org, CNPJ14: cnpj, SourceLeadID: "Lq", ContactEmail: "q@acme.com",
+		EventType: OutcomeReplied, OccurredAt: time.Now().UTC(), IdempotencyKey: "seed-out-1",
+		Payload: []byte(`{"channel":"EMAIL","intent":"QUESTION","confidence":0.7,"snippet":"Quanto custa?","subject":"Re: proposta"}`),
+	})
+	d, xerr := svc.GenerateReplyDraft(context.Background(), org, user, accID, nil)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if d.Status != models.OutreachDraftNeedsReview {
+		t.Fatal(d.Status)
+	}
+	acc, _ := r.GetAccount(context.Background(), org, accID)
+	if acc.QueueState != models.OutreachQueueNeedsReview {
+		t.Fatalf("queue=%s want NEEDS_REVIEW for awaiting approval filter", acc.QueueState)
+	}
+	items, xerr := svc.ListAttention(context.Background(), org, FilterAwaitingApproval, 20)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	found := false
+	for _, it := range items {
+		if it.AccountID == accID {
+			found = true
+			if it.ReplyDraftID == nil {
+				t.Fatal("reply draft id")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("awaiting approval should list reply draft accounts")
+	}
+	detail, xerr := svc.GetAttention(context.Background(), org, accID)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if detail.Confidence < 0.5 {
+		t.Fatalf("confidence=%v", detail.Confidence)
+	}
+	if detail.LastSnippet == "" && detail.Thread == "" {
+		t.Fatal("thread/snippet required")
+	}
 }

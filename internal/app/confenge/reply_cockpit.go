@@ -35,8 +35,11 @@ type AttentionItem struct {
 	SuggestedAction string          `json:"suggested_action,omitempty"`
 	Evidence        []EvidenceBrief `json:"evidence,omitempty"`
 	LastSnippet     string          `json:"last_snippet,omitempty"`
+	ThreadSubject   string          `json:"thread_subject,omitempty"`
+	Thread          string          `json:"thread,omitempty"`
 	UpdatedAt       time.Time       `json:"updated_at"`
 	ReplyDraftID    *uuid.UUID      `json:"reply_draft_id,omitempty"`
+	ResumeAt        string          `json:"resume_at,omitempty"`
 }
 
 // EvidenceBrief is a compact evidence row for the attention detail pane.
@@ -49,6 +52,7 @@ type EvidenceBrief struct {
 }
 
 // ListAttention returns cockpit items for a filter (needs_attention default).
+// awaiting_approval is draft-centric (reply/resume drafts in NEEDS_REVIEW).
 func (s *service) ListAttention(ctx context.Context, orgID uuid.UUID, filter string, limit int) ([]AttentionItem, *errx.Error) {
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, xerr
@@ -56,7 +60,14 @@ func (s *service) ListAttention(ctx context.Context, orgID uuid.UUID, filter str
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	qs := MapCockpitFilterToQueueState(filter)
+	f := strings.ToLower(strings.TrimSpace(filter))
+	if f == "" {
+		f = FilterNeedsAttention
+	}
+	if f == FilterAwaitingApproval || f == "awaiting-approval" || f == "review" {
+		return s.listAwaitingApprovalAttention(ctx, orgID, limit)
+	}
+	qs := MapCockpitFilterToQueueState(f)
 	if qs == "" {
 		qs = models.OutreachQueueReplied
 	}
@@ -72,6 +83,41 @@ func (s *service) ListAttention(ctx context.Context, orgID uuid.UUID, filter str
 		item, xerr := s.buildAttentionItem(ctx, orgID, &accs[i], false)
 		if xerr != nil {
 			continue
+		}
+		out = append(out, *item)
+	}
+	return out, nil
+}
+
+func (s *service) listAwaitingApprovalAttention(ctx context.Context, orgID uuid.UUID, limit int) ([]AttentionItem, *errx.Error) {
+	drafts, err := s.repo.ListDrafts(ctx, orgID, models.OutreachDraftNeedsReview, limit, 0)
+	if err != nil {
+		return nil, errx.New(errx.Internal, "list drafts failed")
+	}
+	seen := map[uuid.UUID]bool{}
+	var out []AttentionItem
+	for i := range drafts {
+		d := drafts[i]
+		if seen[d.AccountID] {
+			continue
+		}
+		// Prefer reply/resume drafts; still include any NEEDS_REVIEW so the queue is useful.
+		seen[d.AccountID] = true
+		acc, err := s.repo.GetAccount(ctx, orgID, d.AccountID)
+		if err != nil || acc == nil {
+			continue
+		}
+		item, xerr := s.buildAttentionItem(ctx, orgID, acc, false)
+		if xerr != nil {
+			continue
+		}
+		id := d.ID
+		item.ReplyDraftID = &id
+		if d.Channel != "" {
+			item.Channel = d.Channel
+		}
+		if d.Subject != "" {
+			item.ThreadSubject = d.Subject
 		}
 		out = append(out, *item)
 	}
@@ -143,15 +189,69 @@ func (s *service) buildAttentionItem(ctx context.Context, orgID uuid.UUID, acc *
 			id := drafts[i].ID
 			item.ReplyDraftID = &id
 			item.Channel = drafts[i].Channel
-			if strings.Contains(strings.ToLower(drafts[i].StrategyCode), "reply") || containsFlag(drafts[i].RiskFlags, "reply_draft") {
+			if strings.HasPrefix(drafts[i].StrategyCode, "RESUME_AT:") {
+				item.ResumeAt = strings.TrimPrefix(drafts[i].StrategyCode, "RESUME_AT:")
+			}
+			if strings.Contains(strings.ToLower(drafts[i].StrategyCode), "reply") || containsFlag(drafts[i].RiskFlags, "reply_draft") || containsFlag(drafts[i].RiskFlags, "resume_scheduled") {
 				break
 			}
 		}
 	}
+	// Hydrate confidence / thread snippet from latest handoff outcome payload.
+	email := item.ContactEmail
+	if outc, err := s.repo.GetLatestOutcomeForLead(ctx, orgID, acc.CNPJ14, acc.SourceLeadID, email); err == nil && outc != nil {
+		if m := parseHandoffPayload(outc.Payload); m != nil {
+			if v, ok := m["confidence"].(float64); ok {
+				item.Confidence = v
+			}
+			if v, ok := m["snippet"].(string); ok {
+				item.LastSnippet = v
+				item.Thread = v
+			}
+			if v, ok := m["subject"].(string); ok {
+				item.ThreadSubject = v
+			}
+			if v, ok := m["channel"].(string); ok && item.Channel == "" {
+				item.Channel = v
+			}
+			if v, ok := m["intent"].(string); ok && (item.Intent == "" || item.Intent == "NEW") {
+				item.Intent = v
+				item.SuggestedAction = SuggestNextAction(v, nil, "")
+			}
+			if v, ok := m["suggested_action"].(string); ok && v != "" {
+				item.SuggestedAction = v
+			}
+		}
+	}
+	// Parse resume_at from block_reason when present.
+	if strings.HasPrefix(acc.BlockReason, "resume_at:") {
+		item.ResumeAt = strings.TrimPrefix(acc.BlockReason, "resume_at:")
+	}
+	if item.Confidence == 0 && item.Intent == IntentDoNotContact {
+		item.Confidence = 0.95
+	} else if item.Confidence == 0 && item.Intent != "" && item.Intent != IntentUnknown && item.Intent != "NEW" {
+		item.Confidence = 0.75
+	}
 	if item.Channel == "" {
-		item.Channel = models.OutreachChannelEmail
+		// Infer from block_reason reply:CHANNEL:INTENT
+		if parts := strings.Split(acc.BlockReason, ":"); len(parts) >= 3 && parts[0] == "reply" {
+			item.Channel = parts[1]
+		} else {
+			item.Channel = models.OutreachChannelEmail
+		}
 	}
 	return item, nil
+}
+
+func parseHandoffPayload(raw []byte) map[string]any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil
+	}
+	return m
 }
 
 // GenerateReplyDraft builds a human-review reply draft (never auto-send).
@@ -278,9 +378,9 @@ func (s *service) GenerateReplyDraft(ctx context.Context, orgID, userID, account
 	if err := s.repo.UpsertDraft(ctx, draft); err != nil {
 		return nil, errx.New(errx.Internal, "failed to save reply draft: "+err.Error())
 	}
-	// Keep account in REPLIED / needs attention; do not auto-enroll or send.
+	// Surface under Awaiting approval (NEEDS_REVIEW); do not auto-enroll or send.
 	if acc.QueueState != models.OutreachQueueDoNotContact {
-		_ = s.repo.SetAccountHumanFlags(ctx, orgID, accountID, acc.Blocked, acc.DoNotContact, acc.BlockReason, models.OutreachQueueReplied)
+		_ = s.repo.SetAccountHumanFlags(ctx, orgID, accountID, acc.Blocked, acc.DoNotContact, acc.BlockReason, models.OutreachQueueNeedsReview)
 	}
 	if s.audit != nil {
 		s.audit.LogAction(ctx, orgID, userID, models.AuditActionCreate, models.AuditEntityOutreachAccount, &accountID, "", "",

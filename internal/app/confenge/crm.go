@@ -187,7 +187,13 @@ func ClassifyReplyForCRM(replyClass string) ReplyCRMAction {
 }
 
 // HandleClassifiedReply routes through unified handoff. Never auto-WON.
+// Legacy entry without body — prefer HandleClassifiedReplyFull / OnClassifiedReply.
 func (s *service) HandleClassifiedReply(ctx context.Context, orgID, actorID uuid.UUID, contactEmail, replyClass string, warmblyContactID *uuid.UUID) *errx.Error {
+	return s.HandleClassifiedReplyFull(ctx, orgID, actorID, contactEmail, replyClass, warmblyContactID, "", "", nil)
+}
+
+// HandleClassifiedReplyFull includes subject/body so commercial lexicon (DNC, referral, OOO) runs.
+func (s *service) HandleClassifiedReplyFull(ctx context.Context, orgID, actorID uuid.UUID, contactEmail, replyClass string, warmblyContactID *uuid.UUID, subject, bodyText string, headers map[string][]string) *errx.Error {
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil
 	}
@@ -195,15 +201,22 @@ func (s *service) HandleClassifiedReply(ctx context.Context, orgID, actorID uuid
 	if email == "" {
 		return nil
 	}
+	idemExtra := replyClass
+	if bodyText != "" {
+		// Stable-ish key for content-bearing handoffs (minute bucket still limits spam).
+		idemExtra = replyClass + ":" + fmt.Sprintf("%d", time.Now().UTC().Truncate(time.Minute).Unix())
+	}
 	_, xerr := s.ProcessInboundHandoff(ctx, orgID, InboundHandoff{
 		Channel: models.OutreachChannelEmail, ContactEmail: email, PreClass: replyClass,
-		IdempotencyKey:   fmt.Sprintf("classified:%s:%s:%s:%d", orgID, email, replyClass, time.Now().UTC().Truncate(time.Minute).Unix()),
+		Subject: subject, BodyText: bodyText, Headers: headers,
+		IdempotencyKey:   fmt.Sprintf("classified:%s:%s:%s", orgID, email, idemExtra),
 		WarmblyContactID: warmblyContactID, ActorID: actorID, OccurredAt: time.Now().UTC(),
 	})
 	return xerr
 }
 
-// applyReplyCRM creates tasks/deals only. Never Ganho.
+// applyReplyCRM creates tasks/deals. Never Ganho.
+// When actorID is Nil (system inbound), resolves org owner so tasks still get created.
 func (s *service) applyReplyCRM(ctx context.Context, orgID, actorID uuid.UUID, contactEmail, replyClass string, warmblyContactID *uuid.UUID, cand *models.OutreachContactCandidate, acc *models.OutreachAccount) {
 	if s.crm == nil {
 		return
@@ -216,8 +229,16 @@ func (s *service) applyReplyCRM(ctx context.Context, orgID, actorID uuid.UUID, c
 	if contactID == nil {
 		return
 	}
-	if action.CreateTask && actorID != uuid.Nil {
-		_, _ = s.crm.CreateCRMTask(ctx, orgID, actorID, &models.CreateCRMTask{ContactID: contactID, Title: action.TaskTitle, Type: action.TaskType, Priority: "medium"})
+	actor := actorID
+	if actor == uuid.Nil {
+		if id, err := s.repo.GetOrgOwnerUserID(ctx, orgID); err == nil && id != uuid.Nil {
+			actor = id
+		}
+	}
+	if action.CreateTask && actor != uuid.Nil {
+		_, _ = s.crm.CreateCRMTask(ctx, orgID, actor, &models.CreateCRMTask{
+			ContactID: contactID, Title: action.TaskTitle, Type: action.TaskType, Priority: "medium",
+		})
 	}
 	if action.OpenDeal {
 		pipe, xerr := s.BootstrapPipeline(ctx, orgID)
@@ -228,7 +249,9 @@ func (s *service) applyReplyCRM(ctx context.Context, orgID, actorID uuid.UUID, c
 				if acc != nil {
 					name = firstNonEmpty(acc.NomeFantasia, acc.RazaoSocial, "CONFENGE")
 				}
-				_, _ = s.crm.CreateDeal(ctx, orgID, &models.CreateDeal{PipelineID: pipe.ID, StageID: stageID, ContactID: contactID, Name: name, Currency: "BRL"})
+				_, _ = s.crm.CreateDeal(ctx, orgID, &models.CreateDeal{
+					PipelineID: pipe.ID, StageID: stageID, ContactID: contactID, Name: name, Currency: "BRL",
+				})
 			}
 		}
 	}

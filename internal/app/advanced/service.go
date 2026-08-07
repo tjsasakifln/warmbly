@@ -167,8 +167,10 @@ type service struct {
 
 // ConfengeReplyHook is implemented by the CONFENGE outreach service. Kept as a
 // narrow interface so advanced does not import the confenge package.
+// subject/body/actor are required so commercial lexicon (DNC, referral, OOO)
+// and CRM tasks run on the real email path (not only PreClass).
 type ConfengeReplyHook interface {
-	OnClassifiedReply(ctx context.Context, orgID uuid.UUID, contactEmail, replyClass string, contactID *uuid.UUID) error
+	OnClassifiedReply(ctx context.Context, orgID uuid.UUID, contactEmail, replyClass string, contactID *uuid.UUID, subject, bodyText string, actorID uuid.UUID) error
 }
 
 func NewService(
@@ -904,9 +906,15 @@ func (s *service) ProcessIncomingReply(ctx context.Context, emailAccountID uuid.
 		// skipped the model.
 		_ = s.campaignProgressRepo.RecordReplyClassification(ctx, cID, ctID, sID, replyResult.Class, replyResult.Source, replyResult.Confidence)
 
-		// CONFENGE staging: attribute the class to outbox + CRM (best-effort).
+		// CONFENGE staging: full handoff with body so commercial lexicon runs (DNC/referral/OOO).
 		if s.confengeReply != nil && account.OrganizationID != nil {
-			_ = s.confengeReply.OnClassifiedReply(ctx, *account.OrganizationID, sender, replyResult.Class, &ctID)
+			actorID := uuid.Nil
+			if account.UserID != "" {
+				if parsed, perr := uuid.Parse(account.UserID); perr == nil {
+					actorID = parsed
+				}
+			}
+			_ = s.confengeReply.OnClassifiedReply(ctx, *account.OrganizationID, sender, replyResult.Class, &ctID, msg.Subject, msg.Snippet, actorID)
 		}
 
 		// OOO trap fix: only a HUMAN reply stamps replied_at. An auto_reply /

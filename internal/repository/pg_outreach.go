@@ -58,6 +58,10 @@ type OutreachRepository interface {
 	GetOutcomeByIdempotency(ctx context.Context, orgID uuid.UUID, key string) (*models.OutreachOutcome, error)
 	FindCandidateByEmail(ctx context.Context, orgID uuid.UUID, email string) (*models.OutreachContactCandidate, *models.OutreachAccount, error)
 	FindCandidateByPhone(ctx context.Context, orgID uuid.UUID, phone string) (*models.OutreachContactCandidate, *models.OutreachAccount, error)
+	// Org owner for system-created CRM tasks when inbound has no human actor.
+	GetOrgOwnerUserID(ctx context.Context, orgID uuid.UUID) (uuid.UUID, error)
+	// Latest handoff/outcome projection for cockpit confidence/snippet/thread.
+	GetLatestOutcomeForLead(ctx context.Context, orgID uuid.UUID, cnpj14, sourceLeadID, contactEmail string) (*models.OutreachOutcome, error)
 }
 
 // OutreachAccountFilter filters staged accounts.

@@ -175,3 +175,44 @@ func (r *outreachRepository) FindCandidateByPhone(ctx context.Context, orgID uui
 	}
 	return c, acc, nil
 }
+
+// GetOrgOwnerUserID returns organizations.owner_user_id for system CRM attribution.
+func (r *outreachRepository) GetOrgOwnerUserID(ctx context.Context, orgID uuid.UUID) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := r.db.QueryRow(ctx, `SELECT owner_user_id FROM organizations WHERE id=$1`, orgID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, nil
+	}
+	return id, err
+}
+
+// GetLatestOutcomeForLead returns the newest outcome for cockpit projection.
+func (r *outreachRepository) GetLatestOutcomeForLead(ctx context.Context, orgID uuid.UUID, cnpj14, sourceLeadID, contactEmail string) (*models.OutreachOutcome, error) {
+	row := r.db.QueryRow(ctx, `
+		SELECT id, organization_id, event_id, idempotency_key, COALESCE(source_lead_id,''), COALESCE(cnpj14,''),
+			COALESCE(contact_email,''), event_type, payload, occurred_at, attempts, next_attempt_at,
+			delivered_at, COALESCE(last_error,''), dead_letter, created_at, updated_at
+		FROM outreach_outcome_outbox
+		WHERE organization_id=$1
+		  AND (
+			($2 <> '' AND cnpj14=$2) OR
+			($3 <> '' AND source_lead_id=$3) OR
+			($4 <> '' AND lower(contact_email)=lower($4))
+		  )
+		  AND event_type IN ('REPLIED','DO_NOT_CONTACT','MEETING','PROPOSAL')
+		ORDER BY occurred_at DESC
+		LIMIT 1`, orgID, cnpj14, sourceLeadID, contactEmail)
+	var ev models.OutreachOutcome
+	err := row.Scan(
+		&ev.ID, &ev.OrganizationID, &ev.EventID, &ev.IdempotencyKey, &ev.SourceLeadID, &ev.CNPJ14,
+		&ev.ContactEmail, &ev.EventType, &ev.Payload, &ev.OccurredAt, &ev.Attempts, &ev.NextAttemptAt,
+		&ev.DeliveredAt, &ev.LastError, &ev.DeadLetter, &ev.CreatedAt, &ev.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ev, nil
+}

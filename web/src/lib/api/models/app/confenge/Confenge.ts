@@ -136,6 +136,9 @@ export type ConfengeAttentionItem = {
     suggested_action?: string;
     evidence?: ConfengeEvidenceBrief[];
     last_snippet?: string;
+    thread_subject?: string;
+    thread?: string;
     updated_at?: string;
     reply_draft_id?: string;
+    resume_at?: string;
 };
