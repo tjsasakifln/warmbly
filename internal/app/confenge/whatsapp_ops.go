@@ -197,11 +197,9 @@ func (s *service) SendApprovedWhatsApp(ctx context.Context, orgID, userID, draft
 	if err != nil || d == nil {
 		return nil, errx.New(errx.NotFound, "draft not found")
 	}
-	if d.Channel != models.OutreachChannelWhatsApp && d.Channel != "" && d.Channel != "WHATSAPP" {
-		// allow empty channel only if phone present (legacy) — still require explicit WHATSAPP
-		if d.RecipientPhoneE164 == "" {
-			return nil, errx.New(errx.BadRequest, "draft is not a WhatsApp draft")
-		}
+	// Explicit WHATSAPP channel only — never send an EMAIL draft even if a phone is set.
+	if d.Channel != models.OutreachChannelWhatsApp && d.Channel != "WHATSAPP" {
+		return nil, errx.New(errx.BadRequest, "draft is not a WhatsApp draft")
 	}
 	if d.Status != models.OutreachDraftApproved {
 		return nil, errx.New(errx.BadRequest, "draft must be APPROVED before WhatsApp send")

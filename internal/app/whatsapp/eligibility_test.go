@@ -238,4 +238,41 @@ func TestOutsideServiceWindowTemplateOnly(t *testing.T) {
 	}
 }
 
+// USER_INITIATED after the service window expires must not allow free-text.
+// Free-text requires an open window; outside it is template-only.
+func TestUserInitiatedOutsideWindowBlocksFreeText(t *testing.T) {
+	now := time.Now().UTC()
+	inbound := now.Add(-48 * time.Hour)
+	until := now.Add(-24 * time.Hour) // expired
+	st := baseState()
+	st.ConsentStatus = ConsentUserInitiated
+	st.ConsentProvenanceOK = true
+	st.ConsentSource = "inbound_whatsapp"
+	st.LastInboundAt = &inbound
+	st.ServiceWindowUntil = &until
+
+	d := EvaluateEligibility(st, SendIntent{
+		Mode: ModeFreeText, Automated: false, FeatureEnabled: true, Now: now,
+		ServiceWindow: 24 * time.Hour,
+	})
+	if d.Allowed {
+		t.Fatalf("free-text must be blocked outside service window: %+v", d)
+	}
+	if d.Eligibility != EligTemplateOnly || !d.UseTemplate {
+		t.Fatalf("expected template-only: %+v", d)
+	}
+	if d.OpenServiceWindow {
+		t.Fatal("OpenServiceWindow must be false when window expired")
+	}
+
+	// Approved template may still send outside window for USER_INITIATED.
+	d2 := EvaluateEligibility(st, SendIntent{
+		Mode: ModeTemplate, TemplateApproved: true, Automated: false, FeatureEnabled: true, Now: now,
+		ServiceWindow: 24 * time.Hour,
+	})
+	if !d2.Allowed || !d2.UseTemplate {
+		t.Fatalf("approved template should be allowed: %+v", d2)
+	}
+}
+
 func ptrTime(t time.Time) *time.Time { return &t }

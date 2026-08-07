@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/warmbly/warmbly/internal/app/whatsapp"
+	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
 )
 
@@ -47,6 +48,42 @@ func TestLeadToCandidatePhoneConsent(t *testing.T) {
 	}
 }
 
+// memWAStore persists channel state for send/inbound integration tests.
+type memWAStore struct {
+	byPhone map[string]*models.WhatsAppContactState
+	msgs    int
+}
+
+func (m *memWAStore) UpsertContactState(_ context.Context, st *models.WhatsAppContactState) *errx.Error {
+	if m.byPhone == nil {
+		m.byPhone = map[string]*models.WhatsAppContactState{}
+	}
+	cp := *st
+	m.byPhone[st.PhoneE164] = &cp
+	return nil
+}
+func (m *memWAStore) GetContactStateByPhone(_ context.Context, _ uuid.UUID, phone string) (*models.WhatsAppContactState, *errx.Error) {
+	if m.byPhone == nil {
+		return nil, nil
+	}
+	st := m.byPhone[phone]
+	if st == nil {
+		return nil, nil
+	}
+	cp := *st
+	return &cp, nil
+}
+func (m *memWAStore) InsertMessage(context.Context, *models.WhatsAppMessage) (bool, *errx.Error) {
+	m.msgs++
+	return true, nil
+}
+func (m *memWAStore) GetInstanceByName(context.Context, string, string) (*models.WhatsAppInstance, *errx.Error) {
+	return nil, nil
+}
+func (m *memWAStore) InsertWebhookEvent(context.Context, uuid.UUID, string, string, string, string, string) (bool, *errx.Error) {
+	return true, nil
+}
+
 func TestDecideChannelGenerateAndSend(t *testing.T) {
 	org := uuid.New()
 	accID := uuid.New()
@@ -74,9 +111,10 @@ func TestDecideChannelGenerateAndSend(t *testing.T) {
 		Enabled: true, AutoSendEnabled: false, CrossChannelInterval: 0, ServiceWindow: 24 * time.Hour,
 		EvolutionInstance: "test",
 	}, mock, nil)
+	store := &memWAStore{}
 	cfg := Config{Enabled: true, WhatsAppEnabled: true, RequireHumanApproval: true, CrossChannelHours: 0, MaxInitialEmailWords: 120}
 	svc := NewService(cfg, repo, nil).(*service)
-	svc.WireWhatsApp(waSvc, nil)
+	svc.WireWhatsApp(waSvc, store)
 
 	// Case A: public phone
 	pubID := uuid.New()
@@ -105,7 +143,7 @@ func TestDecideChannelGenerateAndSend(t *testing.T) {
 		t.Fatal("generate must not send")
 	}
 
-	// Open service window via inbound then send approved draft
+	// Open service window via inbound (persisted in store) then send approved draft.
 	_, err := svc.HandleWhatsAppInbound(context.Background(), org, whatsapp.ChannelEvent{
 		Channel: whatsapp.ChannelWhatsApp, Provider: whatsapp.ProviderEvolution,
 		EventType: whatsapp.EventMessageReceived, ExternalMessageID: "in1",
@@ -114,6 +152,9 @@ func TestDecideChannelGenerateAndSend(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if st, _ := store.GetContactStateByPhone(context.Background(), org, "+5548999887766"); st == nil || st.ServiceWindowUntil == nil {
+		t.Fatal("inbound must open service window in store")
 	}
 	draft.Status = models.OutreachDraftApproved
 	_ = repo.UpsertDraft(context.Background(), draft)
@@ -189,6 +230,36 @@ func TestHandleWhatsAppInboundOptOutStopsAndOutcomes(t *testing.T) {
 	}
 	if !res2.Duplicate {
 		t.Fatal("expected duplicate")
+	}
+}
+
+func TestSendApprovedWhatsAppRejectsEmailDraft(t *testing.T) {
+	org := uuid.New()
+	accID := uuid.New()
+	user := uuid.New()
+	repo := newMemRepo()
+	repo.byID[accID] = &models.OutreachAccount{
+		ID: accID, OrganizationID: org, SourceLeadID: "L3", CNPJ14: "111",
+	}
+	repo.accounts[accKey(org, "111")] = repo.byID[accID]
+	draftID := uuid.New()
+	// EMAIL draft that happens to have a phone — must never send via WhatsApp.
+	repo.drafts[draftID] = &models.OutreachDraft{
+		ID: draftID, OrganizationID: org, AccountID: accID,
+		Channel: models.OutreachChannelEmail, Status: models.OutreachDraftApproved,
+		RecipientPhoneE164: "+5548999000111", BodyText: "email body",
+	}
+	mock := whatsapp.NewMockProvider()
+	waSvc := whatsapp.NewService(whatsapp.Config{Enabled: true, ServiceWindow: 24 * time.Hour}, mock, nil)
+	svc := NewService(Config{Enabled: true, WhatsAppEnabled: true}, repo, nil).(*service)
+	svc.WireWhatsApp(waSvc, nil)
+
+	_, xerr := svc.SendApprovedWhatsApp(context.Background(), org, user, draftID)
+	if xerr == nil {
+		t.Fatal("EMAIL draft must be rejected even when phone is set")
+	}
+	if mock.SendCount() != 0 {
+		t.Fatalf("provider must not be called, sends=%d", mock.SendCount())
 	}
 }
 

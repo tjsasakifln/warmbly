@@ -118,24 +118,24 @@ func EvaluateEligibility(state ContactChannelState, intent SendIntent) Decision 
 		inServiceWindow = true
 	}
 
-	// USER_INITIATED with open window: free-text reply allowed (human or system
-	// if auto-reply flag is on — that flag is checked by the caller for auto-reply).
-	if consent == ConsentUserInitiated || inServiceWindow {
+	// Free-text is only allowed inside an open service window (last inbound + TTL).
+	// USER_INITIATED alone does not keep free-text forever after the window closes.
+	if inServiceWindow {
 		if intent.Mode == ModeFreeText || intent.Mode == ModeTemplate {
 			if intent.Automated && !intent.AutoSendEnabled {
-				return Decision{Allowed: false, Eligibility: EligManualReview, Reason: "auto_send_disabled", OpenServiceWindow: inServiceWindow}
+				return Decision{Allowed: false, Eligibility: EligManualReview, Reason: "auto_send_disabled", OpenServiceWindow: true}
 			}
 			if intent.Automated && intent.RequireHumanApproval {
-				return Decision{Allowed: false, Eligibility: EligManualReview, Reason: "requires_human_approval", OpenServiceWindow: inServiceWindow}
+				return Decision{Allowed: false, Eligibility: EligManualReview, Reason: "requires_human_approval", OpenServiceWindow: true}
 			}
 			if blocked, why := crossChannelBlocked(state, now, cross); blocked {
-				return Decision{Allowed: false, Eligibility: EligBlocked, Reason: why, OpenServiceWindow: inServiceWindow}
+				return Decision{Allowed: false, Eligibility: EligBlocked, Reason: why, OpenServiceWindow: true}
 			}
 			elig := EligServiceWindow
 			if consent == ConsentOptedIn && state.ConsentProvenanceOK {
 				elig = EligAutomatedAllowed
 			}
-			return Decision{Allowed: true, Eligibility: elig, Reason: "service_window_or_user_initiated", OpenServiceWindow: true}
+			return Decision{Allowed: true, Eligibility: elig, Reason: "service_window_open", OpenServiceWindow: true}
 		}
 	}
 
