@@ -3,6 +3,7 @@ import type {
     ConfengeDraft,
     ConfengeStatus,
     ConfengeSummary,
+    ConfengeDispatchStatus,
 } from "@/lib/api/models/app/confenge/Confenge";
 import Request from "../../Request";
 
@@ -103,6 +104,35 @@ export async function bootstrapConfengeCampaign(): Promise<{ id: string; name: s
     const res = await Request<{ data: { id: string; name: string } }>({
         method: "POST",
         url: "/confenge/campaign/bootstrap",
+        authorization: true,
+        data: {},
+    });
+    return res.data;
+}
+
+export async function getConfengeDispatchStatus(): Promise<ConfengeDispatchStatus> {
+    const res = await Request<{ data: ConfengeDispatchStatus }>({
+        method: "GET",
+        url: "/confenge/dispatch/status",
+        authorization: true,
+    });
+    return res.data;
+}
+
+export async function pauseConfengeDispatch(reason?: string): Promise<ConfengeDispatchStatus> {
+    const res = await Request<{ data: ConfengeDispatchStatus }>({
+        method: "POST",
+        url: "/confenge/dispatch/pause",
+        authorization: true,
+        data: { reason: reason ?? "manual_pause" },
+    });
+    return res.data;
+}
+
+export async function resumeConfengeDispatch(): Promise<ConfengeDispatchStatus> {
+    const res = await Request<{ data: ConfengeDispatchStatus }>({
+        method: "POST",
+        url: "/confenge/dispatch/resume",
         authorization: true,
         data: {},
     });

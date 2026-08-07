@@ -97,3 +97,29 @@ export type ConfengeDraft = {
     human_edited: boolean;
     validation_ok?: boolean;
 };
+
+export type ConfengeDispatchFailure = {
+    id: string;
+    organization_id?: string;
+    channel: string;
+    message_key: string;
+    draft_id?: string;
+    error_text: string;
+    occurred_at: string;
+};
+
+export type ConfengeDispatchStatus = {
+    sent_last_hour: number;
+    cap: number;
+    min_gap_seconds: number;
+    next_slot_at?: string;
+    queued_approved: number;
+    paused: boolean;
+    pause_reason?: string;
+    in_send_window: boolean;
+    timezone: string;
+    window_start: string;
+    window_end: string;
+    active_leases: number;
+    recent_failures?: ConfengeDispatchFailure[];
+};

@@ -5,10 +5,13 @@ import {
     enrollConfengeDraft,
     generateConfengeDraft,
     getConfengeAccount,
+    getConfengeDispatchStatus,
     getConfengeStatus,
     getConfengeSummary,
     listConfengeAccounts,
     listConfengeDrafts,
+    pauseConfengeDispatch,
+    resumeConfengeDispatch,
     reviewConfengeDraft,
 } from "@/lib/api/client/app/confenge/confenge";
 
@@ -104,5 +107,38 @@ export function useBootstrapConfengeCampaign() {
         mutationFn: () => bootstrapConfengeCampaign(),
         onSuccess: (c) => toast.success(`Campaign ready: ${c.name}`),
         onError: (e: Error) => toast.error(e.message || "Bootstrap failed"),
+    });
+}
+
+export function useConfengeDispatchStatus(enabled = true) {
+    return useQuery({
+        queryKey: [...KEY, "dispatch-status"],
+        queryFn: getConfengeDispatchStatus,
+        enabled,
+        refetchInterval: 30_000,
+    });
+}
+
+export function usePauseConfengeDispatch() {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: (reason?: string) => pauseConfengeDispatch(reason),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: KEY });
+            toast.success("Dispatch paused");
+        },
+        onError: (e: Error) => toast.error(e.message || "Pause failed"),
+    });
+}
+
+export function useResumeConfengeDispatch() {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: () => resumeConfengeDispatch(),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: KEY });
+            toast.success("Dispatch resumed");
+        },
+        onError: (e: Error) => toast.error(e.message || "Resume failed"),
     });
 }

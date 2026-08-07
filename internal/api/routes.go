@@ -456,6 +456,7 @@ func Run(
 			confengeGroup.Use(m.RequireOrganization())
 			{
 				confengeGroup.GET("/status", h.GetConfengeStatus)
+				confengeGroup.GET("/dispatch/status", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeDispatchStatus)
 				confengeGroup.GET("/summary", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeSummary)
 				confengeGroup.GET("/accounts", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeAccounts)
 				confengeGroup.GET("/accounts/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeAccount)
@@ -477,6 +478,8 @@ func Run(
 					confengeWrite.POST("/drafts/:id/send-whatsapp", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.SendConfengeWhatsAppDraft)
 					confengeWrite.POST("/campaign/bootstrap", m.RequireAccess(models.PermManageCampaigns, models.APIPermWriteCampaigns), h.BootstrapConfengeCampaign)
 					confengeWrite.POST("/crm/bootstrap", m.RequireAccess(models.PermManageContacts, models.APIPermWriteCRM), h.BootstrapConfengePipeline)
+					confengeWrite.POST("/dispatch/pause", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.PauseConfengeDispatch)
+					confengeWrite.POST("/dispatch/resume", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ResumeConfengeDispatch)
 				}
 			}
 

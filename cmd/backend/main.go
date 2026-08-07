@@ -989,6 +989,10 @@ func main() {
 		}
 		outreachRepo := repository.NewOutreachRepository(primaryDB.Pool)
 		confengeServiceForHandler = confenge.NewServiceWithAI(confengeCfg, outreachRepo, auditService, aiProvider)
+		if confengeServiceForHandler != nil {
+			// Global dispatch governor: ~10 outbound/hour shared email+WhatsApp.
+			confengeServiceForHandler.WireDispatch(primaryDB.Pool)
+		}
 		if confengeServiceForHandler != nil && aiProvider != nil {
 			confengeServiceForHandler.SetAI(aiProvider)
 		}

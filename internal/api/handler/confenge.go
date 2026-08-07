@@ -514,3 +514,53 @@ func (h *Handler) SendConfengeWhatsAppDraft(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, d)
 }
+
+// GetConfengeDispatchStatus — GET /confenge/dispatch/status
+func (h *Handler) GetConfengeDispatchStatus(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	st, xerr := h.ConfengeService.DispatchStatus(c.Request.Context(), orgID)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": st})
+}
+
+// PauseConfengeDispatch — POST /confenge/dispatch/pause
+func (h *Handler) PauseConfengeDispatch(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, _ := c.Get("user_id")
+	uid, _ := userID.(uuid.UUID)
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	if xerr := h.ConfengeService.PauseDispatch(c.Request.Context(), orgID, uid, body.Reason); xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	st, _ := h.ConfengeService.DispatchStatus(c.Request.Context(), orgID)
+	c.JSON(http.StatusOK, gin.H{"data": st})
+}
+
+// ResumeConfengeDispatch — POST /confenge/dispatch/resume
+func (h *Handler) ResumeConfengeDispatch(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, _ := c.Get("user_id")
+	uid, _ := userID.(uuid.UUID)
+	if xerr := h.ConfengeService.ResumeDispatch(c.Request.Context(), orgID, uid); xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	st, _ := h.ConfengeService.DispatchStatus(c.Request.Context(), orgID)
+	c.JSON(http.StatusOK, gin.H{"data": st})
+}

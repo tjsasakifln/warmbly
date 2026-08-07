@@ -190,8 +190,19 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 		// RED may enroll only after explicit approve (already APPROVED); allowed but audited.
 	}
 
+	// Global CONFENGE dispatch governor: email enroll is the outbound authorization.
+	// Shared with WhatsApp under the same rolling-hour cap.
+	lease, already, xerr := s.reserveOutbound(ctx, orgID, "EMAIL", draftID)
+	if xerr != nil {
+		return nil, xerr
+	}
+	if already {
+		return d, nil
+	}
+
 	camp, xerr := s.BootstrapCampaign(ctx, orgID, userID)
 	if xerr != nil {
+		s.releaseOutbound(ctx, lease, xerr.Error())
 		return nil, xerr
 	}
 
@@ -213,9 +224,11 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 		},
 	}})
 	if xerr != nil {
+		s.releaseOutbound(ctx, lease, xerr.Error())
 		return nil, xerr
 	}
 	if len(added) == 0 {
+		s.releaseOutbound(ctx, lease, "empty contact create")
 		return nil, errx.New(errx.Internal, "contact create returned empty")
 	}
 	contactID := added[0].ID
@@ -231,8 +244,10 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 	d.EnrollmentContactID = &contactID
 	d.EnrolledAt = &now
 	if err := s.repo.UpsertDraft(ctx, d); err != nil {
+		s.releaseOutbound(ctx, lease, err.Error())
 		return nil, errx.New(errx.Internal, "failed to update draft enrollment")
 	}
+	s.commitOutbound(ctx, lease)
 	_ = s.repo.SetAccountHumanFlags(ctx, orgID, d.AccountID, acc.Blocked, acc.DoNotContact, acc.BlockReason, models.OutreachQueueEnrolled)
 
 	// Outcomes: approved contact + contacted (enrolled into campaign)
