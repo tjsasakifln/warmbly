@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -229,6 +230,21 @@ func (m *memRepo) GetOrgSettings(ctx context.Context, orgID uuid.UUID) (*models.
 }
 func (m *memRepo) UpsertOrgSettings(ctx context.Context, s *models.OutreachOrgSettings) error {
 	return nil
+}
+func (m *memRepo) EnqueueOutcome(ctx context.Context, ev *models.OutreachOutcome) error {
+	return nil
+}
+func (m *memRepo) ListPendingOutcomes(ctx context.Context, limit int) ([]models.OutreachOutcome, error) {
+	return nil, nil
+}
+func (m *memRepo) MarkOutcomeDelivered(ctx context.Context, orgID, id uuid.UUID) error {
+	return nil
+}
+func (m *memRepo) MarkOutcomeAttempt(ctx context.Context, orgID, id uuid.UUID, attempts int, next time.Time, lastErr string, dead bool) error {
+	return nil
+}
+func (m *memRepo) GetOutcomeByIdempotency(ctx context.Context, orgID uuid.UUID, key string) (*models.OutreachOutcome, error) {
+	return nil, nil
 }
 
 func testSvc(repo repository.OutreachRepository) Service {

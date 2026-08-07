@@ -351,3 +351,24 @@ type OutreachOrgSettings struct {
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
 }
+
+// OutreachOutcome is one outbox row for confenge.outcome.v1 delivery.
+type OutreachOutcome struct {
+	ID             uuid.UUID  `json:"id"`
+	OrganizationID uuid.UUID  `json:"organization_id"`
+	EventID        uuid.UUID  `json:"event_id"`
+	IdempotencyKey string     `json:"idempotency_key"`
+	SourceLeadID   string     `json:"source_lead_id"`
+	CNPJ14         string     `json:"cnpj14"`
+	ContactEmail   string     `json:"contact_email"`
+	EventType      string     `json:"event_type"`
+	Payload        []byte     `json:"payload,omitempty"`
+	OccurredAt     time.Time  `json:"occurred_at"`
+	Attempts       int        `json:"attempts"`
+	NextAttemptAt  time.Time  `json:"next_attempt_at"`
+	DeliveredAt    *time.Time `json:"delivered_at,omitempty"`
+	LastError      string     `json:"last_error,omitempty"`
+	DeadLetter     bool       `json:"dead_letter"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}

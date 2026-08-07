@@ -49,6 +49,13 @@ type OutreachRepository interface {
 	UpdateDraftStatus(ctx context.Context, d *models.OutreachDraft) error
 	GetOrgSettings(ctx context.Context, orgID uuid.UUID) (*models.OutreachOrgSettings, error)
 	UpsertOrgSettings(ctx context.Context, s *models.OutreachOrgSettings) error
+
+	// Outcome outbox
+	EnqueueOutcome(ctx context.Context, ev *models.OutreachOutcome) error
+	ListPendingOutcomes(ctx context.Context, limit int) ([]models.OutreachOutcome, error)
+	MarkOutcomeDelivered(ctx context.Context, orgID, id uuid.UUID) error
+	MarkOutcomeAttempt(ctx context.Context, orgID, id uuid.UUID, attempts int, next time.Time, lastErr string, dead bool) error
+	GetOutcomeByIdempotency(ctx context.Context, orgID uuid.UUID, key string) (*models.OutreachOutcome, error)
 }
 
 // OutreachAccountFilter filters staged accounts.

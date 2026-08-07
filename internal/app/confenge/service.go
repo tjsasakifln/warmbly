@@ -44,6 +44,7 @@ type Service interface {
 	ListDrafts(ctx context.Context, orgID uuid.UUID, status string, limit, offset int) ([]models.OutreachDraft, *errx.Error)
 	ReviewDraft(ctx context.Context, orgID, userID, draftID uuid.UUID, action string, edit *DraftEdit) (*models.OutreachDraft, *errx.Error)
 	SetAI(p generation.Provider)
+	EnqueueOutcome(ctx context.Context, orgID uuid.UUID, ev models.OutreachOutcome) *errx.Error
 }
 
 // ImportOptions controls dry-run, idempotency, and source tracking.
