@@ -1,14 +1,22 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 import {
+    approveConfengeTouchpoint,
     bootstrapConfengeCampaign,
-    enrollConfengeDraft,
+    decideConfengeTouchpoint,
+    dncConfengeAccount,
+    editConfengeTouchpoint,
     generateConfengeDraft,
+    generateConfengeTouchpoint,
     getConfengeAccount,
     getConfengeStatus,
     getConfengeSummary,
     listConfengeAccounts,
+    listConfengeAccountTouchpoints,
     listConfengeDrafts,
+    listConfengeReviewTouchpoints,
+    planConfengeCadence,
+    queueConfengeTouchpoint,
     reviewConfengeDraft,
 } from "@/lib/api/client/app/confenge/confenge";
 
@@ -105,4 +113,55 @@ export function useBootstrapConfengeCampaign() {
         onSuccess: (c) => toast.success(`Campaign ready: ${c.name}`),
         onError: (e: Error) => toast.error(e.message || "Bootstrap failed"),
     });
+}
+
+export function useConfengeReviewTouchpoints(enabled = true) {
+  return useQuery({ queryKey: [...KEY, "touchpoints", "review"], queryFn: listConfengeReviewTouchpoints, enabled, staleTime: 5000 });
+}
+export function useConfengeAccountTimeline(accountId: string | null) {
+  return useQuery({ queryKey: [...KEY, "timeline", accountId], queryFn: () => listConfengeAccountTouchpoints(accountId!), enabled: !!accountId });
+}
+export function usePlanConfengeCadence() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ accountId, channel }: { accountId: string; channel?: string }) => planConfengeCadence(accountId, channel),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: KEY }); toast.success("Cadence planned"); },
+    onError: (e: Error) => toast.error(e.message || "Plan failed"),
+  });
+}
+export function useGenerateConfengeTouchpoint() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => generateConfengeTouchpoint(id),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: KEY }); toast.success("Generated"); },
+    onError: (e: Error) => toast.error(e.message || "Generate failed"),
+  });
+}
+export function useApproveAndQueueTouchpoint() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: { id: string; subject?: string; body_text?: string; recipient?: string }) => {
+      await editConfengeTouchpoint(args.id, { subject: args.subject, body_text: args.body_text, recipient: args.recipient });
+      await approveConfengeTouchpoint(args.id);
+      return queueConfengeTouchpoint(args.id);
+    },
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: KEY }); toast.success("Approved and queued"); },
+    onError: (e: Error) => toast.error(e.message || "Approve & queue failed"),
+  });
+}
+export function useSkipConfengeTouchpoint() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => decideConfengeTouchpoint(id, "skip"),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: KEY }); toast.success("Skipped"); },
+    onError: (e: Error) => toast.error(e.message || "Skip failed"),
+  });
+}
+export function useDncConfengeAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (accountId: string) => dncConfengeAccount(accountId),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: KEY }); toast.success("DNC"); },
+    onError: (e: Error) => toast.error(e.message || "DNC failed"),
+  });
 }

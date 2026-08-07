@@ -514,3 +514,261 @@ func (h *Handler) SendConfengeWhatsAppDraft(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, d)
 }
+
+func (h *Handler) ListConfengeReviewTouchpoints(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	limit, offset := 50, 0
+	list, xerr := h.ConfengeService.ListReviewTouchpoints(c.Request.Context(), orgID, limit, offset)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": list})
+}
+func (h *Handler) GetConfengeTouchpoint(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	tp, xerr := h.ConfengeService.GetTouchpoint(c.Request.Context(), orgID, id)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": tp})
+}
+func (h *Handler) ListConfengeAccountTouchpoints(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	accountID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	list, xerr := h.ConfengeService.ListAccountTouchpoints(c.Request.Context(), orgID, accountID)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": list})
+}
+func (h *Handler) PlanConfengeCadence(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	accountID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	var body struct {
+		ContactCandidateID *uuid.UUID `json:"contact_candidate_id"`
+		Channel            string     `json:"channel"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	list, xerr := h.ConfengeService.PlanAccountCadence(c.Request.Context(), orgID, userID, accountID, body.ContactCandidateID, body.Channel)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": list})
+}
+func (h *Handler) GenerateConfengeTouchpoint(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	tp, xerr := h.ConfengeService.GenerateTouchpointDraft(c.Request.Context(), orgID, userID, id)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": tp})
+}
+func (h *Handler) EditConfengeTouchpoint(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	var body struct {
+		Subject   *string `json:"subject"`
+		BodyText  *string `json:"body_text"`
+		Recipient *string `json:"recipient"`
+		Channel   *string `json:"channel"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		errx.JSON(c, errx.ErrInvalid)
+		return
+	}
+	tp, xerr := h.ConfengeService.EditTouchpoint(c.Request.Context(), orgID, userID, id, body.Subject, body.BodyText, body.Recipient, body.Channel)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": tp})
+}
+func (h *Handler) ApproveConfengeTouchpoint(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	tp, xerr := h.ConfengeService.ApproveTouchpoint(c.Request.Context(), orgID, userID, id)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": tp})
+}
+func (h *Handler) RejectSkipConfengeTouchpoint(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	var body struct {
+		Action string `json:"action" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		errx.JSON(c, errx.ErrInvalid)
+		return
+	}
+	tp, xerr := h.ConfengeService.RejectOrSkipTouchpoint(c.Request.Context(), orgID, userID, id, body.Action)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": tp})
+}
+func (h *Handler) QueueConfengeTouchpoint(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	tp, xerr := h.ConfengeService.QueueTouchpoint(c.Request.Context(), orgID, userID, id)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": tp})
+}
+func (h *Handler) CancelConfengeAccountTouchpoints(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	accountID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	if body.Reason == "" {
+		body.Reason = "CANCELLED"
+	}
+	n, xerr := h.ConfengeService.CancelAccountTouchpoints(c.Request.Context(), orgID, userID, accountID, body.Reason)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"cancelled": n}})
+}
+func (h *Handler) DNCConfengeAccount(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	accountID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	_, xerr := h.ConfengeService.BlockAccount(c.Request.Context(), orgID, userID, accountID, "human_dnc", true)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	n, xerr := h.ConfengeService.CancelAccountTouchpoints(c.Request.Context(), orgID, userID, accountID, "DNC")
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"cancelled": n, "do_not_contact": true}})
+}

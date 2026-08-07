@@ -26,8 +26,11 @@ func (m *mockCampaigns) Create(ctx context.Context, userID string, orgID *uuid.U
 	if data.Timezone == nil || *data.Timezone != "America/Sao_Paulo" {
 		return nil, errx.New(errx.BadRequest, "timezone")
 	}
-	if len(data.Sequences) != 4 {
-		return nil, errx.New(errx.BadRequest, "want 4 cadence steps")
+	if len(data.Sequences) != 1 {
+		return nil, errx.New(errx.BadRequest, "want 1 campaign shell step")
+	}
+	if data.Sequences[0].WaitAfter != nil {
+		return nil, errx.New(errx.BadRequest, "no wait_after")
 	}
 	c := &models.Campaign{ID: uuid.New(), Name: data.Name, Status: "draft"}
 	m.created = c

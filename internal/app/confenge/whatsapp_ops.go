@@ -204,6 +204,11 @@ func (s *service) SendApprovedWhatsApp(ctx context.Context, orgID, userID, draft
 	if d.Status != models.OutreachDraftApproved {
 		return nil, errx.New(errx.BadRequest, "draft must be APPROVED before WhatsApp send")
 	}
+	if tp, _ := s.repo.GetTouchpointByDraft(ctx, orgID, draftID); tp != nil {
+		if xerr := AssertTransportAllowed(tp); xerr != nil {
+			return nil, xerr
+		}
+	}
 	acc, err := s.repo.GetAccount(ctx, orgID, d.AccountID)
 	if err != nil || acc == nil {
 		return nil, errx.New(errx.NotFound, "account not found")
@@ -441,6 +446,11 @@ func (s *service) HandleWhatsAppInbound(ctx context.Context, orgID uuid.UUID, ev
 
 	// Stop follow-ups / mark replied on confenge account + drafts.
 	if res.StopSequences && acc != nil {
+		term, stop := models.TouchpointReplied, "REPLY"
+		if res.OptOut.Matched && res.OptOut.Confident {
+			term, stop = models.TouchpointDNC, "DNC"
+		}
+		_, _ = s.repo.CancelOpenTouchpoints(ctx, orgID, acc.ID, term, stop)
 		_ = s.repo.SetAccountHumanFlags(ctx, orgID, acc.ID, acc.Blocked, acc.DoNotContact || st.DoNotContact, acc.BlockReason, models.OutreachQueueReplied)
 		// Mark WhatsApp drafts replied when possible.
 		if drafts, err := s.repo.ListDrafts(ctx, orgID, models.OutreachDraftEnrolled, 50, 0); err == nil {

@@ -97,3 +97,24 @@ export type ConfengeDraft = {
     human_edited: boolean;
     validation_ok?: boolean;
 };
+
+
+export type ConfengeTouchpoint = {
+  id: string;
+  organization_id: string;
+  account_id: string;
+  ordinal: number;
+  channel: string;
+  purpose: string;
+  due_at: string;
+  state: string;
+  recipient: string;
+  subject: string;
+  body_text: string;
+  content_hash: string;
+  approved_content_hash: string;
+  service_code: string;
+  fact_used: string;
+  evidence_ids?: string[];
+  account?: ConfengeAccount;
+};

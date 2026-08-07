@@ -43,6 +43,7 @@ func (s *service) NoteReply(ctx context.Context, orgID uuid.UUID, contactEmail s
 	if err != nil || cand == nil || acc == nil {
 		return nil // not a confenge lead
 	}
+	_, _ = s.repo.CancelOpenTouchpoints(ctx, orgID, acc.ID, models.TouchpointReplied, "REPLY")
 	payload, _ := jsonMarshalMap(meta)
 	return s.enqueueErr(ctx, orgID, models.OutreachOutcome{
 		IdempotencyKey: fmt.Sprintf("replied:%s:%s:%d", orgID, email, time.Now().UTC().Truncate(time.Minute).Unix()),
@@ -77,6 +78,7 @@ func (s *service) NoteBounce(ctx context.Context, orgID uuid.UUID, contactEmail,
 	if acc != nil {
 		cnpj, lead = acc.CNPJ14, acc.SourceLeadID
 		_ = s.repo.SetAccountHumanFlags(ctx, orgID, acc.ID, acc.Blocked, acc.DoNotContact, "bounce", models.OutreachQueueBounced)
+		_, _ = s.repo.CancelOpenTouchpoints(ctx, orgID, acc.ID, models.TouchpointBounced, "BOUNCE")
 	}
 	return s.enqueueErr(ctx, orgID, models.OutreachOutcome{
 		IdempotencyKey: fmt.Sprintf("bounced:%s:%s", orgID, email),
@@ -111,6 +113,7 @@ func (s *service) NoteDNC(ctx context.Context, orgID uuid.UUID, contactEmail, re
 	if acc != nil {
 		cnpj, lead = acc.CNPJ14, acc.SourceLeadID
 		_ = s.repo.SetAccountHumanFlags(ctx, orgID, acc.ID, true, true, reason, models.OutreachQueueDoNotContact)
+		_, _ = s.repo.CancelOpenTouchpoints(ctx, orgID, acc.ID, models.TouchpointDNC, "DNC")
 	}
 	return s.enqueueErr(ctx, orgID, models.OutreachOutcome{
 		IdempotencyKey: fmt.Sprintf("dnc:%s:%s", orgID, email),

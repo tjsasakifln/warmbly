@@ -34,7 +34,7 @@ Warmbly **must not**:
 | --- | --- | --- |
 | `CONFENGE_OUTREACH_ENABLED` | `false` | Master switch for API + import |
 | `CONFENGE_AUTO_SEND_ENABLED` | `false` | Reserved; never default on |
-| `CONFENGE_REQUIRE_HUMAN_APPROVAL` | `true` | Safety default for later send paths |
+| `CONFENGE_REQUIRE_HUMAN_APPROVAL` | `true` | Per-touch approval required (see [touchpoints.md](./touchpoints.md)) |
 | `CONFENGE_EXTRA_CLI_FEED_URL` | empty | HTTPS or `file://` feed |
 | `CONFENGE_EXTRA_CLI_FEED_TOKEN` | empty | Optional Bearer for HTTPS |
 | `CONFENGE_EXTRA_CLI_ALLOWED_HOSTS` | empty | Required in prod when feed URL set |
