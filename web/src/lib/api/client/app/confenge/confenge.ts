@@ -108,3 +108,18 @@ export async function bootstrapConfengeCampaign(): Promise<{ id: string; name: s
     });
     return res.data;
 }
+
+export async function batchApproveConfengeDrafts(draftIds: string[]): Promise<{
+    approved: string[];
+    skipped: { id: string; reason: string }[];
+}> {
+    const res = await Request<{
+        data: { approved: string[]; skipped: { id: string; reason: string }[] };
+    }>({
+        method: "POST",
+        url: "/confenge/drafts/batch-approve",
+        authorization: true,
+        data: { draft_ids: draftIds },
+    });
+    return res.data;
+}

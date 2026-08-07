@@ -12,8 +12,9 @@ import (
 )
 
 type mockCampaigns struct {
-	created *models.Campaign
-	gets    map[string]*models.Campaign
+	created      *models.Campaign
+	gets         map[string]*models.Campaign
+	captureSteps *[]models.CreateSequenceInput
 }
 
 func (m *mockCampaigns) Create(ctx context.Context, userID string, orgID *uuid.UUID, data *models.CreateCampaign) (*models.Campaign, *errx.Error) {
@@ -28,6 +29,18 @@ func (m *mockCampaigns) Create(ctx context.Context, userID string, orgID *uuid.U
 	}
 	if len(data.Sequences) != 4 {
 		return nil, errx.New(errx.BadRequest, "want 4 cadence steps")
+	}
+	// Lead-facing step 0 must use approved-draft merge vars (not generic prose).
+	if data.Sequences[0].Subject != "{{.confenge_subject}}" || data.Sequences[0].BodyPlain != "{{.confenge_body}}" {
+		return nil, errx.New(errx.BadRequest, "step0 must use confenge_subject/body merge vars")
+	}
+	for _, seq := range data.Sequences {
+		if strings.Contains(seq.Subject, "—") || strings.Contains(seq.BodyPlain, "—") {
+			return nil, errx.New(errx.BadRequest, "em dash forbidden in cadence")
+		}
+	}
+	if m.captureSteps != nil {
+		*m.captureSteps = append([]models.CreateSequenceInput{}, data.Sequences...)
 	}
 	c := &models.Campaign{ID: uuid.New(), Name: data.Name, Status: "draft"}
 	m.created = c

@@ -425,3 +425,39 @@ func (h *Handler) BootstrapConfengePipeline(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"data": pipe})
 }
+
+// BatchApproveConfengeDrafts — POST /confenge/drafts/batch-approve
+// Body: {"draft_ids":["uuid",...]} — only GREEN / validated / enrollable items.
+func (h *Handler) BatchApproveConfengeDrafts(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	var body struct {
+		DraftIDs []string `json:"draft_ids"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		errx.JSON(c, errx.ErrInvalid)
+		return
+	}
+	ids := make([]uuid.UUID, 0, len(body.DraftIDs))
+	for _, s := range body.DraftIDs {
+		id, err := uuid.Parse(s)
+		if err != nil {
+			errx.JSON(c, errx.New(errx.BadRequest, "invalid draft_id"))
+			return
+		}
+		ids = append(ids, id)
+	}
+	res, xerr := h.ConfengeService.BatchApproveDrafts(c.Request.Context(), orgID, userID, ids)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": res})
+}

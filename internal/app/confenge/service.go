@@ -49,10 +49,13 @@ type Service interface {
 	BootstrapCampaign(ctx context.Context, orgID, userID uuid.UUID) (*models.Campaign, *errx.Error)
 	EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.UUID) (*models.OutreachDraft, *errx.Error)
 	WireCRM(crm CRMAPI)
+	WireSuppress(sup SuppressAPI)
 	BootstrapPipeline(ctx context.Context, orgID uuid.UUID) (*models.Pipeline, *errx.Error)
 	HandleClassifiedReply(ctx context.Context, orgID, actorID uuid.UUID, contactEmail, replyClass string, warmblyContactID *uuid.UUID) *errx.Error
 	// OnClassifiedReply is the advanced-package hook (error, not errx).
 	OnClassifiedReply(ctx context.Context, orgID uuid.UUID, contactEmail, replyClass string, contactID *uuid.UUID) error
+	BatchApproveDrafts(ctx context.Context, orgID, userID uuid.UUID, draftIDs []uuid.UUID) (*BatchApproveResult, *errx.Error)
+	Metrics(ctx context.Context, orgID uuid.UUID) (*models.OutreachQueueSummary, *errx.Error)
 }
 
 // ImportOptions controls dry-run, idempotency, and source tracking.
@@ -71,6 +74,7 @@ type service struct {
 	campaigns CampaignAPI
 	contacts  ContactAPI
 	crm       CRMAPI
+	suppress  SuppressAPI
 }
 
 // NewService wires confenge outreach. When cfg.Enabled is false, mutators return 404-style disabled errors.

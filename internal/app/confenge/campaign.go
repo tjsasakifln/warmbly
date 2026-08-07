@@ -2,6 +2,7 @@ package confenge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -105,34 +106,72 @@ func (s *service) BootstrapCampaign(ctx context.Context, orgID, userID uuid.UUID
 	return created, nil
 }
 
+// defaultCadenceSteps uses merge variables filled at enroll from the human-
+// approved draft (confenge_subject / confenge_body / confenge_followup_N).
+// The campaign send path renders these via RenderTemplate + contact CustomFields,
+// so the message that leaves the mailbox is the reviewed copy, not a generic
+// template. No em dashes (product prohibition for lead-facing copy).
 func defaultCadenceSteps() []models.CreateSequenceInput {
 	w3, w4, w7 := 3, 4, 7
 	return []models.CreateSequenceInput{
 		{
 			Name:      "Email inicial",
-			Subject:   "{{.Company}} — conversa objetiva",
-			BodyPlain: "Ola{{if .FirstName}} {{.FirstName}}{{end}},\n\nSou da CONFENGE. Acompanhei publicacoes recentes da {{.Company}} e gostaria de entender se faz sentido uma conversa curta sobre aditivos e controle contratual.\n\nPosso enviar um checklist de uma pagina?\n\nAbraço,\nTiago Sasaki\nCONFENGE",
+			Subject:   "{{.confenge_subject}}",
+			BodyPlain: "{{.confenge_body}}",
 			WaitAfter: &w3,
 		},
 		{
 			Name:      "Follow-up D+3",
 			Subject:   "Re: {{.Company}}",
-			BodyPlain: "Reenvio com uma pergunta mais objetiva: quem na equipe acompanha aditivos e reajustes?\n\nSe fizer sentido, respondo em poucos minutos.",
+			BodyPlain: "{{if .confenge_followup_1}}{{.confenge_followup_1}}{{else}}Reenvio com uma pergunta mais objetiva: quem na equipe acompanha aditivos e reajustes?\n\nSe fizer sentido, respondo em poucos minutos.{{end}}",
 			WaitAfter: &w4,
 		},
 		{
 			Name:      "Follow-up D+7",
 			Subject:   "Re: {{.Company}}",
-			BodyPlain: "Se nao for com voce, pode me indicar a pessoa certa de contratos ou engenharia?\n\nObrigado.",
+			BodyPlain: "{{if .confenge_followup_2}}{{.confenge_followup_2}}{{else}}Se nao for com voce, pode me indicar a pessoa certa de contratos ou engenharia?\n\nObrigado.{{end}}",
 			WaitAfter: &w7,
 		},
 		{
 			Name:      "Encerramento D+14",
 			Subject:   "Re: {{.Company}}",
-			BodyPlain: "Encerro por aqui para nao ocupar sua caixa. Se fizer sentido no futuro, e so responder este fio.\n\nAbraço.",
+			BodyPlain: "{{if .confenge_followup_3}}{{.confenge_followup_3}}{{else}}Encerro por aqui para nao ocupar sua caixa. Se fizer sentido no futuro, e so responder este fio.\n\nAbraco.{{end}}",
 			WaitAfter: nil,
 		},
 	}
+}
+
+// EnrollCustomFields builds contact custom fields that the cadence templates
+// merge at send time. Subject/body must match the approved draft exactly.
+func EnrollCustomFields(d *models.OutreachDraft, acc *models.OutreachAccount) map[string]string {
+	cf := map[string]string{
+		"confenge_subject": strings.TrimSpace(d.Subject),
+		"confenge_body":    strings.TrimSpace(d.BodyText),
+	}
+	if acc != nil {
+		cf["cnpj14"] = acc.CNPJ14
+		cf["confenge_service"] = firstNonEmpty(d.ServiceCode, acc.ServiceCode)
+		cf["confenge_fact"] = firstNonEmpty(d.FactUsed, acc.FactToMention)
+	} else {
+		cf["confenge_service"] = d.ServiceCode
+		cf["confenge_fact"] = d.FactUsed
+	}
+	// Follow-ups from draft JSON (delay-ordered as stored).
+	if len(d.FollowupsJSON) > 0 {
+		var fus []DraftFollowup
+		if json.Unmarshal(d.FollowupsJSON, &fus) == nil {
+			for i, fu := range fus {
+				if i >= 3 {
+					break
+				}
+				body := strings.TrimSpace(fu.BodyText)
+				if body != "" {
+					cf[fmt.Sprintf("confenge_followup_%d", i+1)] = body
+				}
+			}
+		}
+	}
+	return cf
 }
 
 // EnrollDraft promotes an APPROVED, validated draft into a Warmbly contact
@@ -197,20 +236,16 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 
 	first, last := splitName(cand.Name)
 	company := firstNonEmpty(acc.NomeFantasia, acc.RazaoSocial)
+	// Custom fields feed the cadence merge vars so send uses the approved draft.
+	cf := EnrollCustomFields(d, acc)
 	added, xerr := s.contacts.Add(ctx, userID.String(), orgID, []models.AddContact{{
-		FirstName: first,
-		LastName:  last,
-		Email:     strings.TrimSpace(strings.ToLower(cand.Email)),
-		Company:   company,
-		Phone:     cand.Phone,
-		Campaigns: []string{camp.ID.String()},
-		CustomFields: map[string]string{
-			"cnpj14":           acc.CNPJ14,
-			"confenge_subject": d.Subject,
-			"confenge_body":    d.BodyText,
-			"confenge_service": d.ServiceCode,
-			"confenge_fact":    d.FactUsed,
-		},
+		FirstName:    first,
+		LastName:     last,
+		Email:        strings.TrimSpace(strings.ToLower(cand.Email)),
+		Company:      company,
+		Phone:        cand.Phone,
+		Campaigns:    []string{camp.ID.String()},
+		CustomFields: cf,
 	}})
 	if xerr != nil {
 		return nil, xerr

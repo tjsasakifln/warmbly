@@ -7,6 +7,7 @@ import {
     useConfengeDrafts,
     useConfengeStatus,
     useConfengeSummary,
+    useBatchApproveConfengeDrafts,
     useBootstrapConfengeCampaign,
     useEnrollConfengeDraft,
     useGenerateConfengeDraft,
@@ -26,6 +27,7 @@ export default function ConfengePage() {
     const review = useReviewConfengeDraft();
     const enroll = useEnrollConfengeDraft();
     const bootstrap = useBootstrapConfengeCampaign();
+    const batchApprove = useBatchApproveConfengeDrafts();
 
     const [idx, setIdx] = useState(0);
     const queue = drafts.data ?? [];
@@ -185,6 +187,30 @@ export default function ConfengePage() {
                             Review queue ({queue.length})
                             {current ? ` · ${idx + 1}/${queue.length}` : ""}
                         </span>
+                        {queue.length > 0 && (
+                            <button
+                                type="button"
+                                className="h-7 px-2 rounded-md border border-slate-200 text-[12px] text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                                disabled={batchApprove.isPending}
+                                title="Only GREEN, validated, enrollable drafts"
+                                onClick={() => {
+                                    const green = queue
+                                        .filter(
+                                            (d) =>
+                                                d.risk_class === "GREEN" &&
+                                                d.validation_ok !== false &&
+                                                d.status === "NEEDS_REVIEW",
+                                        )
+                                        .map((d) => d.id);
+                                    if (green.length === 0) {
+                                        return;
+                                    }
+                                    batchApprove.mutate(green);
+                                }}
+                            >
+                                Batch approve GREEN
+                            </button>
+                        )}
                         {current && (
                             <span
                                 className={

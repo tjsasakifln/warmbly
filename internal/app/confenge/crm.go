@@ -22,13 +22,35 @@ type CRMAPI interface {
 	CreatePipeline(ctx context.Context, orgID uuid.UUID, data *models.CreatePipeline) (*models.Pipeline, *errx.Error)
 	CreateCRMTask(ctx context.Context, orgID, userID uuid.UUID, data *models.CreateCRMTask) (*models.CRMTask, *errx.Error)
 	CreateDeal(ctx context.Context, orgID uuid.UUID, data *models.CreateDeal) (*models.Deal, *errx.Error)
-	// Optional activity recording via underlying repo is not on the service
-	// surface; tasks/deals create their own activity trails.
+}
+
+// SuppressAPI writes platform-wide suppression (blocks campaign send).
+type SuppressAPI interface {
+	SuppressRecipient(ctx context.Context, orgID uuid.UUID, email, reason string) error
 }
 
 // WireCRM attaches the CRM control-plane service.
 func (s *service) WireCRM(crm CRMAPI) {
 	s.crm = crm
+}
+
+// WireSuppress attaches platform suppression (advanced outreach list).
+func (s *service) WireSuppress(sup SuppressAPI) {
+	s.suppress = sup
+}
+
+// SuppressFromAdvanced adapts advanced.Service.SuppressRecipient to SuppressAPI
+// without importing advanced into every confenge call site (wiring only).
+type SuppressFromAdvanced struct {
+	// Fn is typically advancedService.SuppressRecipient wrapped to return error.
+	Fn func(ctx context.Context, orgID uuid.UUID, email, reason string) error
+}
+
+func (a SuppressFromAdvanced) SuppressRecipient(ctx context.Context, orgID uuid.UUID, email, reason string) error {
+	if a.Fn == nil {
+		return nil
+	}
+	return a.Fn(ctx, orgID, email, reason)
 }
 
 // confengeStages is the fixed stage list. Re-bootstrap never renames human edits

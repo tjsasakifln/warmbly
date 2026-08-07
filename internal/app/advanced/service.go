@@ -43,6 +43,9 @@ type Service interface {
 	RecordInboundBounce(ctx context.Context, emailAccountID uuid.UUID, originalMessageID, failedRecipient, reason string) *errx.Error
 
 	ShouldSuppressRecipient(ctx context.Context, organizationID uuid.UUID, recipient string) (bool, string, *errx.Error)
+	// SuppressRecipient adds an address to the org suppression list (e.g. DNC
+	// from CONFENGE reply classification). Always suppress — explicit request.
+	SuppressRecipient(ctx context.Context, organizationID uuid.UUID, email, reason string) *errx.Error
 	// Unsubscribe suppresses a contact in response to a List-Unsubscribe action
 	// (one-click POST or the manual link). Always suppresses — it's an explicit
 	// recipient request, independent of the auto-suppress settings.
@@ -496,6 +499,26 @@ func (s *service) ListPipelines(ctx context.Context, orgID uuid.UUID) ([]models.
 		return nil, nil
 	}
 	return s.crmRepo.ListPipelines(ctx, orgID)
+}
+
+func (s *service) SuppressRecipient(ctx context.Context, organizationID uuid.UUID, email, reason string) *errx.Error {
+	email = strings.TrimSpace(strings.ToLower(email))
+	if email == "" {
+		return errx.New(errx.BadRequest, "email is required")
+	}
+	if reason == "" {
+		reason = "manual suppression"
+	}
+	if err := s.repo.UpsertSuppressedRecipient(ctx, &models.SuppressedRecipient{
+		OrganizationID: organizationID,
+		Email:          email,
+		Reason:         reason,
+		Source:         models.DeliverabilityEventUnsubscribe,
+		Metadata:       map[string]interface{}{"via": "confenge_dnc"},
+	}); err != nil {
+		return toErrx(err)
+	}
+	return nil
 }
 
 func (s *service) Unsubscribe(ctx context.Context, campaignID, contactID uuid.UUID) *errx.Error {

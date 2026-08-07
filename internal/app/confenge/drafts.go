@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -253,6 +252,17 @@ func (s *service) ReviewDraft(ctx context.Context, orgID, userID, draftID uuid.U
 		d.Status = models.OutreachDraftApproved
 		d.ApprovedBy = &userID
 		d.ApprovedAt = &now
+		// Human review duration (seconds since last update / creation).
+		if !d.UpdatedAt.IsZero() {
+			sec := int(now.Sub(d.UpdatedAt).Seconds())
+			if sec < 0 {
+				sec = 0
+			}
+			if sec > 3600 {
+				sec = 3600
+			}
+			d.ReviewSeconds = sec
+		}
 		if acc != nil {
 			_ = s.repo.SetAccountHumanFlags(ctx, orgID, d.AccountID, acc.Blocked, acc.DoNotContact, acc.BlockReason, models.OutreachQueueApproved)
 			email := ""
@@ -285,18 +295,16 @@ func (s *service) ReviewDraft(ctx context.Context, orgID, userID, draftID uuid.U
 		dnc := edit != nil && edit.DoNotContact
 		_ = s.repo.SetAccountHumanFlags(ctx, orgID, d.AccountID, true, dnc, reason,
 			map[bool]string{true: models.OutreachQueueDoNotContact, false: models.OutreachQueueBlocked}[dnc])
-		if acc, _ := s.repo.GetAccount(ctx, orgID, d.AccountID); acc != nil {
-			evType := OutcomeLeadReviewed
-			if dnc {
-				evType = OutcomeDoNotContact
-			}
-			email := d.RecipientEmail
+		email := d.RecipientEmail
+		if dnc && email != "" {
+			_ = s.NoteDNC(ctx, orgID, email, reason) // staging + platform suppression + outbox
+		} else if acc, _ := s.repo.GetAccount(ctx, orgID, d.AccountID); acc != nil {
 			_ = s.EnqueueOutcome(ctx, orgID, models.OutreachOutcome{
-				IdempotencyKey: fmt.Sprintf("%s:%s", strings.ToLower(evType), d.ID.String()),
+				IdempotencyKey: fmt.Sprintf("blocked:%s", d.ID.String()),
 				SourceLeadID:   acc.SourceLeadID,
 				CNPJ14:         acc.CNPJ14,
 				ContactEmail:   email,
-				EventType:      evType,
+				EventType:      OutcomeLeadReviewed,
 				OccurredAt:     time.Now().UTC(),
 			})
 		}
@@ -341,4 +349,64 @@ func stringsJoin(parts []string, sep string) string {
 // Ensure service holds optional AI provider.
 func (s *service) SetAI(p generation.Provider) {
 	s.ai = p
+}
+
+// BatchApproveResult summarizes bulk approval (only GREEN / validated items).
+type BatchApproveResult struct {
+	Approved []uuid.UUID `json:"approved"`
+	Skipped  []struct {
+		ID     uuid.UUID `json:"id"`
+		Reason string    `json:"reason"`
+	} `json:"skipped"`
+}
+
+// BatchApproveDrafts approves only drafts that pass CanBatchApprove gates.
+func (s *service) BatchApproveDrafts(ctx context.Context, orgID, userID uuid.UUID, draftIDs []uuid.UUID) (*BatchApproveResult, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return nil, xerr
+	}
+	if len(draftIDs) == 0 {
+		return nil, errx.New(errx.BadRequest, "draft_ids required")
+	}
+	if len(draftIDs) > 100 {
+		return nil, errx.New(errx.BadRequest, "at most 100 drafts per batch")
+	}
+	res := &BatchApproveResult{}
+	for _, id := range draftIDs {
+		d, err := s.repo.GetDraft(ctx, orgID, id)
+		if err != nil || d == nil {
+			res.Skipped = append(res.Skipped, struct {
+				ID     uuid.UUID `json:"id"`
+				Reason string    `json:"reason"`
+			}{ID: id, Reason: "not found"})
+			continue
+		}
+		var cand *models.OutreachContactCandidate
+		if d.ContactCandidateID != nil {
+			cand, _ = s.repo.GetCandidate(ctx, orgID, *d.ContactCandidateID)
+		}
+		if !CanBatchApprove(d, cand) {
+			res.Skipped = append(res.Skipped, struct {
+				ID     uuid.UUID `json:"id"`
+				Reason string    `json:"reason"`
+			}{ID: id, Reason: "not eligible for batch (risk, validation, or contact)"})
+			continue
+		}
+		approved, xerr := s.ReviewDraft(ctx, orgID, userID, id, "approve", nil)
+		if xerr != nil {
+			res.Skipped = append(res.Skipped, struct {
+				ID     uuid.UUID `json:"id"`
+				Reason string    `json:"reason"`
+			}{ID: id, Reason: xerr.Message})
+			continue
+		}
+		res.Approved = append(res.Approved, approved.ID)
+	}
+	return res, nil
+}
+
+// Metrics returns queue summary (funnel counts). Human review time is
+// aggregated from draft.review_seconds when listing approved drafts.
+func (s *service) Metrics(ctx context.Context, orgID uuid.UUID) (*models.OutreachQueueSummary, *errx.Error) {
+	return s.Summary(ctx, orgID)
 }

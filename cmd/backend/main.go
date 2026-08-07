@@ -1029,6 +1029,16 @@ func main() {
 			if crmService != nil {
 				confengeServiceForHandler.WireCRM(crmService)
 			}
+			if advancedService != nil {
+				confengeServiceForHandler.WireSuppress(confenge.SuppressFromAdvanced{
+					Fn: func(ctx context.Context, orgID uuid.UUID, email, reason string) error {
+						if xerr := advancedService.SuppressRecipient(ctx, orgID, email, reason); xerr != nil {
+							return fmt.Errorf("%s", xerr.Message)
+						}
+						return nil
+					},
+				})
+			}
 		}
 		emailSendService = emailsend.NewService(taskRepository, emailRepostory, userRepostory, schedulerService, tasksClient, featureGateService, dailyThrottleService)
 		composeService = compose.NewService(emailRepostory, repository.NewComposeRepository(primaryDB))

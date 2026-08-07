@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 import {
+    batchApproveConfengeDrafts,
     bootstrapConfengeCampaign,
     enrollConfengeDraft,
     generateConfengeDraft,
@@ -104,5 +105,17 @@ export function useBootstrapConfengeCampaign() {
         mutationFn: () => bootstrapConfengeCampaign(),
         onSuccess: (c) => toast.success(`Campaign ready: ${c.name}`),
         onError: (e: Error) => toast.error(e.message || "Bootstrap failed"),
+    });
+}
+
+export function useBatchApproveConfengeDrafts() {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: (ids: string[]) => batchApproveConfengeDrafts(ids),
+        onSuccess: (res) => {
+            void qc.invalidateQueries({ queryKey: KEY });
+            toast.success(`Approved ${res.approved?.length ?? 0}, skipped ${res.skipped?.length ?? 0}`);
+        },
+        onError: (e: Error) => toast.error(e.message || "Batch approve failed"),
     });
 }

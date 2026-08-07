@@ -112,6 +112,10 @@ func (s *service) NoteDNC(ctx context.Context, orgID uuid.UUID, contactEmail, re
 		cnpj, lead = acc.CNPJ14, acc.SourceLeadID
 		_ = s.repo.SetAccountHumanFlags(ctx, orgID, acc.ID, true, true, reason, models.OutreachQueueDoNotContact)
 	}
+	// Platform suppression list: campaign send paths check this before enqueue.
+	if s.suppress != nil {
+		_ = s.suppress.SuppressRecipient(ctx, orgID, email, firstNonEmpty(reason, "confenge DO_NOT_CONTACT"))
+	}
 	return s.enqueueErr(ctx, orgID, models.OutreachOutcome{
 		IdempotencyKey: fmt.Sprintf("dnc:%s:%s", orgID, email),
 		SourceLeadID:   lead,
