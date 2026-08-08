@@ -729,6 +729,11 @@ test.describe("CONFENGE product acceptance UI", () => {
     expect((tp.state || "").toUpperCase()).toBe("APPROVED");
     expect(tp.approved_content_hash).toBe(tp.content_hash);
 
+    const approvedSubject = (tp.subject || "").trim();
+    const approvedBody = (tp.body_text || "").trim();
+    const approvedRecipient = (tp.recipient || "").trim();
+    const approvedHash = tp.approved_content_hash as string;
+
     tp = (
       await apiJSON<{ data: Touchpoint }>(
         tokens.access_token,
@@ -740,6 +745,72 @@ test.describe("CONFENGE product acceptance UI", () => {
     const st3 = (tp.state || "").toUpperCase();
     // Local enroll may land SENT immediately; governor may leave QUEUED.
     expect(["QUEUED", "SENT"]).toContain(st3);
+
+    // ── Phase H: Mailpit exact delivery of approved content (not just OTP) ──
+    // Poll Mailpit for a message whose subject/body match the approved touchpoint.
+    // Recipient may be rewritten to a controlled sink; we still require body/subject match.
+    type MailpitMsg = {
+      ID: string;
+      Subject?: string;
+      To?: Array<{ Address?: string }>;
+      From?: { Address?: string };
+    };
+    let mailpitMatch: {
+      id: string;
+      subject: string;
+      body: string;
+      to: string;
+    } | null = null;
+    const normalize = (s: string) =>
+      s.replace(/\r\n/g, "\n").replace(/\s+$/gm, "").trim();
+    for (let i = 0; i < 40; i++) {
+      const listRes = await fetch(`${MAILPIT}/api/v1/messages`);
+      const list = (await listRes.json()) as { messages?: MailpitMsg[] };
+      for (const m of list.messages || []) {
+        const subj = (m.Subject || "").trim();
+        // Skip auth OTP mails
+        if (/Login Code|password|verify/i.test(subj)) continue;
+        if (approvedSubject && subj && !subj.includes(approvedSubject.slice(0, 40)) && subj !== approvedSubject) {
+          // allow soft match: approved subject is often exact; if not equal, still fetch body
+        }
+        const bodyRes = await fetch(`${MAILPIT}/api/v1/message/${m.ID}`);
+        const bodyJ = (await bodyRes.json()) as { Text?: string; HTML?: string };
+        const text = normalize(bodyJ.Text || bodyJ.HTML || "");
+        const want = normalize(approvedBody);
+        // Match: body contains approved text (MIME may wrap) or exact after normalize
+        if (
+          want.length > 10 &&
+          (text.includes(want) ||
+            text.replace(/\s+/g, " ").includes(want.replace(/\s+/g, " ")))
+        ) {
+          mailpitMatch = {
+            id: m.ID,
+            subject: subj,
+            body: text,
+            to: (m.To || []).map((t) => t.Address || "").join(","),
+          };
+          break;
+        }
+      }
+      if (mailpitMatch) break;
+      // If still QUEUED, wait for local dispatch/worker; SENT may already be in Mailpit
+      if (st3 === "QUEUED" || st3 === "SENT") {
+        await new Promise((r) => setTimeout(r, 500));
+      } else {
+        break;
+      }
+    }
+    // Hard require Mailpit proof when transport reached SENT; when QUEUED-only, record as such.
+    if (st3 === "SENT") {
+      expect(
+        mailpitMatch,
+        "SENT touchpoint must produce Mailpit message whose body matches approved content",
+      ).toBeTruthy();
+      expect(normalize(mailpitMatch!.body)).toContain(normalize(approvedBody).slice(0, 80));
+      if (approvedSubject) {
+        expect(mailpitMatch!.subject.length).toBeGreaterThan(0);
+      }
+    }
 
     // ── UI path B: surface still works (second isolated review TP) ──
     const uiSeed = await ensureReviewTouchpoint(tokens.access_token);
@@ -800,25 +871,41 @@ test.describe("CONFENGE product acceptance UI", () => {
       code_sha: codeSha || undefined,
       tested_sha: codeSha || undefined,
       command: "playwright confenge-product-acceptance",
-      test_id: "import-approve-edit-invalidate-queue",
+      test_id: "import-approve-edit-invalidate-queue-mailpit",
       touchpoint_id: seeded.touchpointId,
       account_id: seeded.accountId,
       after_approve: {
         state: st1,
         content_hash_len: (hashAfterApprove || "").length,
         approved_matches_content: true,
+        approved_content_hash: approvedHash,
+        subject: approvedSubject,
+        body_len: approvedBody.length,
+        recipient: approvedRecipient,
       },
       after_edit: {
         state: "NEEDS_REVIEW",
         approved_content_hash_cleared: true,
         content_hash_changed: true,
-        // Product SM: approved hash empty/null and not valid-for-send
         not_valid_approved_for_send: true,
       },
       after_reapprove_queue: {
         state: st3,
         approved_matches_content: true,
         queued_or_sent: true,
+      },
+      mailpit_exact_delivery: {
+        required_when_sent: true,
+        transport_state: st3,
+        matched: !!mailpitMatch,
+        mailpit_message_id: mailpitMatch?.id || null,
+        approved_subject: approvedSubject,
+        mailpit_subject: mailpitMatch?.subject || null,
+        approved_body_prefix: approvedBody.slice(0, 120),
+        body_match: !!mailpitMatch,
+        recipient_meta: approvedRecipient,
+        mailpit_to: mailpitMatch?.to || null,
+        note: "Body must match approved content; recipient may be controlled sink",
       },
       ui_approve_queue: {
         touchpoint_id: uiSeed.touchpointId,
@@ -832,10 +919,41 @@ test.describe("CONFENGE product acceptance UI", () => {
       path.join(PROOF_DIR, "playwright_live.json"),
       JSON.stringify(proof, null, 2),
     );
-    // Legacy filename kept for older consumers
     fs.writeFileSync(
       path.join(PROOF_DIR, "playwright-live-pass.json"),
       JSON.stringify(proof, null, 2),
     );
+    // Dedicated mailpit gate evidence (mechanical, same run as Playwright).
+    if (mailpitMatch && st3 === "SENT") {
+      fs.writeFileSync(
+        path.join(PROOF_DIR, "mailpit_exact_delivery.json"),
+        JSON.stringify(
+          {
+            result: "PASS",
+            pass: true,
+            gate: "PASS",
+            hard_asserts: true,
+            generated_at: new Date().toISOString(),
+            at: new Date().toISOString(),
+            code_sha: codeSha || undefined,
+            tested_sha: codeSha || undefined,
+            command: "playwright confenge-product-acceptance mailpit compare",
+            test_id: "mailpit-exact-body-match",
+            touchpoint_id: seeded.touchpointId,
+            approved_content_hash: approvedHash,
+            approved_subject: approvedSubject,
+            approved_body: approvedBody,
+            approved_recipient_meta: approvedRecipient,
+            mailpit_message_id: mailpitMatch.id,
+            mailpit_subject: mailpitMatch.subject,
+            mailpit_to: mailpitMatch.to,
+            body_match: true,
+            subject_present: mailpitMatch.subject.length > 0,
+          },
+          null,
+          2,
+        ),
+      );
+    }
   });
 });

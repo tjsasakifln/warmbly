@@ -179,6 +179,67 @@ class TestContactHonesty(unittest.TestCase):
             self.assertFalse(result["whatsapp_eligible"])
 
 
+class TestStickyOnlyGates(unittest.TestCase):
+    def test_sticky_gates_not_filled_from_evidence_files(self):
+        """Re-stamped dnc_sticky.json must not promote Phase M gates when live skipped."""
+        contact = {"gate": gate.GATE_PASS, "reason": "test"}
+        sticky = {
+            k: {"pass": False, "status": gate.GATE_NOT_RUN, "error": "live phase skipped"}
+            for k in (
+                "no_burst_creates",
+                "dnc_sticky",
+                "sent_sticky",
+                "approval_sticky",
+                "replied_sticky",
+                "bounced_sticky",
+                "process_restart",
+            )
+        }
+        with tempfile.TemporaryDirectory() as td:
+            ev = Path(td)
+            sha = gate.current_code_sha() or "testsha"
+            for name in (
+                "dnc_sticky",
+                "reimport_sticky",
+                "restart_no_burst",
+                "reply_cancels_future",
+                "playwright_live",
+            ):
+                payload = {
+                    "result": "PASS",
+                    "pass": True,
+                    "code_sha": sha,
+                    "generated_at": "2026-08-08T00:00:00+00:00",
+                }
+                if name.startswith("dnc") or "sticky" in name or "restart" in name or "reply" in name:
+                    payload["source"] = "re-stamped after HEAD tests / live playwright"
+                (ev / f"{name}.json").write_text(json.dumps(payload))
+            old_ev = gate.EVIDENCE
+            try:
+                gate.EVIDENCE = ev
+                gates = gate.build_critical_gate_map(
+                    contact=contact,
+                    sticky_assertions=sticky,
+                    restart_ok=False,
+                    channel_ok=True,
+                )
+            finally:
+                gate.EVIDENCE = old_ev
+        for name in (
+            "dnc_sticky",
+            "reimport_sticky",
+            "restart_no_burst",
+            "reply_cancels_future",
+        ):
+            self.assertEqual(
+                gates[name],
+                gate.GATE_NOT_RUN,
+                f"{name} must stay NOT_RUN when live sticky skipped",
+            )
+        # Non-sticky external can still load PASS from evidence.
+        self.assertEqual(gates["playwright_live"], gate.GATE_PASS)
+
+
 class TestEvidenceStale(unittest.TestCase):
     def test_missing_is_not_run(self):
         info = gate.classify_evidence_file(Path("/nonexistent/evidence.json"))

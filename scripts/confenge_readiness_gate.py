@@ -227,6 +227,27 @@ def classify_evidence_file(
     else:
         status = GATE_NOT_RUN
         r = "missing result field"
+
+    # Anti-theater: mailpit gate requires mechanical body match fields.
+    name = path.name if hasattr(path, "name") else str(path)
+    if status == GATE_PASS and "mailpit" in name.lower():
+        if not (
+            data.get("body_match") is True
+            or data.get("hard_asserts") is True
+            and data.get("mailpit_message_id")
+        ):
+            status = GATE_NOT_RUN
+            r = "mailpit evidence missing body_match/mailpit_message_id (not theater-stamped)"
+
+    # Anti-theater: sticky gate files alone are never enough without live phase;
+    # build_critical_gate_map already refuses STICKY_ONLY file fill-in.
+    if status == GATE_PASS and any(
+        k in name for k in ("dnc_sticky", "reimport_sticky", "restart_no_burst", "reply_cancels")
+    ):
+        if data.get("source") == "re-stamped after HEAD tests / live playwright":
+            status = GATE_NOT_RUN
+            r = "rejected re-stamped sticky theater evidence"
+
     return {
         "status": status,
         "path": str(path),
@@ -1078,6 +1099,16 @@ def build_critical_gate_map(
             return GATE_NOT_RUN
         return GATE_PASS if v.get("pass") else GATE_FAIL
 
+    # Live sticky-only gates: NEVER filled from evidence files (re-stamp theater).
+    # Phase M must run on the product stack for these to become PASS.
+    STICKY_ONLY = frozenset(
+        {
+            "dnc_sticky",
+            "reimport_sticky",
+            "restart_no_burst",
+            "reply_cancels_future",
+        }
+    )
     gates: dict[str, str] = {
         "contact_integrity": contact.get("gate") or GATE_NOT_RUN,
         "dnc_sticky": sticky_ok("dnc_sticky"),
@@ -1089,26 +1120,25 @@ def build_critical_gate_map(
             if sticky.get("no_burst_creates") is not None
             else (GATE_FAIL if restart_ok is False else GATE_NOT_RUN)
         ),
+        # approval can also be proven by Playwright hard_asserts evidence (not sticky-only).
         "approval_content_hash": sticky_ok("approval_sticky"),
         "reply_cancels_future": sticky_ok("replied_sticky"),
-        # Channel readiness is not a CRITICAL_GATES name but influences READY blockers.
     }
-    # External / evidence-backed critical gates — default NOT_RUN (never prior PASS).
-    # If sticky measurement is NOT_RUN, allow current-run evidence files to fill in
-    # (e.g. Playwright-proven approval/edit_invalidation on this HEAD).
+    # External evidence fill-in for non-sticky gates only (playwright, governor, mailpit…).
+    # Never promote STICKY_ONLY from files; never demote sticky FAIL.
     for name in CRITICAL_GATES:
+        if name in STICKY_ONLY:
+            continue
         if name in gates and gates[name] not in (GATE_NOT_RUN,):
             continue
         if name in ext:
-            gates[name] = ext[name]
+            loaded = ext[name]
         else:
             loaded = load_external_gate_status(name)
-            if name not in gates or gates[name] == GATE_NOT_RUN or loaded == GATE_PASS:
-                # Prefer PASS evidence over sticky NOT_RUN; never demote sticky FAIL.
-                if name not in gates or gates[name] == GATE_NOT_RUN:
-                    gates[name] = loaded
-                elif gates[name] != GATE_FAIL and loaded == GATE_PASS:
-                    gates[name] = loaded
+        if name not in gates or gates[name] == GATE_NOT_RUN:
+            gates[name] = loaded
+        elif gates[name] != GATE_FAIL and loaded == GATE_PASS:
+            gates[name] = loaded
 
     # CI is never self-declared green inside this process.
     if gates.get("ci_green") is None:
@@ -1530,9 +1560,19 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     # READY only via aggregate of ALL critical gates (gate_blockers empty) AND channel.
+    # Live sticky phase is mandatory for READY (cannot --contact-only/--skip-live to READY).
     if not channel_ok:
         verdict = "NOT_READY_FOR_CONTROLLED_REAL_OUTREACH"
     if gate_blockers:
+        verdict = "NOT_READY_FOR_CONTROLLED_REAL_OUTREACH"
+    if not live_ran:
+        verdict = "NOT_READY_FOR_CONTROLLED_REAL_OUTREACH"
+        blockers.append("live sticky/restart phase not run (required for READY)")
+    if live_ran and not sticky_pass:
+        verdict = "NOT_READY_FOR_CONTROLLED_REAL_OUTREACH"
+    if args.report_only and verdict == "READY_FOR_CONTROLLED_REAL_OUTREACH":
+        # report-only may write artifacts but must not present official READY.
+        blockers.append("report_only=true cannot declare official READY")
         verdict = "NOT_READY_FOR_CONTROLLED_REAL_OUTREACH"
 
     contact_metrics = {
