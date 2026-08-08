@@ -165,10 +165,7 @@ jobs:
     name: CONFENGE product acceptance
     needs: changes
     if: needs.changes.outputs.web == 'true' || needs.changes.outputs.go-services == 'true'
-    # Browser stack in GHA is still flaky (auth inject / feature flag timing).
-    # Do not fail the whole workflow: Go CI already runs Mailpit exact + governor +
-    # product-acceptance suite. Live local Playwright remains the hard proof.
-    continue-on-error: true
+    # Hard gate: Playwright FAIL must fail the workflow. Do not re-add continue-on-error.
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -241,7 +238,9 @@ jobs:
       CONFENGE_GATE_CODE_SHA: ${{ github.sha }}
       CONFENGE_E2E_PROOF_DIR: ${{ github.workspace }}/data/confenge-evidence
       # Absolute path: Playwright runs with cwd=web/, so repo-relative paths break.
-      CONFENGE_E2E_FEED: ${{ github.workspace }}/internal/app/confenge/testdata/demo_3_companies.json
+      # Prefer real pipeline-derived acceptance slice when present; fall back to demo fixture.
+      CONFENGE_E2E_FEED: ${{ github.workspace }}/data/confenge-feeds/acceptance_real_slice/slice.json
+      CONFENGE_E2E_FEED_FALLBACK: ${{ github.workspace }}/internal/app/confenge/testdata/demo_3_companies.json
     steps:
       - uses: actions/checkout@v4
 
@@ -603,6 +602,24 @@ jobs:
     steps:
       - name: Check CI status
         run: |
+          # confenge-product-acceptance is a hard gate when it ran. Skipped (path filter)
+          # is allowed only when neither web nor go-services changed; otherwise failure,
+          # cancelled, or timed_out of that job fails the aggregate.
+          confenge_result="${{ needs.confenge-product-acceptance.result }}"
+          confenge_failed=0
+          if [[ "$confenge_result" == "failure" ]] || \
+             [[ "$confenge_result" == "cancelled" ]] || \
+             [[ "$confenge_result" == "timed_out" ]]; then
+            confenge_failed=1
+          fi
+          # When web/go changed, job should not be skipped; treat unexpected skip as fail.
+          if [[ "${{ needs.changes.outputs.web }}" == "true" ]] || \
+             [[ "${{ needs.changes.outputs.go-services }}" == "true" ]]; then
+            if [[ "$confenge_result" == "skipped" ]] || [[ -z "$confenge_result" ]]; then
+              echo "CONFENGE product acceptance was skipped but web/go changes require it"
+              confenge_failed=1
+            fi
+          fi
           if [[ "${{ needs.go-ci.result }}" == "failure" ]] || \
              [[ "${{ needs.web-ci.result }}" == "failure" ]] || \
              [[ "${{ needs.admin-ci.result }}" == "failure" ]] || \
@@ -612,8 +629,9 @@ jobs:
              [[ "${{ needs.rust-ci.result }}" == "failure" ]] || \
              [[ "${{ needs.elixir-ci.result }}" == "failure" ]] || \
              [[ "${{ needs.ios-ci.result }}" == "failure" ]] || \
-             [[ "${{ needs.security.result }}" == "failure" ]]; then
-            echo "CI failed"
+             [[ "${{ needs.security.result }}" == "failure" ]] || \
+             [[ "$confenge_failed" -eq 1 ]]; then
+            echo "CI failed (confenge=$confenge_result)"
             exit 1
           fi
-          echo "CI passed"
+          echo "CI passed (confenge=$confenge_result)"

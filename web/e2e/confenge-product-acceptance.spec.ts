@@ -20,9 +20,20 @@ const ORG = process.env.CONFENGE_E2E_ORG || "22222222-0000-0000-0000-00000000000
 const WEB_BASE = process.env.CONFENGE_E2E_BASE_URL || "http://127.0.0.1:5173";
 // web/e2e → repo root is ../.. (ESM-safe; no __dirname)
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const FEED_PATH =
-  process.env.CONFENGE_E2E_FEED ||
-  path.join(REPO_ROOT, "internal/app/confenge/testdata/demo_3_companies.json");
+function resolveFeedPath(): string {
+  const candidates = [
+    process.env.CONFENGE_E2E_FEED,
+    process.env.CONFENGE_E2E_FEED_FALLBACK,
+    // Prefer deterministic slice of the real extra-cli national pipeline feed.
+    path.join(REPO_ROOT, "data/confenge-feeds/acceptance_real_slice/slice.json"),
+    path.join(REPO_ROOT, "internal/app/confenge/testdata/demo_3_companies.json"),
+  ].filter((p): p is string => !!p);
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[candidates.length - 1]!;
+}
+const FEED_PATH = resolveFeedPath();
 const PROOF_DIR =
   process.env.CONFENGE_E2E_PROOF_DIR ||
   path.join(REPO_ROOT, "data/confenge-evidence");

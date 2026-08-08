@@ -355,9 +355,10 @@ WEB_HOST := $(if $(PUBLIC_HOST),$(PUBLIC_HOST),localhost)
 # `--host 0.0.0.0` only when exposing; empty (default localhost bind) otherwise.
 VITE_HOST_FLAG := $(if $(PUBLIC_HOST),--host 0.0.0.0,)
 
-# Backend CORS allowlist: web + admin origins at PUBLIC_HOST plus localhost.
+# Backend CORS allowlist: web + admin origins at PUBLIC_HOST plus localhost/127.0.0.1.
+# Playwright CONFENGE E2E uses http://127.0.0.1:5173; localhost-only CORS hides /app/confenge.
 # Empty when not exposing, so the backend keeps its APP_URL-derived default.
-CORS_ORIGINS := $(if $(PUBLIC_HOST),http://$(PUBLIC_HOST):5173$(comma)http://$(PUBLIC_HOST):5174$(comma)http://localhost:5173$(comma)http://localhost:5174,)
+CORS_ORIGINS := $(if $(PUBLIC_HOST),http://$(PUBLIC_HOST):5173$(comma)http://$(PUBLIC_HOST):5174$(comma)http://localhost:5173$(comma)http://localhost:5174$(comma)http://127.0.0.1:5173$(comma)http://127.0.0.1:5174,http://localhost:5173$(comma)http://127.0.0.1:5173)
 
 # Shared by the control-plane services (backend, consumer). Flattened to
 # one line by make so it can prefix a command as inline env.
