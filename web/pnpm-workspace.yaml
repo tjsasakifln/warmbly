@@ -10,6 +10,7 @@ allowBuilds:
 # (rolldown-vite was being requested as plain `vite@7.1.14`, which doesn't
 # exist on the registry).
 overrides:
+  nanoid: 3.3.17
   picomatch: ^4.0.4
   # Clear CVE-2026-59887 (quadratic-complexity ReDoS via `mailto:`) in the
   # transitive linkify-it.

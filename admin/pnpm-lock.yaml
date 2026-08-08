@@ -6,6 +6,8 @@ settings:
 
 overrides:
   nanoid: 3.3.17
+  picomatch: ^4.0.4
+  js-yaml: ^4.3.0
 
 importers:
 
