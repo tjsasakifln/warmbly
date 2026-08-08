@@ -313,6 +313,29 @@ async function ensureReviewTouchpoint(token: string): Promise<{
       }
 
       let tp = await getTouchpoint(token, first.id);
+      // Resolve an enrollable recipient from account candidates when touchpoint has none.
+      let seedRecipient = (tp.recipient || "").trim();
+      if (!seedRecipient) {
+        try {
+          const detail = await apiJSON<{
+            data?: { contacts?: Array<{ email?: string; verification_status?: string }> };
+          }>(token, "GET", `/v1/confenge/accounts/${accountId}`);
+          const contacts = detail.data?.contacts || [];
+          const enrollable = contacts.find(
+            (c) =>
+              (c.email || "").includes("@") &&
+              !["CANDIDATE_UNVERIFIED", "NOT_FOUND", "INVALID", "BOUNCED", "DO_NOT_CONTACT"].includes(
+                (c.verification_status || "").toUpperCase(),
+              ),
+          );
+          seedRecipient =
+            enrollable?.email ||
+            contacts.find((c) => (c.email || "").includes("@"))?.email ||
+            "";
+        } catch {
+          /* best-effort */
+        }
+      }
       if (!(tp.body_text || "").trim()) {
         const gen = await fetch(`${API}/v1/confenge/touchpoints/${first.id}/generate`, {
           method: "POST",
@@ -322,43 +345,43 @@ async function ensureReviewTouchpoint(token: string): Promise<{
           },
           body: "{}",
         });
-        if (!gen.ok) {
-          const errText = await gen.text();
-          // Fallback: account-level generate then edit into the touchpoint.
-          try {
-            const dr = await apiJSON<{
-              data?: {
-                body_text?: string;
-                subject?: string;
-                recipient_email?: string;
-              };
-            }>(token, "POST", `/v1/confenge/accounts/${accountId}/generate`, {});
-            const d = dr.data || {};
-            tp = (
-              await apiJSON<{ data: Touchpoint }>(
-                token,
-                "POST",
-                `/v1/confenge/touchpoints/${first.id}/edit`,
-                {
-                  subject: d.subject || "CONFENGE",
-                  body_text:
-                    d.body_text ||
-                    "Mensagem CONFENGE com fato público e CTA para revisão humana.",
-                  recipient: d.recipient_email || tp.recipient || "contato@example.com",
-                },
-              )
-            ).data;
-          } catch (e) {
-            lastErr = `generate ${first.id}: ${gen.status} ${errText.slice(0, 120)}; fallback ${e}`;
-            continue;
-          }
-        } else {
+        if (gen.ok) {
           tp = ((await gen.json()) as { data: Touchpoint }).data;
+        } else {
+          lastErr = `generate ${first.id}: ${gen.status} ${(await gen.text()).slice(0, 120)}`;
+        }
+      }
+      // Always force a human-editable body+recipient when generate leaves them empty
+      // (template/AI path may no-op in CI without provider; edit is the product path).
+      if (!(tp.body_text || "").trim() || !(tp.recipient || "").trim()) {
+        try {
+          const forcedBody =
+            (tp.body_text || "").trim() ||
+            "Mensagem CONFENGE com fato público e CTA para revisão humana. Podemos conversar sobre o recorte contratual observado?";
+          const forcedRecipient =
+            (tp.recipient || "").trim() ||
+            seedRecipient ||
+            `confenge-pilot+${accountId.slice(0, 8)}@warmbly.local`;
+          tp = (
+            await apiJSON<{ data: Touchpoint }>(
+              token,
+              "POST",
+              `/v1/confenge/touchpoints/${first.id}/edit`,
+              {
+                subject: tp.subject || "CONFENGE",
+                body_text: forcedBody,
+                recipient: forcedRecipient,
+              },
+            )
+          ).data;
+        } catch (e) {
+          lastErr = `force-edit empty touchpoint ${first.id}: ${e}`;
+          continue;
         }
       }
 
       if (!(tp.body_text || "").trim() || !(tp.recipient || "").trim()) {
-        lastErr = `touchpoint ${first.id} still empty after generate`;
+        lastErr = `touchpoint ${first.id} still empty after generate+force-edit`;
         continue;
       }
       tp = await ensureDraftLinked(token, tp);
