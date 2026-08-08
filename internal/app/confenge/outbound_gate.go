@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
+	"github.com/warmbly/warmbly/internal/models"
 )
 
 // GateKind is a closed set of campaign-email gate outcomes.
@@ -78,12 +79,14 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 
 	// Dominant blocks: DNC/opt-out/bounce — hard block without consuming a slot.
 	// Err is deliberately nil so callers never treat policy as infrastructure failure.
+	var acc *models.OutreachAccount
 	if recipientEmail != "" {
-		cand, acc, err := s.repo.FindCandidateByEmail(ctx, orgID, strings.TrimSpace(strings.ToLower(recipientEmail)))
+		cand, found, err := s.repo.FindCandidateByEmail(ctx, orgID, strings.TrimSpace(strings.ToLower(recipientEmail)))
 		if err != nil {
 			// Lookup failure is transient (DB blip), not a permanent DNC.
 			return CampaignGateResult{Kind: GateTransient, Reason: ReasonGovernor, Err: fmt.Errorf("contact lookup: %w", err)}
 		}
+		acc = found
 		if cand != nil && (cand.DoNotContact || cand.Bounced) {
 			return CampaignGateResult{Kind: GateHardBlock, Reason: ReasonDNCOrBounce}
 		}
@@ -91,6 +94,25 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 			return CampaignGateResult{Kind: GateHardBlock, Reason: ReasonAccountDNC}
 		}
 	}
+	// Final material-context check at pre-SMTP gate: any approved/queued touchpoint
+	// for this account must still match message_context_hash (rank-only changes OK).
+	if acc != nil && strings.TrimSpace(acc.MessageContextHash) != "" {
+		for _, st := range []string{models.TouchpointApproved, models.TouchpointQueued} {
+			open, err := s.repo.ListTouchpoints(ctx, orgID, acc.ID, st, 10, 0)
+			if err != nil {
+				continue
+			}
+			for i := range open {
+				if open[i].GeneratedContextHash == "" {
+					continue
+				}
+				if err := AssertMessageContextFresh(acc, open[i].GeneratedContextHash); err != nil {
+					return CampaignGateResult{Kind: GateHardBlock, Reason: "context_stale", Err: err}
+				}
+			}
+		}
+	}
+	_ = sequenceID // campaign step id (not a draft/touchpoint id)
 
 	key := MessageKeyCampaignEmail(campaignID, contactID, sequenceID)
 	res, err := s.governor.TryReserve(ctx, dispatch.ReserveRequest{

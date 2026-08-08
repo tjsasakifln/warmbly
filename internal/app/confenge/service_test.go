@@ -28,6 +28,8 @@ type memRepo struct {
 	touchpoints map[uuid.UUID]*models.OutreachTouchpoint
 	outcomeBy   map[string]*models.OutreachOutcome
 	orgOwner    map[uuid.UUID]uuid.UUID
+	feedSync    map[uuid.UUID]*models.OutreachFeedSyncState
+	advLocks    map[int64]bool
 }
 
 func newMemRepo() *memRepo {
@@ -139,6 +141,7 @@ func (m *memRepo) UpsertAccount(ctx context.Context, acc *models.OutreachAccount
 func (m *memRepo) ListAccounts(ctx context.Context, orgID uuid.UUID, filter repository.OutreachAccountFilter) ([]models.OutreachAccount, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	now := time.Now().UTC()
 	var out []models.OutreachAccount
 	for _, a := range m.byID {
 		if a.OrganizationID != orgID {
@@ -149,6 +152,30 @@ func (m *memRepo) ListAccounts(ctx context.Context, orgID uuid.UUID, filter repo
 		}
 		if filter.CNPJ14 != "" && a.CNPJ14 != filter.CNPJ14 {
 			continue
+		}
+		if filter.ActivationState != "" && a.ActivationState != filter.ActivationState {
+			continue
+		}
+		if filter.ActivationDueNow {
+			if a.NextBestActionAt != nil && a.NextBestActionAt.After(now) {
+				continue
+			}
+		}
+		if filter.ActivationNotExpired {
+			if a.ActivationExpiresAt != nil && !a.ActivationExpiresAt.After(now) {
+				continue
+			}
+		}
+		if filter.ExcludeTerminal {
+			switch a.QueueState {
+			case models.OutreachQueueDoNotContact, models.OutreachQueueBlocked, models.OutreachQueueBounced,
+				models.OutreachQueueReplied, models.OutreachQueueMeeting, models.OutreachQueueProposal,
+				models.OutreachQueueWon, models.OutreachQueueLost, models.OutreachQueueSent, models.OutreachQueueEnrolled:
+				continue
+			}
+			if a.DoNotContact || a.Blocked {
+				continue
+			}
 		}
 		if filter.Search != "" {
 			q := strings.ToLower(filter.Search)
@@ -180,7 +207,44 @@ func (m *memRepo) ListAccounts(ctx context.Context, orgID uuid.UUID, filter repo
 }
 
 func (m *memRepo) CountByQueueState(ctx context.Context, orgID uuid.UUID) (*models.OutreachQueueSummary, error) {
-	return &models.OutreachQueueSummary{}, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := &models.OutreachQueueSummary{}
+	for _, a := range m.byID {
+		if a.OrganizationID != orgID {
+			continue
+		}
+		s.Total++
+		switch a.QueueState {
+		case models.OutreachQueueNeedsContact:
+			s.NeedsContact++
+		case models.OutreachQueueReadyToGenerate:
+			s.ReadyToGenerate++
+		case models.OutreachQueueNeedsReview:
+			s.NeedsReview++
+		case models.OutreachQueueApproved:
+			s.Approved++
+		case models.OutreachQueueEnrolled:
+			s.Enrolled++
+		case models.OutreachQueueSent:
+			s.Sent++
+		case models.OutreachQueueReplied:
+			s.Replied++
+		case models.OutreachQueueMeeting:
+			s.Meeting++
+		case models.OutreachQueueProposal:
+			s.Proposal++
+		case models.OutreachQueueWon:
+			s.Won++
+		case models.OutreachQueueBlocked:
+			s.Blocked++
+		case models.OutreachQueueBounced:
+			s.Bounced++
+		case models.OutreachQueueDoNotContact:
+			s.DoNotContact++
+		}
+	}
+	return s, nil
 }
 
 func (m *memRepo) SetAccountHumanFlags(ctx context.Context, orgID, id uuid.UUID, blocked, dnc bool, reason, queueState string) error {
@@ -819,4 +883,80 @@ func TestEvidenceAddedOnReimport(t *testing.T) {
 // local helper avoiding import cycle noise
 func jsonMarshal(v any) ([]byte, error) {
 	return marshalJSON(v)
+}
+
+func (m *memRepo) CountByActivationState(ctx context.Context, orgID uuid.UUID, now time.Time) (*repository.OutreachActivationCounts, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := &repository.OutreachActivationCounts{}
+	for _, a := range m.byID {
+		if a.OrganizationID != orgID {
+			continue
+		}
+		out.Total++
+		switch a.ActivationState {
+		case ActivationActionableNow:
+			out.ActionableNow++
+			if IsOutboundDue(a, now) {
+				out.ActionableDueNow++
+				if a.QueueState == models.OutreachQueueNeedsContact {
+					out.NeedsContactDue++
+				}
+			}
+		case ActivationSuppressed:
+			out.Suppressed++
+		case ActivationResearchRequired:
+			out.ResearchRequired++
+		default:
+			out.Watch++
+		}
+	}
+	return out, nil
+}
+
+func (m *memRepo) GetFeedSyncState(ctx context.Context, orgID uuid.UUID) (*models.OutreachFeedSyncState, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.feedSync == nil {
+		return nil, nil
+	}
+	st := m.feedSync[orgID]
+	if st == nil {
+		return nil, nil
+	}
+	cp := *st
+	return &cp, nil
+}
+
+func (m *memRepo) UpsertFeedSyncState(ctx context.Context, st *models.OutreachFeedSyncState) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.feedSync == nil {
+		m.feedSync = map[uuid.UUID]*models.OutreachFeedSyncState{}
+	}
+	cp := *st
+	m.feedSync[st.OrganizationID] = &cp
+	return nil
+}
+
+func (m *memRepo) TryAdvisoryLock(ctx context.Context, key int64) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.advLocks == nil {
+		m.advLocks = map[int64]bool{}
+	}
+	if m.advLocks[key] {
+		return false, nil
+	}
+	m.advLocks[key] = true
+	return true, nil
+}
+
+func (m *memRepo) AdvisoryUnlock(ctx context.Context, key int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.advLocks != nil {
+		delete(m.advLocks, key)
+	}
+	return nil
 }

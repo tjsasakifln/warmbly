@@ -34,21 +34,32 @@ const (
 
 // OutcomeEnvelope is the payload posted to extra-cli.
 type OutcomeEnvelope struct {
-	SchemaVersion  string         `json:"schema_version"`
-	EventID        string         `json:"event_id"`
-	IdempotencyKey string         `json:"idempotency_key"`
-	OccurredAt     string         `json:"occurred_at"`
-	Source         string         `json:"source"`
-	SourceLeadID   string         `json:"source_lead_id"`
-	CNPJ14         string         `json:"cnpj14"`
-	ContactEmail   string         `json:"contact_email"`
-	EventType      string         `json:"event_type"`
-	CampaignID     string         `json:"campaign_id,omitempty"`
-	MessageID      string         `json:"message_id,omitempty"`
-	Metadata       map[string]any `json:"metadata,omitempty"`
+	SchemaVersion  string `json:"schema_version"`
+	EventID        string `json:"event_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+	OccurredAt     string `json:"occurred_at"`
+	Source         string `json:"source"`
+	SourceLeadID   string `json:"source_lead_id"`
+	CNPJ14         string `json:"cnpj14"`
+	ContactEmail   string `json:"contact_email"`
+	EventType      string `json:"event_type"`
+	CampaignID     string `json:"campaign_id,omitempty"`
+	MessageID      string `json:"message_id,omitempty"`
+	// Commercial snapshot for Decision Memory analysis (not a second ledger).
+	ServiceCode             string         `json:"service_code,omitempty"`
+	MomentCode              string         `json:"moment_code,omitempty"`
+	ActivationPolicyVersion string         `json:"activation_policy_version,omitempty"`
+	ActivationScore         float64        `json:"activation_score,omitempty"`
+	ActivationReasonCodes   []string       `json:"activation_reason_codes,omitempty"`
+	ActivationSourceHash    string         `json:"activation_source_hash,omitempty"`
+	GeneratedContextHash    string         `json:"generated_context_hash,omitempty"`
+	TouchpointOrdinal       int            `json:"touchpoint_ordinal,omitempty"`
+	Channel                 string         `json:"channel,omitempty"`
+	Metadata                map[string]any `json:"metadata,omitempty"`
 }
 
 // EnqueueOutcome records an async outbox row (idempotent by key).
+// When payload is empty, enriches a commercial snapshot from account/touchpoint when available.
 func (s *service) EnqueueOutcome(ctx context.Context, orgID uuid.UUID, ev models.OutreachOutcome) *errx.Error {
 	if xerr := s.requireEnabled(); xerr != nil {
 		return xerr
@@ -63,6 +74,7 @@ func (s *service) EnqueueOutcome(ctx context.Context, orgID uuid.UUID, ev models
 		ev.OccurredAt = time.Now().UTC()
 	}
 	ev.OrganizationID = orgID
+	s.enrichOutcomePayload(ctx, orgID, &ev)
 	if err := s.repo.EnqueueOutcome(ctx, &ev); err != nil {
 		// unique violation → already queued
 		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
@@ -71,6 +83,69 @@ func (s *service) EnqueueOutcome(ctx context.Context, orgID uuid.UUID, ev models
 		return errx.New(errx.Internal, "failed to enqueue outcome: "+err.Error())
 	}
 	return nil
+}
+
+// enrichOutcomePayload merges activation/commercial snapshot into payload JSON without wiping caller fields.
+func (s *service) enrichOutcomePayload(ctx context.Context, orgID uuid.UUID, ev *models.OutreachOutcome) {
+	if ev == nil {
+		return
+	}
+	meta := map[string]any{}
+	if len(ev.Payload) > 0 {
+		_ = json.Unmarshal(ev.Payload, &meta)
+	}
+	// Prefer CNPJ lookup; never invent facts.
+	var acc *models.OutreachAccount
+	if cnpj := NormalizeCNPJ14(ev.CNPJ14); cnpj != "" {
+		acc, _ = s.repo.GetAccountByCNPJ(ctx, orgID, cnpj)
+	}
+	if acc == nil && strings.TrimSpace(ev.ContactEmail) != "" {
+		_, found, _ := s.repo.FindCandidateByEmail(ctx, orgID, strings.TrimSpace(strings.ToLower(ev.ContactEmail)))
+		acc = found
+	}
+	if acc != nil {
+		if ev.CNPJ14 == "" {
+			ev.CNPJ14 = acc.CNPJ14
+		}
+		if ev.SourceLeadID == "" {
+			ev.SourceLeadID = acc.SourceLeadID
+		}
+		putIfMissing(meta, "service_code", acc.ServiceCode)
+		putIfMissing(meta, "moment_code", acc.MomentCode)
+		putIfMissing(meta, "activation_policy_version", acc.ActivationPolicyVersion)
+		if _, ok := meta["activation_score"]; !ok && acc.ActivationScore > 0 {
+			meta["activation_score"] = acc.ActivationScore
+		}
+		if _, ok := meta["activation_reason_codes"]; !ok && len(acc.ActivationReasonCodes) > 0 {
+			meta["activation_reason_codes"] = acc.ActivationReasonCodes
+		}
+		putIfMissing(meta, "activation_source_hash", acc.ActivationSourceHash)
+		putIfMissing(meta, "message_context_hash", acc.MessageContextHash)
+		// Latest approved/sent touchpoint context if present
+		if tps, err := s.repo.ListTouchpoints(ctx, orgID, acc.ID, "", 1, 0); err == nil && len(tps) > 0 {
+			tp := tps[0]
+			putIfMissing(meta, "generated_context_hash", tp.GeneratedContextHash)
+			if _, ok := meta["touchpoint_ordinal"]; !ok {
+				meta["touchpoint_ordinal"] = tp.Ordinal
+			}
+			putIfMissing(meta, "channel", tp.Channel)
+		}
+	}
+	if len(meta) > 0 {
+		b, _ := json.Marshal(meta)
+		if len(b) > 0 {
+			ev.Payload = b
+		}
+	}
+}
+
+func putIfMissing(m map[string]any, k, v string) {
+	if v == "" {
+		return
+	}
+	if _, ok := m[k]; !ok {
+		m[k] = v
+	}
 }
 
 // SignOutcomeHMAC builds the signature header value: t=<unix>,v1=<hex>.

@@ -998,6 +998,19 @@ func main() {
 		}
 		// Async outcome outbox → extra-cli HMAC webhook (idle when URL/secret unset).
 		go confenge.NewOutcomeDeliveryWorker(outreachRepo, confengeCfg, confenge.OutcomeDeliveryOptions{}).Run(ctx)
+		// Continuous feed sync (fail-closed OFF by default). Single-flight inside SyncFeedManifest.
+		if confengeCfg.FeedSyncEnabled {
+			if orgRaw := strings.TrimSpace(os.Getenv("CONFENGE_FEED_SYNC_ORG_ID")); orgRaw != "" {
+				if orgID, err := uuid.Parse(orgRaw); err == nil {
+					go confenge.NewFeedSyncWorker(confengeServiceForHandler, orgID, confengeCfg.FeedSyncInterval).Run(ctx)
+					log.Printf("confenge feed sync worker started for org %s interval=%s", orgID, confengeCfg.FeedSyncInterval)
+				} else {
+					log.Printf("confenge feed sync: invalid CONFENGE_FEED_SYNC_ORG_ID %q", orgRaw)
+				}
+			} else {
+				log.Printf("confenge feed sync enabled but CONFENGE_FEED_SYNC_ORG_ID unset; worker not started")
+			}
+		}
 
 		apiKeyService = apikey.NewService(cache, apiKeyRepository)
 		crmService = crm.NewService(crmRepository)

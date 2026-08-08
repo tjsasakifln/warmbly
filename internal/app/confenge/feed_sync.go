@@ -86,13 +86,34 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 		return nil, errx.New(errx.BadRequest, "manifest URI not configured")
 	}
 
+	// Process-local single-flight + durable advisory lock when PG is available.
 	mu := orgFeedSyncLock(orgID)
 	if !mu.TryLock() {
 		return nil, errx.New(errx.Conflict, "feed sync already in progress for this organization")
 	}
 	defer mu.Unlock()
 
+	advKey := feedSyncAdvisoryKey(orgID)
+	if locked, err := s.repo.TryAdvisoryLock(ctx, advKey); err == nil {
+		if !locked {
+			return nil, errx.New(errx.Conflict, "feed sync already in progress (advisory lock)")
+		}
+		defer func() { _ = s.repo.AdvisoryUnlock(ctx, advKey) }()
+	}
+
 	result := &FeedSyncResult{Status: "failed", Counts: map[string]int{}}
+	// Read durable last snapshot BEFORE mutating status (running write must not wipe it).
+	lastSnap, lastRun := s.lastAppliedSnapshot(ctx, orgID)
+	now := time.Now().UTC()
+	_ = s.repo.UpsertFeedSyncState(ctx, &models.OutreachFeedSyncState{
+		OrganizationID:   orgID,
+		LastSnapshotHash: lastSnap,
+		LastRunID:        lastRun,
+		LastManifestURI:  uri,
+		LastAttemptAt:    &now,
+		LastStatus:       "running",
+	})
+
 	fetcher := &FeedFetcher{
 		AllowedHosts: s.cfg.AllowedHosts,
 		Token:        s.cfg.FeedToken,
@@ -101,13 +122,16 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 	raw, err := fetcher.Fetch(ctx, uri)
 	if err != nil {
 		result.Errors = append(result.Errors, "manifest fetch: "+err.Error())
+		s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "failed", result, false)
 		return result, errx.New(errx.BadRequest, "manifest fetch failed: "+err.Error())
 	}
 	var man outreachManifest
 	if err := json.Unmarshal(raw, &man); err != nil {
+		s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "failed", result, false)
 		return result, errx.New(errx.BadRequest, "invalid manifest JSON: "+err.Error())
 	}
 	if man.Source.SnapshotHash == "" || man.Source.RunID == "" {
+		s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "failed", result, false)
 		return result, errx.New(errx.BadRequest, "manifest missing source.snapshot_hash or run_id")
 	}
 	result.SnapshotHash = man.Source.SnapshotHash
@@ -115,13 +139,12 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 	result.ChunksTotal = len(man.Chunks)
 
 	// Idempotent: same snapshot already applied → noop
-	lastSnap, lastRun := s.lastAppliedSnapshot(ctx, orgID)
 	if lastSnap == man.Source.SnapshotHash && lastSnap != "" {
 		result.Status = "noop"
 		result.SkippedSame = true
+		s.persistFeedSync(ctx, orgID, man.Source.SnapshotHash, man.Source.RunID, uri, "completed", result, true)
 		return result, nil
 	}
-	_ = lastRun
 
 	baseURI := manifestBaseURI(uri)
 	imported := 0
@@ -164,14 +187,14 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 		if n, err := s.ApplyDeactivations(ctx, orgID, man.Deactivations); err == nil {
 			result.Deactivations = n
 		}
-		s.rememberSnapshot(ctx, orgID, man.Source.SnapshotHash, man.Source.RunID, uri, "completed", result)
 		result.Status = "completed"
+		s.persistFeedSync(ctx, orgID, man.Source.SnapshotHash, man.Source.RunID, uri, "completed", result, true)
 		return result, nil
 	}
 
 	// Partial: do NOT mark snapshot complete (Warmbly must not treat as success).
 	result.Status = "partial"
-	s.rememberSnapshot(ctx, orgID, "", "", uri, "partial", result)
+	s.persistFeedSync(ctx, orgID, "", "", uri, "partial", result, false)
 	return result, errx.New(errx.BadRequest, "feed sync partial: "+strings.Join(partialErrs, "; "))
 }
 
@@ -194,20 +217,23 @@ func joinURI(base, file string) string {
 	return strings.TrimRight(base, "/") + "/" + file
 }
 
-// In-memory last-snapshot fallback when feed_sync_state table not yet used by repo.
-var lastSnapMu sync.Mutex
-var lastSnapByOrg = map[string]struct {
-	Snap, Run string
-	At        time.Time
-}{}
+func feedSyncAdvisoryKey(orgID uuid.UUID) int64 {
+	// Stable 63-bit key from org UUID (avoid sign bit).
+	h := sha256.Sum256([]byte("confenge-feed-sync:" + orgID.String()))
+	var n uint64
+	for i := 0; i < 8; i++ {
+		n = (n << 8) | uint64(h[i])
+	}
+	return int64(n & 0x7fffffffffffffff)
+}
 
 func (s *service) lastAppliedSnapshot(ctx context.Context, orgID uuid.UUID) (snap, run string) {
-	lastSnapMu.Lock()
-	defer lastSnapMu.Unlock()
-	if v, ok := lastSnapByOrg[orgID.String()]; ok {
-		return v.Snap, v.Run
+	if st, err := s.repo.GetFeedSyncState(ctx, orgID); err == nil && st != nil {
+		if st.LastStatus == "completed" && st.LastSnapshotHash != "" {
+			return st.LastSnapshotHash, st.LastRunID
+		}
 	}
-	// Best-effort: last import run snapshot
+	// Fallback: last completed import run snapshot
 	runs, err := s.repo.ListImportRuns(ctx, orgID, 1)
 	if err == nil && len(runs) > 0 && runs[0].Status == models.OutreachImportCompleted {
 		return runs[0].SnapshotHash, runs[0].SourceRunID
@@ -215,17 +241,31 @@ func (s *service) lastAppliedSnapshot(ctx context.Context, orgID uuid.UUID) (sna
 	return "", ""
 }
 
-func (s *service) rememberSnapshot(ctx context.Context, orgID uuid.UUID, snap, run, uri, status string, res *FeedSyncResult) {
-	_ = ctx
-	_ = uri
-	_ = res
-	if snap == "" {
-		return
+func (s *service) persistFeedSync(ctx context.Context, orgID uuid.UUID, snap, run, uri, status string, res *FeedSyncResult, success bool) {
+	now := time.Now().UTC()
+	st := &models.OutreachFeedSyncState{
+		OrganizationID:   orgID,
+		LastSnapshotHash: snap,
+		LastRunID:        run,
+		LastManifestURI:  uri,
+		LastAttemptAt:    &now,
+		LastStatus:       status,
+		LastError:        "",
 	}
-	lastSnapMu.Lock()
-	lastSnapByOrg[orgID.String()] = struct {
-		Snap, Run string
-		At        time.Time
-	}{Snap: snap, Run: run, At: time.Now().UTC()}
-	lastSnapMu.Unlock()
+	if res != nil && len(res.Errors) > 0 {
+		st.LastError = strings.Join(res.Errors, "; ")
+	}
+	if success {
+		st.LastSuccessAt = &now
+	}
+	if res != nil {
+		b, _ := json.Marshal(map[string]any{
+			"chunks_total":    res.ChunksTotal,
+			"chunks_imported": res.ChunksImported,
+			"deactivations":   res.Deactivations,
+			"skipped_same":    res.SkippedSame,
+		})
+		st.CountsJSON = b
+	}
+	_ = s.repo.UpsertFeedSyncState(ctx, st)
 }

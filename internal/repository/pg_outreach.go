@@ -30,7 +30,13 @@ type OutreachRepository interface {
 	UpsertAccount(ctx context.Context, acc *models.OutreachAccount) (created bool, err error)
 	ListAccounts(ctx context.Context, orgID uuid.UUID, filter OutreachAccountFilter) ([]models.OutreachAccount, error)
 	CountByQueueState(ctx context.Context, orgID uuid.UUID) (*models.OutreachQueueSummary, error)
+	CountByActivationState(ctx context.Context, orgID uuid.UUID, now time.Time) (*OutreachActivationCounts, error)
 	SetAccountHumanFlags(ctx context.Context, orgID, id uuid.UUID, blocked, dnc bool, reason, queueState string) error
+	// Feed sync durable state (single-flight across replicas via advisory lock + table).
+	GetFeedSyncState(ctx context.Context, orgID uuid.UUID) (*models.OutreachFeedSyncState, error)
+	UpsertFeedSyncState(ctx context.Context, st *models.OutreachFeedSyncState) error
+	TryAdvisoryLock(ctx context.Context, key int64) (bool, error)
+	AdvisoryUnlock(ctx context.Context, key int64) error
 
 	// Contacts
 	ListCandidates(ctx context.Context, orgID, accountID uuid.UUID) ([]models.OutreachContactCandidate, error)
@@ -86,6 +92,24 @@ type OutreachAccountFilter struct {
 	Offset          int
 	DynamicPriority bool
 	ActivationState string
+	// ActivationDueNow: next_best_action_at IS NULL OR next_best_action_at <= now.
+	ActivationDueNow bool
+	// ActivationNotExpired: activation_expires_at IS NULL OR activation_expires_at > now.
+	ActivationNotExpired bool
+	// Exclude dominant human queue states from outbound lanes.
+	ExcludeTerminal bool
+}
+
+// OutreachActivationCounts is aggregate activation_state distribution for an org.
+type OutreachActivationCounts struct {
+	Total            int
+	Watch            int
+	ResearchRequired int
+	ActionableNow    int
+	Suppressed       int
+	// ActionableDueNow is ACTIONABLE_NOW with NBA due and not expired.
+	ActionableDueNow int
+	NeedsContactDue  int
 }
 
 type outreachRepository struct {
@@ -430,8 +454,11 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 
 func (r *outreachRepository) ListAccounts(ctx context.Context, orgID uuid.UUID, filter OutreachAccountFilter) ([]models.OutreachAccount, error) {
 	limit := filter.Limit
-	if limit <= 0 || limit > 200 {
+	if limit <= 0 {
 		limit = 50
+	}
+	if limit > 1000 {
+		limit = 1000
 	}
 	offset := filter.Offset
 	if offset < 0 {
@@ -460,6 +487,16 @@ func (r *outreachRepository) ListAccounts(ctx context.Context, orgID uuid.UUID, 
 		args = append(args, filter.ActivationState)
 		n++
 	}
+	if filter.ActivationDueNow {
+		q += ` AND (next_best_action_at IS NULL OR next_best_action_at <= now())`
+	}
+	if filter.ActivationNotExpired {
+		q += ` AND (activation_expires_at IS NULL OR activation_expires_at > now())`
+	}
+	if filter.ExcludeTerminal {
+		q += ` AND queue_state NOT IN ('DO_NOT_CONTACT','BLOCKED','BOUNCED','REPLIED','MEETING','PROPOSAL','WON','LOST','SENT','ENROLLED')`
+		q += ` AND do_not_contact = false AND blocked = false`
+	}
 	if filter.DynamicPriority {
 		q += fmt.Sprintf(` ORDER BY next_best_action_at ASC NULLS LAST, activation_score DESC, priority_rank ASC NULLS LAST, moment_observed_at DESC NULLS LAST, cnpj14 ASC LIMIT $%d OFFSET $%d`, n, n+1)
 	} else {
@@ -481,6 +518,133 @@ func (r *outreachRepository) ListAccounts(ctx context.Context, orgID uuid.UUID, 
 		out = append(out, *acc)
 	}
 	return out, rows.Err()
+}
+
+func (r *outreachRepository) CountByActivationState(ctx context.Context, orgID uuid.UUID, now time.Time) (*OutreachActivationCounts, error) {
+	_ = now
+	out := &OutreachActivationCounts{}
+	rows, err := r.db.Query(ctx, `
+		SELECT COALESCE(activation_state,''), COUNT(*)::int
+		FROM outreach_accounts WHERE organization_id=$1
+		GROUP BY COALESCE(activation_state,'')`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var st string
+		var n int
+		if err := rows.Scan(&st, &n); err != nil {
+			return nil, err
+		}
+		out.Total += n
+		switch st {
+		case "WATCH":
+			out.Watch = n
+		case "RESEARCH_REQUIRED":
+			out.ResearchRequired = n
+		case "ACTIONABLE_NOW":
+			out.ActionableNow = n
+		case "SUPPRESSED":
+			out.Suppressed = n
+		default:
+			out.Watch += n
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Due ACTIONABLE_NOW (NBA ready, not expired, not terminal)
+	err = r.db.QueryRow(ctx, `
+		SELECT COUNT(*)::int FROM outreach_accounts
+		WHERE organization_id=$1
+		  AND activation_state='ACTIONABLE_NOW'
+		  AND do_not_contact=false AND blocked=false
+		  AND queue_state NOT IN ('DO_NOT_CONTACT','BLOCKED','BOUNCED','REPLIED','MEETING','PROPOSAL','WON','LOST','SENT','ENROLLED')
+		  AND (next_best_action_at IS NULL OR next_best_action_at <= now())
+		  AND (activation_expires_at IS NULL OR activation_expires_at > now())`,
+		orgID).Scan(&out.ActionableDueNow)
+	if err != nil {
+		return nil, err
+	}
+	err = r.db.QueryRow(ctx, `
+		SELECT COUNT(*)::int FROM outreach_accounts
+		WHERE organization_id=$1
+		  AND activation_state='ACTIONABLE_NOW'
+		  AND queue_state='NEEDS_CONTACT'
+		  AND do_not_contact=false AND blocked=false
+		  AND (next_best_action_at IS NULL OR next_best_action_at <= now())
+		  AND (activation_expires_at IS NULL OR activation_expires_at > now())`,
+		orgID).Scan(&out.NeedsContactDue)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (r *outreachRepository) GetFeedSyncState(ctx context.Context, orgID uuid.UUID) (*models.OutreachFeedSyncState, error) {
+	row := r.db.QueryRow(ctx, `
+		SELECT organization_id, COALESCE(last_snapshot_hash,''), COALESCE(last_run_id,''),
+			COALESCE(last_manifest_uri,''), last_success_at, last_attempt_at,
+			COALESCE(last_error,''), COALESCE(last_status,'idle'), counts, updated_at
+		FROM outreach_feed_sync_state WHERE organization_id=$1`, orgID)
+	var st models.OutreachFeedSyncState
+	var counts []byte
+	err := row.Scan(
+		&st.OrganizationID, &st.LastSnapshotHash, &st.LastRunID,
+		&st.LastManifestURI, &st.LastSuccessAt, &st.LastAttemptAt,
+		&st.LastError, &st.LastStatus, &counts, &st.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	st.CountsJSON = counts
+	return &st, nil
+}
+
+func (r *outreachRepository) UpsertFeedSyncState(ctx context.Context, st *models.OutreachFeedSyncState) error {
+	if st == nil {
+		return errors.New("nil feed sync state")
+	}
+	now := time.Now().UTC()
+	st.UpdatedAt = now
+	counts := st.CountsJSON
+	if len(counts) == 0 {
+		counts = []byte("{}")
+	}
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO outreach_feed_sync_state (
+			organization_id, last_snapshot_hash, last_run_id, last_manifest_uri,
+			last_success_at, last_attempt_at, last_error, last_status, counts, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		ON CONFLICT (organization_id) DO UPDATE SET
+			last_snapshot_hash = EXCLUDED.last_snapshot_hash,
+			last_run_id = EXCLUDED.last_run_id,
+			last_manifest_uri = EXCLUDED.last_manifest_uri,
+			last_success_at = COALESCE(EXCLUDED.last_success_at, outreach_feed_sync_state.last_success_at),
+			last_attempt_at = EXCLUDED.last_attempt_at,
+			last_error = EXCLUDED.last_error,
+			last_status = EXCLUDED.last_status,
+			counts = EXCLUDED.counts,
+			updated_at = EXCLUDED.updated_at`,
+		st.OrganizationID, st.LastSnapshotHash, st.LastRunID, st.LastManifestURI,
+		st.LastSuccessAt, st.LastAttemptAt, st.LastError, st.LastStatus, counts, st.UpdatedAt,
+	)
+	return err
+}
+
+func (r *outreachRepository) TryAdvisoryLock(ctx context.Context, key int64) (bool, error) {
+	var ok bool
+	err := r.db.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&ok)
+	return ok, err
+}
+
+func (r *outreachRepository) AdvisoryUnlock(ctx context.Context, key int64) error {
+	_, err := r.db.Exec(ctx, `SELECT pg_advisory_unlock($1)`, key)
+	return err
 }
 
 func (r *outreachRepository) CountByQueueState(ctx context.Context, orgID uuid.UUID) (*models.OutreachQueueSummary, error) {

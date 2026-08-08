@@ -144,31 +144,77 @@ func (s *service) ListWorkingQueue(ctx context.Context, orgID uuid.UUID, lane st
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, xerr
 	}
-	if limit <= 0 || limit > 200 {
+	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
 	lane = normalizeLane(lane)
 	now := time.Now().UTC()
+	// SQL filters push due/activation predicates into the DB (not a 200-row sample).
 	filter := repository.OutreachAccountFilter{
-		Limit:           200,
+		Limit:           limit,
 		DynamicPriority: s.cfg.DynamicPriorityEnabled,
+		ExcludeTerminal: true,
+	}
+	switch lane {
+	case LaneNow:
+		filter.ActivationState = ActivationActionableNow
+		filter.ActivationDueNow = true
+		filter.ActivationNotExpired = true
+		// Prefer contact-ready operational states; needs_contact is its own lane.
+		// Still list READY/REVIEW/APPROVED first via dynamic order.
+	case LaneNeedsContact:
+		filter.ActivationState = ActivationActionableNow
+		filter.ActivationDueNow = true
+		filter.ActivationNotExpired = true
+		filter.QueueState = models.OutreachQueueNeedsContact
+	case LaneNeedsReview:
+		filter.QueueState = models.OutreachQueueNeedsReview
+		filter.ExcludeTerminal = false
+	case LaneApproved:
+		filter.QueueState = models.OutreachQueueApproved
+		filter.ExcludeTerminal = false
+	case LaneWatch:
+		filter.ActivationState = ActivationWatch
+	case LaneNeedsAttention:
+		// Human-dominant: replied/meeting/proposal — not terminal-excluded
+		filter.ExcludeTerminal = false
+	default:
+		if !s.cfg.DynamicPriorityEnabled {
+			// Legacy surface: classic ready / needs contact only.
+			filter.ExcludeTerminal = false
+		} else {
+			filter.ActivationDueNow = true
+			filter.ActivationNotExpired = true
+		}
 	}
 	accounts, err := s.repo.ListAccounts(ctx, orgID, filter)
 	if err != nil {
 		return nil, errx.New(errx.Internal, "list accounts: "+err.Error())
 	}
-	items := make([]WorkingQueueItem, 0, limit)
+	// Needs attention: filter client-side only for multi-state human lanes.
+	items := make([]WorkingQueueItem, 0, len(accounts))
 	for i := range accounts {
 		acc := accounts[i]
-		// Join contacts for contact-ready detection when available
 		if cands, err := s.repo.ListCandidates(ctx, orgID, acc.ID); err == nil {
 			acc.Contacts = cands
 		}
 		item := workingItemFromAccount(&acc, now)
-		if lane != "" && item.Lane != lane {
+		if lane == LaneNeedsAttention && item.Lane != LaneNeedsAttention {
 			continue
 		}
-		// When dynamic priority off, only expose classic ready/needs_contact lanes.
+		if lane == LaneNow && item.Lane != LaneNow {
+			// SQL already filtered ACTIONABLE due; still drop pure needs-contact into its lane.
+			if item.Lane == LaneNeedsContact {
+				continue
+			}
+			// Allow ready/review that is also due actionable.
+			if item.Lane != LaneNow && item.Lane != LaneNeedsReview && item.Lane != LaneApproved {
+				if !IsOutboundDue(&acc, now) {
+					continue
+				}
+				item.Lane = LaneNow
+			}
+		}
 		if !s.cfg.DynamicPriorityEnabled && lane == "" {
 			if acc.QueueState != models.OutreachQueueReadyToGenerate &&
 				acc.QueueState != models.OutreachQueueNeedsContact &&
@@ -322,37 +368,22 @@ func (s *service) WorkingQueueOverview(ctx context.Context, orgID uuid.UUID) (*W
 		ReservoirMonitored: sum.Total,
 	}
 	now := time.Now().UTC()
-	if accounts, err := s.repo.ListAccounts(ctx, orgID, repository.OutreachAccountFilter{
-		Limit: 200, DynamicPriority: s.cfg.DynamicPriorityEnabled,
-	}); err == nil {
-		actionable, needsC, watch, suppressed, due := 0, 0, 0, 0, 0
-		for i := range accounts {
-			a := &accounts[i]
-			switch a.ActivationState {
-			case ActivationActionableNow:
-				if IsOutboundDue(a, now) {
-					actionable++
-					if a.QueueState == models.OutreachQueueNeedsContact {
-						needsC++
-					} else {
-						due++
-					}
-				}
-			case ActivationSuppressed:
-				suppressed++
-			default:
-				watch++
-			}
+	if act, err := s.repo.CountByActivationState(ctx, orgID, now); err == nil && act != nil {
+		out.ActionableNow = act.ActionableDueNow
+		if act.NeedsContactDue > 0 {
+			out.NeedsContact = act.NeedsContactDue
 		}
-		out.ActionableNow = actionable
-		if needsC > 0 {
-			out.NeedsContact = needsC
+		out.WatchAwaiting = act.Watch + act.ResearchRequired
+		out.Suppressed = act.Suppressed
+		out.DueNext24h = act.ActionableDueNow - act.NeedsContactDue
+		if out.DueNext24h < 0 {
+			out.DueNext24h = 0
 		}
-		out.WatchAwaiting = watch
-		out.Suppressed = suppressed
-		out.DueNext24h = due + sum.Approved
-	}
-	if out.WatchAwaiting == 0 && sum.Total > 0 && out.ActionableNow == 0 {
+		out.DueNext24h += sum.Approved
+		if act.Total > out.ReservoirMonitored {
+			out.ReservoirMonitored = act.Total
+		}
+	} else if out.WatchAwaiting == 0 && sum.Total > 0 {
 		out.WatchAwaiting = sum.Total - sum.NeedsContact - sum.ReadyToGenerate - sum.NeedsReview -
 			sum.Approved - sum.Enrolled - sum.Sent - sum.Replied - sum.Meeting - sum.Proposal -
 			sum.Won - sum.Blocked - sum.Bounced - sum.DoNotContact
@@ -374,6 +405,13 @@ func (s *service) WorkingQueueOverview(ctx context.Context, orgID uuid.UUID) (*W
 	}
 	if slots > 0 {
 		out.CapacityLoad = float64(out.DueNext24h) / float64(slots)
+	}
+	if st, err := s.repo.GetFeedSyncState(ctx, orgID); err == nil && st != nil {
+		out.LastFeedSyncAt = st.LastSuccessAt
+		if st.LastSuccessAt != nil {
+			age := int64(time.Since(*st.LastSuccessAt).Seconds())
+			out.FeedAgeSeconds = &age
+		}
 	}
 	return out, nil
 }

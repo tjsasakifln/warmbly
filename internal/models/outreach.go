@@ -407,6 +407,20 @@ type OutreachOutcome struct {
 	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
+// OutreachFeedSyncState is durable manifest sync progress per org.
+type OutreachFeedSyncState struct {
+	OrganizationID   uuid.UUID  `json:"organization_id"`
+	LastSnapshotHash string     `json:"last_snapshot_hash"`
+	LastRunID        string     `json:"last_run_id"`
+	LastManifestURI  string     `json:"last_manifest_uri"`
+	LastSuccessAt    *time.Time `json:"last_success_at,omitempty"`
+	LastAttemptAt    *time.Time `json:"last_attempt_at,omitempty"`
+	LastError        string     `json:"last_error,omitempty"`
+	LastStatus       string     `json:"last_status"`
+	CountsJSON       []byte     `json:"counts,omitempty"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+}
+
 // Touchpoint states (per-message human approval authority).
 const (
 	TouchpointPlanned     = "PLANNED"
