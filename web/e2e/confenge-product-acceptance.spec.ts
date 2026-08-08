@@ -540,14 +540,30 @@ test.describe("CONFENGE product acceptance UI", () => {
     await healthcheckOrThrow();
 
     const tokens = await loginViaAPIAndMailpit();
-    await fetch(`${API}/v1/auth/me/onboarding`, {
+    // Complete onboarding via API (referral_source is required server-side).
+    // Without this, UserProvider permanently redirects to /onboarding and the
+    // CONFENGE UI never mounts in multi-step CI seed environments.
+    const onboardRes = await fetch(`${API}/v1/auth/me/onboarding`, {
       method: "PATCH",
       headers: {
         Authorization: `Bearer ${tokens.access_token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ first_name: "Dev", last_name: "User" }),
-    }).catch(() => undefined);
+      body: JSON.stringify({
+        first_name: "Dev",
+        last_name: "User",
+        referral_source: "other",
+        role: "founder",
+        team_size: "just_me",
+      }),
+    });
+    if (!onboardRes.ok && onboardRes.status !== 204) {
+      // Already completed is fine; surface other failures for CI debugging.
+      const t = await onboardRes.text();
+      if (!/already|completed/i.test(t)) {
+        throw new Error(`onboarding ${onboardRes.status}: ${t.slice(0, 300)}`);
+      }
+    }
 
     // Import real feed (idempotent)
     if (!fs.existsSync(FEED_PATH)) {
