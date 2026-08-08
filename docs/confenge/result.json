@@ -1,9 +1,9 @@
 {
   "verdict": "READY_FOR_CONTROLLED_REAL_OUTREACH",
   "emitted_by": "scripts/confenge_readiness_gate.py",
-  "at": "2026-08-08T02:50:31.589529+00:00",
-  "generated_at": "2026-08-08T02:50:31.589531+00:00",
-  "code_sha": "35d22aba4f06d1be2cca9def167a3e1e8bfb7cbd",
+  "at": "2026-08-08T02:51:21.864603+00:00",
+  "generated_at": "2026-08-08T02:51:21.864604+00:00",
+  "code_sha": "11907a8c63c447b73a2d90ce007aa42d1e1eb2ac",
   "gates": {
     "contact_integrity": "PASS",
     "dnc_sticky": "PASS",
