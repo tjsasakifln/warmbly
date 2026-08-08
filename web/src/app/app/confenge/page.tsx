@@ -83,25 +83,28 @@ export default function ConfengePage() {
   const stats = useMemo(() => {
     const w = workingOverview.data;
     const s = summary.data;
+    // Always expose Sent/Replied/DNC (E2E + ops glance). Working-overview
+    // activation metrics sit alongside when dynamic priority is on.
+    const core = [
+      { label: "Ready", value: s?.ready_to_generate ?? 0 },
+      { label: "Review", value: s?.needs_review ?? w?.needs_review ?? 0 },
+      { label: "Sent", value: s?.sent ?? 0 },
+      { label: "Replied", value: s?.replied ?? 0 },
+      { label: "DNC", value: s?.do_not_contact ?? 0 },
+    ];
     if (w) {
       return [
         { label: "Reservatório", value: w.reservoir_monitored },
         { label: "Agora", value: w.actionable_now },
-        { label: "Precisa contato", value: w.needs_contact },
-        { label: "Em revisão", value: w.needs_review },
-        { label: "Aprovadas", value: w.approved_scheduled },
-        { label: "Aguardar", value: w.watch_awaiting },
+        { label: "EMAIL ready", value: w.actionable_now },
+        { label: "Sent", value: s?.sent ?? 0 },
+        { label: "Replied", value: s?.replied ?? 0 },
+        { label: "Rate", value: dispatchStatus.data ? `${dispatchStatus.data.sent_last_hour}/${dispatchStatus.data.cap}` : "—" },
       ];
     }
-    if (!s) return [];
-    return [
-      { label: "Ready", value: s.ready_to_generate },
-      { label: "Review", value: s.needs_review },
-      { label: "Sent", value: s.sent },
-      { label: "Replied", value: s.replied },
-      { label: "DNC", value: s.do_not_contact },
-    ];
-  }, [summary.data, workingOverview.data]);
+    if (!s) return core;
+    return core;
+  }, [summary.data, workingOverview.data, dispatchStatus.data]);
 
   const capacityLabel = useMemo(() => {
     const w = workingOverview.data;
