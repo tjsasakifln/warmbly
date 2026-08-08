@@ -241,6 +241,7 @@ async function ensureReviewTouchpoint(token: string): Promise<{
   // APPROVED accounts with re-editable drafts also seed the path.
   for (const qs of [
     "READY_TO_GENERATE",
+    "NEEDS_CONTACT",
     "NEEDS_REVIEW",
     "APPROVED",
     "ENROLLED",
@@ -264,7 +265,13 @@ async function ensureReviewTouchpoint(token: string): Promise<{
     for (const a of all.data || []) {
       const qs = (a.queue_state || "").toUpperCase();
       if (
-        ["READY_TO_GENERATE", "NEEDS_REVIEW", "APPROVED", "ENROLLED"].includes(qs)
+        [
+          "READY_TO_GENERATE",
+          "NEEDS_CONTACT",
+          "NEEDS_REVIEW",
+          "APPROVED",
+          "ENROLLED",
+        ].includes(qs)
       ) {
         candidates.push(a);
       }
@@ -505,7 +512,18 @@ test.describe("CONFENGE product acceptance UI", () => {
       },
       body: fs.readFileSync(FEED_PATH),
     });
-    expect(importRes.ok).toBeTruthy();
+    const importText = await importRes.text();
+    expect(importRes.ok, `import failed: ${importRes.status} ${importText.slice(0, 400)}`).toBeTruthy();
+    // Sanity: at least one confenge account exists after real-feed import.
+    const postImport = await apiJSON<{ data?: Array<{ id: string; queue_state?: string }> }>(
+      tokens.access_token,
+      "GET",
+      "/v1/confenge/accounts?limit=50",
+    );
+    expect(
+      (postImport.data || []).length,
+      `import returned ok but no accounts; body=${importText.slice(0, 300)}`,
+    ).toBeGreaterThan(0);
 
     const seeded = await ensureReviewTouchpoint(tokens.access_token);
     expect(seeded.touchpointId).toBeTruthy();

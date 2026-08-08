@@ -151,6 +151,8 @@ var allowedVerification = map[string]bool{
 	models.OutreachVerifyInvalid:              true,
 	models.OutreachVerifyBounced:              true,
 	models.OutreachVerifyDoNotContact:         true,
+	models.OutreachVerifyHumanConfirmed:       true,
+	models.OutreachVerifyVerified:             true,
 }
 
 var allowedEpistemic = map[string]bool{

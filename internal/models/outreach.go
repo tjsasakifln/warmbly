@@ -28,6 +28,9 @@ const (
 	OutreachVerifyInvalid              = "INVALID"
 	OutreachVerifyBounced              = "BOUNCED"
 	OutreachVerifyDoNotContact         = "DO_NOT_CONTACT"
+	// Human/operator-confirmed (pilot list, sink, CRM) and verified-channel statuses.
+	OutreachVerifyHumanConfirmed = "HUMAN_CONFIRMED"
+	OutreachVerifyVerified       = "VERIFIED"
 )
 
 // Epistemic classifications for evidence.

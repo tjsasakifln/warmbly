@@ -121,6 +121,8 @@ func TestUnenrollableVerification(t *testing.T) {
 	}{
 		{models.OutreachVerifyOfficialSource, true},
 		{models.OutreachVerifyInstitutionalGeneric, true},
+		{models.OutreachVerifyHumanConfirmed, true},
+		{models.OutreachVerifyVerified, true},
 		{models.OutreachVerifyCandidateUnverified, false},
 		{models.OutreachVerifyNotFound, false},
 		{models.OutreachVerifyInvalid, false},
