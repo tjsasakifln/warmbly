@@ -234,8 +234,9 @@ jobs:
       CONFENGE_E2E_MAILPIT: http://127.0.0.1:18025
       CONFENGE_E2E_BASE_URL: http://127.0.0.1:5173
       CONFENGE_GATE_CODE_SHA: ${{ github.sha }}
-      CONFENGE_E2E_PROOF_DIR: data/confenge-evidence
-      CONFENGE_E2E_FEED: internal/app/confenge/testdata/demo_3_companies.json
+      CONFENGE_E2E_PROOF_DIR: ${{ github.workspace }}/data/confenge-evidence
+      # Absolute path: Playwright runs with cwd=web/, so repo-relative paths break.
+      CONFENGE_E2E_FEED: ${{ github.workspace }}/internal/app/confenge/testdata/demo_3_companies.json
     steps:
       - uses: actions/checkout@v4
 
