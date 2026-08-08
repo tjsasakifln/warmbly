@@ -184,12 +184,14 @@ func VerifyOutcomeHMAC(secret, header string, body []byte, now time.Time, maxSke
 }
 
 // BuildOutcomeEnvelope maps a stored row to the wire contract.
+// Promotes commercial snapshot keys from payload metadata into top-level fields
+// so Decision Memory consumers do not need to dig into metadata only.
 func BuildOutcomeEnvelope(ev *models.OutreachOutcome) OutcomeEnvelope {
 	meta := map[string]any{}
 	if len(ev.Payload) > 0 {
 		_ = json.Unmarshal(ev.Payload, &meta)
 	}
-	return OutcomeEnvelope{
+	env := OutcomeEnvelope{
 		SchemaVersion:  models.OutreachOutcomeSchemaV1,
 		EventID:        ev.EventID.String(),
 		IdempotencyKey: ev.IdempotencyKey,
@@ -201,6 +203,52 @@ func BuildOutcomeEnvelope(ev *models.OutreachOutcome) OutcomeEnvelope {
 		EventType:      ev.EventType,
 		Metadata:       meta,
 	}
+	// Promote activation / commercial snapshot from payload (set by enrichOutcomePayload).
+	env.ServiceCode = metaString(meta, "service_code")
+	env.MomentCode = metaString(meta, "moment_code")
+	env.ActivationPolicyVersion = metaString(meta, "activation_policy_version")
+	env.ActivationSourceHash = metaString(meta, "activation_source_hash")
+	env.GeneratedContextHash = metaString(meta, "generated_context_hash")
+	env.Channel = metaString(meta, "channel")
+	if v, ok := meta["activation_score"].(float64); ok {
+		env.ActivationScore = v
+	}
+	if v, ok := meta["touchpoint_ordinal"].(float64); ok {
+		env.TouchpointOrdinal = int(v)
+	} else if v, ok := meta["touchpoint_ordinal"].(int); ok {
+		env.TouchpointOrdinal = v
+	}
+	if raw, ok := meta["activation_reason_codes"]; ok {
+		switch codes := raw.(type) {
+		case []string:
+			env.ActivationReasonCodes = codes
+		case []any:
+			out := make([]string, 0, len(codes))
+			for _, c := range codes {
+				if s, ok := c.(string); ok && s != "" {
+					out = append(out, s)
+				}
+			}
+			env.ActivationReasonCodes = out
+		}
+	}
+	if camp, ok := meta["campaign_id"].(string); ok && camp != "" {
+		env.CampaignID = camp
+	}
+	if mid, ok := meta["message_id"].(string); ok && mid != "" {
+		env.MessageID = mid
+	}
+	return env
+}
+
+func metaString(meta map[string]any, key string) string {
+	if meta == nil {
+		return ""
+	}
+	if v, ok := meta[key].(string); ok {
+		return v
+	}
+	return ""
 }
 
 // OutcomeBackoff grows attempts: 30s, 1m, 2m, 5m, 15m, 1h (cap).

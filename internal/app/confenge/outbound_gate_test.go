@@ -249,3 +249,20 @@ func (e *errStore) CountActiveLeases(ctx context.Context, now time.Time) (int, e
 func (e *errStore) CountSendsSince(ctx context.Context, since time.Time) (int, error) {
 	return e.inner.CountSendsSince(ctx, since)
 }
+
+func TestContextStaleIsDeferredNotPermanentSuppress(t *testing.T) {
+	// GateDeferred must never permanent-suppress (campaign_task only suppresses HardBlock).
+	r := CampaignGateResult{Kind: GateDeferred, Reason: "context_stale"}
+	if r.PermanentSuppress() {
+		t.Fatal("context_stale deferred must not PermanentSuppress")
+	}
+	// GateHardBlock remains the only permanent suppress kind.
+	hard := CampaignGateResult{Kind: GateHardBlock, Reason: ReasonDNCOrBounce}
+	if !hard.PermanentSuppress() {
+		t.Fatal("HardBlock must PermanentSuppress")
+	}
+	// Sanity: stale reason is not DNC/bounce.
+	if r.Reason == ReasonDNCOrBounce || r.Reason == ReasonAccountDNC {
+		t.Fatal("stale reason must not masquerade as DNC")
+	}
+}

@@ -96,6 +96,8 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 	}
 	// Final material-context check at pre-SMTP gate: any approved/queued touchpoint
 	// for this account must still match message_context_hash (rank-only changes OK).
+	// Stale context is NOT permanent suppress (must not bounce/suppress recipient).
+	// Clear approval and defer so the operator regenerates + re-approves.
 	if acc != nil && strings.TrimSpace(acc.MessageContextHash) != "" {
 		for _, st := range []string{models.TouchpointApproved, models.TouchpointQueued} {
 			open, err := s.repo.ListTouchpoints(ctx, orgID, acc.ID, st, 10, 0)
@@ -103,11 +105,26 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 				continue
 			}
 			for i := range open {
-				if open[i].GeneratedContextHash == "" {
+				tp := &open[i]
+				if tp.GeneratedContextHash == "" {
 					continue
 				}
-				if err := AssertMessageContextFresh(acc, open[i].GeneratedContextHash); err != nil {
-					return CampaignGateResult{Kind: GateHardBlock, Reason: "context_stale", Err: err}
+				if err := AssertMessageContextFresh(acc, tp.GeneratedContextHash); err != nil {
+					// Invalidate approval so stale copy cannot be retried as "approved".
+					tp.State = models.TouchpointNeedsReview
+					tp.StopReason = "context_stale"
+					tp.ContextStale = true
+					tp.ApprovedBy, tp.ApprovedAt = nil, nil
+					tp.ApprovedContentHash = ""
+					_ = s.repo.UpdateTouchpoint(ctx, tp)
+					_ = s.repo.SetAccountHumanFlags(ctx, orgID, acc.ID, acc.Blocked, acc.DoNotContact, acc.BlockReason, models.OutreachQueueNeedsReview)
+					due := time.Now().UTC().Add(time.Minute)
+					return CampaignGateResult{
+						Kind:     GateDeferred,
+						NextSlot: due,
+						Reason:   "context_stale",
+						Err:      err,
+					}
 				}
 			}
 		}
