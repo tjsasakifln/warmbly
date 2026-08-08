@@ -263,13 +263,14 @@ func TestProductAcceptanceMultichannelSum(t *testing.T) {
 		t.Fatalf("bullet11 restart burst committed %d while cap already full", burst)
 	}
 
-	// 12. deliver approved content via SMTP to Mailpit and assert body appears
+	// 12. deliver approved content via SMTP to Mailpit and assert exact transport
+	// (recipient/subject/body == approved), not a loose marker contains-check alone.
 	toAddr := "tiago-self+" + marker + "@example.com"
 	if err := smtpSendApproved(mailpitSMTP, "confenge-acceptance@warmbly.local", toAddr, queued.Subject, queued.BodyText); err != nil {
 		t.Fatalf("bullet12 SMTP to Mailpit: %v", err)
 	}
-	if !mailpitHasBody(t, mailpitAPI, marker, queued.BodyText) {
-		t.Fatal("bullet12 approved body not found in Mailpit")
+	if !mailpitExactDelivery(t, mailpitAPI, marker, toAddr, queued.Subject, queued.BodyText) {
+		t.Fatal("bullet12 Mailpit exact delivery failed (recipient/subject/body must match approved content)")
 	}
 
 	// 13–14. WhatsApp: public phone blocked on generate; consented path sends via mock provider
@@ -611,10 +612,17 @@ func smtpSendApproved(smtpAddr, from, to, subject, body string) error {
 	return smtp.SendMail(smtpAddr, nil, from, []string{to}, []byte(msg))
 }
 
-func mailpitHasBody(t *testing.T, apiBase, marker, wantBody string) bool {
+// mailpitExactDelivery asserts approved recipient/subject/body equal the
+// message received in Mailpit (transport-normalized line endings only).
+func mailpitExactDelivery(t *testing.T, apiBase, marker, wantTo, wantSubject, wantBody string) bool {
 	t.Helper()
-	// Search by marker, then fetch full message.
-	deadline := time.Now().Add(8 * time.Second)
+	norm := func(s string) string {
+		s = strings.ReplaceAll(s, "\r\n", "\n")
+		s = strings.ReplaceAll(s, "\r", "\n")
+		return strings.TrimSpace(s)
+	}
+	wantBodyN, wantSubN := norm(wantBody), norm(wantSubject)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		u := apiBase + "/api/v1/search?query=" + url.QueryEscape(marker) + "&limit=20"
 		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, u, nil)
@@ -650,21 +658,39 @@ func mailpitHasBody(t *testing.T, apiBase, marker, wantBody string) bool {
 			}
 			body, _ := io.ReadAll(res2.Body)
 			_ = res2.Body.Close()
-			text := string(body)
-			if strings.Contains(text, marker) && (wantBody == "" || strings.Contains(text, wantBody) || strings.Contains(text, marker)) {
-				// Prefer full body match when present in Text field
-				var msg struct {
-					Text string `json:"Text"`
+			var msg struct {
+				Text    string `json:"Text"`
+				Subject string `json:"Subject"`
+				To      []struct {
+					Address string `json:"Address"`
+				} `json:"To"`
+			}
+			if err := json.Unmarshal(body, &msg); err != nil {
+				continue
+			}
+			if !strings.Contains(msg.Text, marker) && !strings.Contains(msg.Subject, marker) {
+				continue
+			}
+			// Exact body (normalized CRLF); subject exact when provided; recipient when provided.
+			if wantBodyN != "" && norm(msg.Text) != wantBodyN {
+				t.Logf("mailpit body mismatch: got %q want %q", norm(msg.Text), wantBodyN)
+				continue
+			}
+			if wantSubN != "" && norm(msg.Subject) != wantSubN {
+				t.Logf("mailpit subject mismatch: got %q want %q", msg.Subject, wantSubject)
+				continue
+			}
+			if wantTo != "" {
+				gotTo := ""
+				if len(msg.To) > 0 {
+					gotTo = strings.TrimSpace(msg.To[0].Address)
 				}
-				_ = json.Unmarshal(body, &msg)
-				if msg.Text != "" {
-					if strings.Contains(msg.Text, marker) {
-						return true
-					}
-				} else if strings.Contains(text, marker) {
-					return true
+				if !strings.EqualFold(gotTo, wantTo) {
+					t.Logf("mailpit recipient mismatch: got %q want %q", gotTo, wantTo)
+					continue
 				}
 			}
+			return true
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
