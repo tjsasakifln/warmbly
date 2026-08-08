@@ -187,9 +187,7 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
-      nats:
-        image: nats:2.10-alpine
-        ports: ["4222:4222"]
+      # NATS without JetStream panics ensureStream; start -js manually in a step.
       mailpit:
         image: axllent/mailpit:v1.22
         ports:
@@ -265,6 +263,21 @@ jobs:
           pnpm install --frozen-lockfile
           npx playwright install --with-deps chromium
 
+      - name: Start NATS JetStream
+        run: |
+          docker run -d --name confenge-nats -p 4222:4222 -p 8222:8222 \
+            nats:2.10-alpine -js -sd /data -m 8222
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8222/healthz >/dev/null 2>&1; then
+              echo "nats jetstream up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "nats failed" >&2
+          docker logs confenge-nats || true
+          exit 1
+
       - name: Migrate + seed
         run: |
           go run ./cmd/migrate
@@ -273,17 +286,14 @@ jobs:
       - name: Start backend
         run: |
           mkdir -p /tmp/warmbly-blobs data/confenge-evidence
-          # Build once so the listener is a stable binary (go run may exit on panic after print).
           go build -o /tmp/warmbly-backend ./cmd/backend
           nohup /tmp/warmbly-backend > /tmp/confenge-backend.log 2>&1 &
           echo $! > /tmp/confenge-backend.pid
           for i in $(seq 1 90); do
             code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18080/v1/confenge/status || true)
-            # 401 means API is up (auth required); 200 also ok
             if [ "$code" = "401" ] || [ "$code" = "200" ]; then
-              echo "backend up code=$code"
-              # ensure process still alive
               if kill -0 "$(cat /tmp/confenge-backend.pid)" 2>/dev/null; then
+                echo "backend up code=$code"
                 exit 0
               fi
             fi
