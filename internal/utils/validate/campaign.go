@@ -26,7 +26,9 @@ func CampaignDescription(description string) *errx.Error {
 }
 
 func CampaignDailyLimit(val int) *errx.Error {
-	if val < 3 || val > 100 {
+	// Upper bound raised for CONFENGE adaptive peak (20/h × 9h ≈ 180) plus margin.
+	// Rolling-hour governor remains the primary cap; daily is secondary.
+	if val < 3 || val > 200 {
 		return errx.ErrCampaignDailyLimit
 	}
 	return nil

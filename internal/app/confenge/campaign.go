@@ -65,7 +65,7 @@ func (s *service) BootstrapCampaign(ctx context.Context, orgID, userID uuid.UUID
 	unsub := true
 	textOnly := true
 	start := "09:00"
-	end := "17:00"
+	end := "18:00" // same window as dispatch governor (CONFENGE_SEND_WINDOW_*)
 	// Mon-Fri bitmask: leave Days nil so repository uses DefaultDays().
 	steps := defaultCadenceSteps()
 	desc := "CONFENGE consultive outreach. Human-approved enrollments only. Stop on reply/bounce."
