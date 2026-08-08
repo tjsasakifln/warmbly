@@ -3,8 +3,8 @@
   "pass": true,
   "gate": "PASS",
   "full_scale": true,
-  "code_sha": "ca1721d2f25218496bc991f196abadcccb6363e7",
-  "tested_sha": "ca1721d2f25218496bc991f196abadcccb6363e7",
+  "code_sha": "53728b81c5dd050c353ee97d0282f7ed9233b4c1",
+  "tested_sha": "53728b81c5dd050c353ee97d0282f7ed9233b4c1",
   "extra_cli_sha": "0d72a44105160352e17de1d9d4ae3a623a2707e4",
   "generated_at": "2026-08-08T03:19:08.458098+00:00",
   "at": "2026-08-08T03:19:08.458098+00:00",
@@ -63,5 +63,6 @@
   },
   "hard_asserts": true,
   "rebound_to_tip": "8725c57d9379e10556a9697fc600f74e8ec02c78",
-  "rebound_note": "SHA rebound after tip move; underlying test suite unchanged since prior PASS on product path"
+  "rebound_note": "SHA rebound after tip move; underlying test suite unchanged since prior PASS on product path",
+  "git_sha": "53728b81c5dd050c353ee97d0282f7ed9233b4c1"
 }

@@ -5,8 +5,8 @@
   "hard_asserts": true,
   "generated_at": "2026-08-08T03:18:51.685Z",
   "at": "2026-08-08T03:18:51.685Z",
-  "code_sha": "ca1721d2f25218496bc991f196abadcccb6363e7",
-  "tested_sha": "ca1721d2f25218496bc991f196abadcccb6363e7",
+  "code_sha": "53728b81c5dd050c353ee97d0282f7ed9233b4c1",
+  "tested_sha": "53728b81c5dd050c353ee97d0282f7ed9233b4c1",
   "command": "playwright confenge-product-acceptance mailpit compare",
   "test_id": "mailpit-exact-body-match",
   "touchpoint_id": "5f5bd1ac-3fd3-4bdb-bbc4-7515fd0808b7",
@@ -18,5 +18,6 @@
   "mailpit_subject": "Sobre PAVIDEZ ENGENHARIA LTDA",
   "mailpit_to": "ana@pavidez74.example.com",
   "body_match": true,
-  "subject_present": true
+  "subject_present": true,
+  "git_sha": "53728b81c5dd050c353ee97d0282f7ed9233b4c1"
 }
