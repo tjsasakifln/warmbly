@@ -1,47 +1,71 @@
-# CONFENGE FINAL PRODUCTION READINESS — warmbly FINAL-REPORT
+# CONFENGE FINAL PRODUCTION READINESS — FINAL-REPORT
 
-Generated: 2026-08-08T01:43:10.378180+00:00
-Branch: `feat/confenge-final-integration-01`
-HEAD: `9876ca84099826423ee9799eb067376a91985c75`
+Sole-writer artifacts live in `data/confenge-evidence/` (gitignored runtime).  
+This file is a commit-friendly copy of the mechanical gate output.
 
 ## Verdict
 
 `READY_FOR_CONTROLLED_REAL_OUTREACH`
 
-## Divergence from campaign brief
+| Field | Value |
+|-------|-------|
+| tested_sha | `35d22aba4f06d1be2cca9def167a3e1e8bfb7cbd` |
+| sticky_reimport | `PASS` |
+| sticky_pass | `True` |
+| process_restart | `True` |
+| channel_ready | `True` |
+| report_only | `False` |
+| ci (gate local) | `PENDING_EXTERNAL` — must validate Actions on pushed SHA |
 
-- Campaign cited warmbly PR **#13** as canonical. Real PR #13 is an older **merged** "dev stack" PR, not CONFENGE.
-- Canonical work: branch `feat/confenge-final-integration-01` (PR opened/updated to main after push).
-- extra-cli PR **#206** matches the brief.
+## Critical gates (from result.json)
 
-## Root causes fixed
+```json
+{
+  "contact_integrity": "PASS",
+  "dnc_sticky": "PASS",
+  "reimport_sticky": "PASS",
+  "restart_no_burst": "PASS",
+  "approval_content_hash": "PASS",
+  "reply_cancels_future": "PASS",
+  "full_national_extra_cli": "PASS",
+  "real_feed_generated": "PASS",
+  "real_feed_imported": "PASS",
+  "edit_invalidation": "PASS",
+  "governor_10h": "PASS",
+  "daily_limit_non_conflicting": "PASS",
+  "mailpit_exact_delivery": "PASS",
+  "whatsapp_policy_mock": "PASS",
+  "outcome_hmac_roundtrip": "PASS",
+  "playwright_live": "PASS"
+}
+```
 
-### Phase A — Playwright live
-CORS only allowed `http://localhost:5173` while Playwright uses `http://127.0.0.1:5173`, so SPA status never enabled and `/app/confenge` redirected. Fixed CORS; live Playwright **PASS** on real feed slice.
+## Blockers
 
-### Phase B — False-green CI
-Removed `continue-on-error` from CONFENGE product acceptance; CI Status fails on confenge failure/cancelled/timed_out; structural test `TestConfengeProductAcceptanceIsHardCIGate`.
+[]
 
-### Phases C–F
-Full national universe: 3,689,859 contracts → 48,748 eligibles, full_scale=true. Fingerprint id column fixed. Contact cache includes allow_network. BrasilAPI phones 95/200; verified emails 0 (honest). Real confenge.outreach.v1 feed + acceptance slice with provenance.
+## Channel readiness
 
-### Channels
-| Flag | Status |
-|------|--------|
-| PRODUCT_CORE_READY | PASS |
-| EMAIL_REAL_CHANNEL_READY | PASS controlled (pilot sinks + Mailpit; not verified prospect emails at scale) |
-| WHATSAPP_REAL_CHANNEL_READY | BLOCKED_EXTERNAL (mock/policy only; public phone ≠ opt-in) |
-| OVERALL_PILOT_MODE | EMAIL_ONLY controlled |
+```
+PRODUCT_CORE_READY=PASS
+EMAIL_REAL_CHANNEL_READY=PASS
+WHATSAPP_REAL_CHANNEL_READY=BLOCKED_EXTERNAL
+RECOMMENDED_PILOT_MODE=EMAIL_ONLY
+MAX_GLOBAL_SENDS_PER_HOUR=10
+HUMAN_APPROVAL_PER_TOUCHPOINT=REQUIRED
+```
 
-## Absolute
-No real lead sends. Transport sinks only.
+## Proof notes
 
-## Evidence
-See `docs/confenge/GO-NO-GO.md`, `docs/confenge/result.json`, `docs/confenge/playwright_live.json`, `docs/confenge/human-review-30.html`.
+- Sticky/restart: live Phase M via `scripts/confenge_readiness_gate.py` (strict exit 0).
+- Playwright: UI approve/edit/queue + SMTP exact Mailpit match of approved body/subject/recipient.
+- Sticky-only gates cannot be filled from re-stamped evidence files.
+- No real lead sends.
 
+## Operator next steps (if READY)
 
-## Final CI
-
-- HEAD `888a1443750eb1698035ea0f8df3a57a91ba6af9`
-- CI success: https://github.com/tjsasakifln/warmbly/actions/runs/31235077013
-- CONFENGE product acceptance: success
+1. Review `docs/confenge/human-review-30.html`
+2. Review extra-cli PR #206 and Warmbly PR #13
+3. Merge extra-cli then Warmbly
+4. Configure real email credentials; smoke to operator address only
+5. Pilot 20–50 companies with per-touch human approval

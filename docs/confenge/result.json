@@ -1,9 +1,9 @@
 {
   "verdict": "READY_FOR_CONTROLLED_REAL_OUTREACH",
   "emitted_by": "scripts/confenge_readiness_gate.py",
-  "at": "2026-08-08T01:43:10.378180+00:00",
-  "generated_at": "2026-08-08T01:43:10.378182+00:00",
-  "code_sha": "9876ca84099826423ee9799eb067376a91985c75",
+  "at": "2026-08-08T02:50:31.589529+00:00",
+  "generated_at": "2026-08-08T02:50:31.589531+00:00",
+  "code_sha": "35d22aba4f06d1be2cca9def167a3e1e8bfb7cbd",
   "gates": {
     "contact_integrity": "PASS",
     "dnc_sticky": "PASS",
@@ -113,22 +113,22 @@
     "note": "domain!=example.com is NOT verified. Pattern-guessed emails stay non-enrollable. contact_discovered \u2260 email_enrollable \u2260 whatsapp_eligible."
   },
   "sticky_reimport": {
-    "status": "NOT_RUN",
+    "status": "PASS",
     "critical_results": {
-      "no_burst_creates": false,
-      "dnc_sticky": false,
-      "sent_sticky": false,
-      "approval_sticky": false,
-      "replied_sticky": false,
-      "bounced_sticky": false,
-      "process_restart": false
+      "no_burst_creates": true,
+      "dnc_sticky": true,
+      "sent_sticky": true,
+      "approval_sticky": true,
+      "replied_sticky": true,
+      "bounced_sticky": true,
+      "process_restart": true
     },
-    "process_restart": false
+    "process_restart": true
   },
   "channel_ready": true,
   "playwright_live": "PASS",
   "governor_10h": "PASS",
   "ci": "PENDING_EXTERNAL",
   "blockers": [],
-  "report_only": true
+  "report_only": false
 }

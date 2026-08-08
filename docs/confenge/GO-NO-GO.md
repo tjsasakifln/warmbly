@@ -6,63 +6,44 @@
 READY_FOR_CONTROLLED_REAL_OUTREACH
 ```
 
-Emitted for mechanical readiness on HEAD `888a1443750eb1698035ea0f8df3a57a91ba6af9` at 2026-08-08T02:33:08.298798+00:00.
+Emitted by `scripts/confenge_readiness_gate.py` at 2026-08-08T02:50:31.589539+00:00. Do not hand-edit.
+tested_sha: `35d22aba4f06d1be2cca9def167a3e1e8bfb7cbd`
 
-| Field | Value |
-|-------|-------|
-| warmbly HEAD | `888a1443750eb1698035ea0f8df3a57a91ba6af9` |
-| extra-cli HEAD | `3b7477a9c87b9f296f631728c1ca971113ebbaae` |
-| warmbly PR | https://github.com/tjsasakifln/warmbly/pull/13 |
-| extra-cli PR | https://github.com/tjsasakifln/extra-cli/pull/206 |
-| CI run (warmbly) | https://github.com/tjsasakifln/warmbly/actions/runs/31235077013 |
-| CONFENGE product acceptance | **success** (hard gate; no continue-on-error) |
-| CI Status | **success** |
+## Critical gates (measurement → evidence → verdict)
 
-## Critical gates
+Status vocabulary: `PASS` | `FAIL` | `NOT_RUN` | `BLOCKED_EXTERNAL` | `STALE`.
+Historical success is **not** PASS. Missing current evidence is `NOT_RUN`.
 
 | Gate | Status | Notes |
 |------|--------|-------|
-| full_national_extra_cli | **PASS** | 3,689,859 contracts → 48,748 eligibles; full_scale=true |
-| real_feed_generated | **PASS** | confenge.outreach.v1 from pipeline |
-| real_feed_imported | **PASS** | acceptance_real_slice with provenance |
-| contact_integrity | **PASS** | official phones + HUMAN_CONFIRMED pilot sinks |
-| approval_content_hash | **PASS** | Playwright live |
-| edit_invalidation | **PASS** | Playwright live |
-| governor_10h | **PASS** | Go dispatch tests + defaults |
-| daily_limit_non_conflicting | **PASS** | daily 100 preserves 10/h band |
-| mailpit_exact_delivery | **PASS** | local sink path |
-| whatsapp_policy_mock | **PASS** | public phone ≠ opt-in |
-| reply_cancels_future | **PASS** | |
-| dnc_sticky | **PASS** | |
-| restart_no_burst | **PASS** | |
-| reimport_sticky | **PASS** | |
-| outcome_hmac_roundtrip | **PASS** | |
-| playwright_live | **PASS** | CI job conclusion success |
-| ci_exact_head | **PASS** | run 31235077013 on `888a1443750eb1698035ea0f8df3a57a91ba6af9` |
+| full_national_extra_cli | **PASS** |  |
+| real_feed_generated | **PASS** |  |
+| real_feed_imported | **PASS** |  |
+| contact_integrity | **PASS** | human-verified pilot recipient list present |
+| approval_content_hash | **PASS** |  |
+| edit_invalidation | **PASS** |  |
+| governor_10h | **PASS** |  |
+| daily_limit_non_conflicting | **PASS** |  |
+| mailpit_exact_delivery | **PASS** |  |
+| whatsapp_policy_mock | **PASS** |  |
+| reply_cancels_future | **PASS** |  |
+| dnc_sticky | **PASS** |  |
+| restart_no_burst | **PASS** |  |
+| reimport_sticky | **PASS** |  |
+| outcome_hmac_roundtrip | **PASS** |  |
+| playwright_live | **PASS** |  |
 
-## Channel readiness
+| enrollable send channel (derived) | PASS | verified/human/official email or pilot list; domain!=example.com alone is not enough |
 
-| Flag | Status |
-|------|--------|
-| PRODUCT_CORE_READY | **PASS** |
-| EMAIL_REAL_CHANNEL_READY | **PASS** (controlled pilot sinks + Mailpit; not mass-verified prospect emails) |
-| WHATSAPP_REAL_CHANNEL_READY | **BLOCKED_EXTERNAL** (no real WABA; policy mock only) |
-| OVERALL_PILOT_MODE | **EMAIL_ONLY** controlled |
+## CI (external only)
 
-## Absolute rules
+CI = `PENDING_EXTERNAL` — this script never declares CI GREEN for exact HEAD.
+Validate GitHub Actions on the tested SHA after the workflow finishes.
 
-- No real lead sends in this campaign
-- Pattern-guess emails never enrollable
-- Public phone ≠ WhatsApp opt-in
-- Human review of `docs/confenge/human-review-30.html` still required before first pilot send
+## Blockers
 
-## Root causes fixed this campaign
+None (all critical gates PASS).
 
-1. CORS localhost vs 127.0.0.1 blocked SPA confenge status
-2. `continue-on-error` false-green on Playwright job (removed; CI Status hard-fails)
-3. Onboarding API missing required `referral_source` left UI on /onboarding
-4. Multi-org OrgGate needed warmbly-storage currentOrganization inject
-5. HUMAN_CONFIRMED rejected by app allowlist and DB CHECK (migration 000088)
-6. Draft recipient not synced on edit → approved hash transport mismatch
-7. Contact enroll rebind/mint for approved recipient
-8. extra-cli: fingerprint id column + contact cache network isolation; BrasilAPI phones on sample
+Human review of human-review-30.md remains required before first pilot send.
+
+READY is impossible while any critical gate is FAIL, NOT_RUN, STALE, or BLOCKED_EXTERNAL.
