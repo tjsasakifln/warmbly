@@ -322,6 +322,8 @@ export function useRealtimeEvents() {
           // or a teammate applying/snoozing/dismissing one. Refreshes every
           // strip and every nav badge at once.
           advisor_finding: [['advisor']],
+          outreach_import_run: [['confenge']],
+          outreach_account: [['confenge']],
           settings: [['organizations', 'current']],
           unibox: [['unibox']],
           crm_note: [['crm'], ['contacts']],

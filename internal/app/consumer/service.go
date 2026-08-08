@@ -5,6 +5,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 	"github.com/warmbly/warmbly/internal/app/advanced"
+	"github.com/warmbly/warmbly/internal/app/confenge"
 	warmupapp "github.com/warmbly/warmbly/internal/app/warmup"
 	workerapp "github.com/warmbly/warmbly/internal/app/worker"
 	"github.com/warmbly/warmbly/internal/events"
@@ -41,6 +42,9 @@ type JobsService struct {
 	// Pub/Sub for real-time notifications to users
 	StreamingPublisher *pubsub.StreamingPublisher
 	AdvancedService    advanced.Service
+
+	// ConfengeOutcomes attributes reply/bounce/DNC back to staged leads (optional).
+	ConfengeOutcomes confenge.OutcomeSink
 
 	// Cache for dead worker detection
 	Cache *cache.Cache

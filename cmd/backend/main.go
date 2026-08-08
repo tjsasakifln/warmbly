@@ -37,6 +37,7 @@ import (
 	"github.com/warmbly/warmbly/internal/app/campaign"
 	"github.com/warmbly/warmbly/internal/app/cipher"
 	"github.com/warmbly/warmbly/internal/app/compose"
+	"github.com/warmbly/warmbly/internal/app/confenge"
 	"github.com/warmbly/warmbly/internal/app/contact"
 	"github.com/warmbly/warmbly/internal/app/credits"
 	"github.com/warmbly/warmbly/internal/app/creditwatch"
@@ -85,6 +86,8 @@ import (
 	warmupapp "github.com/warmbly/warmbly/internal/app/warmup"
 	"github.com/warmbly/warmbly/internal/app/warmupcontent"
 	"github.com/warmbly/warmbly/internal/app/webhook"
+	"github.com/warmbly/warmbly/internal/app/whatsapp"
+	"github.com/warmbly/warmbly/internal/app/whatsapp/evolution"
 	"github.com/warmbly/warmbly/internal/app/worker"
 	"github.com/warmbly/warmbly/internal/app/worker_orchestrator"
 	"github.com/warmbly/warmbly/internal/config"
@@ -177,6 +180,8 @@ func main() {
 	var tagService group.GroupService
 	var categoryService group.GroupService
 	var crmService crm.CRMService
+	var whatsAppService *whatsapp.Service
+	var whatsAppRepo repository.WhatsAppRepository
 	var teamService team.TeamService
 	var apiKeyService apikey.APIKeyService
 	var idempotencyService idempotencyapp.Service
@@ -239,6 +244,7 @@ func main() {
 	var contactRepoForHandler repository.ContactRepository
 	var attachmentRepoForHandler repository.AttachmentRepository
 	var leadSyncServiceForHandler leadsync.Service
+	var confengeServiceForHandler confenge.Service
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -974,8 +980,70 @@ func main() {
 		leadSyncRepository := repository.NewLeadSyncRepository(primaryDB.Pool)
 		leadSyncServiceForHandler = leadsync.NewService(leadSyncRepository, integrationServiceForHandler, contactService)
 
+		// CONFENGE outreach staging: extra-cli feed import. Off by default
+		// (CONFENGE_OUTREACH_ENABLED=false). Fail closed on insecure prod config.
+		confengeCfg := confenge.LoadConfig()
+		if err := confengeCfg.ValidateStartup(os.Getenv("APP_ENV")); err != nil {
+			sentry.CaptureException(err)
+			log.Fatalf("confenge config: %v", err)
+		}
+		outreachRepo := repository.NewOutreachRepository(primaryDB.Pool)
+		confengeServiceForHandler = confenge.NewServiceWithAI(confengeCfg, outreachRepo, auditService, aiProvider)
+		if confengeServiceForHandler != nil {
+			// Global dispatch governor: ~10 outbound/hour shared email+WhatsApp.
+			confengeServiceForHandler.WireDispatch(primaryDB.Pool)
+		}
+		if confengeServiceForHandler != nil && aiProvider != nil {
+			confengeServiceForHandler.SetAI(aiProvider)
+		}
+		// Async outcome outbox → extra-cli HMAC webhook (idle when URL/secret unset).
+		go confenge.NewOutcomeDeliveryWorker(outreachRepo, confengeCfg, confenge.OutcomeDeliveryOptions{}).Run(ctx)
+		// Continuous feed sync (fail-closed OFF by default). Single-flight inside SyncFeedManifest.
+		if confengeCfg.FeedSyncEnabled {
+			if orgRaw := strings.TrimSpace(os.Getenv("CONFENGE_FEED_SYNC_ORG_ID")); orgRaw != "" {
+				if orgID, err := uuid.Parse(orgRaw); err == nil {
+					go confenge.NewFeedSyncWorker(confengeServiceForHandler, orgID, confengeCfg.FeedSyncInterval).Run(ctx)
+					log.Printf("confenge feed sync worker started for org %s interval=%s", orgID, confengeCfg.FeedSyncInterval)
+				} else {
+					log.Printf("confenge feed sync: invalid CONFENGE_FEED_SYNC_ORG_ID %q", orgRaw)
+				}
+			} else {
+				log.Printf("confenge feed sync enabled but CONFENGE_FEED_SYNC_ORG_ID unset; worker not started")
+			}
+		}
+
 		apiKeyService = apikey.NewService(cache, apiKeyRepository)
 		crmService = crm.NewService(crmRepository)
+
+		// WhatsApp channel (Evolution gateway). Disabled by default; Cloud API first.
+		waCfg := whatsapp.LoadConfig()
+		if err := waCfg.ValidateStartup(); err != nil {
+			log.Fatalf("whatsapp config: %v", err)
+		}
+		whatsapp.LogBaileysWarning(waCfg)
+		whatsAppRepo = repository.NewWhatsAppRepository(primaryDB.Pool)
+		var waProvider whatsapp.Provider
+		if waCfg.Enabled && (waCfg.Provider == whatsapp.ProviderEvolution || waCfg.Provider == "") {
+			evoClient := evolution.NewClient(evolution.ClientConfig{
+				BaseURL:    waCfg.EvolutionBaseURL,
+				APIKey:     waCfg.EvolutionAPIKey,
+				Timeout:    20 * time.Second,
+				MaxRetries: 2,
+			})
+			waProvider = evolution.NewProvider(evoClient, waCfg.EvolutionInstance)
+		}
+		if waCfg.Enabled && waCfg.Provider == whatsapp.ProviderMock {
+			waProvider = whatsapp.NewMockProvider()
+		}
+		// Template approval checked via Static catalog + DB lookups at send sites.
+		// Full repo-backed catalog is used by confenge orchestration (W2).
+		whatsAppService = whatsapp.NewService(waCfg, waProvider, whatsapp.NewStaticTemplateCatalog())
+		if confengeServiceForHandler != nil && whatsAppService != nil {
+			confengeServiceForHandler.WireWhatsApp(whatsAppService, whatsAppRepo)
+		}
+		if waCfg.Enabled {
+			log.Printf("whatsapp channel enabled provider=%s baileys_allowed=%v auto_send=%v", waCfg.Provider, waCfg.AllowBaileys, waCfg.AutoSendEnabled)
+		}
 		teamRepository := repository.NewTeamRepository(primaryDB.Pool)
 		teamService = team.NewService(teamRepository)
 		socketService = socket.NewService(cache, tokenService)
@@ -1006,6 +1074,13 @@ func main() {
 		templateService = template.NewService(templateRepository)
 		schedulerService := scheduler.NewSchedulerService(taskRepository, warmupRepository, campaignProgressRepository, emailRepostory, campaignRepostory, contactRepostory, campaignLogRepository)
 		campaignService = campaign.NewService(campaignRepostory, taskRepository, emailRepostory, campaignLogRepository, featureGateService, dailyThrottleService, schedulerService, tasksClient, streamingPublisher)
+		// CONFENGE enroll uses campaign + contact services (execution plane).
+		if confengeServiceForHandler != nil {
+			confengeServiceForHandler.WireExecution(campaignService, contactService)
+			if crmService != nil {
+				confengeServiceForHandler.WireCRM(crmService)
+			}
+		}
 		emailSendService = emailsend.NewService(taskRepository, emailRepostory, userRepostory, schedulerService, tasksClient, featureGateService, dailyThrottleService)
 		composeService = compose.NewService(emailRepostory, repository.NewComposeRepository(primaryDB))
 		// uniboxService is constructed here (rather than alongside the
@@ -1150,6 +1225,10 @@ func main() {
 		// agent wired onto the advanced service so any reply processed here also
 		// drafts. Paid + opt-in checked inside; nil provider leaves it inert.
 		aiDraftRepo = repository.NewAIDraftRepository(primaryDB.Pool)
+		// CONFENGE reply attribution (outbox + CRM) when outreach feature is on.
+		if confengeServiceForHandler != nil && confengeServiceForHandler.Enabled() {
+			advancedService.WireConfengeReply(confengeServiceForHandler)
+		}
 		advancedService.WireInboxAgent(inboxagent.NewService(
 			aiProvider, creditService, featureGateService,
 			organizationRepository, uniboxRepository, skillsService,
@@ -1180,6 +1259,12 @@ func main() {
 			trackedLinkRepository,
 			integrationServiceForHandler, // AutomationRunner for campaign run_automation steps
 		)
+		if tasksService != nil && confengeServiceForHandler != nil {
+			// CONFENGE global governor on final campaign email send path.
+			if gate, ok := confengeServiceForHandler.(tasks.ConfengeOutboundGate); ok {
+				tasksService.WireConfengeDispatch(gate)
+			}
+		}
 		// Campaign "ai" sequence steps run over the same provider + credit
 		// ledger as the automation AI nodes. Nil provider leaves them
 		// returning a clean "not available".
@@ -1404,6 +1489,10 @@ func main() {
 		// CRM
 		CRMService: crmService,
 
+		// WhatsApp channel
+		WhatsAppService: whatsAppService,
+		WhatsAppRepo:    whatsAppRepo,
+
 		// Teams
 		TeamService: teamService,
 
@@ -1469,6 +1558,9 @@ func main() {
 
 		// On-demand Google Sheets -> leads sync
 		LeadSyncService: leadSyncServiceForHandler,
+
+		// CONFENGE outreach staging (feature-flagged)
+		ConfengeService: confengeServiceForHandler,
 
 		WebsocketURI: websocketURI,
 

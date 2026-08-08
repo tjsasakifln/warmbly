@@ -355,9 +355,10 @@ WEB_HOST := $(if $(PUBLIC_HOST),$(PUBLIC_HOST),localhost)
 # `--host 0.0.0.0` only when exposing; empty (default localhost bind) otherwise.
 VITE_HOST_FLAG := $(if $(PUBLIC_HOST),--host 0.0.0.0,)
 
-# Backend CORS allowlist: web + admin origins at PUBLIC_HOST plus localhost.
+# Backend CORS allowlist: web + admin origins at PUBLIC_HOST plus localhost/127.0.0.1.
+# Playwright CONFENGE E2E uses http://127.0.0.1:5173; localhost-only CORS hides /app/confenge.
 # Empty when not exposing, so the backend keeps its APP_URL-derived default.
-CORS_ORIGINS := $(if $(PUBLIC_HOST),http://$(PUBLIC_HOST):5173$(comma)http://$(PUBLIC_HOST):5174$(comma)http://localhost:5173$(comma)http://localhost:5174,)
+CORS_ORIGINS := $(if $(PUBLIC_HOST),http://$(PUBLIC_HOST):5173$(comma)http://$(PUBLIC_HOST):5174$(comma)http://localhost:5173$(comma)http://localhost:5174$(comma)http://127.0.0.1:5173$(comma)http://127.0.0.1:5174,http://localhost:5173$(comma)http://127.0.0.1:5173)
 
 # Shared by the control-plane services (backend, consumer). Flattened to
 # one line by make so it can prefix a command as inline env.
@@ -618,6 +619,163 @@ site:
 # Next.js reads PORT from the env (passing -p through pnpm gets mangled).
 docs:
 	cd docs && PORT=4322 pnpm dev
+
+
+# ─── CONFENGE local-first one-command ops (WSL) ─────────────────────────
+#
+# Operator path without Kafka/AWS/GCP/Stripe:
+#   cp .env.confenge.example .env.confenge
+#   make confenge-local
+#   make confenge-preflight
+#   make confenge-import FEED=internal/app/confenge/testdata/demo_3_companies.json
+#   login dev@warmbly.com / password123 → /app/confenge
+#
+# Infra: postgres redis nats mailpit. App: backend consumer worker web.
+# Kill switch: make confenge-stop-sending / confenge-resume-sending
+# Backup: make confenge-db-backup / confenge-db-restore FILE=...
+
+CONFENGE_ENV_FILE ?= .env.confenge
+CONFENGE_FEED ?= internal/app/confenge/testdata/demo_3_companies.json
+CONFENGE_BACKUP_DIR ?= data/backups
+
+# CONFENGE_DEV_ENV extends GO_DEV_ENV with outreach flags (fail-closed auto-send).
+# Operator .env.confenge / shell exports win: every value uses $${VAR:-default}
+# so Makefile never silently overrides CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=100
+# (or any other operator-set limit) after confenge_source_env.
+# Primary pace: CONFENGE_GLOBAL_SENDS_PER_HOUR=10 (rolling hour, email+WA).
+# Campaign daily is a secondary ceiling (default 100 ≈ full 09–18 day at 10/h).
+CONFENGE_API_HOST ?= 127.0.0.1:8080
+CONFENGE_DEV_ENV = \
+	CONFENGE_OUTREACH_ENABLED=$${CONFENGE_OUTREACH_ENABLED:-true} \
+	CONFENGE_REQUIRE_HUMAN_APPROVAL=$${CONFENGE_REQUIRE_HUMAN_APPROVAL:-true} \
+	CONFENGE_AUTO_SEND_ENABLED=$${CONFENGE_AUTO_SEND_ENABLED:-false} \
+	CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=$${CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT:-200} \
+	CONFENGE_GLOBAL_SENDS_PER_HOUR=$${CONFENGE_GLOBAL_SENDS_PER_HOUR:-10} \
+	CONFENGE_MIN_SEND_GAP_SECONDS=$${CONFENGE_MIN_SEND_GAP_SECONDS:-360} \
+	CONFENGE_EXTRA_CLI_FEED_URL=$${CONFENGE_EXTRA_CLI_FEED_URL:-file://$(CURDIR)/$(CONFENGE_FEED)} \
+	CONFENGE_WHATSAPP_ENABLED=$${CONFENGE_WHATSAPP_ENABLED:-false} \
+	WHATSAPP_PROVIDER=$${WHATSAPP_PROVIDER:-mock} \
+	WHATSAPP_EVOLUTION_ALLOW_BAILEYS=false
+
+# Load optional operator env file into the shell for confenge targets.
+define confenge_source_env
+	@if [ -f "$(CONFENGE_ENV_FILE)" ]; then set -a; . ./$(CONFENGE_ENV_FILE); set +a; fi
+endef
+
+confenge-local:
+	@command -v docker >/dev/null || { echo "docker is required"; exit 1; }
+	@command -v go >/dev/null || { echo "go 1.25+ is required"; exit 1; }
+	@command -v pnpm >/dev/null || { echo "pnpm is required"; exit 1; }
+	@if [ ! -f "$(CONFENGE_ENV_FILE)" ]; then \
+		echo "No $(CONFENGE_ENV_FILE); copying from .env.confenge.example"; \
+		cp .env.confenge.example $(CONFENGE_ENV_FILE); \
+	fi
+	$(COMPOSE) up -d $(INFRA_SVCS)
+	@echo "Waiting for postgres..."
+	@until $(COMPOSE) exec -T postgres pg_isready -U warmbly >/dev/null 2>&1; do sleep 1; done
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	$(GO_DEV_ENV) $(CONFENGE_DEV_ENV) go run ./cmd/migrate
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	if [ "$(SEED)" = "true" ]; then $(GO_DEV_ENV) SEED_RICH=true SEED_FULL=true go run ./cmd/seed; fi
+	@if [ ! -d web/node_modules ]; then echo "Installing web deps..."; cd web && pnpm install; fi
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	$(GO_DEV_ENV) $(CONFENGE_DEV_ENV) go run ./cmd/confenge bootstrap || true
+	@echo ""
+	@echo "CONFENGE local stack starting (no Kafka/AWS/Stripe)."
+	@echo "Dashboard: http://localhost:5173  Login: dev@warmbly.com / password123"
+	@echo "Mailpit:   http://localhost:18025  API: http://$(CONFENGE_API_HOST)"
+	@echo "Ctrl-C stops app processes; infra stays up (make infra-down to stop)."
+	@echo ""
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	trap 'kill 0' INT TERM; \
+	$(MAKE) --no-print-directory confenge-backend & \
+	$(MAKE) --no-print-directory consumer & \
+	$(MAKE) --no-print-directory worker & \
+	$(MAKE) --no-print-directory web & \
+	wait
+
+# Backend with CONFENGE flags and local-safe bind.
+confenge-backend:
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	$(GO_DEV_ENV) \
+	$(CONFENGE_DEV_ENV) \
+	$(AI_DEV_ENV) \
+	API_HOST=$(CONFENGE_API_HOST) \
+	GIN_MODE=debug \
+	APP_URL=http://$(WEB_HOST):5173 \
+	CORS_ALLOW_ORIGINS=$(CORS_ORIGINS) \
+	WEBSOCKET_URL=ws://$(WEB_HOST):4000/socket/websocket \
+	AUTH_SECRET=local-dev-auth-secret-minimum-32-characters-long \
+	EMAIL_NAME='Warmbly Dev' \
+	EMAIL_ADDRESS=dev@warmbly.local \
+	TRACKING_DOMAIN=t.warmbly.com \
+	SMTP_HOST=$(INFRA_HOST) \
+	SMTP_PORT=11025 \
+	GEODB_PATH=data/GeoLite2-City.mmdb \
+	INTERNAL_API_TOKEN=local-dev-internal-token \
+	go run ./cmd/backend
+
+confenge-preflight:
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	$(GO_DEV_ENV) $(CONFENGE_DEV_ENV) go run ./cmd/confenge preflight
+
+confenge-bootstrap:
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	$(GO_DEV_ENV) $(CONFENGE_DEV_ENV) go run ./cmd/confenge bootstrap
+
+# FEED=path DRY_RUN=true|false (default false). Dry-run: make confenge-import DRY_RUN=true
+DRY_RUN ?= false
+confenge-import:
+	@if [ -z "$(FEED)" ] && [ -z "$(CONFENGE_FEED)" ]; then echo "Usage: make confenge-import FEED=/path/to/feed.json [DRY_RUN=true]"; exit 2; fi
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	feed="$(FEED)"; [ -n "$$feed" ] || feed="$(CONFENGE_FEED)"; \
+	dry_flag=""; [ "$(DRY_RUN)" = "true" ] && dry_flag="--dry-run"; \
+	$(GO_DEV_ENV) $(CONFENGE_DEV_ENV) go run ./cmd/confenge import --feed "$$feed" $$dry_flag
+
+confenge-stop-sending:
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	$(GO_DEV_ENV) go run ./cmd/confenge stop-sending
+
+confenge-resume-sending:
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	$(GO_DEV_ENV) go run ./cmd/confenge resume-sending
+
+confenge-db-backup:
+	@mkdir -p $(CONFENGE_BACKUP_DIR)
+	@ts=$$(date -u +%Y%m%dT%H%M%SZ); \
+	out="$(CONFENGE_BACKUP_DIR)/warmbly_dev_$$ts.sql"; \
+	$(COMPOSE) exec -T postgres pg_dump -U warmbly warmbly_dev > "$$out"; \
+	echo "Backup written to $$out"
+
+# FILE=data/backups/....sql
+confenge-db-restore:
+	@if [ -z "$(FILE)" ]; then echo "Usage: make confenge-db-restore FILE=data/backups/....sql"; exit 2; fi
+	@echo "Restoring $(FILE) into warmbly_dev (destructive to current data)..."
+	@$(COMPOSE) exec -T postgres psql -U warmbly -d warmbly_dev -c "SELECT 1" >/dev/null
+	@cat "$(FILE)" | $(COMPOSE) exec -T postgres psql -U warmbly -d warmbly_dev
+	@echo "Restore complete."
+
+# Strict readiness gate (exit non-zero when NOT_READY). Official path: no --report-only.
+confenge-readiness:
+	@mkdir -p data/confenge-evidence data/confenge-artifacts
+	python3 scripts/confenge_readiness_gate.py
+
+# Report writer only (exit 0 even when NOT_READY). Do not use for official GO.
+confenge-readiness-report:
+	@mkdir -p data/confenge-evidence data/confenge-artifacts
+	python3 scripts/confenge_readiness_gate.py --report-only
+
+# Live Playwright browser (requires confenge-local stack already up).
+confenge-playwright:
+	@cd web && CONFENGE_E2E=1 \
+		CONFENGE_E2E_API=$${CONFENGE_E2E_API:-http://127.0.0.1:18080} \
+		CONFENGE_E2E_MAILPIT=$${CONFENGE_E2E_MAILPIT:-http://127.0.0.1:18025} \
+		CONFENGE_E2E_BASE_URL=$${CONFENGE_E2E_BASE_URL:-http://127.0.0.1:5173} \
+		CONFENGE_E2E_PROOF_DIR=$${CONFENGE_E2E_PROOF_DIR:-$(CURDIR)/data/confenge-evidence} \
+		CONFENGE_GATE_CODE_SHA=$$(git rev-parse HEAD) \
+		pnpm test:e2e:confenge:live
+
+.PHONY: confenge-local confenge-backend confenge-preflight confenge-bootstrap confenge-import confenge-stop-sending confenge-resume-sending confenge-db-backup confenge-db-restore confenge-readiness confenge-readiness-report confenge-playwright
 
 # ─── admin bootstrap (local/test only) ──────────────────────────────────
 #
