@@ -35,12 +35,30 @@ type Check struct {
 	Message  string        `json:"message"`
 }
 
+// PilotSnapshot is the operator-facing pilot readiness block (email-only pilot).
+// Explicit so ops can paste into a runbook without re-deriving flags.
+type PilotSnapshot struct {
+	MailboxConnected             string `json:"MAILBOX_CONNECTED"`
+	MailboxAuthValid             string `json:"MAILBOX_AUTH_VALID"`
+	SendPermissionOK             string `json:"SEND_PERMISSION_OK"`
+	FromAddress                  string `json:"FROM_ADDRESS"`
+	ReplyTo                      string `json:"REPLY_TO"`
+	ConfengeOutreachEnabled      string `json:"CONFENGE_OUTREACH_ENABLED"`
+	ConfengeRequireHumanApproval string `json:"CONFENGE_REQUIRE_HUMAN_APPROVAL"`
+	ConfengeAutoSendEnabled      string `json:"CONFENGE_AUTO_SEND_ENABLED"`
+	GlobalSendsPerHour           int    `json:"GLOBAL_SENDS_PER_HOUR"`
+	SendingPaused                string `json:"SENDING_PAUSED"`
+	WhatsAppCriticalPath         string `json:"WHATSAPP_CRITICAL_PATH"`
+	EmailChannel                 string `json:"EMAIL_CHANNEL"`
+}
+
 // PreflightReport is the full operator preflight result.
 type PreflightReport struct {
-	Checks   []Check `json:"checks"`
-	OK       bool    `json:"ok"`
-	Warnings int     `json:"warnings"`
-	Fails    int     `json:"fails"`
+	Checks   []Check       `json:"checks"`
+	OK       bool          `json:"ok"`
+	Warnings int           `json:"warnings"`
+	Fails    int           `json:"fails"`
+	Pilot    PilotSnapshot `json:"pilot"`
 }
 
 // PreflightDeps optional live probes. Nil fields skip live connectivity.
@@ -224,7 +242,12 @@ func RunPreflight(cfg Config, deps PreflightDeps) PreflightReport {
 		add("bind", CheckPass, "API_HOST="+apiHost)
 	}
 
-	rep := PreflightReport{Checks: checks, OK: true}
+	add("pilot_defaults", CheckPass, fmt.Sprintf(
+		"REQUIRE_HUMAN_APPROVAL=%v AUTO_SEND=%v GLOBAL_SENDS_PER_HOUR=%d EMAIL=enabled WHATSAPP=not_critical_path",
+		cfg.RequireHumanApproval, cfg.AutoSendEnabled, hourly,
+	))
+
+	rep := PreflightReport{Checks: checks, OK: true, Pilot: buildPilotSnapshot(cfg, deps, checks, hourly)}
 	for _, c := range checks {
 		switch c.Severity {
 		case CheckFail:
@@ -235,6 +258,55 @@ func RunPreflight(cfg Config, deps PreflightDeps) PreflightReport {
 		}
 	}
 	return rep
+}
+
+func buildPilotSnapshot(cfg Config, deps PreflightDeps, checks []Check, hourly int) PilotSnapshot {
+	mailbox, mailboxAuth, sendOK := "unknown", "unknown", "unknown"
+	for _, c := range checks {
+		if c.Name != "mailbox" {
+			continue
+		}
+		switch c.Severity {
+		case CheckPass:
+			mailbox, mailboxAuth, sendOK = "true", "true", "true"
+		case CheckWarn:
+			mailbox, mailboxAuth, sendOK = "false", "unverified", "unverified"
+		case CheckFail:
+			mailbox, mailboxAuth, sendOK = "false", "false", "false"
+		}
+	}
+	if deps.CountActiveMailboxes == nil {
+		mailbox, mailboxAuth, sendOK = "probe_skipped", "probe_skipped", "probe_skipped"
+	}
+	from := strings.TrimSpace(os.Getenv("CONFENGE_FROM_ADDRESS"))
+	if from == "" {
+		from = strings.TrimSpace(os.Getenv("SMTP_FROM"))
+	}
+	if from == "" {
+		from = "(operator mailbox / Mailpit in confenge-local)"
+	}
+	replyTo := strings.TrimSpace(os.Getenv("CONFENGE_REPLY_TO"))
+	if replyTo == "" {
+		replyTo = from
+	}
+	paused := "false"
+	if !cfg.SendingAllowed() {
+		paused = "true"
+	}
+	return PilotSnapshot{
+		MailboxConnected:             mailbox,
+		MailboxAuthValid:             mailboxAuth,
+		SendPermissionOK:             sendOK,
+		FromAddress:                  from,
+		ReplyTo:                      replyTo,
+		ConfengeOutreachEnabled:      fmt.Sprintf("%v", cfg.Enabled),
+		ConfengeRequireHumanApproval: fmt.Sprintf("%v", cfg.RequireHumanApproval),
+		ConfengeAutoSendEnabled:      fmt.Sprintf("%v", cfg.AutoSendEnabled),
+		GlobalSendsPerHour:           hourly,
+		SendingPaused:                paused,
+		WhatsAppCriticalPath:         "false",
+		EmailChannel:                 "enabled",
+	}
 }
 
 // FormatPreflight renders a human-readable report for CLI/Make.
@@ -254,6 +326,20 @@ func FormatPreflight(r PreflightReport) string {
 		}
 		fmt.Fprintf(&b, "  [%s] %-18s %s\n", mark, c.Name, c.Message)
 	}
+	b.WriteString(strings.Repeat("-", 48) + "\n")
+	b.WriteString("Pilot snapshot (email-only)\n")
+	fmt.Fprintf(&b, "  MAILBOX_CONNECTED=%s\n", r.Pilot.MailboxConnected)
+	fmt.Fprintf(&b, "  MAILBOX_AUTH_VALID=%s\n", r.Pilot.MailboxAuthValid)
+	fmt.Fprintf(&b, "  SEND_PERMISSION_OK=%s\n", r.Pilot.SendPermissionOK)
+	fmt.Fprintf(&b, "  FROM_ADDRESS=%s\n", r.Pilot.FromAddress)
+	fmt.Fprintf(&b, "  REPLY_TO=%s\n", r.Pilot.ReplyTo)
+	fmt.Fprintf(&b, "  CONFENGE_OUTREACH_ENABLED=%s\n", r.Pilot.ConfengeOutreachEnabled)
+	fmt.Fprintf(&b, "  CONFENGE_REQUIRE_HUMAN_APPROVAL=%s\n", r.Pilot.ConfengeRequireHumanApproval)
+	fmt.Fprintf(&b, "  CONFENGE_AUTO_SEND_ENABLED=%s\n", r.Pilot.ConfengeAutoSendEnabled)
+	fmt.Fprintf(&b, "  GLOBAL_SENDS_PER_HOUR=%d\n", r.Pilot.GlobalSendsPerHour)
+	fmt.Fprintf(&b, "  SENDING_PAUSED=%s\n", r.Pilot.SendingPaused)
+	fmt.Fprintf(&b, "  EMAIL_CHANNEL=%s\n", r.Pilot.EmailChannel)
+	fmt.Fprintf(&b, "  WHATSAPP_CRITICAL_PATH=%s\n", r.Pilot.WhatsAppCriticalPath)
 	b.WriteString(strings.Repeat("-", 48) + "\n")
 	if r.OK {
 		fmt.Fprintf(&b, "OK (%d warnings)\n", r.Warnings)
