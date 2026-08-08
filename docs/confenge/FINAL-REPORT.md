@@ -38,3 +38,10 @@ No real lead sends. Transport sinks only.
 
 ## Evidence
 See `docs/confenge/GO-NO-GO.md`, `docs/confenge/result.json`, `docs/confenge/playwright_live.json`, `docs/confenge/human-review-30.html`.
+
+
+## Final CI
+
+- HEAD `888a1443750eb1698035ea0f8df3a57a91ba6af9`
+- CI success: https://github.com/tjsasakifln/warmbly/actions/runs/31235077013
+- CONFENGE product acceptance: success
