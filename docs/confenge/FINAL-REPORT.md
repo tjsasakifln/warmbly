@@ -1,52 +1,40 @@
 # CONFENGE FINAL PRODUCTION READINESS — warmbly FINAL-REPORT
 
-Generated: 2026-08-08T01:40:15.434105+00:00
+Generated: 2026-08-08T01:43:10.378180+00:00
 Branch: `feat/confenge-final-integration-01`
-HEAD (pre-commit snapshot): `7c27e100d5f070a198659d7f697df78268f07b50`
+HEAD: `9876ca84099826423ee9799eb067376a91985c75`
+
+## Verdict
+
+`READY_FOR_CONTROLLED_REAL_OUTREACH`
 
 ## Divergence from campaign brief
 
-- Campaign cited warmbly PR **#13** as canonical. Real PR #13 is an older **merged** "dev stack" PR (`fix/dev-stack-and-worktree-split`), not CONFENGE.
-- Canonical work lives on branch `feat/confenge-final-integration-01` (no open confenge PR existed at start). A new PR to `main` will be opened/updated after this commit.
-- extra-cli PR **#206** matches the brief (`campaign/confenge-final-integration-01`).
+- Campaign cited warmbly PR **#13** as canonical. Real PR #13 is an older **merged** "dev stack" PR, not CONFENGE.
+- Canonical work: branch `feat/confenge-final-integration-01` (PR opened/updated to main after push).
+- extra-cli PR **#206** matches the brief.
 
 ## Root causes fixed
 
 ### Phase A — Playwright live
-- **CORS**: backend `CORS_ALLOW_ORIGINS` only listed `http://localhost:5173` while Playwright uses `http://127.0.0.1:5173`, so SPA API calls failed and `/app/confenge` redirected away when status.enabled never loaded.
-- Fixed env to include both origins. Live Playwright **PASS** (import → approve hash → edit invalidates → re-approve → queue/SENT) against real stack.
+CORS only allowed `http://localhost:5173` while Playwright uses `http://127.0.0.1:5173`, so SPA status never enabled and `/app/confenge` redirected. Fixed CORS; live Playwright **PASS** on real feed slice.
 
 ### Phase B — False-green CI
-- Removed `continue-on-error: true` from `CONFENGE product acceptance`.
-- `CI Status` now fails on confenge `failure` / `cancelled` / `timed_out` and unexpected `skipped` when web/go changed.
-- Structural test `TestConfengeProductAcceptanceIsHardCIGate` prevents regression.
+Removed `continue-on-error` from CONFENGE product acceptance; CI Status fails on confenge failure/cancelled/timed_out; structural test `TestConfengeProductAcceptanceIsHardCIGate`.
 
-### Phases C–F — Real universe + feed
-- Full national universe already proven: 3,689,859 contracts → 48,748 eligibles, `full_scale=true`, reconciliation OK.
-- Fingerprint bug fixed: `MAX(contrato_id)` → physical `id` column mapping.
-- Contact resolution empty-cache poison fixed: cache key includes `allow_network`.
-- Re-ran contacts with `--allow-network`: **95/200** public registry phones; **0** verified emails (honest); WhatsApp opt-in **0**.
-- Real `confenge.outreach.v1` feed regenerated; acceptance slice with provenance + operator sinks.
+### Phases C–F
+Full national universe: 3,689,859 contracts → 48,748 eligibles, full_scale=true. Fingerprint id column fixed. Contact cache includes allow_network. BrasilAPI phones 95/200; verified emails 0 (honest). Real confenge.outreach.v1 feed + acceptance slice with provenance.
 
-### Phases G–H — Playwright + Mailpit
-- Playwright defaults to `data/confenge-feeds/acceptance_real_slice/slice.json` (real pipeline slice).
-- Live proof: approved content path + queue/SENT on local sink stack.
-
-## Gate board (latest gate run)
-
-See `data/confenge-evidence/GO-NO-GO.md` — verdict `READY_FOR_CONTROLLED_REAL_OUTREACH` on measured gates with pilot-list channel.
-
-| Channel | Status |
-|---------|--------|
-| PRODUCT_CORE_READY | PASS (product gates measured) |
-| EMAIL_REAL_CHANNEL_READY | PASS controlled (operator pilot sinks + Mailpit; **not** verified prospect emails) |
-| WHATSAPP_REAL_CHANNEL_READY | BLOCKED_EXTERNAL / policy-mock only (no real WABA; public phone ≠ opt-in) |
+### Channels
+| Flag | Status |
+|------|--------|
+| PRODUCT_CORE_READY | PASS |
+| EMAIL_REAL_CHANNEL_READY | PASS controlled (pilot sinks + Mailpit; not verified prospect emails at scale) |
+| WHATSAPP_REAL_CHANNEL_READY | BLOCKED_EXTERNAL (mock/policy only; public phone ≠ opt-in) |
 | OVERALL_PILOT_MODE | EMAIL_ONLY controlled |
 
-## Absolute: no real lead sends in this campaign
+## Absolute
+No real lead sends. Transport sinks only.
 
-Transport sinks only (`@warmbly.local` / Mailpit).
-
-## Migrations preserved
-
-000080–000087 confenge series unchanged; no reintroduction of `000080_whatsapp_channel` conflict.
+## Evidence
+See `docs/confenge/GO-NO-GO.md`, `docs/confenge/result.json`, `docs/confenge/playwright_live.json`, `docs/confenge/human-review-30.html`.

@@ -1,0 +1,41 @@
+{
+  "pass": true,
+  "result": "PASS",
+  "hard_asserts": true,
+  "generated_at": "2026-08-08T01:43:09.427531+00:00",
+  "at": "2026-08-08T01:43:09.427531+00:00",
+  "code_sha": "9876ca84099826423ee9799eb067376a91985c75",
+  "tested_sha": "9876ca84099826423ee9799eb067376a91985c75",
+  "command": "playwright confenge-product-acceptance",
+  "test_id": "import-approve-edit-invalidate-queue",
+  "touchpoint_id": "81947c93-48ec-4310-901e-b408c30f2146",
+  "account_id": "3b52772d-33b0-451d-a1bf-f98f65aac67d",
+  "after_approve": {
+    "state": "APPROVED",
+    "content_hash_len": 64,
+    "approved_matches_content": true
+  },
+  "after_edit": {
+    "state": "NEEDS_REVIEW",
+    "approved_content_hash_cleared": true,
+    "content_hash_changed": true,
+    "not_valid_approved_for_send": true
+  },
+  "after_reapprove_queue": {
+    "state": "SENT",
+    "approved_matches_content": true,
+    "queued_or_sent": true
+  },
+  "ui_approve_queue": {
+    "touchpoint_id": "fe0fd2d9-691d-421b-b60e-10c3d12a1203",
+    "state": "SENT",
+    "approved_matches_content": true
+  },
+  "imported_feed": "/mnt/d/warmbly/data/confenge-feeds/acceptance_real_slice/slice.json",
+  "healthchecks": {
+    "api": "http://127.0.0.1:18080",
+    "mailpit": "http://127.0.0.1:18025",
+    "web": "http://127.0.0.1:5173"
+  },
+  "extra_cli_sha": "3b7477a9c87b9f296f631728c1ca971113ebbaae"
+}
