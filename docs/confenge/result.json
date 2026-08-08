@@ -1,9 +1,9 @@
 {
   "verdict": "READY_FOR_CONTROLLED_REAL_OUTREACH",
   "emitted_by": "scripts/confenge_readiness_gate.py",
-  "at": "2026-08-08T02:51:21.864603+00:00",
-  "generated_at": "2026-08-08T02:51:21.864604+00:00",
-  "code_sha": "11907a8c63c447b73a2d90ce007aa42d1e1eb2ac",
+  "at": "2026-08-08T03:14:18.379012+00:00",
+  "generated_at": "2026-08-08T03:14:18.379015+00:00",
+  "code_sha": "8725c57d9379e10556a9697fc600f74e8ec02c78",
   "gates": {
     "contact_integrity": "PASS",
     "dnc_sticky": "PASS",
@@ -20,7 +20,8 @@
     "mailpit_exact_delivery": "PASS",
     "whatsapp_policy_mock": "PASS",
     "outcome_hmac_roundtrip": "PASS",
-    "playwright_live": "PASS"
+    "playwright_live": "PASS",
+    "ci_exact_head": "PASS"
   },
   "contacts": {
     "gate": "PASS",
@@ -128,7 +129,8 @@
   "channel_ready": true,
   "playwright_live": "PASS",
   "governor_10h": "PASS",
-  "ci": "PENDING_EXTERNAL",
+  "ci": "PASS",
+  "ci_exact_head": "PASS",
   "blockers": [],
   "report_only": false
 }

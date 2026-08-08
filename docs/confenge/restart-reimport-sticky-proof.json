@@ -1,7 +1,7 @@
 {
-  "at": "2026-08-08T02:51:12.999335+00:00",
+  "at": "2026-08-08T03:14:06.238554+00:00",
   "gate_script": "scripts/confenge_readiness_gate.py",
-  "code_sha": "11907a8c63c447b73a2d90ce007aa42d1e1eb2ac",
+  "code_sha": "8725c57d9379e10556a9697fc600f74e8ec02c78",
   "org": "22222222-0000-0000-0000-000000000001",
   "feed": "/mnt/d/warmbly/data/confenge-feeds/acceptance_real_slice/slice.json",
   "warmbly_root": "/mnt/d/warmbly",
@@ -9,19 +9,19 @@
     {
       "kill": [
         {
-          "pid": 364537,
+          "pid": 393471,
           "signal": "SIGTERM"
         },
         {
-          "pid": 364538,
+          "pid": 393472,
           "signal": "SIGTERM"
         }
       ]
     },
     {
       "restart": {
-        "backend_pid": 365723,
-        "receptor_pid": 365724,
+        "backend_pid": 394050,
+        "receptor_pid": 394051,
         "backend_bin": "/mnt/d/warmbly/bin/warmbly-backend",
         "receptor_cmd": "python3 -m scripts.warmbly_bridge serve-outcomes --host 127.0.0.1 --port 18090 --secret confenge-outcome-test-secret-32chars!! --memory-store"
       }
@@ -37,7 +37,7 @@
     },
     "dnc_sticky": {
       "pass": true,
-      "account_id": "9cad2c7d-322e-4b3f-b633-f29d9ece8b1f",
+      "account_id": "6bf91fc6-0235-4908-aa42-b93f93531976",
       "do_not_contact": true,
       "queue_state": "DO_NOT_CONTACT",
       "before": "DO_NOT_CONTACT"
@@ -45,29 +45,29 @@
     "sent_sticky": {
       "pass": true,
       "state": "SENT",
-      "approved_content_hash": "2b88631fe556835390c65d620857ec5e3a4c4a840ec4948c150e7aeec9087d2e",
+      "approved_content_hash": "599ea66f68c8bb34017729a8fc89554a0f16f676fc7237c7238d896645ed5e8d",
       "before_state": "SENT",
-      "before_hash": "2b88631fe556835390c65d620857ec5e3a4c4a840ec4948c150e7aeec9087d2e",
+      "before_hash": "599ea66f68c8bb34017729a8fc89554a0f16f676fc7237c7238d896645ed5e8d",
       "note": "SENT or QUEUED only; open review states fail"
     },
     "approval_sticky": {
       "pass": true,
       "state": "APPROVED",
-      "approved_content_hash": "ed75d808a0bdfd5305785b8a8d7d922088b42b1602321abda78651ab80894cc5",
-      "before_hash": "ed75d808a0bdfd5305785b8a8d7d922088b42b1602321abda78651ab80894cc5",
+      "approved_content_hash": "8d75031afa1d18eca74bf538f4d5b9d89ae45ff0a9eef670096be259b2e08aad",
+      "before_hash": "8d75031afa1d18eca74bf538f4d5b9d89ae45ff0a9eef670096be259b2e08aad",
       "before_state": "APPROVED"
     },
     "replied_sticky": {
       "pass": true,
       "queue_state": "REPLIED",
-      "account_id": "1fb81a9d-4b7a-4bb4-9ca8-64324f4c7740",
+      "account_id": "876326d5-9e81-425a-9db7-7fdbbb4c850c",
       "path": "POST /v1/confenge/accounts/:id/cancel-touchpoints reason=REPLY",
       "seed_http": 200
     },
     "bounced_sticky": {
       "pass": true,
       "queue_state": "BOUNCED",
-      "account_id": "3525b862-223b-4cd9-8fd6-88ddbcc055ed",
+      "account_id": "f30b7d13-413c-427b-a62a-66202a348ee0",
       "path": "POST /v1/confenge/accounts/:id/cancel-touchpoints reason=BOUNCE",
       "seed_http": 200
     },
@@ -77,31 +77,31 @@
         "attempted": true,
         "pass": true,
         "killed_backend_pids": [
-          364537
+          393471
         ],
         "killed_receptor_pids": [
-          364538
+          393472
         ],
-        "new_backend_pid": 365723,
-        "new_receptor_pid": 365724
+        "new_backend_pid": 394050,
+        "new_receptor_pid": 394051
       }
     }
   },
   "pass": true,
   "summary_before_seed": {
-    "needs_contact": 134,
+    "needs_contact": 114,
     "ready_to_generate": 0,
-    "needs_review": 3,
+    "needs_review": 5,
     "approved": 7,
-    "enrolled": 22,
+    "enrolled": 28,
     "sent": 0,
-    "replied": 13,
+    "replied": 17,
     "meeting": 0,
     "proposal": 0,
     "won": 0,
     "blocked": 1,
-    "bounced": 12,
-    "do_not_contact": 13,
+    "bounced": 16,
+    "do_not_contact": 17,
     "total": 205
   },
   "seeds": {
@@ -118,24 +118,24 @@
     ],
     "errors": [],
     "sent": {
-      "account_id": "c9cf6388-98fe-490d-a7fc-7a17addb767d",
-      "touchpoint_id": "608a4de0-a989-4ec3-b24f-65da7a864cab",
+      "account_id": "f734892f-76e6-4216-8f19-1cef6edb6347",
+      "touchpoint_id": "af2866bf-85b7-4918-9d1d-e1b9c2b62426",
       "state": "SENT",
-      "approved_content_hash": "2b88631fe556835390c65d620857ec5e3a4c4a840ec4948c150e7aeec9087d2e",
-      "content_hash": "2b88631fe556835390c65d620857ec5e3a4c4a840ec4948c150e7aeec9087d2e",
+      "approved_content_hash": "599ea66f68c8bb34017729a8fc89554a0f16f676fc7237c7238d896645ed5e8d",
+      "content_hash": "599ea66f68c8bb34017729a8fc89554a0f16f676fc7237c7238d896645ed5e8d",
       "path": "POST approve \u2192 queue on reviewable TP (public product path)"
     },
     "approved": {
-      "account_id": "a76cb2d0-d01f-40c7-94cf-7ae455b2c127",
-      "touchpoint_id": "dff888c1-356e-47bf-b744-dd63c773788c",
+      "account_id": "fac25a17-4b1c-4a10-9272-4455122bd323",
+      "touchpoint_id": "5f5bd1ac-3fd3-4bdb-bbc4-7515fd0808b7",
       "state": "APPROVED",
-      "approved_content_hash": "ed75d808a0bdfd5305785b8a8d7d922088b42b1602321abda78651ab80894cc5",
-      "content_hash": "ed75d808a0bdfd5305785b8a8d7d922088b42b1602321abda78651ab80894cc5",
+      "approved_content_hash": "8d75031afa1d18eca74bf538f4d5b9d89ae45ff0a9eef670096be259b2e08aad",
+      "content_hash": "8d75031afa1d18eca74bf538f4d5b9d89ae45ff0a9eef670096be259b2e08aad",
       "path": "POST approve (no queue) on reviewable TP",
       "http_status": 200
     },
     "dnc": {
-      "account_id": "9cad2c7d-322e-4b3f-b633-f29d9ece8b1f",
+      "account_id": "6bf91fc6-0235-4908-aa42-b93f93531976",
       "http_status": 200,
       "do_not_contact": true,
       "queue_state": "DO_NOT_CONTACT",
@@ -143,7 +143,7 @@
       "ok": true
     },
     "replied": {
-      "account_id": "1fb81a9d-4b7a-4bb4-9ca8-64324f4c7740",
+      "account_id": "876326d5-9e81-425a-9db7-7fdbbb4c850c",
       "http_status": 200,
       "queue_state": "REPLIED",
       "path": "POST /v1/confenge/accounts/:id/cancel-touchpoints reason=REPLY",
@@ -153,7 +153,7 @@
       }
     },
     "bounced": {
-      "account_id": "3525b862-223b-4cd9-8fd6-88ddbcc055ed",
+      "account_id": "f30b7d13-413c-427b-a62a-66202a348ee0",
       "http_status": 200,
       "queue_state": "BOUNCED",
       "path": "POST /v1/confenge/accounts/:id/cancel-touchpoints reason=BOUNCE",
@@ -164,41 +164,41 @@
     }
   },
   "summary_after_seed": {
-    "needs_contact": 130,
+    "needs_contact": 110,
     "ready_to_generate": 0,
-    "needs_review": 3,
+    "needs_review": 5,
     "approved": 7,
-    "enrolled": 23,
+    "enrolled": 29,
     "sent": 0,
-    "replied": 14,
+    "replied": 18,
     "meeting": 0,
     "proposal": 0,
     "won": 0,
     "blocked": 1,
-    "bounced": 13,
-    "do_not_contact": 14,
+    "bounced": 17,
+    "do_not_contact": 18,
     "total": 205
   },
   "snapshot_before_restart": {
     "sent": {
-      "account_id": "c9cf6388-98fe-490d-a7fc-7a17addb767d",
-      "touchpoint_id": "608a4de0-a989-4ec3-b24f-65da7a864cab",
+      "account_id": "f734892f-76e6-4216-8f19-1cef6edb6347",
+      "touchpoint_id": "af2866bf-85b7-4918-9d1d-e1b9c2b62426",
       "state": "SENT",
-      "approved_content_hash": "2b88631fe556835390c65d620857ec5e3a4c4a840ec4948c150e7aeec9087d2e",
-      "content_hash": "2b88631fe556835390c65d620857ec5e3a4c4a840ec4948c150e7aeec9087d2e",
+      "approved_content_hash": "599ea66f68c8bb34017729a8fc89554a0f16f676fc7237c7238d896645ed5e8d",
+      "content_hash": "599ea66f68c8bb34017729a8fc89554a0f16f676fc7237c7238d896645ed5e8d",
       "path": "POST approve \u2192 queue on reviewable TP (public product path)"
     },
     "approved": {
-      "account_id": "a76cb2d0-d01f-40c7-94cf-7ae455b2c127",
-      "touchpoint_id": "dff888c1-356e-47bf-b744-dd63c773788c",
+      "account_id": "fac25a17-4b1c-4a10-9272-4455122bd323",
+      "touchpoint_id": "5f5bd1ac-3fd3-4bdb-bbc4-7515fd0808b7",
       "state": "APPROVED",
-      "approved_content_hash": "ed75d808a0bdfd5305785b8a8d7d922088b42b1602321abda78651ab80894cc5",
-      "content_hash": "ed75d808a0bdfd5305785b8a8d7d922088b42b1602321abda78651ab80894cc5",
+      "approved_content_hash": "8d75031afa1d18eca74bf538f4d5b9d89ae45ff0a9eef670096be259b2e08aad",
+      "content_hash": "8d75031afa1d18eca74bf538f4d5b9d89ae45ff0a9eef670096be259b2e08aad",
       "path": "POST approve (no queue) on reviewable TP",
       "http_status": 200
     },
     "dnc": {
-      "account_id": "9cad2c7d-322e-4b3f-b633-f29d9ece8b1f",
+      "account_id": "6bf91fc6-0235-4908-aa42-b93f93531976",
       "http_status": 200,
       "do_not_contact": true,
       "queue_state": "DO_NOT_CONTACT",
@@ -206,7 +206,7 @@
       "ok": true
     },
     "replied": {
-      "account_id": "1fb81a9d-4b7a-4bb4-9ca8-64324f4c7740",
+      "account_id": "876326d5-9e81-425a-9db7-7fdbbb4c850c",
       "http_status": 200,
       "queue_state": "REPLIED",
       "path": "POST /v1/confenge/accounts/:id/cancel-touchpoints reason=REPLY",
@@ -216,7 +216,7 @@
       }
     },
     "bounced": {
-      "account_id": "3525b862-223b-4cd9-8fd6-88ddbcc055ed",
+      "account_id": "f30b7d13-413c-427b-a62a-66202a348ee0",
       "http_status": 200,
       "queue_state": "BOUNCED",
       "path": "POST /v1/confenge/accounts/:id/cancel-touchpoints reason=BOUNCE",
@@ -228,10 +228,10 @@
   },
   "pids_before": {
     "backend": [
-      364537
+      393471
     ],
     "receptor": [
-      364538
+      393472
     ]
   },
   "backend_down_after_kill": true,
@@ -241,13 +241,13 @@
     "attempted": true,
     "pass": true,
     "killed_backend_pids": [
-      364537
+      393471
     ],
     "killed_receptor_pids": [
-      364538
+      393472
     ],
-    "new_backend_pid": 365723,
-    "new_receptor_pid": 365724
+    "new_backend_pid": 394050,
+    "new_receptor_pid": 394051
   },
   "reimport1": {
     "status": 200,
@@ -290,19 +290,19 @@
     ]
   },
   "summary_after_reimport": {
-    "needs_contact": 130,
+    "needs_contact": 110,
     "ready_to_generate": 0,
-    "needs_review": 3,
+    "needs_review": 5,
     "approved": 7,
-    "enrolled": 23,
+    "enrolled": 29,
     "sent": 0,
-    "replied": 14,
+    "replied": 18,
     "meeting": 0,
     "proposal": 0,
     "won": 0,
     "blocked": 1,
-    "bounced": 13,
-    "do_not_contact": 14,
+    "bounced": 17,
+    "do_not_contact": 18,
     "total": 205
   },
   "critical_results": {

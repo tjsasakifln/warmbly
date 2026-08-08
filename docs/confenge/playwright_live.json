@@ -2,22 +2,22 @@
   "pass": true,
   "result": "PASS",
   "hard_asserts": true,
-  "generated_at": "2026-08-08T02:51:12.679052+00:00",
-  "at": "2026-08-08T02:51:12.679052+00:00",
-  "code_sha": "11907a8c63c447b73a2d90ce007aa42d1e1eb2ac",
-  "tested_sha": "11907a8c63c447b73a2d90ce007aa42d1e1eb2ac",
+  "generated_at": "2026-08-08T03:12:45.796Z",
+  "at": "2026-08-08T03:12:45.797Z",
+  "code_sha": "8725c57d9379e10556a9697fc600f74e8ec02c78",
+  "tested_sha": "8725c57d9379e10556a9697fc600f74e8ec02c78",
   "command": "playwright confenge-product-acceptance",
   "test_id": "import-approve-edit-invalidate-queue-mailpit",
-  "touchpoint_id": "2f44985d-f4b1-4725-942b-7bfb32cba668",
-  "account_id": "0e26de1a-1bfe-4a7d-a886-5de4b044182b",
+  "touchpoint_id": "1e381f55-bce7-4763-a6c8-310e90b97af9",
+  "account_id": "b4cf4ee0-bcf7-40c4-8423-44ce30874162",
   "after_approve": {
     "state": "APPROVED",
     "content_hash_len": 64,
     "approved_matches_content": true,
-    "approved_content_hash": "07e6a2a8f292e900655a640f52d5ffc1286f51cd4f340814954cbc7cc5518e2f",
-    "subject": "Sobre MULTICON ENGENHARIA LTDA",
-    "body_len": 486,
-    "recipient": "confenge-pilot+00242092000116@warmbly.local"
+    "approved_content_hash": "9d55048bb1f7d5b69dc4046471d2fa764f13779dd0c2eccd6a9f61a6d9286db9",
+    "subject": "Sobre LMA ENGENHARIA LTDA",
+    "body_len": 467,
+    "recipient": "confenge-pilot+b4cf4ee0@warmbly.local"
   },
   "after_edit": {
     "state": "NEEDS_REVIEW",
@@ -34,17 +34,17 @@
     "required_when_sent": true,
     "transport_state": "SENT",
     "matched": true,
-    "mailpit_message_id": "1Q92wMRvyH98SIBTBcjUbM",
-    "approved_subject": "Sobre MULTICON ENGENHARIA LTDA",
-    "mailpit_subject": "Sobre MULTICON ENGENHARIA LTDA",
-    "approved_body_prefix": "Ol\u00e1, Operador,\n\nSou da CONFENGE. Notei que Portf\u00f3lio p\u00fablico observado com 8 contrato(s) no input..\n\nAjudamos times de e",
+    "mailpit_message_id": "1oGkJlRLLdMXoiemFdl92s",
+    "approved_subject": "Sobre LMA ENGENHARIA LTDA",
+    "mailpit_subject": "Sobre LMA ENGENHARIA LTDA",
+    "approved_body_prefix": "Ol\u00e1,\n\nSou da CONFENGE. Notei que Portf\u00f3lio p\u00fablico observado com 2 contrato(s) no input..\n\nAjudamos times de engenharia ",
     "body_match": true,
-    "recipient_meta": "confenge-pilot+00242092000116@warmbly.local",
-    "mailpit_to": "confenge-pw+2f44985d@warmbly.local",
+    "recipient_meta": "confenge-pilot+b4cf4ee0@warmbly.local",
+    "mailpit_to": "confenge-pilot+b4cf4ee0@warmbly.local",
     "note": "Body must match approved content; recipient may be controlled sink"
   },
   "ui_approve_queue": {
-    "touchpoint_id": "3e2433e5-304e-4ce6-a30a-394ed0fdd8eb",
+    "touchpoint_id": "49c31c9a-0cf2-499c-832b-4892f2ebbe93",
     "state": "SENT",
     "approved_matches_content": true
   },
@@ -53,6 +53,5 @@
     "api": "http://127.0.0.1:18080",
     "mailpit": "http://127.0.0.1:18025",
     "web": "http://127.0.0.1:5173"
-  },
-  "extra_cli_sha": "5859d5bf178b961db33ac937b26b79e6676eabad"
+  }
 }

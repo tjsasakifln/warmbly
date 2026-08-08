@@ -6,8 +6,8 @@
 READY_FOR_CONTROLLED_REAL_OUTREACH
 ```
 
-Emitted by `scripts/confenge_readiness_gate.py` at 2026-08-08T02:51:21.864612+00:00. Do not hand-edit.
-tested_sha: `11907a8c63c447b73a2d90ce007aa42d1e1eb2ac`
+Emitted by `scripts/confenge_readiness_gate.py` at 2026-08-08T03:14:18.379033+00:00. Do not hand-edit.
+tested_sha: `8725c57d9379e10556a9697fc600f74e8ec02c78`
 
 ## Critical gates (measurement → evidence → verdict)
 
@@ -32,13 +32,13 @@ Historical success is **not** PASS. Missing current evidence is `NOT_RUN`.
 | reimport_sticky | **PASS** |  |
 | outcome_hmac_roundtrip | **PASS** |  |
 | playwright_live | **PASS** |  |
+| ci_exact_head | **PASS** |  |
 
 | enrollable send channel (derived) | PASS | verified/human/official email or pilot list; domain!=example.com alone is not enough |
 
-## CI (external only)
+## CI (ci_exact_head)
 
-CI = `PENDING_EXTERNAL` — this script never declares CI GREEN for exact HEAD.
-Validate GitHub Actions on the tested SHA after the workflow finishes.
+ci_exact_head = `PASS` — requires evidence file `ci_exact_head.json` or env `CONFENGE_GATE_CI_CONCLUSION=success` bound to the same tested_sha (never invent PASS).
 
 ## Blockers
 
