@@ -313,10 +313,26 @@ func (s *service) EditTouchpoint(ctx context.Context, orgID, userID, id uuid.UUI
 				d.RecipientPhoneE164 = tp.Recipient
 			} else {
 				d.RecipientEmail = tp.Recipient
+				// Rebind ContactCandidateID to an enrollable email match when the
+				// human edits the recipient (plan may have bound a phone-only cand).
+				if rec := strings.TrimSpace(tp.Recipient); rec != "" {
+					if list, err := s.repo.ListCandidates(ctx, orgID, tp.AccountID); err == nil {
+						for i := range list {
+							c := &list[i]
+							if strings.EqualFold(strings.TrimSpace(c.Email), rec) && c.CanEnroll() {
+								id := c.ID
+								d.ContactCandidateID = &id
+								tp.ContactCandidateID = &id
+								break
+							}
+						}
+					}
+				}
 			}
 			d.HumanEdited, d.Status = true, models.OutreachDraftNeedsReview
 			d.ApprovedBy, d.ApprovedAt = nil, nil
 			_ = s.repo.UpsertDraft(ctx, d)
+			_ = s.repo.UpdateTouchpoint(ctx, tp)
 		}
 	}
 	_ = userID

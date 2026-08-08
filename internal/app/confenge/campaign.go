@@ -168,6 +168,24 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 		}
 	}
 	if cand == nil || !cand.CanEnroll() {
+		// Re-resolve by draft recipient email (human may have edited recipient
+		// after plan bound a phone-only or unverified candidate).
+		email := strings.TrimSpace(d.RecipientEmail)
+		if email != "" {
+			if list, lerr := s.repo.ListCandidates(ctx, orgID, d.AccountID); lerr == nil {
+				for i := range list {
+					c := &list[i]
+					if strings.EqualFold(strings.TrimSpace(c.Email), email) && c.CanEnroll() {
+						cand = c
+						id := c.ID
+						d.ContactCandidateID = &id
+						break
+					}
+				}
+			}
+		}
+	}
+	if cand == nil || !cand.CanEnroll() {
 		return nil, errx.New(errx.BadRequest, "contact is not enrollable")
 	}
 
