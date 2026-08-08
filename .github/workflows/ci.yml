@@ -201,7 +201,8 @@ jobs:
       CODEC_PROVIDER: json
       APP_ENV: dev
       APP_URL: http://127.0.0.1:5173
-      API_HOST: 127.0.0.1:18080
+      # Use :8080 so default VITE_API_URL and dashboard expectations match.
+      API_HOST: 127.0.0.1:8080
       WEBSOCKET_URL: ws://127.0.0.1:4000/socket/websocket
       GEODB_PATH: /tmp/missing-geolite.mmdb
       BILLING_PROVIDER: none
@@ -213,7 +214,7 @@ jobs:
       ENCRYPTED_KEYS_PROVIDER: postgres
       BLOB_PROVIDER: filesystem
       BLOB_FS_ROOT: /tmp/warmbly-blobs
-      BLOB_PUBLIC_BASE_URL: http://127.0.0.1:18080/public
+      BLOB_PUBLIC_BASE_URL: http://127.0.0.1:8080/public
       TASKS_PROVIDER: local
       AUTH_SECRET: local-dev-auth-secret-minimum-32-characters-long
       INTERNAL_API_TOKEN: local-dev-internal-token
@@ -222,7 +223,7 @@ jobs:
       SMTP_HOST: 127.0.0.1
       SMTP_PORT: "11025"
       TRACKING_DOMAIN: t.warmbly.com
-      CORS_ALLOW_ORIGINS: http://127.0.0.1:5173
+      CORS_ALLOW_ORIGINS: http://127.0.0.1:5173,http://localhost:5173
       CONFENGE_OUTREACH_ENABLED: "true"
       CONFENGE_REQUIRE_HUMAN_APPROVAL: "true"
       CONFENGE_AUTO_SEND_ENABLED: "false"
@@ -230,7 +231,7 @@ jobs:
       CONFENGE_GLOBAL_SENDS_PER_HOUR: "10"
       CONFENGE_MIN_SEND_GAP_SECONDS: "360"
       CONFENGE_E2E: "1"
-      CONFENGE_E2E_API: http://127.0.0.1:18080
+      CONFENGE_E2E_API: http://127.0.0.1:8080
       CONFENGE_E2E_MAILPIT: http://127.0.0.1:18025
       CONFENGE_E2E_BASE_URL: http://127.0.0.1:5173
       CONFENGE_GATE_CODE_SHA: ${{ github.sha }}
@@ -291,7 +292,7 @@ jobs:
           nohup /tmp/warmbly-backend > /tmp/confenge-backend.log 2>&1 &
           echo $! > /tmp/confenge-backend.pid
           for i in $(seq 1 90); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18080/v1/confenge/status || true)
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/v1/confenge/status || true)
             if [ "$code" = "401" ] || [ "$code" = "200" ]; then
               if kill -0 "$(cat /tmp/confenge-backend.pid)" 2>/dev/null; then
                 echo "backend up code=$code"
@@ -307,7 +308,7 @@ jobs:
       - name: Start web
         working-directory: web
         env:
-          VITE_API_URL: http://127.0.0.1:18080
+          VITE_API_URL: http://127.0.0.1:8080
           VITE_APP_URL: http://127.0.0.1:5173
         run: |
           nohup pnpm dev --host 127.0.0.1 --port 5173 > /tmp/confenge-web.log 2>&1 &
@@ -326,8 +327,10 @@ jobs:
         run: |
           curl -fsS http://127.0.0.1:18025/api/v1/info >/dev/null
           curl -fsS -o /dev/null http://127.0.0.1:5173/
-          code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18080/v1/confenge/status || true)
+          code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/v1/confenge/status || true)
           test -n "$code" && test "$code" -lt 500
+          # Prove confenge feature is enabled on the server for the E2E org path.
+          echo "confenge status http=$code"
 
       - name: Playwright live browser
         working-directory: web
