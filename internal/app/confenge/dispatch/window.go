@@ -137,3 +137,62 @@ func MessageKeyEmail(draftID uuid.UUID) string {
 func MessageKeyWhatsApp(draftID uuid.UUID) string {
 	return "wa:draft:" + draftID.String()
 }
+
+// IsBusinessDay reports Mon–Fri in the given timezone (holiday calendar out of scope).
+func IsBusinessDay(now time.Time, tzName string) bool {
+	loc, err := time.LoadLocation(tzName)
+	if err != nil {
+		loc = time.FixedZone("SP", -3*3600)
+	}
+	wd := now.In(loc).Weekday()
+	return wd >= time.Monday && wd <= time.Friday
+}
+
+// InSendWindowBusiness is InSendWindow plus Mon–Fri when businessDaysOnly is true.
+func InSendWindowBusiness(now time.Time, tzName, startHHMM, endHHMM string, businessDaysOnly bool) (bool, error) {
+	if businessDaysOnly && !IsBusinessDay(now, tzName) {
+		return false, nil
+	}
+	return InSendWindow(now, tzName, startHHMM, endHHMM)
+}
+
+// NextWindowOpenBusiness advances to next weekday open when businessDaysOnly.
+func NextWindowOpenBusiness(now time.Time, tzName, startHHMM, endHHMM string, businessDaysOnly bool) time.Time {
+	if !businessDaysOnly {
+		return NextWindowOpen(now, tzName, startHHMM, endHHMM)
+	}
+	// Walk up to 8 days to find next Mon–Fri window open.
+	t := now
+	for i := 0; i < 8; i++ {
+		in, err := InSendWindowBusiness(t, tzName, startHHMM, endHHMM, true)
+		if err != nil {
+			return NextWindowOpen(now, tzName, startHHMM, endHHMM)
+		}
+		if in {
+			return t.UTC()
+		}
+		next := NextWindowOpen(t, tzName, startHHMM, endHHMM)
+		if !IsBusinessDay(next, tzName) {
+			// Jump to next Monday  start
+			loc, err := time.LoadLocation(tzName)
+			if err != nil {
+				loc = time.FixedZone("SP", -3*3600)
+			}
+			local := next.In(loc)
+			for local.Weekday() == time.Saturday || local.Weekday() == time.Sunday {
+				local = local.Add(24 * time.Hour)
+			}
+			startM, err := parseHHMM(startHHMM)
+			if err != nil {
+				return next
+			}
+			next = time.Date(local.Year(), local.Month(), local.Day(), startM/60, startM%60, 0, 0, loc).UTC()
+		}
+		if !next.After(t) {
+			t = t.Add(24 * time.Hour)
+			continue
+		}
+		t = next
+	}
+	return NextWindowOpen(now, tzName, startHHMM, endHHMM)
+}

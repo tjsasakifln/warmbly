@@ -68,16 +68,41 @@ type Config struct {
 	LeaseTTL       time.Duration
 	EnvPaused      bool
 	EnvPauseReason string
+	// BusinessDaysOnly rejects Sat/Sun even inside HH:MM window (default true).
+	BusinessDaysOnly bool
+	// Adaptive rate: when RateMode=="adaptive", SendsPerHour is the current effective cap.
+	RateMode         string // "fixed" | "adaptive"
+	RateStartPerHour int
+	RateMaxPerHour   int
+	// Health counters for adaptive step (in-memory; store may also track failures).
+	AdaptiveBatchSize int // commits required before step-up evaluation
 }
 
 func DefaultConfig() Config {
 	return Config{
-		SendsPerHour: DefaultSendsPerHour,
-		MinGap:       time.Duration(DefaultMinGapSeconds) * time.Second,
-		Timezone:     DefaultTimezone,
-		WindowStart:  DefaultWindowStart,
-		WindowEnd:    DefaultWindowEnd,
-		LeaseTTL:     DefaultLeaseTTL,
+		SendsPerHour:      DefaultSendsPerHour,
+		MinGap:            time.Duration(DefaultMinGapSeconds) * time.Second,
+		Timezone:          DefaultTimezone,
+		WindowStart:       DefaultWindowStart,
+		WindowEnd:         DefaultWindowEnd,
+		LeaseTTL:          DefaultLeaseTTL,
+		BusinessDaysOnly:  true,
+		RateMode:          "adaptive",
+		RateStartPerHour:  DefaultSendsPerHour,
+		RateMaxPerHour:    20,
+		AdaptiveBatchSize: 20,
+	}
+}
+
+// MinGapForRate returns the nominal min-gap for a target hourly rate.
+func MinGapForRate(sendsPerHour int) time.Duration {
+	switch {
+	case sendsPerHour >= 20:
+		return 180 * time.Second
+	case sendsPerHour >= 15:
+		return 240 * time.Second
+	default:
+		return 360 * time.Second
 	}
 }
 

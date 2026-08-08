@@ -40,16 +40,23 @@ const (
 	EnvFeedSyncEnabled  = "CONFENGE_FEED_SYNC_ENABLED"
 	EnvFeedSyncInterval = "CONFENGE_FEED_SYNC_INTERVAL"
 	EnvManifestURL      = "CONFENGE_EXTRA_CLI_MANIFEST_URL"
+	// GREEN autorun under campaign policy authorization (fail-closed default).
+	EnvGreenAutorun = "CONFENGE_GREEN_AUTORUN_ENABLED"
+	// Adaptive rate (single capacity authority with dispatch governor).
+	EnvRateMode         = "CONFENGE_RATE_MODE"
+	EnvRateStartPerHour = "CONFENGE_RATE_START_PER_HOUR"
+	EnvRateMaxPerHour   = "CONFENGE_RATE_MAX_PER_HOUR"
+	EnvAllowEnrollMint  = "CONFENGE_ALLOW_ENROLL_MINT" // dev/Mailpit only; ignored in production
 )
 
 // Defaults for conservative cold outreach.
 //
 // Primary pacing: dispatch.DefaultSendsPerHour = 10 (rolling hour, email+WA).
 // Campaign daily limit is a secondary mailbox/campaign safety ceiling only.
-// Default 100 allows a full workday of ~10/h (09:00–18:00 ≈ 90 slots) without
-// the daily cap becoming the accidental binding constraint.
+// Default 200 allows adaptive peak 20/h × 9h (=180) plus margin so the daily
+// campaign cap is never the binding constraint ahead of the rolling-hour governor.
 const (
-	DefaultCampaignDailyLimit = 100
+	DefaultCampaignDailyLimit = 200
 	DefaultMaxInitialWords    = 120
 	DefaultMaxPayloadBytes    = 32 << 20 // 32 MiB
 	DefaultCrossChannelHours  = 24
@@ -82,6 +89,17 @@ type Config struct {
 	FeedSyncEnabled  bool
 	FeedSyncInterval time.Duration
 	ManifestURL      string
+	// GreenAutorunEnabled auto-queues GREEN messages under CAMPAIGN_POLICY_AUTHORIZATION.
+	// Default false (fail-closed). Distinct from AutoSendEnabled (legacy ambiguous).
+	GreenAutorunEnabled bool
+	// RateMode: "fixed" | "adaptive". Adaptive starts at RateStartPerHour and may climb to RateMaxPerHour.
+	RateMode         string
+	RateStartPerHour int
+	RateMaxPerHour   int
+	// AllowEnrollMint enables HUMAN_CONFIRMED mint outside production only.
+	AllowEnrollMint bool
+	// AppEnv mirrors APP_ENV for production guards.
+	AppEnv string
 }
 
 // SendWindowHours returns whole hours in [start, end) for HH:MM window strings.
@@ -142,7 +160,23 @@ func LoadConfig() Config {
 		FeedSyncEnabled:        envBool(EnvFeedSyncEnabled, false),
 		FeedSyncInterval:       envDuration(EnvFeedSyncInterval, 15*time.Minute),
 		ManifestURL:            strings.TrimSpace(os.Getenv(EnvManifestURL)),
+		GreenAutorunEnabled:    envBool(EnvGreenAutorun, false),
+		RateMode:               strings.ToLower(strings.TrimSpace(os.Getenv(EnvRateMode))),
+		RateStartPerHour:       envInt(EnvRateStartPerHour, 10),
+		RateMaxPerHour:         envInt(EnvRateMaxPerHour, 20),
+		AllowEnrollMint:        envBool(EnvAllowEnrollMint, false),
+		AppEnv:                 strings.TrimSpace(os.Getenv("APP_ENV")),
 	}
+	if cfg.RateMode == "" {
+		cfg.RateMode = "adaptive"
+	}
+	if cfg.RateStartPerHour < 1 {
+		cfg.RateStartPerHour = 10
+	}
+	if cfg.RateMaxPerHour < cfg.RateStartPerHour {
+		cfg.RateMaxPerHour = 20
+	}
+
 	// Fall back to chunk feed URL for manifest if only FeedURL is set.
 	if cfg.ManifestURL == "" && cfg.FeedURL != "" && strings.HasSuffix(cfg.FeedURL, "manifest.json") {
 		cfg.ManifestURL = cfg.FeedURL
@@ -192,13 +226,31 @@ func (c Config) ValidateStartup(appEnv string) error {
 			}
 		}
 	}
-	if c.DefaultDailyLimit < 1 || c.DefaultDailyLimit > 100 {
-		return fmt.Errorf("%s must be between 1 and 100", EnvDefaultDailyLimit)
+	if c.DefaultDailyLimit < 1 || c.DefaultDailyLimit > 200 {
+		return fmt.Errorf("%s must be between 1 and 200", EnvDefaultDailyLimit)
 	}
 	if c.MaxInitialEmailWords < 20 || c.MaxInitialEmailWords > 500 {
 		return fmt.Errorf("%s must be between 20 and 500", EnvMaxInitialWords)
 	}
 	return nil
+}
+
+// IsProduction reports production-like APP_ENV (mint and other fail-open paths blocked).
+func (c Config) IsProduction() bool {
+	e := strings.ToLower(strings.TrimSpace(c.AppEnv))
+	if e == "" {
+		e = strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+	}
+	return e == "prod" || e == "production"
+}
+
+// AllowSilentEnrollMint is true only for non-production when explicitly allowed or default dev.
+func (c Config) AllowSilentEnrollMint() bool {
+	if c.IsProduction() {
+		return false
+	}
+	// Dev/test default: mint allowed unless APP_ENV is production.
+	return true
 }
 
 func envBool(key string, def bool) bool {

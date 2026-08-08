@@ -113,8 +113,8 @@ func RunPreflight(cfg Config, deps PreflightDeps) PreflightReport {
 		dispatch.EnvGlobalSendsPerHour, hourly, int(dcfg.MinGap.Seconds()),
 	))
 
-	if cfg.DefaultDailyLimit < 1 || cfg.DefaultDailyLimit > 100 {
-		add("campaign_daily_limit", CheckFail, fmt.Sprintf("%s=%d out of range 1-100", EnvDefaultDailyLimit, cfg.DefaultDailyLimit))
+	if cfg.DefaultDailyLimit < 1 || cfg.DefaultDailyLimit > 200 {
+		add("campaign_daily_limit", CheckFail, fmt.Sprintf("%s=%d out of range 1-200", EnvDefaultDailyLimit, cfg.DefaultDailyLimit))
 	} else if cfg.DefaultDailyLimit < hourly {
 		// Daily cap below one hour of governor capacity is always contradictory.
 		add("campaign_daily_limit", CheckWarn, fmt.Sprintf(

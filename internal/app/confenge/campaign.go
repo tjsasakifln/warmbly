@@ -183,10 +183,11 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 					}
 				}
 			}
-			// Last resort: mint a human-confirmed candidate for the exact
-			// approved recipient (operator sink / pilot). Never invents an
-			// address — only persists the email already on the approved draft.
-			if (cand == nil || !cand.CanEnroll()) && strings.Contains(email, "@") {
+			// Last resort mint of HUMAN_CONFIRMED is allowed only outside
+			// production (Mailpit/sink/dev/tests). Production fail-closed:
+			// never silently promote a draft address without a legitimate
+			// enrollable candidate. Explicit audited manual confirm is separate.
+			if (cand == nil || !cand.CanEnroll()) && strings.Contains(email, "@") && s.cfg.AllowSilentEnrollMint() {
 				mint := &models.OutreachContactCandidate{
 					OrganizationID:     orgID,
 					AccountID:          d.AccountID,

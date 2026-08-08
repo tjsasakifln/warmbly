@@ -23,8 +23,8 @@ func TestDefaultDailyLimitDoesNotCollapseHourlyGovernor(t *testing.T) {
 			DefaultCampaignDailyLimit, dcfg.SendsPerHour, windowH, hourlyDay, dcfg.SendsPerHour, DefaultCampaignDailyLimit,
 		)
 	}
-	if DefaultCampaignDailyLimit > 100 {
-		t.Fatalf("DefaultCampaignDailyLimit=%d exceeds ValidateStartup max 100", DefaultCampaignDailyLimit)
+	if DefaultCampaignDailyLimit > 200 {
+		t.Fatalf("DefaultCampaignDailyLimit=%d exceeds ValidateStartup max 200", DefaultCampaignDailyLimit)
 	}
 }
 

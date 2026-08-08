@@ -33,7 +33,8 @@ func TestLoadConfigHonorsOperatorDailyLimit(t *testing.T) {
 }
 
 // TestLoadConfigDefaultsMatchCanonicalSemantics documents the ship defaults:
-// hourly governor 10, min gap 360s, campaign daily secondary ceiling 100.
+// hourly governor 10 (adaptive start), min gap 360s, campaign daily secondary ceiling 200
+// (headroom for adaptive peak 20/h × 9h = 180).
 func TestLoadConfigDefaultsMatchCanonicalSemantics(t *testing.T) {
 	t.Setenv(EnvDefaultDailyLimit, "")
 	t.Setenv(dispatch.EnvGlobalSendsPerHour, "")
@@ -43,11 +44,11 @@ func TestLoadConfigDefaultsMatchCanonicalSemantics(t *testing.T) {
 
 	cfg := LoadConfig()
 	dcfg := dispatch.LoadConfig()
-	if DefaultCampaignDailyLimit != 100 {
-		t.Fatalf("package DefaultCampaignDailyLimit want 100, got %d", DefaultCampaignDailyLimit)
+	if DefaultCampaignDailyLimit != 200 {
+		t.Fatalf("package DefaultCampaignDailyLimit want 200, got %d", DefaultCampaignDailyLimit)
 	}
-	if cfg.DefaultDailyLimit != 100 {
-		t.Fatalf("LoadConfig default daily want 100, got %d", cfg.DefaultDailyLimit)
+	if cfg.DefaultDailyLimit != 200 {
+		t.Fatalf("LoadConfig default daily want 200, got %d", cfg.DefaultDailyLimit)
 	}
 	if dispatch.DefaultSendsPerHour != 10 {
 		t.Fatalf("package DefaultSendsPerHour want 10, got %d", dispatch.DefaultSendsPerHour)
@@ -152,19 +153,24 @@ func TestMakefileDoesNotHardcodeDailyLimit10(t *testing.T) {
 	if bad.MatchString(text) {
 		t.Fatal("Makefile hardcodes CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=10; use $${CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT:-100}")
 	}
-	// Required: operator-preserving default of 100
-	if !strings.Contains(text, "CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=$${CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT:-100}") &&
-		!strings.Contains(text, "CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=${CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT:-100}") {
-		t.Fatal("Makefile must use $${CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT:-100} so operator env wins")
+	// Required: operator-preserving default of 100 or 200
+	has100 := strings.Contains(text, "CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=$${CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT:-100}") ||
+		strings.Contains(text, "CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=${CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT:-100}")
+	has200 := strings.Contains(text, "CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=$${CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT:-200}") ||
+		strings.Contains(text, "CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=${CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT:-200}")
+	if !has100 && !has200 {
+		t.Fatal("Makefile must use $${CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT:-100|200} so operator env wins")
 	}
-	// .env.confenge.example must still document 100
+	// .env.confenge.example documents daily ceiling (100 legacy or 200 adaptive-ready)
 	ex := filepath.Join(root, ".env.confenge.example")
 	exRaw, err := os.ReadFile(ex)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(exRaw), "CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=100") {
-		t.Fatal(".env.confenge.example must set CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=100")
+	exs := string(exRaw)
+	if !strings.Contains(exs, "CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=100") &&
+		!strings.Contains(exs, "CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=200") {
+		t.Fatal(".env.confenge.example must set CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT")
 	}
 }
 

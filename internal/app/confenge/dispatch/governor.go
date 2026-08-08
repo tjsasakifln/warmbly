@@ -103,13 +103,17 @@ func (g *Governor) TryReserve(ctx context.Context, req ReserveRequest) (ReserveR
 		return out, nil
 	}
 
-	inWin, werr := InSendWindow(now, g.cfg.Timezone, g.cfg.WindowStart, g.cfg.WindowEnd)
+	inWin, werr := InSendWindowBusiness(now, g.cfg.Timezone, g.cfg.WindowStart, g.cfg.WindowEnd, g.cfg.BusinessDaysOnly)
 	if werr != nil {
 		return out, werr
 	}
 	if !inWin {
-		out.Reason = "outside_send_window"
-		out.NextSlot = NextWindowOpen(now, g.cfg.Timezone, g.cfg.WindowStart, g.cfg.WindowEnd)
+		if g.cfg.BusinessDaysOnly && !IsBusinessDay(now, g.cfg.Timezone) {
+			out.Reason = "outside_business_day"
+		} else {
+			out.Reason = "outside_send_window"
+		}
+		out.NextSlot = NextWindowOpenBusiness(now, g.cfg.Timezone, g.cfg.WindowStart, g.cfg.WindowEnd, g.cfg.BusinessDaysOnly)
 		return out, nil
 	}
 
@@ -205,13 +209,13 @@ func (g *Governor) Status(ctx context.Context, orgID *uuid.UUID) (Status, error)
 			st.PauseReason = "env_paused"
 		}
 	}
-	inWin, _ := InSendWindow(now, g.cfg.Timezone, g.cfg.WindowStart, g.cfg.WindowEnd)
+	inWin, _ := InSendWindowBusiness(now, g.cfg.Timezone, g.cfg.WindowStart, g.cfg.WindowEnd, g.cfg.BusinessDaysOnly)
 	st.InSendWindow = inWin
 	if st.Paused {
 		t := now.Add(g.cfg.MinGap)
 		st.NextSlotAt = &t
 	} else if !inWin {
-		t := NextWindowOpen(now, g.cfg.Timezone, g.cfg.WindowStart, g.cfg.WindowEnd)
+		t := NextWindowOpenBusiness(now, g.cfg.Timezone, g.cfg.WindowStart, g.cfg.WindowEnd, g.cfg.BusinessDaysOnly)
 		st.NextSlotAt = &t
 	} else {
 		occupied, last, err := g.store.ListOccupied(ctx, now, RollingWindow)

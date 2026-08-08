@@ -69,12 +69,19 @@ func MessageKeyCampaignEmail(campaignID, contactID, sequenceID uuid.UUID) string
 
 // GateCampaignEmail is the final CONFENGE email outbound gate (pre worker/SMTP).
 // Outcomes are a closed GateKind set — callers must switch on Kind, not raw error.
+// CONFENGE campaigns never fail-open: missing/unhealthy governor is GateTransient (zero send).
+// Non-CONFENGE campaigns retain legacy GateBypass.
 func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campaignName, recipientEmail string, campaignID, contactID, sequenceID uuid.UUID) CampaignGateResult {
-	if s == nil || !s.cfg.Enabled || s.governor == nil {
-		return CampaignGateResult{Kind: GateBypass, Reason: ReasonNoGovernor}
-	}
 	if !IsConfengeCampaign(campaignName) {
 		return CampaignGateResult{Kind: GateBypass, Reason: ReasonNotConfenge}
+	}
+	// CONFENGE path: fail-closed without a healthy governor. Never GateBypass.
+	if s == nil || !s.cfg.Enabled || s.governor == nil {
+		return CampaignGateResult{
+			Kind:   GateTransient,
+			Reason: ReasonNoGovernor,
+			Err:    fmt.Errorf("confenge governor not wired or disabled; refusing send"),
+		}
 	}
 
 	// Dominant blocks: DNC/opt-out/bounce — hard block without consuming a slot.

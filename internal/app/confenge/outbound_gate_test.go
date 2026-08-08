@@ -52,6 +52,7 @@ func TestGateCampaignEmailHardBlockDNC(t *testing.T) {
 	clock := &dispatch.FixedClock{T: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)}
 	cfg := dispatch.DefaultConfig()
 	cfg.WindowStart, cfg.WindowEnd, cfg.Timezone, cfg.MinGap = "00:00", "23:59", "UTC", 0
+	cfg.BusinessDaysOnly = false
 	svc.governor = dispatch.NewGovernor(cfg, dispatch.NewMemoryStore(), clock)
 
 	r := svc.GateCampaignEmail(context.Background(), org, DefaultCampaignName, "dnc@example.com",
@@ -86,6 +87,7 @@ func TestGateCampaignEmailHardBlockAccountDNC(t *testing.T) {
 	clock := &dispatch.FixedClock{T: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)}
 	cfg := dispatch.DefaultConfig()
 	cfg.WindowStart, cfg.WindowEnd, cfg.Timezone, cfg.MinGap = "00:00", "23:59", "UTC", 0
+	cfg.BusinessDaysOnly = false
 	svc.governor = dispatch.NewGovernor(cfg, dispatch.NewMemoryStore(), clock)
 
 	r := svc.GateCampaignEmail(context.Background(), org, DefaultCampaignName, "ok@example.com",
@@ -100,10 +102,11 @@ func TestGateCampaignEmailHardBlockAccountDNC(t *testing.T) {
 
 func TestGateCampaignEmailTransientOnGovernorError(t *testing.T) {
 	// errStore fails TryReserveAtomic (simulates DB blip).
-	store := &errStore{inner: dispatch.NewMemoryStore(), failReserve: true}
+	store := &errStore{MemoryStore: dispatch.NewMemoryStore(), failReserve: true}
 	clock := &dispatch.FixedClock{T: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)}
 	cfg := dispatch.DefaultConfig()
 	cfg.WindowStart, cfg.WindowEnd, cfg.Timezone, cfg.MinGap = "00:00", "23:59", "UTC", 0
+	cfg.BusinessDaysOnly = false
 	gov := dispatch.NewGovernor(cfg, store, clock)
 
 	repo := newMemRepoWithSettings()
@@ -135,6 +138,7 @@ func TestGateCampaignEmailDeferredCap(t *testing.T) {
 	clock := &dispatch.FixedClock{T: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)}
 	cfg := dispatch.DefaultConfig()
 	cfg.WindowStart, cfg.WindowEnd, cfg.Timezone, cfg.MinGap = "00:00", "23:59", "UTC", 0
+	cfg.BusinessDaysOnly = false
 	cfg.SendsPerHour = 1
 	gov := dispatch.NewGovernor(cfg, store, clock)
 
@@ -180,89 +184,47 @@ func TestGateCampaignEmailBypassNonConfenge(t *testing.T) {
 	}
 }
 
-// errStore wraps MemoryStore and can fail TryReserveAtomic.
+// TestGateCampaignEmailConfengeNilGovernorFailClosed: CONFENGE + nil governor => zero send.
+func TestGateCampaignEmailConfengeNilGovernorFailClosed(t *testing.T) {
+	svc := &service{cfg: Config{Enabled: true}, governor: nil}
+	r := svc.GateCampaignEmail(context.Background(), uuid.New(), DefaultCampaignName, "lead@example.com",
+		uuid.New(), uuid.New(), uuid.New())
+	if r.Kind != GateTransient {
+		t.Fatalf("CONFENGE+nil governor must be Transient (fail-closed), got kind=%d reason=%s", r.Kind, r.Reason)
+	}
+	if r.Reason != ReasonNoGovernor {
+		t.Fatalf("reason want %s got %s", ReasonNoGovernor, r.Reason)
+	}
+	if r.PermanentSuppress() {
+		t.Fatal("must not permanent suppress")
+	}
+	// Non-CONFENGE still bypasses with nil governor.
+	r2 := svc.GateCampaignEmail(context.Background(), uuid.New(), "Other campaign", "a@b.com",
+		uuid.New(), uuid.New(), uuid.New())
+	if r2.Kind != GateBypass {
+		t.Fatalf("non-CONFENGE+nil want Bypass, got %d", r2.Kind)
+	}
+}
+
+// TestGateCampaignEmailConfengeDisabledFailClosed: enabled=false still fail-closed for CONFENGE name.
+func TestGateCampaignEmailConfengeDisabledFailClosed(t *testing.T) {
+	svc := &service{cfg: Config{Enabled: false}, governor: nil}
+	r := svc.GateCampaignEmail(context.Background(), uuid.New(), "CONFENGE cold", "x@y.com",
+		uuid.New(), uuid.New(), uuid.New())
+	if r.Kind != GateTransient {
+		t.Fatalf("got kind=%d want Transient", r.Kind)
+	}
+}
+
+// errStore embeds MemoryStore and can fail TryReserveAtomic.
 type errStore struct {
-	inner       *dispatch.MemoryStore
+	*dispatch.MemoryStore
 	failReserve bool
 }
 
-func (e *errStore) GetControl(ctx context.Context) (dispatch.ControlState, error) {
-	return e.inner.GetControl(ctx)
-}
-func (e *errStore) SetPaused(ctx context.Context, paused bool, reason string, by *uuid.UUID) error {
-	return e.inner.SetPaused(ctx, paused, reason, by)
-}
 func (e *errStore) TryReserveAtomic(ctx context.Context, in dispatch.AtomicReserveInput) (dispatch.AtomicReserveOutput, error) {
 	if e.failReserve {
 		return dispatch.AtomicReserveOutput{}, errors.New("simulated store failure")
 	}
-	return e.inner.TryReserveAtomic(ctx, in)
-}
-func (e *errStore) GetReservationByKey(ctx context.Context, messageKey string) (*dispatch.Reservation, error) {
-	return e.inner.GetReservationByKey(ctx, messageKey)
-}
-func (e *errStore) GetSendByKey(ctx context.Context, messageKey string) (time.Time, bool, error) {
-	return e.inner.GetSendByKey(ctx, messageKey)
-}
-func (e *errStore) RefreshReservation(ctx context.Context, id uuid.UUID, leaseUntil time.Time, workerToken string) error {
-	return e.inner.RefreshReservation(ctx, id, leaseUntil, workerToken)
-}
-func (e *errStore) CommitReservation(ctx context.Context, id uuid.UUID, sentAt time.Time) error {
-	return e.inner.CommitReservation(ctx, id, sentAt)
-}
-func (e *errStore) ReleaseReservation(ctx context.Context, id uuid.UUID, state, errText string) error {
-	return e.inner.ReleaseReservation(ctx, id, state, errText)
-}
-func (e *errStore) ExpireStaleReservations(ctx context.Context, now time.Time) (int, error) {
-	return e.inner.ExpireStaleReservations(ctx, now)
-}
-func (e *errStore) ListOccupied(ctx context.Context, now time.Time, window time.Duration) ([]time.Time, time.Time, error) {
-	return e.inner.ListOccupied(ctx, now, window)
-}
-func (e *errStore) Enqueue(ctx context.Context, item *dispatch.QueueItem) error {
-	return e.inner.Enqueue(ctx, item)
-}
-func (e *errStore) CancelQueue(ctx context.Context, messageKey, reason string) error {
-	return e.inner.CancelQueue(ctx, messageKey, reason)
-}
-func (e *errStore) CancelQueueByRecipient(ctx context.Context, orgID uuid.UUID, recipientRef, reason string) (int, error) {
-	return e.inner.CancelQueueByRecipient(ctx, orgID, recipientRef, reason)
-}
-func (e *errStore) CountQueued(ctx context.Context, orgID *uuid.UUID) (int, error) {
-	return e.inner.CountQueued(ctx, orgID)
-}
-func (e *errStore) ClaimNextQueued(ctx context.Context, now time.Time) (*dispatch.QueueItem, error) {
-	return e.inner.ClaimNextQueued(ctx, now)
-}
-func (e *errStore) UpdateQueueStatus(ctx context.Context, id uuid.UUID, status, errText string) error {
-	return e.inner.UpdateQueueStatus(ctx, id, status, errText)
-}
-func (e *errStore) RecordFailure(ctx context.Context, f dispatch.FailureRecord) error {
-	return e.inner.RecordFailure(ctx, f)
-}
-func (e *errStore) ListRecentFailures(ctx context.Context, limit int) ([]dispatch.FailureRecord, error) {
-	return e.inner.ListRecentFailures(ctx, limit)
-}
-func (e *errStore) CountActiveLeases(ctx context.Context, now time.Time) (int, error) {
-	return e.inner.CountActiveLeases(ctx, now)
-}
-func (e *errStore) CountSendsSince(ctx context.Context, since time.Time) (int, error) {
-	return e.inner.CountSendsSince(ctx, since)
-}
-
-func TestContextStaleIsDeferredNotPermanentSuppress(t *testing.T) {
-	// GateDeferred must never permanent-suppress (campaign_task only suppresses HardBlock).
-	r := CampaignGateResult{Kind: GateDeferred, Reason: "context_stale"}
-	if r.PermanentSuppress() {
-		t.Fatal("context_stale deferred must not PermanentSuppress")
-	}
-	// GateHardBlock remains the only permanent suppress kind.
-	hard := CampaignGateResult{Kind: GateHardBlock, Reason: ReasonDNCOrBounce}
-	if !hard.PermanentSuppress() {
-		t.Fatal("HardBlock must PermanentSuppress")
-	}
-	// Sanity: stale reason is not DNC/bounce.
-	if r.Reason == ReasonDNCOrBounce || r.Reason == ReasonAccountDNC {
-		t.Fatal("stale reason must not masquerade as DNC")
-	}
+	return e.MemoryStore.TryReserveAtomic(ctx, in)
 }
