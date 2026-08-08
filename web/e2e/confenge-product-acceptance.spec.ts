@@ -108,22 +108,49 @@ async function loginViaAPIAndMailpit(): Promise<Record<string, string>> {
 }
 
 async function injectTokens(page: Page, tokens: Record<string, string>) {
+  // Use /login so we have an origin for localStorage, then stamp auth + org.
+  // Full seed creates multiple orgs; without currentOrganization in
+  // warmbly-storage, OrgGate redirects to /select-org and /app/confenge never
+  // mounts (CI multi-org; local single-org can mask this).
   await page.goto("/login");
-  await page.evaluate((t) => {
-    localStorage.setItem("access_token", t.access_token);
-    localStorage.setItem("access_token_expires_at", t.access_token_expires_at);
-    localStorage.setItem("refresh_token", t.refresh_token);
-    localStorage.setItem("refresh_token_expires_at", t.refresh_token_expires_at);
-    localStorage.setItem(
-      "auth_token",
-      JSON.stringify({
-        access_token: t.access_token,
-        access_token_expires_at: t.access_token_expires_at,
-        refresh_token: t.refresh_token,
-        refresh_token_expires_at: t.refresh_token_expires_at,
-      }),
-    );
-  }, tokens);
+  await page.evaluate(
+    ({ t, orgId }) => {
+      localStorage.setItem("access_token", t.access_token);
+      localStorage.setItem("access_token_expires_at", t.access_token_expires_at);
+      localStorage.setItem("refresh_token", t.refresh_token);
+      localStorage.setItem("refresh_token_expires_at", t.refresh_token_expires_at);
+      localStorage.setItem(
+        "auth_token",
+        JSON.stringify({
+          access_token: t.access_token,
+          access_token_expires_at: t.access_token_expires_at,
+          refresh_token: t.refresh_token,
+          refresh_token_expires_at: t.refresh_token_expires_at,
+        }),
+      );
+      // zustand persist shape for organization selection
+      const storageKey = "warmbly-storage";
+      let prev: Record<string, unknown> = {};
+      try {
+        prev = JSON.parse(localStorage.getItem(storageKey) || "{}") || {};
+      } catch {
+        prev = {};
+      }
+      const state = (prev.state as Record<string, unknown>) || prev;
+      const nextState = {
+        ...state,
+        currentOrganization: {
+          id: orgId,
+          name: "CONFENGE E2E",
+        },
+      };
+      localStorage.setItem(
+        storageKey,
+        JSON.stringify({ state: nextState, version: prev.version ?? 0 }),
+      );
+    },
+    { t: tokens, orgId: ORG },
+  );
 }
 
 async function apiJSON<T>(
@@ -564,14 +591,28 @@ test.describe("CONFENGE product acceptance UI", () => {
 
     await injectTokens(page, tokens);
     await page.goto("/app");
+    // Onboarding first-name gate
     const firstName = page.getByPlaceholder("John");
     if ((await firstName.count()) > 0 && (await firstName.isVisible().catch(() => false))) {
       await firstName.fill("Dev");
       await page.getByPlaceholder("Doe").fill("User");
       await page.getByRole("button", { name: /Continue/i }).click();
     }
+    // Multi-org select-org fallback if OrgGate still redirected
+    if (page.url().includes("select-org")) {
+      const orgRow = page.getByText(/CONFENGE|Sunrise|Dev|Organization/i).first();
+      if ((await orgRow.count()) > 0) {
+        await orgRow.click();
+      }
+      // Prefer direct switch via any primary CTA
+      const continueBtn = page.getByRole("button", { name: /Continue|Select|Open/i }).first();
+      if ((await continueBtn.count()) > 0 && (await continueBtn.isVisible().catch(() => false))) {
+        await continueBtn.click();
+      }
+    }
 
     await page.goto("/app/confenge");
+    // Dump URL on failure helps diagnose auth/org redirects in CI artifacts.
     await expect(
       page.getByText(/CONFENGE/i).or(page.getByTestId("confenge-dispatch-quota")).first(),
     ).toBeVisible({ timeout: 45_000 });
