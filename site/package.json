@@ -24,7 +24,11 @@
     "overrides": {
       "js-yaml": "4.3.1",
       "postcss": "8.5.23",
-      "svgo": "^4.0.2"
+      "svgo": "^4.0.2",
+      "nanoid": "3.3.17"
     }
+  },
+  "overrides": {
+    "nanoid": "3.3.17"
   }
 }
