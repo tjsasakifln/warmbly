@@ -91,3 +91,8 @@ xcuserdata/
 .env.confenge
 data/confenge-kill-switch
 data/backups/
+
+# CONFENGE readiness evidence (local current-run only; never commit SHA-bound proofs)
+data/confenge-evidence/
+data/confenge-artifacts/
+data/confenge-backend.env

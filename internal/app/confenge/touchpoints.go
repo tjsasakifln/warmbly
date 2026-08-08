@@ -193,12 +193,29 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 			tp.Recipient = cand.Email
 		}
 	}
-	draft := &models.OutreachDraft{
-		OrganizationID: orgID, AccountID: tp.AccountID, ContactCandidateID: tp.ContactCandidateID,
-		Channel: tp.Channel, Subject: subject, BodyText: body, ServiceCode: acc.ServiceCode,
-		FactUsed: SanitizeText(acc.FactToMention, 2000), EvidenceIDs: acc.MomentEvidenceIDs,
-		Provider: "template", Model: "jit_" + tp.Purpose, PromptVersion: PromptVersion + "+touch",
-		Status: models.OutreachDraftNeedsReview, RiskClass: "YELLOW", RiskFlags: []string{"per_touch_approval", "jit"},
+	// One active draft per account (unique index). Reuse when present so
+	// generate is not blocked by outreach_drafts_org_account_active_uidx.
+	draft, _ := s.repo.GetActiveDraftForAccount(ctx, orgID, tp.AccountID)
+	if draft == nil {
+		draft = &models.OutreachDraft{
+			OrganizationID: orgID, AccountID: tp.AccountID, ContactCandidateID: tp.ContactCandidateID,
+			Channel: tp.Channel, Subject: subject, BodyText: body, ServiceCode: acc.ServiceCode,
+			FactUsed: SanitizeText(acc.FactToMention, 2000), EvidenceIDs: acc.MomentEvidenceIDs,
+			Provider: "template", Model: "jit_" + tp.Purpose, PromptVersion: PromptVersion + "+touch",
+			Status: models.OutreachDraftNeedsReview, RiskClass: "YELLOW", RiskFlags: []string{"per_touch_approval", "jit"},
+		}
+	} else {
+		draft.ContactCandidateID = tp.ContactCandidateID
+		draft.Channel = tp.Channel
+		draft.Subject, draft.BodyText = subject, body
+		draft.ServiceCode = acc.ServiceCode
+		draft.FactUsed = SanitizeText(acc.FactToMention, 2000)
+		draft.EvidenceIDs = acc.MomentEvidenceIDs
+		draft.Provider, draft.Model = "template", "jit_"+tp.Purpose
+		draft.PromptVersion = PromptVersion + "+touch"
+		draft.Status = models.OutreachDraftNeedsReview
+		draft.ApprovedBy, draft.ApprovedAt = nil, nil
+		draft.HumanEdited = false
 	}
 	if cand != nil {
 		draft.RecipientName, draft.RecipientRole, draft.RecipientEmail = cand.Name, cand.Role, cand.Email

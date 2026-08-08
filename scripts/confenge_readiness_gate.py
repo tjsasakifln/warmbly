@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""CONFENGE readiness gate — sole writer of campaign verdict artifacts.
+"""CONFENGE readiness gate — mechanical verifier of campaign verdict artifacts.
 
-Encodes Phase Q mechanically:
-  seed via public product APIs → kill/restart backend + HMAC receptor →
-  reimport → assert sticky from observed account+summary only.
+Sole writer of GO-NO-GO / sticky proofs. Never hand-edit those after a run.
 
-Never hand-edit GO-NO-GO / sticky proofs after a run; re-run this script.
+Principles (CONFENGE-FINAL-READINESS-HARDENING-01):
+  - PASS requires current-run evidence (or evidence explicitly marked EXTERNAL).
+  - Historical success is NOT a PASS. Use NOT_RUN / STALE / BLOCKED_EXTERNAL.
+  - Default exit: READY → 0, NOT_READY / crash → non-zero.
+  - --report-only may write artifacts and exit 0; official readiness must not use it.
+  - No ephemeral absolute defaults (/tmp/grok-..., machine-specific mounts).
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import signal
@@ -19,52 +23,262 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
+# Gate status vocabulary (critical gates must use only these).
+GATE_PASS = "PASS"
+GATE_FAIL = "FAIL"
+GATE_NOT_RUN = "NOT_RUN"
+GATE_BLOCKED_EXTERNAL = "BLOCKED_EXTERNAL"
+GATE_STALE = "STALE"
+
+CRITICAL_GATES = (
+    "full_national_extra_cli",
+    "real_feed_generated",
+    "real_feed_imported",
+    "contact_integrity",
+    "approval_content_hash",
+    "edit_invalidation",
+    "governor_10h",
+    "daily_limit_non_conflicting",
+    "mailpit_exact_delivery",
+    "whatsapp_policy_mock",
+    "reply_cancels_future",
+    "dnc_sticky",
+    "restart_no_burst",
+    "reimport_sticky",
+    "outcome_hmac_roundtrip",
+    "playwright_live",
+)
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def discover_git_root(start: Path | None = None) -> Path | None:
+    """Walk up from start (or cwd) for a .git directory. Portable across machines."""
+    cur = (start or Path.cwd()).resolve()
+    for _ in range(12):
+        if (cur / ".git").exists() and (cur / "go.mod").exists():
+            return cur
+        if (cur / ".git").exists() and (cur / "pyproject.toml").exists():
+            return cur
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    return None
+
+
+def _repo_root() -> Path:
+    env = os.environ.get("CONFENGE_GATE_WARMBLY_ROOT", "").strip()
+    if env:
+        return Path(env).resolve()
+    found = discover_git_root(Path(__file__).resolve().parent)
+    if found:
+        return found
+    # Fail closed for required paths: caller must set env when not in-repo.
+    return Path.cwd().resolve()
+
+
+def _resolve_path(env_key: str, *relative_parts: str, required: bool = False) -> Path:
+    """Prefer env, else repo-relative path. Never hardcode /tmp/grok-* or fixed mounts."""
+    raw = os.environ.get(env_key, "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    root = _repo_root()
+    p = root.joinpath(*relative_parts)
+    if required and not p.exists() and not os.environ.get(env_key):
+        # Deferred: existence checked when the path is used.
+        pass
+    return p
+
+
+WARMBLY_ROOT = _repo_root()
 API = os.environ.get("CONFENGE_GATE_API", "http://127.0.0.1:18080")
 MAILPIT = os.environ.get("CONFENGE_GATE_MAILPIT", "http://127.0.0.1:18025")
 ORG = os.environ.get("CONFENGE_GATE_ORG", "22222222-0000-0000-0000-000000000001")
-FEED = Path(
-    os.environ.get(
-        "CONFENGE_GATE_FEED",
-        "/tmp/grok-goal-54bfd8993c72/implementer/confenge_outreach_with_contacts/06_warmbly_feed/chunk_0000.json",
-    )
+FEED = _resolve_path(
+    "CONFENGE_GATE_FEED",
+    "internal",
+    "app",
+    "confenge",
+    "testdata",
+    "demo_3_companies.json",
 )
-ARTIFACT = Path(
-    os.environ.get(
-        "CONFENGE_GATE_ARTIFACT_DIR",
-        "/tmp/grok-goal-54bfd8993c72/implementer/artifacts/campaigns/CONFENGE-FINAL-INTEGRATION-AND-LIVE-REHEARSAL-01",
-    )
+ARTIFACT = _resolve_path(
+    "CONFENGE_GATE_ARTIFACT_DIR",
+    "data",
+    "confenge-artifacts",
+    "CONFENGE-FINAL-INTEGRATION-AND-LIVE-REHEARSAL-01",
 )
-EVIDENCE = Path(
-    os.environ.get(
-        "CONFENGE_GATE_EVIDENCE_DIR",
-        "/tmp/grok-goal-54bfd8993c72/implementer/evidence",
-    )
-)
+EVIDENCE = _resolve_path("CONFENGE_GATE_EVIDENCE_DIR", "data", "confenge-evidence")
 BACKEND_BIN = os.environ.get(
     "CONFENGE_GATE_BACKEND_BIN",
-    "/tmp/grok-goal-54bfd8993c72/implementer/bin/warmbly-backend",
+    str(WARMBLY_ROOT / "bin" / "warmbly-backend"),
 )
-BACKEND_ENV = Path(
-    os.environ.get(
-        "CONFENGE_GATE_BACKEND_ENV",
-        "/tmp/grok-goal-54bfd8993c72/implementer/backend.env",
-    )
-)
+BACKEND_ENV = _resolve_path("CONFENGE_GATE_BACKEND_ENV", "data", "confenge-backend.env")
 RECEPTOR_CMD = os.environ.get(
     "CONFENGE_GATE_RECEPTOR_CMD",
     "python3 -m scripts.warmbly_bridge serve-outcomes --host 127.0.0.1 --port 18090 "
     "--secret confenge-outcome-test-secret-32chars!! --memory-store",
 )
-RECEPTOR_CWD = os.environ.get("CONFENGE_GATE_RECEPTOR_CWD", "/mnt/d/extra-cli")
+
+
+def _default_receptor_cwd() -> str:
+    env = os.environ.get("CONFENGE_GATE_RECEPTOR_CWD", "").strip()
+    if env:
+        return env
+    # Sibling checkout convention: ../extra-cli next to warmbly, else env required.
+    sibling = (WARMBLY_ROOT.parent / "extra-cli").resolve()
+    if sibling.is_dir():
+        return str(sibling)
+    return ""  # fail closed when used
+
+
+RECEPTOR_CWD = _default_receptor_cwd()
 RECEPTOR_HEALTH = os.environ.get(
     "CONFENGE_GATE_RECEPTOR_HEALTH", "http://127.0.0.1:18090/health"
 )
 DO_RESTART = os.environ.get("CONFENGE_GATE_DO_RESTART", "1") == "1"
 
 
-def now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def current_code_sha() -> str:
+    """HEAD of warmbly repo for evidence binding. Empty if git unavailable."""
+    try:
+        out = subprocess.check_output(
+            ["git", "-C", str(WARMBLY_ROOT), "rev-parse", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+        return out.strip()
+    except Exception:
+        return os.environ.get("CONFENGE_GATE_CODE_SHA", "").strip()
+
+
+def classify_evidence_file(
+    path: Path,
+    *,
+    expected_sha: str | None = None,
+    max_age_hours: float | None = 24.0,
+) -> dict[str, Any]:
+    """Return status for a dynamic evidence file. Never PASS on missing/stale."""
+    if not path.exists():
+        return {
+            "status": GATE_NOT_RUN,
+            "path": str(path),
+            "reason": "evidence file missing",
+        }
+    try:
+        data = json.loads(path.read_text())
+    except Exception as e:
+        return {
+            "status": GATE_FAIL,
+            "path": str(path),
+            "reason": f"unreadable evidence: {e}",
+        }
+    if not isinstance(data, dict):
+        return {
+            "status": GATE_FAIL,
+            "path": str(path),
+            "reason": "evidence root must be object",
+        }
+    sha = (
+        data.get("code_sha")
+        or data.get("codeSHA")
+        or data.get("tested_sha")
+        or data.get("git_sha")
+        or ""
+    )
+    gen = data.get("generated_at") or data.get("at") or data.get("timestamp") or ""
+    result = data.get("result") or data.get("status") or data.get("gate") or ""
+    if expected_sha and sha and sha != expected_sha:
+        return {
+            "status": GATE_STALE,
+            "path": str(path),
+            "reason": f"evidence sha {sha[:12]} != current {expected_sha[:12]}",
+            "code_sha": sha,
+        }
+    if max_age_hours is not None and gen:
+        try:
+            # Accept Z or offset
+            ts = datetime.fromisoformat(str(gen).replace("Z", "+00:00"))
+            age_h = (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds() / 3600
+            if age_h > max_age_hours:
+                return {
+                    "status": GATE_STALE,
+                    "path": str(path),
+                    "reason": f"evidence age {age_h:.1f}h > {max_age_hours}h",
+                    "generated_at": gen,
+                }
+        except Exception:
+            pass
+    # Interpret result
+    r = str(result).upper()
+    if r in ("PASS", "OK", "SUCCESS", "TRUE"):
+        status = GATE_PASS
+    elif r in ("FAIL", "FAILED", "ERROR", "FALSE"):
+        status = GATE_FAIL
+    elif data.get("pass") is True:
+        status = GATE_PASS
+    elif data.get("pass") is False:
+        status = GATE_FAIL
+    else:
+        status = GATE_NOT_RUN
+        r = "missing result field"
+    return {
+        "status": status,
+        "path": str(path),
+        "reason": r if status != GATE_PASS else "current evidence",
+        "code_sha": sha or None,
+        "generated_at": gen or None,
+        "raw_result": result,
+    }
+
+
+def aggregate_verdict(gates: dict[str, str]) -> tuple[str, list[str]]:
+    """READY only when every critical gate is PASS. NOT_RUN/STALE → NOT_READY."""
+    blockers: list[str] = []
+    for name in CRITICAL_GATES:
+        st = gates.get(name, GATE_NOT_RUN)
+        if st == GATE_PASS:
+            continue
+        blockers.append(f"{name}={st}")
+    if blockers:
+        return "NOT_READY_FOR_CONTROLLED_REAL_OUTREACH", blockers
+    return "READY_FOR_CONTROLLED_REAL_OUTREACH", []
+
+
+def exit_code_for_verdict(verdict: str, *, report_only: bool) -> int:
+    """Strict mode: READY→0, else non-zero. --report-only always 0 after write."""
+    if report_only:
+        return 0
+    if verdict == "READY_FOR_CONTROLLED_REAL_OUTREACH":
+        return 0
+    return 2
+
+
+def load_external_gate_status(name: str, env_key: str | None = None) -> str:
+    """Load a gate from CONFENGE_GATE_<NAME>_EVIDENCE file or env override.
+
+    Never invents PASS. Missing evidence → NOT_RUN.
+    """
+    env_status = os.environ.get(f"CONFENGE_GATE_{name.upper()}_STATUS", "").strip().upper()
+    if env_status in (GATE_PASS, GATE_FAIL, GATE_NOT_RUN, GATE_BLOCKED_EXTERNAL, GATE_STALE):
+        return env_status
+    key = env_key or f"CONFENGE_GATE_{name.upper()}_EVIDENCE"
+    raw = os.environ.get(key, "").strip()
+    if not raw:
+        # Convention: data/confenge-evidence/<name>.json
+        cand = EVIDENCE / f"{name}.json"
+        if not cand.exists():
+            return GATE_NOT_RUN
+        path = cand
+    else:
+        path = Path(raw)
+    info = classify_evidence_file(path, expected_sha=current_code_sha() or None)
+    return info["status"]
 
 
 def req(method: str, path: str, body=None, token: str | None = None, headers=None, raw=False):
@@ -223,12 +437,17 @@ def start_backend() -> subprocess.Popen:
             if "=" in line and not line.startswith("#"):
                 k, v = line.split("=", 1)
                 env[k] = v
+    if not Path(BACKEND_BIN).exists():
+        raise FileNotFoundError(
+            f"backend binary missing: {BACKEND_BIN} "
+            f"(set CONFENGE_GATE_BACKEND_BIN or build into repo bin/)"
+        )
     log_path = EVIDENCE / "backend-restart.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     lf = open(log_path, "ab")
     return subprocess.Popen(
         [BACKEND_BIN],
-        cwd="/mnt/d/warmbly",
+        cwd=str(WARMBLY_ROOT),
         env=env,
         stdout=lf,
         stderr=lf,
@@ -237,6 +456,11 @@ def start_backend() -> subprocess.Popen:
 
 
 def start_receptor() -> subprocess.Popen:
+    if not RECEPTOR_CWD or not Path(RECEPTOR_CWD).is_dir():
+        raise FileNotFoundError(
+            "CONFENGE_GATE_RECEPTOR_CWD unset/invalid; expected extra-cli checkout "
+            "(sibling ../extra-cli or explicit env)"
+        )
     log_path = EVIDENCE / "receptor-restart.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     lf = open(log_path, "ab")
@@ -268,98 +492,258 @@ def summary(token: str) -> dict:
     return (j.get("data") or j) if st < 400 else {"_error": j, "_status": st}
 
 
-def contact_gate() -> dict:
+# Email/phone verification statuses (honest separation — not a single boolean).
+STATUS_NOT_AVAILABLE = "NOT_AVAILABLE"
+STATUS_PUBLIC_DISCOVERED = "PUBLIC_DISCOVERED"
+STATUS_OFFICIAL_SOURCE = "OFFICIAL_SOURCE"
+STATUS_CANDIDATE_UNVERIFIED = "CANDIDATE_UNVERIFIED"
+STATUS_GENERIC_PUBLIC = "GENERIC_PUBLIC"
+STATUS_VERIFIED = "VERIFIED"
+STATUS_HUMAN_CONFIRMED = "HUMAN_CONFIRMED"
+STATUS_FIXTURE = "FIXTURE"
+
+# Only these make an email enrollable for cold EMAIL channel.
+_EMAIL_ENROLLABLE_STATUSES = frozenset(
+    {STATUS_VERIFIED, STATUS_HUMAN_CONFIRMED, STATUS_OFFICIAL_SOURCE}
+)
+# Explicit verification tokens that count as verified (not format/domain heuristics).
+_VERIFIED_TOKENS = frozenset(
+    {
+        "VERIFIED",
+        "HUMAN_CONFIRMED",
+        "HUMAN_VERIFIED",
+        "OFFICIAL_SOURCE",
+        "REGISTRY",
+        "MX_VERIFIED",
+        "SMTP_VERIFIED",
+        "CATCH_ALL_CHECKED",
+    }
+)
+_PATTERN_GUESS_TOKENS = frozenset(
+    {
+        "PATTERN",
+        "GUESSED",
+        "INFERRED",
+        "PATTERN_GUESS",
+        "NAME_PATTERN",
+        "DERIVED",
+    }
+)
+
+
+def classify_email_contact(c: dict) -> dict[str, Any]:
+    """Classify one contact email honestly.
+
+    Valid format + non-example.com domain ≠ verified. Pattern-guessed emails
+    stay CANDIDATE_UNVERIFIED / not enrollable until adequate evidence.
+    """
+    em = (c.get("email") or c.get("email_address") or "").strip().lower()
+    if not em or "@" not in em:
+        return {
+            "email": em or None,
+            "status": STATUS_NOT_AVAILABLE,
+            "enrollable": False,
+            "discovered": False,
+        }
+    dom = em.split("@", 1)[1]
+    vs = str(
+        c.get("verification_status")
+        or c.get("email_verification_status")
+        or c.get("status")
+        or ""
+    ).strip().upper()
+    src = str(c.get("source") or c.get("source_url") or c.get("provenance") or "").lower()
+    method = str(c.get("resolution_method") or c.get("method") or "").lower()
+
+    if dom.endswith("example.com") or "example." in dom or dom.endswith("test.local"):
+        return {
+            "email": em,
+            "domain": dom,
+            "status": STATUS_FIXTURE,
+            "enrollable": False,
+            "discovered": False,
+        }
+
+    # Pattern guessing is never enrollable regardless of domain existence.
+    if (
+        vs in _PATTERN_GUESS_TOKENS
+        or "pattern" in method
+        or "guess" in method
+        or "infer" in method
+        or "pattern" in src
+    ):
+        return {
+            "email": em,
+            "domain": dom,
+            "status": STATUS_CANDIDATE_UNVERIFIED,
+            "enrollable": False,
+            "discovered": True,
+            "reason": "pattern_guess_or_inferred",
+        }
+
+    if vs in _VERIFIED_TOKENS or vs == STATUS_OFFICIAL_SOURCE:
+        status = STATUS_HUMAN_CONFIRMED if "HUMAN" in vs else (
+            STATUS_OFFICIAL_SOURCE if vs in ("OFFICIAL_SOURCE", "REGISTRY") else STATUS_VERIFIED
+        )
+        return {
+            "email": em,
+            "domain": dom,
+            "status": status,
+            "enrollable": True,
+            "discovered": True,
+            "verification_status": vs,
+        }
+
+    # Generic public mailbox patterns (contato@, comercial@) without verification.
+    local = em.split("@", 1)[0]
+    if local in ("contato", "comercial", "vendas", "info", "contact", "hello", "admin", "sac"):
+        return {
+            "email": em,
+            "domain": dom,
+            "status": STATUS_GENERIC_PUBLIC,
+            "enrollable": False,
+            "discovered": True,
+            "reason": "generic_local_part_unverified",
+        }
+
+    # Discovered public email with no verification evidence.
+    return {
+        "email": em,
+        "domain": dom,
+        "status": STATUS_PUBLIC_DISCOVERED,
+        "enrollable": False,
+        "discovered": True,
+        "reason": "domain_exists_is_not_verified",
+    }
+
+
+def classify_phone_contact(c: dict) -> dict[str, Any]:
+    """Public phone ≠ WhatsApp opt-in. Official registry phone still not WA-eligible."""
+    ph = (
+        c.get("phone") or c.get("phone_e164") or c.get("telefone") or ""
+    ).strip()
+    if not ph:
+        return {
+            "phone": None,
+            "status": STATUS_NOT_AVAILABLE,
+            "whatsapp_eligible": False,
+            "discovered": False,
+        }
+    vs = str(c.get("verification_status") or c.get("phone_verification_status") or "").upper()
+    src = str(c.get("source_url") or c.get("source") or "").lower()
+    consent = bool(
+        c.get("whatsapp_opt_in")
+        or c.get("whatsapp_consent")
+        or c.get("wa_opt_in")
+        or (str(c.get("channel_consent") or "").upper() == "WHATSAPP")
+    )
+    official = vs in ("OFFICIAL_SOURCE", "REGISTRY") or any(
+        k in src for k in ("brasilapi", "official", "registry", "rfb", "receita")
+    )
+    status = STATUS_OFFICIAL_SOURCE if official else STATUS_PUBLIC_DISCOVERED
+    return {
+        "phone": ph,
+        "status": status,
+        "whatsapp_eligible": consent,  # never true from public discovery alone
+        "discovered": True,
+        "official_source": official,
+        "note": "public phone ≠ WhatsApp opt-in",
+    }
+
+
+def contact_gate(feed_path: Path | None = None) -> dict:
     """Hard contact honesty for confenge.outreach.v1 feed.
 
-    PASS requires a non-fixture resolution path:
-      - zero example.com / synthetic domains, AND
-      - at least one real public contact (email not example.com, or phone with
-        OFFICIAL_SOURCE / brasilapi / registry provenance), OR
-      - a signed human-verified pilot recipient list file.
+    Separates:
+      contact discovered | email enrollable | WhatsApp eligible
 
-    Public phone does NOT imply WhatsApp opt-in or email enrollability.
+    PASS on contact_integrity requires non-fixture discovery path OR human pilot list.
+    Channel readiness (email enrollable / WA eligible) is reported separately and
+    does NOT auto-pass from domain != example.com.
     """
+    path = feed_path or FEED
     feed_emails_example = 0
     total_emails = 0
     total_phones = 0
     official_phones = 0
+    discovered_emails = 0
     enrollable_emails = 0
+    whatsapp_eligible = 0
+    status_counts: dict[str, int] = {}
     sample_domains: list[str] = []
     sample_sources: list[str] = []
-    if FEED.exists():
-        try:
-            payload = json.loads(FEED.read_text())
-            leads = payload.get("leads") or payload.get("data") or []
-            if isinstance(payload, list):
-                leads = payload
-            for lead in leads[:500]:
-                contacts = lead.get("contacts") or []
-                for c in contacts:
-                    em = (c.get("email") or c.get("email_address") or "").strip().lower()
-                    ph = (
-                        c.get("phone")
-                        or c.get("phone_e164")
-                        or c.get("telefone")
-                        or ""
-                    ).strip()
-                    src = (
-                        c.get("source_url")
-                        or c.get("verification_status")
-                        or c.get("source")
-                        or ""
-                    )
-                    src_l = str(src).lower()
-                    if em and "@" in em:
-                        total_emails += 1
-                        dom = em.split("@", 1)[1]
-                        if len(sample_domains) < 8:
-                            sample_domains.append(dom)
-                        if dom.endswith("example.com") or "example." in dom:
-                            feed_emails_example += 1
-                        else:
-                            enrollable_emails += 1
-                    if ph:
-                        total_phones += 1
-                        if any(
-                            k in src_l
-                            for k in (
-                                "brasilapi",
-                                "official",
-                                "registry",
-                                "rfb",
-                                "receita",
-                            )
-                        ) or str(c.get("verification_status") or "").upper() in (
-                            "OFFICIAL_SOURCE",
-                            "REGISTRY",
-                        ):
-                            official_phones += 1
-                        if len(sample_sources) < 6 and src:
-                            sample_sources.append(str(src)[:120])
-        except Exception as e:
-            return {"gate": "FAIL", "error": f"feed parse: {e}"}
+    sample_classifications: list[dict] = []
 
-    fixture_email_ratio = (
-        (feed_emails_example / total_emails) if total_emails else 0.0
-    )
+    if not path.exists():
+        return {
+            "gate": GATE_FAIL,
+            "reason": f"feed missing: {path}",
+            "email_enrollable_count": 0,
+            "whatsapp_eligible_count": 0,
+            "contact_discovered": False,
+        }
+
+    try:
+        payload = json.loads(path.read_text())
+        leads = payload.get("leads") or payload.get("data") or []
+        if isinstance(payload, list):
+            leads = payload
+        for lead in leads[:500]:
+            contacts = lead.get("contacts") or []
+            for c in contacts:
+                if not isinstance(c, dict):
+                    continue
+                ec = classify_email_contact(c)
+                if ec.get("email"):
+                    total_emails += 1
+                    st = ec["status"]
+                    status_counts[st] = status_counts.get(st, 0) + 1
+                    if st == STATUS_FIXTURE:
+                        feed_emails_example += 1
+                    if ec.get("discovered"):
+                        discovered_emails += 1
+                    if ec.get("enrollable"):
+                        enrollable_emails += 1
+                    dom = ec.get("domain")
+                    if dom and len(sample_domains) < 8:
+                        sample_domains.append(str(dom))
+                    if len(sample_classifications) < 6:
+                        sample_classifications.append(ec)
+
+                pc = classify_phone_contact(c)
+                if pc.get("phone"):
+                    total_phones += 1
+                    if pc.get("official_source"):
+                        official_phones += 1
+                    if pc.get("whatsapp_eligible"):
+                        whatsapp_eligible += 1
+                    src = c.get("source_url") or c.get("source") or ""
+                    if len(sample_sources) < 6 and src:
+                        sample_sources.append(str(src)[:120])
+    except Exception as e:
+        return {"gate": GATE_FAIL, "error": f"feed parse: {e}"}
+
+    fixture_email_ratio = (feed_emails_example / total_emails) if total_emails else 0.0
     has_fixture_email = feed_emails_example > 0
-    has_real_public = official_phones > 0 or enrollable_emails > 0
+    contact_discovered = discovered_emails > 0 or official_phones > 0 or total_phones > 0
 
     pilot = os.environ.get("CONFENGE_HUMAN_VERIFIED_PILOT_LIST", "")
     pilot_ok = bool(pilot) and Path(pilot).exists()
 
-    # FAIL closed on fixture domains; PASS on live registry/public phones or real emails or pilot list.
+    # Integrity gate: fixture domains fail closed unless pilot overrides.
+    # Non-fixture public discovery OR official phones OR pilot → PASS integrity.
+    # Enrollability is a separate channel flag.
     if has_fixture_email and not pilot_ok:
-        gate = "FAIL"
+        gate = GATE_FAIL
         reason = "fixture example.com emails present"
     elif pilot_ok:
-        gate = "PASS"
+        gate = GATE_PASS
         reason = "human-verified pilot recipient list present"
-    elif has_real_public and not has_fixture_email:
-        gate = "PASS"
-        reason = "live public resolution (registry/official phones and/or non-fixture emails)"
+    elif contact_discovered and not has_fixture_email:
+        gate = GATE_PASS
+        reason = "live public/official contacts discovered (enrollability separate)"
     else:
-        gate = "FAIL"
+        gate = GATE_FAIL
         reason = "no non-fixture contacts and no pilot list"
 
     return {
@@ -368,16 +752,29 @@ def contact_gate() -> dict:
         "total_emails_sampled": total_emails,
         "example_com_emails": feed_emails_example,
         "fixture_email_ratio": fixture_email_ratio,
-        "enrollable_non_fixture_emails": enrollable_emails,
+        # Honest: only verified/human/official, NOT "non-example.com".
+        "enrollable_emails": enrollable_emails,
+        "enrollable_non_fixture_emails": enrollable_emails,  # legacy key, same semantics
+        "discovered_emails": discovered_emails,
         "total_phones": total_phones,
         "official_source_phones": official_phones,
+        "whatsapp_eligible_count": whatsapp_eligible,
+        "contact_discovered": contact_discovered,
+        "email_enrollable": enrollable_emails > 0 or pilot_ok,
+        "whatsapp_eligible": whatsapp_eligible > 0,
+        "status_counts": status_counts,
         "sample_domains": sample_domains,
         "sample_sources": sample_sources,
+        "sample_classifications": sample_classifications,
         "pilot_list": pilot if pilot_ok else None,
-        "whatsapp_eligible_note": "Public phone does not imply WhatsApp opt-in (rate remains 0 unless consent).",
+        "whatsapp_eligible_note": (
+            "Public phone does not imply WhatsApp opt-in "
+            "(eligible only with explicit consent fields)."
+        ),
         "note": (
-            "PASS = non-fixture live resolution path. "
-            "Email enrollability for cold EMAIL channel is separate (may still be 0)."
+            "domain!=example.com is NOT verified. "
+            "Pattern-guessed emails stay non-enrollable. "
+            "contact_discovered ≠ email_enrollable ≠ whatsapp_eligible."
         ),
     }
 
@@ -645,14 +1042,108 @@ def write_all(payload: dict) -> None:
             )
 
 
-def build_go_no_go(
-    critical: dict,
+def _bool_gate(ok: bool | None, ran: bool = True) -> str:
+    if not ran:
+        return GATE_NOT_RUN
+    if ok is None:
+        return GATE_NOT_RUN
+    return GATE_PASS if ok else GATE_FAIL
+
+
+def build_critical_gate_map(
+    *,
     contact: dict,
-    sticky_pass: bool,
-    restart_pass: bool,
+    sticky_assertions: dict,
+    restart_ok: bool,
+    channel_ok: bool,
+    external: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Map CRITICAL_GATES → PASS|FAIL|NOT_RUN|BLOCKED_EXTERNAL|STALE.
+
+    Live sticky/restart assertions from this run are measured here.
+    External gates (playwright, governor unit suite, full national, CI, …)
+    must be supplied via evidence files / env — never inherited as PASS.
+    """
+    ext = external or {}
+    sticky = sticky_assertions or {}
+
+    def sticky_ok(key: str) -> str:
+        v = sticky.get(key)
+        if not isinstance(v, dict):
+            return GATE_NOT_RUN
+        st = str(v.get("status") or "").upper()
+        if st in (GATE_NOT_RUN, GATE_STALE, GATE_BLOCKED_EXTERNAL):
+            return st
+        if "pass" not in v:
+            return GATE_NOT_RUN
+        return GATE_PASS if v.get("pass") else GATE_FAIL
+
+    gates: dict[str, str] = {
+        "contact_integrity": contact.get("gate") or GATE_NOT_RUN,
+        "dnc_sticky": sticky_ok("dnc_sticky"),
+        "reimport_sticky": sticky_ok("no_burst_creates"),
+        "restart_no_burst": (
+            GATE_PASS
+            if restart_ok and sticky.get("no_burst_creates", {}).get("pass")
+            else (
+                GATE_FAIL
+                if sticky.get("no_burst_creates") is not None or restart_ok is False
+                else GATE_NOT_RUN
+            )
+        ),
+        "approval_content_hash": sticky_ok("approval_sticky"),
+        "reply_cancels_future": sticky_ok("replied_sticky"),
+        # Channel readiness is not a CRITICAL_GATES name but influences READY blockers.
+    }
+    # External / evidence-backed critical gates — default NOT_RUN (never prior PASS).
+    for name in CRITICAL_GATES:
+        if name in gates:
+            continue
+        if name in ext:
+            gates[name] = ext[name]
+        else:
+            gates[name] = load_external_gate_status(name)
+
+    # CI is never self-declared green inside this process.
+    if gates.get("ci_green") is None:
+        pass
+    # Optional explicit: if something set CI via env incorrectly to PASS without
+    # external workflow, force PENDING mapping — we do not have ci_green in
+    # CRITICAL_GATES; document PENDING_EXTERNAL in report only.
+
+    # Daily limit coherence can be proven without live stack via env evidence or
+    # leave NOT_RUN unless measured this run.
+    if gates.get("daily_limit_non_conflicting") == GATE_NOT_RUN:
+        # Lightweight current-process measurement: if operator env is coherent.
+        try:
+            daily = int(os.environ.get("CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT", "100"))
+            hourly = int(os.environ.get("CONFENGE_GLOBAL_SENDS_PER_HOUR", "10"))
+            if daily >= hourly * 9:  # 09–18 ≈ 9h
+                gates["daily_limit_non_conflicting"] = GATE_PASS
+            elif daily <= hourly:
+                gates["daily_limit_non_conflicting"] = GATE_FAIL
+            else:
+                gates["daily_limit_non_conflicting"] = GATE_FAIL
+        except Exception:
+            gates["daily_limit_non_conflicting"] = GATE_NOT_RUN
+
+    # sent sticky feeds approval path partially
+    if gates.get("approval_content_hash") == GATE_NOT_RUN:
+        gates["approval_content_hash"] = sticky_ok("sent_sticky")
+
+    _ = channel_ok  # channel used in blockers, not a named critical gate alone
+    return gates
+
+
+def build_go_no_go(
+    gates: dict[str, str],
+    contact: dict,
     channel_ok: bool,
     verdict: str,
     blockers: list[str],
+    *,
+    code_sha: str = "",
+    measurement_notes: dict | None = None,
 ) -> str:
     lines = [
         "# GO / NO-GO",
@@ -664,24 +1155,36 @@ def build_go_no_go(
         "```",
         "",
         f"Emitted by `scripts/confenge_readiness_gate.py` at {now()}. Do not hand-edit.",
+        f"tested_sha: `{code_sha or 'unknown'}`",
         "",
-        "## Critical checklist (machine-observed)",
+        "## Critical gates (measurement → evidence → verdict)",
         "",
-        "| Gate | Status | Evidence |",
-        "|------|--------|----------|",
-        f"| real contact resolution | **{contact['gate']}** | {contact.get('reason', '')} |",
-        f"| enrollable send channel | {'PASS' if channel_ok else 'FAIL'} | non-fixture emails or human pilot list |",
-        f"| sticky reimport (no-burst) | {'PASS' if critical.get('no_burst_creates') else 'FAIL'} | creates after reimport |",
-        f"| sticky DNC | {'PASS' if critical.get('dnc_sticky') else 'FAIL'} | public /dnc + reimport |",
-        f"| sticky SENT | {'PASS' if critical.get('sent_sticky') else 'FAIL'} | approve+queue + reimport |",
-        f"| sticky approval hash | {'PASS' if critical.get('approval_sticky') else 'FAIL'} | APPROVED hash preserved |",
-        f"| sticky REPLIED | {'PASS' if critical.get('replied_sticky') else 'FAIL'} | cancel-touchpoints REPLY + reimport |",
-        f"| sticky BOUNCED | {'PASS' if critical.get('bounced_sticky') else 'FAIL'} | cancel-touchpoints BOUNCE + reimport |",
-        f"| process restart Phase Q | {'PASS' if restart_pass else 'FAIL'} | kill/restart backend+receptor observed |",
-        f"| overall sticky+restart gate | {'PASS' if sticky_pass and restart_pass else 'FAIL'} | all sticky bullets + restart |",
-        "| Playwright hard content_hash | PASS | prior accepted proof |",
-        "| governor 10/h | PASS | prior accepted proof |",
-        "| CI GREEN exact HEAD | PASS | prior accepted proof |",
+        "Status vocabulary: `PASS` | `FAIL` | `NOT_RUN` | `BLOCKED_EXTERNAL` | `STALE`.",
+        "Historical success is **not** PASS. Missing current evidence is `NOT_RUN`.",
+        "",
+        "| Gate | Status | Notes |",
+        "|------|--------|-------|",
+    ]
+    notes = measurement_notes or {}
+    for name in CRITICAL_GATES:
+        st = gates.get(name, GATE_NOT_RUN)
+        note = notes.get(name, "")
+        if name == "contact_integrity":
+            note = note or contact.get("reason", "")
+        if name == "playwright_live" and st == GATE_NOT_RUN:
+            note = note or "no current browser evidence (static data-testid is not PASS)"
+        if name == "governor_10h" and st == GATE_NOT_RUN:
+            note = note or "run dispatch governor tests this HEAD; write evidence JSON"
+        lines.append(f"| {name} | **{st}** | {note} |")
+    lines += [
+        "",
+        f"| enrollable send channel (derived) | {'PASS' if channel_ok else 'FAIL'} | "
+        f"verified/human/official email or pilot list; domain!=example.com alone is not enough |",
+        "",
+        "## CI (external only)",
+        "",
+        "CI = `PENDING_EXTERNAL` — this script never declares CI GREEN for exact HEAD.",
+        "Validate GitHub Actions on the tested SHA after the workflow finishes.",
         "",
         "## Blockers",
         "",
@@ -695,27 +1198,14 @@ def build_go_no_go(
         "",
         "Human review of human-review-30.md remains required before first pilot send.",
         "",
-        "READY is impossible while any critical above is FAIL.",
+        "READY is impossible while any critical gate is FAIL, NOT_RUN, STALE, or BLOCKED_EXTERNAL.",
         "",
     ]
     return "\n".join(lines)
 
 
-def main() -> int:
-    ARTIFACT.mkdir(parents=True, exist_ok=True)
-    EVIDENCE.mkdir(parents=True, exist_ok=True)
-
-    contact = contact_gate()
-    proof: dict = {
-        "at": now(),
-        "gate_script": "scripts/confenge_readiness_gate.py",
-        "org": ORG,
-        "feed": str(FEED),
-        "steps": [],
-        "assertions": {},
-        "pass": False,
-    }
-
+def run_live_sticky_phase(proof: dict) -> tuple[dict, bool, dict, dict]:
+    """Seed → optional restart → reimport → sticky assertions (public APIs only)."""
     token = login()
     proof["summary_before_seed"] = summary(token)
     seeds = seed_states(token)
@@ -730,7 +1220,6 @@ def main() -> int:
     }
     proof["snapshot_before_restart"] = snap_before
 
-    # --- Process restart ---
     backend_pids = pids_for(["warmbly-backend"])
     receptor_pids = pids_for(["serve-outcomes", "warmbly_bridge"])
     proof["pids_before"] = {"backend": backend_pids, "receptor": receptor_pids}
@@ -739,10 +1228,7 @@ def main() -> int:
     if DO_RESTART:
         kill_log = kill_pids(backend_pids + receptor_pids)
         proof["steps"].append({"kill": kill_log})
-        # confirm down
         time.sleep(1)
-        down_backend = not wait_http(API + "/health", timeout=3)
-        # health may 404; try /v1/confenge/status without auth
         backend_alive = False
         try:
             urllib.request.urlopen(API + "/v1/confenge/status", timeout=2)
@@ -769,11 +1255,8 @@ def main() -> int:
         receptor_up = wait_http(RECEPTOR_HEALTH, timeout=30)
         proof["backend_up_after_restart"] = backend_up
         proof["receptor_up_after_restart"] = receptor_up
-        restart_ok = backend_up and receptor_up and bool(backend_pids or True)
-        # require we actually killed something and came back
         restart_ok = backend_up and receptor_up and (len(kill_log) > 0 or len(backend_pids) == 0)
         if not backend_pids:
-            # if no prior pid found, still restarted from fresh start
             restart_ok = backend_up and receptor_up
         proof["process_restart"] = {
             "attempted": True,
@@ -783,7 +1266,6 @@ def main() -> int:
             "new_backend_pid": bp.pid,
             "new_receptor_pid": rp.pid,
         }
-        # re-login after restart
         token = login()
     else:
         proof["process_restart"] = {
@@ -793,7 +1275,6 @@ def main() -> int:
         }
         restart_ok = False
 
-    # --- Reimport twice ---
     r1 = reimport(token, f"gate-reimport-1-{int(time.time())}")
     r2 = reimport(token, f"gate-reimport-2-{int(time.time())}")
     proof["reimport1"] = r1
@@ -813,14 +1294,16 @@ def main() -> int:
 
     assertions: dict = {}
     assertions["no_burst_creates"] = {
-        "pass": creates1 <= 5 and creates2 <= 5 and r1.get("status") == 200 and r2.get("status") == 200,
+        "pass": creates1 <= 5
+        and creates2 <= 5
+        and r1.get("status") == 200
+        and r2.get("status") == 200,
         "creates1": creates1,
         "creates2": creates2,
         "status1": r1.get("status"),
         "status2": r2.get("status"),
     }
 
-    # DNC sticky
     dnc = seeds.get("dnc") or {}
     if dnc.get("account_id") and dnc.get("ok"):
         acc = get_account(token, dnc["account_id"])
@@ -838,7 +1321,6 @@ def main() -> int:
             "seed": dnc,
         }
 
-    # SENT sticky
     sent = seeds.get("sent") or {}
     if sent.get("touchpoint_id"):
         tp = get_tp(token, sent["touchpoint_id"])
@@ -846,21 +1328,24 @@ def main() -> int:
         hash_ok = (not sent.get("approved_content_hash")) or (
             tp.get("approved_content_hash") == sent.get("approved_content_hash")
         )
+        # Prefer exact terminal SENT; QUEUED acceptable mid-transport; not open review.
         assertions["sent_sticky"] = {
-            "pass": st_u in ("SENT", "QUEUED", "FAILED") and hash_ok and st_u != "READY_TO_GENERATE",
+            "pass": st_u in ("SENT", "QUEUED") and hash_ok,
             "state": st_u,
             "approved_content_hash": tp.get("approved_content_hash"),
             "before_state": sent.get("state"),
             "before_hash": sent.get("approved_content_hash"),
-            "note": "FAILED is terminal transport fail after approve; still must not revert to open review",
+            "note": "SENT or QUEUED only; open review states fail",
         }
-        # tighten: must remain SENT or QUEUED ideally; FAILED allowed only if was approved
-        if st_u == "FAILED" and sent.get("approved_content_hash"):
-            assertions["sent_sticky"]["pass"] = hash_ok  # approved material preserved as terminal
+        if st_u == "FAILED" and sent.get("approved_content_hash") and hash_ok:
+            # Terminal transport fail after approve: sticky for approval material only.
+            assertions["sent_sticky"]["pass"] = True
+            assertions["sent_sticky"]["note"] = (
+                "FAILED after approve with hash preserved (terminal, not reopened)"
+            )
     else:
         assertions["sent_sticky"] = {"pass": False, "error": "SENT seed missing"}
 
-    # Approval sticky
     appr = seeds.get("approved") or {}
     if appr.get("touchpoint_id") and appr.get("approved_content_hash"):
         tp = get_tp(token, appr["touchpoint_id"])
@@ -881,7 +1366,6 @@ def main() -> int:
             "seed": appr,
         }
 
-    # REPLIED sticky
     rep = seeds.get("replied") or {}
     if rep.get("ok") and rep.get("account_id"):
         acc = get_account(token, rep["account_id"])
@@ -900,14 +1384,13 @@ def main() -> int:
             "seed": rep,
         }
 
-    # BOUNCED sticky
     bou = seeds.get("bounced") or {}
     if bou.get("ok") and bou.get("account_id"):
         acc = get_account(token, bou["account_id"])
         qs = (acc.get("queue_state") or "").upper()
-        # must not re-open to READY
         assertions["bounced_sticky"] = {
-            "pass": qs in ("BOUNCED", "BLOCKED", "DO_NOT_CONTACT") and qs != "READY_TO_GENERATE",
+            "pass": qs in ("BOUNCED", "BLOCKED", "DO_NOT_CONTACT")
+            and qs != "READY_TO_GENERATE",
             "queue_state": qs,
             "account_id": bou["account_id"],
             "path": bou.get("path"),
@@ -924,100 +1407,187 @@ def main() -> int:
         "pass": restart_ok,
         "detail": proof.get("process_restart"),
     }
+    return assertions, restart_ok, r1, r2
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="CONFENGE readiness gate (strict by default)")
+    parser.add_argument(
+        "--report-only",
+        action="store_true",
+        help="Write report artifacts and exit 0 even when NOT_READY (not for official CI/readiness)",
+    )
+    parser.add_argument(
+        "--skip-live",
+        action="store_true",
+        help="Skip live sticky/restart phase; those gates stay NOT_RUN/FAIL closed",
+    )
+    parser.add_argument(
+        "--contact-only",
+        action="store_true",
+        help="Only evaluate contact honesty on FEED (still strict exit unless --report-only)",
+    )
+    args = parser.parse_args(argv)
+
+    ARTIFACT.mkdir(parents=True, exist_ok=True)
+    EVIDENCE.mkdir(parents=True, exist_ok=True)
+    code_sha = current_code_sha()
+
+    contact = contact_gate()
+    proof: dict = {
+        "at": now(),
+        "gate_script": "scripts/confenge_readiness_gate.py",
+        "code_sha": code_sha,
+        "org": ORG,
+        "feed": str(FEED),
+        "warmbly_root": str(WARMBLY_ROOT),
+        "steps": [],
+        "assertions": {},
+        "pass": False,
+    }
+
+    assertions: dict = {}
+    restart_ok = False
+    r1: dict = {}
+    r2: dict = {}
+    live_ran = False
+
+    if args.contact_only or args.skip_live:
+        proof["live_phase"] = {
+            "skipped": True,
+            "reason": "--contact-only" if args.contact_only else "--skip-live",
+        }
+        # Fail closed: sticky gates not run
+        for k in (
+            "no_burst_creates",
+            "dnc_sticky",
+            "sent_sticky",
+            "approval_sticky",
+            "replied_sticky",
+            "bounced_sticky",
+            "process_restart",
+        ):
+            assertions[k] = {"pass": False, "error": "live phase skipped", "status": GATE_NOT_RUN}
+    else:
+        live_ran = True
+        assertions, restart_ok, r1, r2 = run_live_sticky_phase(proof)
 
     proof["assertions"] = assertions
-    critical = {k: bool(v.get("pass")) for k, v in assertions.items()}
-    proof["critical_results"] = critical
+    critical_bool = {
+        k: bool(v.get("pass")) for k, v in assertions.items() if isinstance(v, dict)
+    }
+    proof["critical_results"] = critical_bool
 
     sticky_bullets = [
-        critical.get("no_burst_creates"),
-        critical.get("dnc_sticky"),
-        critical.get("sent_sticky"),
-        critical.get("approval_sticky"),
-        critical.get("replied_sticky"),
-        critical.get("bounced_sticky"),
+        critical_bool.get("no_burst_creates"),
+        critical_bool.get("dnc_sticky"),
+        critical_bool.get("sent_sticky"),
+        critical_bool.get("approval_sticky"),
+        critical_bool.get("replied_sticky"),
+        critical_bool.get("bounced_sticky"),
     ]
-    sticky_pass = all(sticky_bullets) and restart_ok
+    sticky_pass = all(sticky_bullets) and restart_ok if live_ran else False
     proof["pass"] = sticky_pass
     proof["sticky_pass"] = sticky_pass
     proof["restart_pass"] = restart_ok
 
-    # Refuse parent pass if any NOT_RE_RUN or child fail
-    if not restart_ok:
-        proof["pass"] = False
+    # Channel: verified/human/official email OR pilot — NOT domain!=example.com alone.
+    enrollable_emails = int(
+        contact.get("enrollable_emails")
+        or contact.get("enrollable_non_fixture_emails")
+        or 0
+    )
+    pilot_ok = bool(contact.get("pilot_list"))
+    channel_ok = bool(contact.get("email_enrollable")) or enrollable_emails > 0 or pilot_ok
+
+    gates = build_critical_gate_map(
+        contact=contact,
+        sticky_assertions=assertions,
+        restart_ok=restart_ok,
+        channel_ok=channel_ok,
+    )
+    verdict, gate_blockers = aggregate_verdict(gates)
+
+    blockers: list[str] = list(gate_blockers)
+    if contact["gate"] != GATE_PASS:
+        blockers.append(
+            f"contact_integrity={contact['gate']}: {contact.get('reason', '')}"
+        )
+    if live_ran and not sticky_pass:
+        fails = [k for k, v in critical_bool.items() if not v]
+        blockers.append(f"Phase Q sticky/restart failed: {fails}")
+    if contact.get("gate") == GATE_PASS and not channel_ok:
+        blockers.append(
+            "Contacts discovered but no enrollable email channel "
+            "(domain!=example.com is not verification; public phone ≠ WhatsApp opt-in). "
+            "Need VERIFIED/HUMAN_CONFIRMED/OFFICIAL_SOURCE emails or pilot list."
+        )
+
+    # READY only via aggregate of ALL critical gates (gate_blockers empty) AND channel.
+    if not channel_ok:
+        verdict = "NOT_READY_FOR_CONTROLLED_REAL_OUTREACH"
+    if gate_blockers:
+        verdict = "NOT_READY_FOR_CONTROLLED_REAL_OUTREACH"
 
     contact_metrics = {
         "gate": contact["gate"],
-        "verified_email_rate": 0.0 if contact["gate"] == "FAIL" else None,
-        "fixture_email_rate": contact.get("fixture_ratio"),
+        "enrollable_emails": enrollable_emails,
+        "discovered_emails": contact.get("discovered_emails"),
+        "fixture_email_rate": contact.get("fixture_email_ratio"),
         "example_com_emails": contact.get("example_com_emails"),
         "total_emails_sampled": contact.get("total_emails_sampled"),
+        "whatsapp_eligible_count": contact.get("whatsapp_eligible_count"),
+        "status_counts": contact.get("status_counts"),
         "sample_domains": contact.get("sample_domains"),
-        "source": "gate machine check of feed domains",
+        "source": "gate machine classification of feed contacts",
         "note": contact.get("note"),
+        "code_sha": code_sha,
+        "generated_at": now(),
     }
-
-    # Operational channel: live phones alone cannot pilot EMAIL or WhatsApp without
-    # enrollable email or WA consent. READY requires a sendable channel for the pilot.
-    enrollable_emails = int(contact.get("enrollable_non_fixture_emails") or 0)
-    pilot_ok = bool(contact.get("pilot_list"))
-    channel_ok = enrollable_emails > 0 or pilot_ok
-
-    blockers: list[str] = []
-    if contact["gate"] != "PASS":
-        blockers.append("Contact resolution fixture-only or empty (example.com / no live public path)")
-    if not sticky_pass:
-        fails = [k for k, v in critical.items() if not v]
-        blockers.append(f"Phase Q sticky/restart failed: {fails}")
-    if contact["gate"] == "PASS" and not channel_ok:
-        blockers.append(
-            "Live contacts are registry phones only (no enrollable email; "
-            "public phone ≠ WhatsApp opt-in). Need verified emails or human pilot list "
-            "before controlled real outreach."
-        )
-
-    all_green = (
-        contact["gate"] == "PASS"
-        and sticky_pass
-        and restart_ok
-        and channel_ok
-        and not blockers
-    )
-    verdict = (
-        "READY_FOR_CONTROLLED_REAL_OUTREACH"
-        if all_green
-        else "NOT_READY_FOR_CONTROLLED_REAL_OUTREACH"
-    )
 
     result = {
         "verdict": verdict,
         "emitted_by": "scripts/confenge_readiness_gate.py",
         "at": now(),
+        "generated_at": now(),
+        "code_sha": code_sha,
+        "gates": gates,
         "contacts": contact,
         "sticky_reimport": {
-            "status": "PASS" if sticky_pass else "FAIL",
-            "critical_results": critical,
+            "status": GATE_PASS if sticky_pass else (GATE_FAIL if live_ran else GATE_NOT_RUN),
+            "critical_results": critical_bool,
             "process_restart": restart_ok,
         },
         "channel_ready": channel_ok,
-        "playwright": "PASS",
-        "governor": "PASS",
+        # Never hardcode PASS for external gates:
+        "playwright_live": gates.get("playwright_live", GATE_NOT_RUN),
+        "governor_10h": gates.get("governor_10h", GATE_NOT_RUN),
+        "ci": "PENDING_EXTERNAL",
         "blockers": blockers,
+        "report_only": bool(args.report_only),
     }
 
     restart_proof = {
         "pass": sticky_pass,
+        "result": GATE_PASS if sticky_pass else (GATE_FAIL if live_ran else GATE_NOT_RUN),
         "process_restart": proof.get("process_restart"),
         "reimport1": r1,
         "reimport2": r2,
-        "sticky": critical,
+        "sticky": critical_bool,
         "source": "restart-reimport-sticky-proof.json",
         "emitted_by": "scripts/confenge_readiness_gate.py",
         "at": now(),
+        "generated_at": now(),
+        "code_sha": code_sha,
     }
 
     go_md = build_go_no_go(
-        critical, contact, sticky_pass, restart_ok, channel_ok, verdict, blockers
+        gates,
+        contact,
+        channel_ok,
+        verdict,
+        blockers,
+        code_sha=code_sha,
     )
 
     write_all(
@@ -1037,28 +1607,43 @@ def main() -> int:
                 "sticky_pass": sticky_pass,
                 "restart_pass": restart_ok,
                 "contact_gate": contact["gate"],
-                "critical": critical,
+                "gates": gates,
+                "channel_ready": channel_ok,
                 "verdict": result["verdict"],
+                "blockers": blockers,
+                "code_sha": code_sha,
                 "artifact": str(ARTIFACT),
+                "exit_mode": "report-only" if args.report_only else "strict",
             },
             indent=2,
         )
     )
-    # exit 0 always if we wrote honest FAIL; exit 1 only on script crash
-    return 0
+    return exit_code_for_verdict(verdict, report_only=args.report_only)
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
     except Exception as e:
-        err = {"pass": False, "error": str(e), "at": now(), "emitted_by": "scripts/confenge_readiness_gate.py"}
+        err = {
+            "pass": False,
+            "result": GATE_FAIL,
+            "error": str(e),
+            "at": now(),
+            "generated_at": now(),
+            "code_sha": current_code_sha(),
+            "emitted_by": "scripts/confenge_readiness_gate.py",
+            "verdict": "NOT_READY_FOR_CONTROLLED_REAL_OUTREACH",
+        }
         ARTIFACT.mkdir(parents=True, exist_ok=True)
         EVIDENCE.mkdir(parents=True, exist_ok=True)
         for base in (ARTIFACT, EVIDENCE):
-            (base / "restart-reimport-sticky-proof.json").write_text(json.dumps(err, indent=2) + "\n")
+            (base / "restart-reimport-sticky-proof.json").write_text(
+                json.dumps(err, indent=2) + "\n"
+            )
             (base / "GO-NO-GO.md").write_text(
-                f"# GO / NO-GO\n\n```text\nNOT_READY_FOR_CONTROLLED_REAL_OUTREACH\n```\n\nGate crashed: {e}\n"
+                "# GO / NO-GO\n\n```text\nNOT_READY_FOR_CONTROLLED_REAL_OUTREACH\n```\n\n"
+                f"Gate crashed: {e}\n"
             )
         print(json.dumps(err, indent=2), file=sys.stderr)
         sys.exit(1)

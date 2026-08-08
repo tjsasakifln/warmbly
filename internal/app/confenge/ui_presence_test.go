@@ -58,10 +58,19 @@ func TestConfengeUIAcceptanceAffordancesPresent(t *testing.T) {
 		"confenge-body-input",
 		"confenge-stat-sent",
 		"/app/confenge",
+		"healthcheckOrThrow",
+		"approved_content_hash",
+		"NEEDS_REVIEW",
+		// Live browser is opt-in; static presence never implies playwright_live PASS.
+		"CONFENGE_E2E",
 	} {
 		if !strings.Contains(string(specRaw), n) {
 			t.Errorf("Playwright spec missing step for %q", n)
 		}
+	}
+	// Ephemeral goal-scratch paths must not be defaults.
+	if strings.Contains(string(specRaw), "/tmp/grok-goal-") {
+		t.Error("Playwright spec must not hardcode /tmp/grok-goal-* paths")
 	}
 }
 

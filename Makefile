@@ -638,14 +638,20 @@ CONFENGE_FEED ?= internal/app/confenge/testdata/demo_3_companies.json
 CONFENGE_BACKUP_DIR ?= data/backups
 
 # CONFENGE_DEV_ENV extends GO_DEV_ENV with outreach flags (fail-closed auto-send).
-# API binds 127.0.0.1 by default for local-safe ops (override with API_HOST=).
+# Operator .env.confenge / shell exports win: every value uses $${VAR:-default}
+# so Makefile never silently overrides CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=100
+# (or any other operator-set limit) after confenge_source_env.
+# Primary pace: CONFENGE_GLOBAL_SENDS_PER_HOUR=10 (rolling hour, email+WA).
+# Campaign daily is a secondary ceiling (default 100 ≈ full 09–18 day at 10/h).
 CONFENGE_API_HOST ?= 127.0.0.1:8080
 CONFENGE_DEV_ENV = \
-	CONFENGE_OUTREACH_ENABLED=true \
-	CONFENGE_REQUIRE_HUMAN_APPROVAL=true \
-	CONFENGE_AUTO_SEND_ENABLED=false \
-	CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=10 \
-	CONFENGE_EXTRA_CLI_FEED_URL=file://$(CURDIR)/$(CONFENGE_FEED) \
+	CONFENGE_OUTREACH_ENABLED=$${CONFENGE_OUTREACH_ENABLED:-true} \
+	CONFENGE_REQUIRE_HUMAN_APPROVAL=$${CONFENGE_REQUIRE_HUMAN_APPROVAL:-true} \
+	CONFENGE_AUTO_SEND_ENABLED=$${CONFENGE_AUTO_SEND_ENABLED:-false} \
+	CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=$${CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT:-100} \
+	CONFENGE_GLOBAL_SENDS_PER_HOUR=$${CONFENGE_GLOBAL_SENDS_PER_HOUR:-10} \
+	CONFENGE_MIN_SEND_GAP_SECONDS=$${CONFENGE_MIN_SEND_GAP_SECONDS:-360} \
+	CONFENGE_EXTRA_CLI_FEED_URL=$${CONFENGE_EXTRA_CLI_FEED_URL:-file://$(CURDIR)/$(CONFENGE_FEED)} \
 	CONFENGE_WHATSAPP_ENABLED=$${CONFENGE_WHATSAPP_ENABLED:-false} \
 	WHATSAPP_PROVIDER=$${WHATSAPP_PROVIDER:-mock} \
 	WHATSAPP_EVOLUTION_ALLOW_BAILEYS=false
@@ -748,7 +754,27 @@ confenge-db-restore:
 	@cat "$(FILE)" | $(COMPOSE) exec -T postgres psql -U warmbly -d warmbly_dev
 	@echo "Restore complete."
 
-.PHONY: confenge-local confenge-backend confenge-preflight confenge-bootstrap confenge-import confenge-stop-sending confenge-resume-sending confenge-db-backup confenge-db-restore
+# Strict readiness gate (exit non-zero when NOT_READY). Official path: no --report-only.
+confenge-readiness:
+	@mkdir -p data/confenge-evidence data/confenge-artifacts
+	python3 scripts/confenge_readiness_gate.py
+
+# Report writer only (exit 0 even when NOT_READY). Do not use for official GO.
+confenge-readiness-report:
+	@mkdir -p data/confenge-evidence data/confenge-artifacts
+	python3 scripts/confenge_readiness_gate.py --report-only
+
+# Live Playwright browser (requires confenge-local stack already up).
+confenge-playwright:
+	@cd web && CONFENGE_E2E=1 \
+		CONFENGE_E2E_API=$${CONFENGE_E2E_API:-http://127.0.0.1:18080} \
+		CONFENGE_E2E_MAILPIT=$${CONFENGE_E2E_MAILPIT:-http://127.0.0.1:18025} \
+		CONFENGE_E2E_BASE_URL=$${CONFENGE_E2E_BASE_URL:-http://127.0.0.1:5173} \
+		CONFENGE_E2E_PROOF_DIR=$${CONFENGE_E2E_PROOF_DIR:-$(CURDIR)/data/confenge-evidence} \
+		CONFENGE_GATE_CODE_SHA=$$(git rev-parse HEAD) \
+		pnpm test:e2e:confenge:live
+
+.PHONY: confenge-local confenge-backend confenge-preflight confenge-bootstrap confenge-import confenge-stop-sending confenge-resume-sending confenge-db-backup confenge-db-restore confenge-readiness confenge-readiness-report confenge-playwright
 
 # ─── admin bootstrap (local/test only) ──────────────────────────────────
 #
