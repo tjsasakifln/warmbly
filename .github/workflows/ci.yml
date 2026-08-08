@@ -223,6 +223,7 @@ jobs:
       EMAIL_ADDRESS: dev@warmbly.local
       SMTP_HOST: 127.0.0.1
       SMTP_PORT: "11025"
+      CONFENGE_LOCAL_SMTP_DELIVERY: "true"
       TRACKING_DOMAIN: t.warmbly.com
       CORS_ALLOW_ORIGINS: http://127.0.0.1:5173,http://localhost:5173
       CONFENGE_OUTREACH_ENABLED: "true"

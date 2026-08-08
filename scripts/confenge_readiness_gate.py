@@ -49,6 +49,7 @@ CRITICAL_GATES = (
     "reimport_sticky",
     "outcome_hmac_roundtrip",
     "playwright_live",
+    "ci_exact_head",
 )
 
 
@@ -1234,10 +1235,11 @@ def build_go_no_go(
         f"| enrollable send channel (derived) | {'PASS' if channel_ok else 'FAIL'} | "
         f"verified/human/official email or pilot list; domain!=example.com alone is not enough |",
         "",
-        "## CI (external only)",
+        "## CI (ci_exact_head)",
         "",
-        "CI = `PENDING_EXTERNAL` — this script never declares CI GREEN for exact HEAD.",
-        "Validate GitHub Actions on the tested SHA after the workflow finishes.",
+        f"ci_exact_head = `{gates.get('ci_exact_head', GATE_NOT_RUN)}` — "
+        "requires evidence file `ci_exact_head.json` or env `CONFENGE_GATE_CI_CONCLUSION=success` "
+        "bound to the same tested_sha (never invent PASS).",
         "",
         "## Blockers",
         "",
@@ -1626,7 +1628,8 @@ def main(argv: list[str] | None = None) -> int:
         # Never hardcode PASS for external gates:
         "playwright_live": gates.get("playwright_live", GATE_NOT_RUN),
         "governor_10h": gates.get("governor_10h", GATE_NOT_RUN),
-        "ci": "PENDING_EXTERNAL",
+        "ci": gates.get("ci_exact_head", GATE_NOT_RUN),
+        "ci_exact_head": gates.get("ci_exact_head", GATE_NOT_RUN),
         "blockers": blockers,
         "report_only": bool(args.report_only),
     }

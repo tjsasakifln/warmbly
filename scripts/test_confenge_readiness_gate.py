@@ -92,7 +92,7 @@ class TestNoPriorAcceptedProof(unittest.TestCase):
         self.assertNotIn("previously validated", md.lower())
         self.assertNotIn("assumed green", md.lower())
         self.assertIn("NOT_RUN", md)
-        self.assertIn("PENDING_EXTERNAL", md)
+        self.assertIn("ci_exact_head", md)
         self.assertIn("playwright_live", md)
 
     def test_source_has_no_inherited_pass_literals(self):

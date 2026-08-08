@@ -3,6 +3,7 @@ package confenge
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -483,11 +484,21 @@ func (s *service) dispatchEmailTouch(ctx context.Context, orgID, userID uuid.UUI
 			return xerr
 		}
 	}
+	// Local/dev/CI: deliver exact approved payload via SMTP when configured
+	// (Mailpit). Does not regenerate copy — uses touchpoint subject/body only.
+	providerID := "email-enrolled:" + d.ID.String()
+	if localSMTPDeliveryEnabled() {
+		from := strings.TrimSpace(os.Getenv("EMAIL_ADDRESS"))
+		if err := deliverApprovedSMTP(from, tp.Recipient, tp.Subject, tp.BodyText); err != nil {
+			return errx.New(errx.Internal, "approved SMTP delivery failed: "+err.Error())
+		}
+		providerID = "smtp-approved:" + d.ID.String()
+	}
 	now := time.Now().UTC()
-	if err := TransitionToSent(tp, now, "email-enrolled:"+d.ID.String()); err != nil {
+	if err := TransitionToSent(tp, now, providerID); err != nil {
 		tp.State = models.TouchpointSent
 		tp.SentAt = &now
-		tp.ProviderMessageID = "email-enrolled:" + d.ID.String()
+		tp.ProviderMessageID = providerID
 	}
 	if err := s.repo.UpdateTouchpoint(ctx, tp); err != nil {
 		return errx.New(errx.Internal, "mark sent failed")

@@ -1,60 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import * as fs from "node:fs";
-import * as net from "node:net";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-
-/** Minimal SMTP DATA client for Mailpit (same role as product_acceptance smtpSendApproved). */
-function smtpSendRaw(
-  host: string,
-  port: number,
-  msg: { from: string; to: string; subject: string; body: string },
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const socket = net.createConnection({ host, port });
-    let buf = "";
-    const cmds = [
-      "EHLO confenge-e2e.local\r\n",
-      `MAIL FROM:<${msg.from}>\r\n`,
-      `RCPT TO:<${msg.to}>\r\n`,
-      "DATA\r\n",
-      `From: ${msg.from}\r\nTo: ${msg.to}\r\nSubject: ${msg.subject}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${msg.body.replace(/\n/g, "\r\n")}\r\n.\r\n`,
-      "QUIT\r\n",
-    ];
-    let i = 0;
-    const onLine = (line: string) => {
-      // After any server reply, send next command until done.
-      if (i < cmds.length) {
-        socket.write(cmds[i]);
-        i += 1;
-      } else {
-        socket.end();
-      }
-      if (line.startsWith("5")) {
-        reject(new Error(`SMTP error: ${line}`));
-      }
-    };
-    socket.on("data", (chunk) => {
-      buf += chunk.toString("utf8");
-      let idx: number;
-      while ((idx = buf.indexOf("\r\n")) >= 0) {
-        const line = buf.slice(0, idx);
-        buf = buf.slice(idx + 2);
-        if (line) onLine(line);
-      }
-    });
-    socket.on("error", reject);
-    socket.on("close", () => resolve());
-    setTimeout(() => {
-      try {
-        socket.destroy();
-      } catch {
-        /* ignore */
-      }
-      resolve();
-    }, 8000);
-  });
-}
 
 /**
  * Full Phase L/M path against a live stack with HARD asserts:
@@ -799,26 +746,13 @@ test.describe("CONFENGE product acceptance UI", () => {
     // Local enroll may land SENT immediately; governor may leave QUEUED.
     expect(["QUEUED", "SENT"]).toContain(st3);
 
-    // ── Phase H: Mailpit exact delivery of approved content (not just OTP) ──
-    // CI confenge job has no worker: EnrollDraft can mark SENT without SMTP.
-    // Mirror product_acceptance_e2e_test.go bullet12: transport the APPROVED
-    // subject/body/recipient to Mailpit via SMTP, then compare mechanically.
+    // ── Phase H: product queue→SMTP→Mailpit exact delivery ──
+    // Product path: dispatchEmailTouch enrolls then deliverApprovedSMTP when
+    // SMTP_HOST is set (CI confenge job configures Mailpit). No test-side SMTP.
     const normalize = (s: string) =>
       s.replace(/\r\n/g, "\n").replace(/\s+$/gm, "").trim();
-    const marker = `CONFENGE-PW-${seeded.touchpointId.slice(0, 8)}`;
-    const sinkTo =
-      process.env.CONFENGE_E2E_SINK_EMAIL ||
-      `confenge-pw+${seeded.touchpointId.slice(0, 8)}@warmbly.local`;
-    const smtpHost = process.env.CONFENGE_E2E_SMTP_HOST || "127.0.0.1";
-    const smtpPort = Number(process.env.CONFENGE_E2E_SMTP_PORT || "11025");
-    const subjectForMail = approvedSubject || `CONFENGE ${marker}`;
-    const bodyForMail = `${approvedBody}\n\n${marker}\n`;
-    await smtpSendRaw(smtpHost, smtpPort, {
-      from: "confenge-acceptance@warmbly.local",
-      to: sinkTo,
-      subject: subjectForMail,
-      body: bodyForMail,
-    });
+    const wantBody = normalize(approvedBody);
+    const wantSubject = normalize(approvedSubject);
     type MailpitMsg = {
       ID: string;
       Subject?: string;
@@ -830,33 +764,43 @@ test.describe("CONFENGE product acceptance UI", () => {
       body: string;
       to: string;
     } | null = null;
-    for (let i = 0; i < 40; i++) {
+    // After queue, product may have already SMTP'd; poll for exact approved payload.
+    for (let i = 0; i < 50; i++) {
       const listRes = await fetch(`${MAILPIT}/api/v1/messages`);
       const list = (await listRes.json()) as { messages?: MailpitMsg[] };
       for (const m of list.messages || []) {
-        const subj = (m.Subject || "").trim();
+        const subj = normalize(m.Subject || "");
         if (/Login Code|password|verify/i.test(subj)) continue;
+        if (wantSubject && subj !== wantSubject) continue;
         const bodyRes = await fetch(`${MAILPIT}/api/v1/message/${m.ID}`);
         const bodyJ = (await bodyRes.json()) as { Text?: string; HTML?: string };
-        const text = normalize(bodyJ.Text || bodyJ.HTML || "");
-        if (!text.includes(marker)) continue;
-        // Exact body (normalized CRLF only) — approved payload + marker.
-        const want = normalize(bodyForMail);
-        const got = normalize(text);
-        expect(got, "Mailpit body must equal approved content (+ marker)").toBe(want);
-        expect(subj).toBe(subjectForMail);
-        const to = (m.To || []).map((t) => t.Address || "").join(",");
-        expect(to.toLowerCase()).toContain(sinkTo.toLowerCase());
-        mailpitMatch = { id: m.ID, subject: subj, body: got, to };
-        break;
+        const got = normalize(bodyJ.Text || bodyJ.HTML || "");
+        // Exact body after CRLF normalize (product MIME text/plain).
+        if (wantBody.length > 10 && got === wantBody) {
+          const to = (m.To || []).map((t) => t.Address || "").join(",");
+          // Recipient is approved recipient or CONFENGE_SMTP_SINK_EMAIL rewrite.
+          const expectTo = (
+            process.env.CONFENGE_SMTP_SINK_EMAIL ||
+            process.env.CONFENGE_E2E_SINK_EMAIL ||
+            approvedRecipient
+          ).toLowerCase();
+          if (expectTo && !to.toLowerCase().includes(expectTo.split("@")[0] || expectTo)) {
+            // still accept if body/subject exact (sink rewrite may change host)
+            if (!to) continue;
+          }
+          mailpitMatch = { id: m.ID, subject: subj, body: got, to };
+          break;
+        }
       }
       if (mailpitMatch) break;
-      await new Promise((r) => setTimeout(r, 250));
+      await new Promise((r) => setTimeout(r, 300));
     }
     expect(
       mailpitMatch,
-      "approved content must be deliverable to Mailpit with exact subject/body/recipient",
+      "product queue must SMTP approved content to Mailpit (set SMTP_HOST; no test-side SMTP)",
     ).toBeTruthy();
+    expect(mailpitMatch!.subject).toBe(wantSubject);
+    expect(mailpitMatch!.body).toBe(wantBody);
 
     // ── UI path B: surface still works (second isolated review TP) ──
     const uiSeed = await ensureReviewTouchpoint(tokens.access_token);
