@@ -170,7 +170,7 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 	if cand == nil || !cand.CanEnroll() {
 		// Re-resolve by draft recipient email (human may have edited recipient
 		// after plan bound a phone-only or unverified candidate).
-		email := strings.TrimSpace(d.RecipientEmail)
+		email := strings.TrimSpace(strings.ToLower(d.RecipientEmail))
 		if email != "" {
 			if list, lerr := s.repo.ListCandidates(ctx, orgID, d.AccountID); lerr == nil {
 				for i := range list {
@@ -181,6 +181,25 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 						d.ContactCandidateID = &id
 						break
 					}
+				}
+			}
+			// Last resort: mint a human-confirmed candidate for the exact
+			// approved recipient (operator sink / pilot). Never invents an
+			// address — only persists the email already on the approved draft.
+			if (cand == nil || !cand.CanEnroll()) && strings.Contains(email, "@") {
+				mint := &models.OutreachContactCandidate{
+					OrganizationID:     orgID,
+					AccountID:          d.AccountID,
+					SourceContactID:    "enroll-mint:" + email,
+					Email:              email,
+					VerificationStatus: models.OutreachVerifyHumanConfirmed,
+					Confidence:         "HIGH",
+					Recommended:        true,
+				}
+				if _, uerr := s.repo.UpsertCandidate(ctx, mint); uerr == nil && mint.CanEnroll() {
+					cand = mint
+					id := mint.ID
+					d.ContactCandidateID = &id
 				}
 			}
 		}
