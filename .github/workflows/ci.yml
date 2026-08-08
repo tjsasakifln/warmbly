@@ -306,6 +306,9 @@ jobs:
 
       - name: Start web
         working-directory: web
+        env:
+          VITE_API_URL: http://127.0.0.1:18080
+          VITE_APP_URL: http://127.0.0.1:5173
         run: |
           nohup pnpm dev --host 127.0.0.1 --port 5173 > /tmp/confenge-web.log 2>&1 &
           for i in $(seq 1 60); do
