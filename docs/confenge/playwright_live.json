@@ -4,8 +4,8 @@
   "hard_asserts": true,
   "generated_at": "2026-08-08T03:18:51.680Z",
   "at": "2026-08-08T03:18:51.680Z",
-  "code_sha": "48c0d912564950339e03dfaa227816f69b559da4",
-  "tested_sha": "48c0d912564950339e03dfaa227816f69b559da4",
+  "code_sha": "b5738c6c8ec0005a97bd966a1e274c8627265ecf",
+  "tested_sha": "b5738c6c8ec0005a97bd966a1e274c8627265ecf",
   "command": "playwright confenge-product-acceptance",
   "test_id": "import-approve-edit-invalidate-queue-mailpit",
   "touchpoint_id": "5f5bd1ac-3fd3-4bdb-bbc4-7515fd0808b7",
@@ -54,5 +54,5 @@
     "mailpit": "http://127.0.0.1:18025",
     "web": "http://127.0.0.1:5173"
   },
-  "git_sha": "48c0d912564950339e03dfaa227816f69b559da4"
+  "git_sha": "b5738c6c8ec0005a97bd966a1e274c8627265ecf"
 }
