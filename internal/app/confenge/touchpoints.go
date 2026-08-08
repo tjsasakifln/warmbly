@@ -305,7 +305,15 @@ func (s *service) EditTouchpoint(ctx context.Context, orgID, userID, id uuid.UUI
 	}
 	if tp.DraftID != nil {
 		if d, _ := s.repo.GetDraft(ctx, orgID, *tp.DraftID); d != nil {
+			// Keep draft transport fields in lockstep with the touchpoint so
+			// requireTouchTransport ContentHash(draft) matches approved hash.
 			d.Subject, d.BodyText = tp.Subject, tp.BodyText
+			d.Channel = tp.Channel
+			if tp.Channel == models.OutreachChannelWhatsApp || tp.Channel == "WHATSAPP" {
+				d.RecipientPhoneE164 = tp.Recipient
+			} else {
+				d.RecipientEmail = tp.Recipient
+			}
 			d.HumanEdited, d.Status = true, models.OutreachDraftNeedsReview
 			d.ApprovedBy, d.ApprovedAt = nil, nil
 			_ = s.repo.UpsertDraft(ctx, d)
@@ -446,6 +454,8 @@ func (s *service) dispatchEmailTouch(ctx context.Context, orgID, userID uuid.UUI
 		return errx.New(errx.NotFound, "draft not found")
 	}
 	d.Subject, d.BodyText = tp.Subject, tp.BodyText
+	d.RecipientEmail = tp.Recipient
+	d.Channel = tp.Channel
 	d.Status = models.OutreachDraftApproved
 	d.ApprovedBy, d.ApprovedAt = tp.ApprovedBy, tp.ApprovedAt
 	if err := s.repo.UpsertDraft(ctx, d); err != nil {
