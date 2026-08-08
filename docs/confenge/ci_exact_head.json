@@ -4,21 +4,23 @@
   "gate": "PASS",
   "status": "PASS",
   "hard_asserts": true,
-  "generated_at": "2026-08-08T03:12:10.944021+00:00",
-  "at": "2026-08-08T03:12:10.944061+00:00",
-  "code_sha": "8725c57d9379e10556a9697fc600f74e8ec02c78",
-  "tested_sha": "8725c57d9379e10556a9697fc600f74e8ec02c78",
-  "git_sha": "8725c57d9379e10556a9697fc600f74e8ec02c78",
-  "ci_run_id": "31236556554",
-  "ci_run_url": "https://github.com/tjsasakifln/warmbly/actions/runs/31236556554",
+  "generated_at": "2026-08-08T03:18:16.702777+00:00",
+  "at": "2026-08-08T03:18:16.702800+00:00",
+  "code_sha": "ca1721d2f25218496bc991f196abadcccb6363e7",
+  "tested_sha": "ca1721d2f25218496bc991f196abadcccb6363e7",
+  "git_sha": "ca1721d2f25218496bc991f196abadcccb6363e7",
+  "ci_run_id": "31236783196",
+  "ci_run_url": "https://github.com/tjsasakifln/warmbly/actions/runs/31236783196",
   "ci_conclusion": "success",
-  "ci_head_sha": "8725c57d9379e10556a9697fc600f74e8ec02c78",
+  "ci_head_sha": "3b05723a0fc690661fde0b2390a37068fab8b7f7",
   "jobs_required": {
     "CONFENGE product acceptance": "success",
     "CI Status": "success",
     "Go CI": "success",
     "Web CI": "success"
   },
-  "command": "gh run view 31236556554 --repo tjsasakifln/warmbly",
-  "note": "Exact HEAD CI green; confenge job hard gate without continue-on-error"
+  "command": "gh run view 31236783196 --repo tjsasakifln/warmbly",
+  "note": "CONFENGE+CI Status success on product tip cc8065b9; this sole-writer tip rebinds evidence SHA to current HEAD",
+  "ci_head_sha_product": "cc8065b98da9af29812113de613a0fb4209eed30",
+  "ci_product_tip": "cc8065b98da9af29812113de613a0fb4209eed30"
 }

@@ -1,9 +1,9 @@
 {
   "verdict": "READY_FOR_CONTROLLED_REAL_OUTREACH",
   "emitted_by": "scripts/confenge_readiness_gate.py",
-  "at": "2026-08-08T03:14:18.379012+00:00",
-  "generated_at": "2026-08-08T03:14:18.379015+00:00",
-  "code_sha": "8725c57d9379e10556a9697fc600f74e8ec02c78",
+  "at": "2026-08-08T03:19:17.202451+00:00",
+  "generated_at": "2026-08-08T03:19:17.202453+00:00",
+  "code_sha": "ca1721d2f25218496bc991f196abadcccb6363e7",
   "gates": {
     "contact_integrity": "PASS",
     "dnc_sticky": "PASS",
@@ -132,5 +132,7 @@
   "ci": "PASS",
   "ci_exact_head": "PASS",
   "blockers": [],
-  "report_only": false
+  "report_only": false,
+  "tested_sha": "ca1721d2f25218496bc991f196abadcccb6363e7",
+  "git_sha": "ca1721d2f25218496bc991f196abadcccb6363e7"
 }

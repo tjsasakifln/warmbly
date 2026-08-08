@@ -6,8 +6,8 @@
 READY_FOR_CONTROLLED_REAL_OUTREACH
 ```
 
-Emitted by `scripts/confenge_readiness_gate.py` at 2026-08-08T03:14:18.379033+00:00. Do not hand-edit.
-tested_sha: `8725c57d9379e10556a9697fc600f74e8ec02c78`
+Emitted by `scripts/confenge_readiness_gate.py` at 2026-08-08T03:19:17.202461+00:00. Do not hand-edit.
+tested_sha: `ca1721d2f25218496bc991f196abadcccb6363e7`
 
 ## Critical gates (measurement → evidence → verdict)
 
