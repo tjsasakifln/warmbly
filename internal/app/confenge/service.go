@@ -42,6 +42,11 @@ type Service interface {
 	ListAccounts(ctx context.Context, orgID uuid.UUID, filter repository.OutreachAccountFilter) ([]models.OutreachAccount, *errx.Error)
 	GetAccount(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachAccount, *errx.Error)
 	BlockAccount(ctx context.Context, orgID, userID, id uuid.UUID, reason string, dnc bool) (*models.OutreachAccount, *errx.Error)
+	// Dynamic working set (activation-aware when CONFENGE_DYNAMIC_PRIORITY_ENABLED).
+	ListWorkingQueue(ctx context.Context, orgID uuid.UUID, lane string, limit int) ([]WorkingQueueItem, *errx.Error)
+	WorkingQueueOverview(ctx context.Context, orgID uuid.UUID) (*WorkingQueueSummary, *errx.Error)
+	// Manifest sync from extra-cli (no cross-DB access).
+	SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID *uuid.UUID, manifestURI string) (*FeedSyncResult, *errx.Error)
 
 	// Drafts / review (PR2)
 	GenerateDraft(ctx context.Context, orgID, userID, accountID uuid.UUID, contactID *uuid.UUID) (*models.OutreachDraft, *errx.Error)

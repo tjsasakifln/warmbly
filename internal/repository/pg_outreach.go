@@ -455,6 +455,11 @@ func (r *outreachRepository) ListAccounts(ctx context.Context, orgID uuid.UUID, 
 		args = append(args, "%"+filter.Search+"%")
 		n++
 	}
+	if filter.ActivationState != "" {
+		q += fmt.Sprintf(` AND activation_state=$%d`, n)
+		args = append(args, filter.ActivationState)
+		n++
+	}
 	if filter.DynamicPriority {
 		q += fmt.Sprintf(` ORDER BY next_best_action_at ASC NULLS LAST, activation_score DESC, priority_rank ASC NULLS LAST, moment_observed_at DESC NULLS LAST, cnpj14 ASC LIMIT $%d OFFSET $%d`, n, n+1)
 	} else {

@@ -147,34 +147,66 @@ func (s *service) ListWorkingQueue(ctx context.Context, orgID uuid.UUID, lane st
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
+	lane = normalizeLane(lane)
 	now := time.Now().UTC()
-	accounts, err := s.repo.ListAccounts(ctx, orgID, repository.OutreachAccountFilter{Limit: 200})
+	filter := repository.OutreachAccountFilter{
+		Limit:           200,
+		DynamicPriority: s.cfg.DynamicPriorityEnabled,
+	}
+	accounts, err := s.repo.ListAccounts(ctx, orgID, filter)
 	if err != nil {
 		return nil, errx.New(errx.Internal, "list accounts: "+err.Error())
 	}
 	items := make([]WorkingQueueItem, 0, limit)
 	for i := range accounts {
 		acc := accounts[i]
+		// Join contacts for contact-ready detection when available
+		if cands, err := s.repo.ListCandidates(ctx, orgID, acc.ID); err == nil {
+			acc.Contacts = cands
+		}
 		item := workingItemFromAccount(&acc, now)
 		if lane != "" && item.Lane != lane {
 			continue
 		}
 		// When dynamic priority off, only expose classic ready/needs_contact lanes.
-		if !s.cfg.DynamicPriorityEnabled && item.Lane != LaneNeedsContact && item.Lane != LaneNeedsReview && item.Lane != LaneApproved {
-			if acc.QueueState != models.OutreachQueueReadyToGenerate && acc.QueueState != models.OutreachQueueNeedsContact {
+		if !s.cfg.DynamicPriorityEnabled && lane == "" {
+			if acc.QueueState != models.OutreachQueueReadyToGenerate &&
+				acc.QueueState != models.OutreachQueueNeedsContact &&
+				acc.QueueState != models.OutreachQueueNeedsReview &&
+				acc.QueueState != models.OutreachQueueApproved {
 				continue
 			}
 		}
 		items = append(items, item)
-		if len(items) >= limit {
-			break
-		}
 	}
-	// Sort: needs_attention already filtered by ListAttention; for agora use NBA/score
-	if s.cfg.DynamicPriorityEnabled {
+	if s.cfg.DynamicPriorityEnabled || lane == LaneNow {
 		sortWorkingQueue(items)
 	}
+	if len(items) > limit {
+		items = items[:limit]
+	}
 	return items, nil
+}
+
+func normalizeLane(lane string) string {
+	switch strings.ToLower(strings.TrimSpace(lane)) {
+	case "", "all":
+		return ""
+	case "agora", "now", "actionable":
+		return LaneNow
+	case "needs_contact", "precisa_de_contato", "contact":
+		return LaneNeedsContact
+	case "needs_attention", "attention":
+		return LaneNeedsAttention
+	case "needs_review", "review":
+		return LaneNeedsReview
+	case "approved", "scheduled", "approved_scheduled":
+		return LaneApproved
+	case "aguardar", "watch":
+		return LaneWatch
+	default:
+		return lane
+	}
 }
 
 func workingItemFromAccount(acc *models.OutreachAccount, now time.Time) WorkingQueueItem {
@@ -289,12 +321,44 @@ func (s *service) WorkingQueueOverview(ctx context.Context, orgID uuid.UUID) (*W
 		DynamicPriority:    s.cfg.DynamicPriorityEnabled,
 		ReservoirMonitored: sum.Total,
 	}
-	// Approximate watch = total - active lanes
-	out.WatchAwaiting = sum.Total - sum.NeedsContact - sum.ReadyToGenerate - sum.NeedsReview -
-		sum.Approved - sum.Enrolled - sum.Sent - sum.Replied - sum.Meeting - sum.Proposal -
-		sum.Won - sum.Blocked - sum.Bounced - sum.DoNotContact
-	if out.WatchAwaiting < 0 {
-		out.WatchAwaiting = 0
+	now := time.Now().UTC()
+	if accounts, err := s.repo.ListAccounts(ctx, orgID, repository.OutreachAccountFilter{
+		Limit: 200, DynamicPriority: s.cfg.DynamicPriorityEnabled,
+	}); err == nil {
+		actionable, needsC, watch, suppressed, due := 0, 0, 0, 0, 0
+		for i := range accounts {
+			a := &accounts[i]
+			switch a.ActivationState {
+			case ActivationActionableNow:
+				if IsOutboundDue(a, now) {
+					actionable++
+					if a.QueueState == models.OutreachQueueNeedsContact {
+						needsC++
+					} else {
+						due++
+					}
+				}
+			case ActivationSuppressed:
+				suppressed++
+			default:
+				watch++
+			}
+		}
+		out.ActionableNow = actionable
+		if needsC > 0 {
+			out.NeedsContact = needsC
+		}
+		out.WatchAwaiting = watch
+		out.Suppressed = suppressed
+		out.DueNext24h = due + sum.Approved
+	}
+	if out.WatchAwaiting == 0 && sum.Total > 0 && out.ActionableNow == 0 {
+		out.WatchAwaiting = sum.Total - sum.NeedsContact - sum.ReadyToGenerate - sum.NeedsReview -
+			sum.Approved - sum.Enrolled - sum.Sent - sum.Replied - sum.Meeting - sum.Proposal -
+			sum.Won - sum.Blocked - sum.Bounced - sum.DoNotContact
+		if out.WatchAwaiting < 0 {
+			out.WatchAwaiting = 0
+		}
 	}
 	// Capacity theory from governor + window (does not change governor)
 	slots := 10 * 9 // default ~10/h * 9h window
@@ -305,7 +369,9 @@ func (s *service) WorkingQueueOverview(ctx context.Context, orgID uuid.UUID) (*W
 		}
 	}
 	out.TheoreticalSlots24h = slots
-	out.DueNext24h = sum.ReadyToGenerate + sum.Approved
+	if out.DueNext24h == 0 {
+		out.DueNext24h = sum.ReadyToGenerate + sum.Approved
+	}
 	if slots > 0 {
 		out.CapacityLoad = float64(out.DueNext24h) / float64(slots)
 	}

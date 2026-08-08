@@ -458,6 +458,8 @@ func Run(
 				confengeGroup.GET("/status", h.GetConfengeStatus)
 				confengeGroup.GET("/dispatch/status", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeDispatchStatus)
 				confengeGroup.GET("/summary", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeSummary)
+				confengeGroup.GET("/working-overview", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeWorkingOverview)
+				confengeGroup.GET("/working-queue", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeWorkingQueue)
 				confengeGroup.GET("/attention", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeAttention)
 				confengeGroup.GET("/attention/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeAttention)
 				confengeGroup.GET("/accounts", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeAccounts)
@@ -474,6 +476,7 @@ func Run(
 				confengeWrite.Use(m.RateLimitMiddleware(models.RateLimitWrite))
 				{
 					confengeWrite.POST("/import", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ImportConfengeFeed)
+					confengeWrite.POST("/sync", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.SyncConfengeFeed)
 					confengeWrite.POST("/accounts/:id/block", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.BlockConfengeAccount)
 					confengeWrite.POST("/accounts/:id/dnc", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.DNCConfengeAccount)
 					confengeWrite.POST("/accounts/:id/plan", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.PlanConfengeCadence)

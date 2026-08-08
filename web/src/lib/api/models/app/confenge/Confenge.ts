@@ -102,6 +102,19 @@ export type ConfengeWorkingQueueSummary = {
     feed_age_seconds?: number | null;
 };
 
+export type ConfengeWorkingQueueItem = {
+    account: ConfengeAccount;
+    lane: string;
+    why_now?: string;
+    reason_codes?: string[];
+    activation_score?: number;
+    next_best_action_at?: string | null;
+    activation_expires_at?: string | null;
+    contact_ready: boolean;
+    context_stale: boolean;
+    channel_readiness?: string;
+};
+
 export type ConfengeContact = {
     id: string;
     name: string;

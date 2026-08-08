@@ -16,9 +16,11 @@ import {
     getConfengeDispatchStatus,
     getConfengeStatus,
     getConfengeSummary,
+    getConfengeWorkingOverview,
     listConfengeAccountTouchpoints,
     listConfengeAccounts,
     listConfengeAttention,
+    listConfengeWorkingQueue,
     listConfengeDrafts,
     listConfengeReviewTouchpoints,
     pauseConfengeDispatch,
@@ -46,6 +48,24 @@ export function useConfengeSummary(enabled = true) {
         queryFn: getConfengeSummary,
         enabled,
         staleTime: 15_000,
+    });
+}
+
+export function useConfengeWorkingOverview(enabled = true) {
+    return useQuery({
+        queryKey: [...KEY, "working-overview"],
+        queryFn: getConfengeWorkingOverview,
+        enabled,
+        staleTime: 15_000,
+    });
+}
+
+export function useConfengeWorkingQueue(lane?: string, enabled = true) {
+    return useQuery({
+        queryKey: [...KEY, "working-queue", lane ?? ""],
+        queryFn: () => listConfengeWorkingQueue({ lane, limit: 50 }),
+        enabled,
+        staleTime: 10_000,
     });
 }
 

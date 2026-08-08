@@ -12,6 +12,8 @@ import {
   useConfengeReviewTouchpoints,
   useConfengeStatus,
   useConfengeSummary,
+  useConfengeWorkingOverview,
+  useConfengeWorkingQueue,
   useDncConfengeAccount,
   useGenerateConfengeReplyDraft,
   useGenerateConfengeTouchpoint,
@@ -23,6 +25,7 @@ import {
 import type {
   ConfengeAttentionFilter,
   ConfengeTouchpoint,
+  ConfengeWorkingQueueItem,
 } from "@/lib/api/models/app/confenge/Confenge";
 
 const ATTENTION_FILTERS: { id: ConfengeAttentionFilter; label: string }[] = [
@@ -34,6 +37,9 @@ export default function ConfengePage() {
   const status = useConfengeStatus();
   const enabled = !!status.data?.enabled;
   const summary = useConfengeSummary(enabled);
+  const workingOverview = useConfengeWorkingOverview(enabled);
+  const agoraQueue = useConfengeWorkingQueue("agora", enabled);
+  const needsContactQueue = useConfengeWorkingQueue("needs_contact", enabled);
   const ready = useConfengeAccounts("READY_TO_GENERATE", enabled);
   const review = useConfengeReviewTouchpoints(enabled);
   const plan = usePlanConfengeCadence();
@@ -75,7 +81,18 @@ export default function ConfengePage() {
   const item = detail.data ?? (attention.data ?? []).find((a) => a.account_id === selectedId);
 
   const stats = useMemo(() => {
+    const w = workingOverview.data;
     const s = summary.data;
+    if (w) {
+      return [
+        { label: "Reservatório", value: w.reservoir_monitored },
+        { label: "Agora", value: w.actionable_now },
+        { label: "Precisa contato", value: w.needs_contact },
+        { label: "Em revisão", value: w.needs_review },
+        { label: "Aprovadas", value: w.approved_scheduled },
+        { label: "Aguardar", value: w.watch_awaiting },
+      ];
+    }
     if (!s) return [];
     return [
       { label: "Ready", value: s.ready_to_generate },
@@ -84,7 +101,13 @@ export default function ConfengePage() {
       { label: "Replied", value: s.replied },
       { label: "DNC", value: s.do_not_contact },
     ];
-  }, [summary.data]);
+  }, [summary.data, workingOverview.data]);
+
+  const capacityLabel = useMemo(() => {
+    const w = workingOverview.data;
+    if (!w || !w.theoretical_slots_24h) return null;
+    return `${w.due_next_24h} due / ${w.theoretical_slots_24h} slots teóricos (24h)`;
+  }, [workingOverview.data]);
 
   if (status.isLoading) {
     return (
@@ -149,23 +172,62 @@ export default function ConfengePage() {
         )}
       </PageTopbar>
       <div className="flex flex-col gap-4 p-4 md:p-6 max-w-6xl mx-auto w-full">
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
           {stats.map((s) => (
             <div key={s.label} className="rounded-md border border-slate-200 bg-white px-2.5 py-2">
               <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">{s.label}</div>
               <div
                 className="text-lg font-semibold text-slate-900 tabular-nums"
-                data-testid={`confenge-stat-${s.label.toLowerCase()}`}
+                data-testid={`confenge-stat-${s.label.toLowerCase().replace(/\s+/g, "-")}`}
               >
                 {s.value}
               </div>
             </div>
           ))}
         </div>
+        {capacityLabel && (
+          <div
+            className="text-[12.5px] text-slate-600 tabular-nums"
+            data-testid="confenge-capacity-load"
+          >
+            Capacidade (planejamento, não governor): {capacityLabel}
+            {workingOverview.data?.dynamic_priority_enabled ? " · prioridade dinâmica ON" : " · prioridade dinâmica OFF (shadow)"}
+          </div>
+        )}
         <p className="text-[12.5px] text-slate-500" data-testid="confenge-activation-hint">
           Prioridade comercial vem do extra-cli (activation score = ordenação, não chance de compra).
           Conta com contexto desatualizado exige regenerar e reaprovar antes do envio.
         </p>
+
+        {/* Agora — ACTIONABLE_NOW + operationally due */}
+        <section className="rounded-md border border-slate-200 bg-white" data-testid="confenge-agora">
+          <div className="shrink-0 px-3 h-10 flex items-center border-b border-slate-200">
+            <span className="text-[12.5px] font-medium text-slate-900">Agora</span>
+            <span className="ml-2 text-[12.5px] text-slate-500 tabular-nums">
+              {(agoraQueue.data ?? []).length}
+            </span>
+          </div>
+          <WorkingLaneList
+            items={agoraQueue.data ?? []}
+            empty="Nenhuma conta due agora"
+            onPlan={(id) => plan.mutate({ accountId: id })}
+          />
+        </section>
+
+        {/* Precisa de contato */}
+        <section className="rounded-md border border-slate-200 bg-white" data-testid="confenge-needs-contact">
+          <div className="shrink-0 px-3 h-10 flex items-center border-b border-slate-200">
+            <span className="text-[12.5px] font-medium text-slate-900">Precisa de contato</span>
+            <span className="ml-2 text-[12.5px] text-slate-500 tabular-nums">
+              {(needsContactQueue.data ?? []).length}
+            </span>
+          </div>
+          <WorkingLaneList
+            items={needsContactQueue.data ?? []}
+            empty="Nenhuma conta prioritária sem destinatário"
+            showContactGap
+          />
+        </section>
 
         {/* Needs attention cockpit */}
         <section className="rounded-md border border-slate-200 bg-white" data-testid="confenge-needs-attention">
@@ -452,5 +514,68 @@ export default function ConfengePage() {
         </section>
       </div>
     </Page>
+  );
+}
+
+function WorkingLaneList({
+  items,
+  empty,
+  showContactGap,
+  onPlan,
+}: {
+  items: ConfengeWorkingQueueItem[];
+  empty: string;
+  showContactGap?: boolean;
+  onPlan?: (accountId: string) => void;
+}) {
+  if (!items.length) {
+    return <div className="px-3 py-6 text-center text-slate-400 text-[12.5px]">{empty}</div>;
+  }
+  return (
+    <ul className="divide-y divide-slate-100 max-h-64 overflow-auto">
+      {items.map((it) => {
+        const a = it.account;
+        const name = a.nome_fantasia || a.razao_social || a.cnpj14;
+        const reasons = (it.reason_codes ?? a.activation_reason_codes ?? []).join(", ");
+        const score = it.activation_score ?? a.activation_score;
+        const stale = it.context_stale || a.context_stale;
+        return (
+          <li key={a.id} className="px-3 py-2.5 text-[12.5px] flex items-start gap-2">
+            <div className="min-w-0 flex-1">
+              <div className="font-medium text-slate-900 truncate">{name}</div>
+              <div className="text-slate-500 truncate">
+                {a.service_name || a.service_code || "—"}
+                {reasons ? ` · ${reasons}` : ""}
+                {typeof score === "number" ? ` · prioridade ${score.toFixed(1)}` : ""}
+              </div>
+              <div className="text-slate-400 truncate">
+                {it.why_now || a.moment_summary || a.fact_to_mention || "—"}
+                {it.next_best_action_at ? ` · next ${it.next_best_action_at.slice(0, 10)}` : ""}
+                {it.activation_expires_at ? ` · exp ${it.activation_expires_at.slice(0, 10)}` : ""}
+              </div>
+              {showContactGap && (
+                <div className="text-amber-700 text-[11px] mt-0.5">
+                  Momento comercial forte, mas contato ainda não resolvido
+                </div>
+              )}
+              {stale && (
+                <div className="text-rose-700 text-[11px] mt-0.5" data-testid="confenge-stale-banner">
+                  Os dados desta conta mudaram desde a aprovação. Revise a nova versão antes do envio.
+                </div>
+              )}
+            </div>
+            {onPlan && (
+              <button
+                type="button"
+                className="shrink-0 h-7 px-2 rounded-md border border-slate-200 text-[12.5px] hover:bg-slate-50"
+                onClick={() => onPlan(a.id)}
+              >
+                Plan
+              </button>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }

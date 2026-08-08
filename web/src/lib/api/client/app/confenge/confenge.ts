@@ -7,6 +7,8 @@ import type {
     ConfengeStatus,
     ConfengeSummary,
     ConfengeTouchpoint,
+    ConfengeWorkingQueueItem,
+    ConfengeWorkingQueueSummary,
 } from "@/lib/api/models/app/confenge/Confenge";
 import Request from "../../Request";
 
@@ -25,6 +27,40 @@ export async function getConfengeSummary(): Promise<ConfengeSummary> {
         authorization: true,
     });
     return res.data;
+}
+
+export async function getConfengeWorkingOverview(): Promise<ConfengeWorkingQueueSummary> {
+    const res = await Request<{ data: ConfengeWorkingQueueSummary }>({
+        method: "GET",
+        url: "/confenge/working-overview",
+        authorization: true,
+    });
+    return res.data;
+}
+
+export async function listConfengeWorkingQueue(params?: {
+    lane?: string;
+    limit?: number;
+}): Promise<ConfengeWorkingQueueItem[]> {
+    const sp = new URLSearchParams();
+    if (params?.lane) sp.set("lane", params.lane);
+    if (params?.limit) sp.set("limit", String(params.limit));
+    const qs = sp.toString();
+    const res = await Request<{ data: ConfengeWorkingQueueItem[] }>({
+        method: "GET",
+        url: `/confenge/working-queue${qs ? `?${qs}` : ""}`,
+        authorization: true,
+    });
+    return res.data ?? [];
+}
+
+export async function syncConfengeFeed(manifestUri?: string): Promise<unknown> {
+    return await Request({
+        method: "POST",
+        url: "/confenge/sync",
+        authorization: true,
+        data: manifestUri ? { manifest_uri: manifestUri } : {},
+    });
 }
 
 export async function listConfengeAccounts(params?: {

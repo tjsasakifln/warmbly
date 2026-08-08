@@ -96,9 +96,13 @@ func (h *Handler) ListConfengeAccounts(c *gin.Context) {
 		return
 	}
 	filter := repository.OutreachAccountFilter{
-		QueueState: c.Query("queue_state"),
-		CNPJ14:     c.Query("cnpj14"),
-		Search:     c.Query("q"),
+		QueueState:      c.Query("queue_state"),
+		CNPJ14:          c.Query("cnpj14"),
+		Search:          c.Query("q"),
+		ActivationState: c.Query("activation_state"),
+	}
+	if h.ConfengeService != nil && h.ConfengeService.Config().DynamicPriorityEnabled {
+		filter.DynamicPriority = true
 	}
 	if raw := c.Query("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
@@ -122,6 +126,74 @@ func (h *Handler) ListConfengeAccounts(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": list})
+}
+
+// GetConfengeWorkingOverview — GET /confenge/working-overview
+// Reservoir / agora / needs-contact / capacity planning metrics (not governor).
+func (h *Handler) GetConfengeWorkingOverview(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	ov, xerr := h.ConfengeService.WorkingQueueOverview(c.Request.Context(), orgID)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": ov})
+}
+
+// ListConfengeWorkingQueue — GET /confenge/working-queue?lane=agora|needs_contact|...
+func (h *Handler) ListConfengeWorkingQueue(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	lane := c.Query("lane")
+	limit := 50
+	if raw := c.Query("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 200 {
+			errx.JSON(c, errx.New(errx.BadRequest, "limit must be between 1 and 200"))
+			return
+		}
+		limit = n
+	}
+	list, xerr := h.ConfengeService.ListWorkingQueue(c.Request.Context(), orgID, lane, limit)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": list})
+}
+
+// SyncConfengeFeed — POST /confenge/sync
+// Pulls extra-cli manifest + chunks, validates hashes, imports idempotently.
+func (h *Handler) SyncConfengeFeed(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.New(errx.Unauthorized, "user required"))
+		return
+	}
+	var body struct {
+		ManifestURI string `json:"manifest_uri"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	uid := userID
+	res, xerr := h.ConfengeService.SyncFeedManifest(c.Request.Context(), orgID, &uid, body.ManifestURI)
+	if xerr != nil {
+		if res != nil {
+			errx.JSON(c, xerr)
+			return
+		}
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": res})
 }
 
 // GetConfengeAccount — GET /confenge/accounts/:id
