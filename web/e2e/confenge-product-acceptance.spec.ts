@@ -591,12 +591,20 @@ test.describe("CONFENGE product acceptance UI", () => {
 
     await injectTokens(page, tokens);
     await page.goto("/app");
-    // Onboarding first-name gate
+    // Onboarding first-name gate (CI seed user often still needs this; API PATCH alone is not enough).
+    const welcome = page.getByRole("heading", { name: /Welcome to Warmbly/i });
     const firstName = page.getByPlaceholder("John");
-    if ((await firstName.count()) > 0 && (await firstName.isVisible().catch(() => false))) {
+    try {
+      await welcome.or(firstName).first().waitFor({ state: "visible", timeout: 15_000 });
+    } catch {
+      /* already past onboarding */
+    }
+    if (await firstName.isVisible().catch(() => false)) {
       await firstName.fill("Dev");
       await page.getByPlaceholder("Doe").fill("User");
       await page.getByRole("button", { name: /Continue/i }).click();
+      // Wait until onboarding leaves (welcome heading gone).
+      await welcome.waitFor({ state: "hidden", timeout: 20_000 }).catch(() => undefined);
     }
     // Multi-org select-org fallback if OrgGate still redirected
     if (page.url().includes("select-org")) {
@@ -604,7 +612,6 @@ test.describe("CONFENGE product acceptance UI", () => {
       if ((await orgRow.count()) > 0) {
         await orgRow.click();
       }
-      // Prefer direct switch via any primary CTA
       const continueBtn = page.getByRole("button", { name: /Continue|Select|Open/i }).first();
       if ((await continueBtn.count()) > 0 && (await continueBtn.isVisible().catch(() => false))) {
         await continueBtn.click();
@@ -612,7 +619,14 @@ test.describe("CONFENGE product acceptance UI", () => {
     }
 
     await page.goto("/app/confenge");
-    // Dump URL on failure helps diagnose auth/org redirects in CI artifacts.
+    // If onboarding re-intercepts, complete it again then re-enter confenge.
+    if (await firstName.isVisible().catch(() => false)) {
+      await firstName.fill("Dev");
+      await page.getByPlaceholder("Doe").fill("User");
+      await page.getByRole("button", { name: /Continue/i }).click();
+      await welcome.waitFor({ state: "hidden", timeout: 20_000 }).catch(() => undefined);
+      await page.goto("/app/confenge");
+    }
     await expect(
       page.getByText(/CONFENGE/i).or(page.getByTestId("confenge-dispatch-quota")).first(),
     ).toBeVisible({ timeout: 45_000 });
