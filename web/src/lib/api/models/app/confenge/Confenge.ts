@@ -72,8 +72,34 @@ export type ConfengeAccount = {
     queue_state: string;
     blocked: boolean;
     do_not_contact: boolean;
+    /** Ordering priority from extra-cli (not purchase probability). */
+    activation_state?: string;
+    activation_score?: number;
+    activation_reason_codes?: string[];
+    activation_policy_version?: string;
+    next_best_action_at?: string | null;
+    activation_expires_at?: string | null;
+    message_context_hash?: string;
+    context_stale?: boolean;
     contacts?: ConfengeContact[];
     evidence?: ConfengeEvidence[];
+};
+
+export type ConfengeWorkingQueueSummary = {
+    reservoir_monitored: number;
+    actionable_now: number;
+    needs_contact: number;
+    needs_review: number;
+    approved_scheduled: number;
+    watch_awaiting: number;
+    suppressed: number;
+    stale_context: number;
+    due_next_24h: number;
+    theoretical_slots_24h: number;
+    capacity_load: number;
+    dynamic_priority_enabled: boolean;
+    last_feed_sync_at?: string | null;
+    feed_age_seconds?: number | null;
 };
 
 export type ConfengeContact = {

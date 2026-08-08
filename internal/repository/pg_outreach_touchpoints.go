@@ -21,6 +21,7 @@ const outreachTouchpointSelect = `
 		queued_at, sent_at, COALESCE(provider_message_id,''), COALESCE(stop_reason,''),
 		previous_touchpoint_id, COALESCE(idempotency_key,''),
 		COALESCE(policy_version,''), COALESCE(service_code,''), COALESCE(fact_used,''), evidence_ids,
+		COALESCE(generated_context_hash,''),
 		created_at, updated_at `
 
 func scanTouchpoint(row scannable) (*models.OutreachTouchpoint, error) {
@@ -35,6 +36,7 @@ func scanTouchpoint(row scannable) (*models.OutreachTouchpoint, error) {
 		&t.QueuedAt, &t.SentAt, &t.ProviderMessageID, &t.StopReason,
 		&t.PreviousTouchpointID, &t.IdempotencyKey,
 		&t.PolicyVersion, &t.ServiceCode, &t.FactUsed, &evid,
+		&t.GeneratedContextHash,
 		&t.CreatedAt, &t.UpdatedAt,
 	)
 	if err != nil {
@@ -75,9 +77,10 @@ func (r *outreachRepository) InsertTouchpoint(ctx context.Context, t *models.Out
 			queued_at, sent_at, provider_message_id, stop_reason,
 			previous_touchpoint_id, idempotency_key,
 			policy_version, service_code, fact_used, evidence_ids,
+			generated_context_hash,
 			created_at, updated_at
 		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31
 		)`,
 		t.ID, t.OrganizationID, t.AccountID, t.ContactCandidateID,
 		t.Ordinal, t.CadenceStep, t.Channel, t.Purpose, t.DueAt, t.State, t.DraftID,
@@ -86,6 +89,7 @@ func (r *outreachRepository) InsertTouchpoint(ctx context.Context, t *models.Out
 		t.QueuedAt, t.SentAt, t.ProviderMessageID, t.StopReason,
 		t.PreviousTouchpointID, t.IdempotencyKey,
 		t.PolicyVersion, t.ServiceCode, t.FactUsed, evid,
+		t.GeneratedContextHash,
 		t.CreatedAt, t.UpdatedAt,
 	)
 	return err
@@ -103,14 +107,14 @@ func (r *outreachRepository) UpdateTouchpoint(ctx context.Context, t *models.Out
 			recipient=$9, subject=$10, body_text=$11,
 			content_hash=$12, approved_content_hash=$13, approved_by=$14, approved_at=$15,
 			queued_at=$16, sent_at=$17, provider_message_id=$18, stop_reason=$19,
-			service_code=$20, fact_used=$21, evidence_ids=$22, updated_at=$23
+			service_code=$20, fact_used=$21, evidence_ids=$22, generated_context_hash=$23, updated_at=$24
 		WHERE organization_id=$1 AND id=$2`,
 		t.OrganizationID, t.ID,
 		t.ContactCandidateID, t.Channel, t.Purpose, t.DueAt, t.State, t.DraftID,
 		t.Recipient, t.Subject, t.BodyText,
 		t.ContentHash, t.ApprovedContentHash, t.ApprovedBy, t.ApprovedAt,
 		t.QueuedAt, t.SentAt, t.ProviderMessageID, t.StopReason,
-		t.ServiceCode, t.FactUsed, evid, t.UpdatedAt,
+		t.ServiceCode, t.FactUsed, evid, t.GeneratedContextHash, t.UpdatedAt,
 	)
 	if err != nil {
 		return err

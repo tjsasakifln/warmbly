@@ -441,6 +441,8 @@ func leadToAccount(orgID uuid.UUID, lead FeedLead, feed *Feed, runID uuid.UUID, 
 		LastPayloadHash:    contentHash,
 		ContractsJSON:      contracts,
 	}
+	// Store activation projection from extra-cli (no local commercial re-score).
+	applyActivationToAccount(acc, lead)
 	if existing != nil {
 		acc.ID = existing.ID
 		acc.HumanOverride = existing.HumanOverride
@@ -448,6 +450,18 @@ func leadToAccount(orgID uuid.UUID, lead FeedLead, feed *Feed, runID uuid.UUID, 
 		acc.BlockReason = existing.BlockReason
 		acc.DoNotContact = existing.DoNotContact
 		acc.CreatedAt = existing.CreatedAt
+		// Preserve activation when feed omits it (legacy chunk / partial).
+		if lead.Activation == nil && existing.ActivationState != "" {
+			acc.ActivationState = existing.ActivationState
+			acc.ActivationScore = existing.ActivationScore
+			acc.ActivationReasonCodes = existing.ActivationReasonCodes
+			acc.ActivationPolicyVersion = existing.ActivationPolicyVersion
+			acc.ActivationEvaluatedAt = existing.ActivationEvaluatedAt
+			acc.NextBestActionAt = existing.NextBestActionAt
+			acc.ActivationExpiresAt = existing.ActivationExpiresAt
+			acc.ActivationSourceHash = existing.ActivationSourceHash
+			acc.ScoreComponentsJSON = existing.ScoreComponentsJSON
+		}
 	}
 	return acc
 }

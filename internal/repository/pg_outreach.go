@@ -79,11 +79,13 @@ type OutreachRepository interface {
 
 // OutreachAccountFilter filters staged accounts.
 type OutreachAccountFilter struct {
-	QueueState string
-	CNPJ14     string
-	Search     string
-	Limit      int
-	Offset     int
+	QueueState      string
+	CNPJ14          string
+	Search          string
+	Limit           int
+	Offset          int
+	DynamicPriority bool
+	ActivationState string
 }
 
 type outreachRepository struct {
@@ -265,12 +267,17 @@ const outreachAccountSelect = `
 		COALESCE(fact_to_mention,''), COALESCE(question_to_ask,''), COALESCE(cta,''), claims_to_avoid,
 		COALESCE(commercial_state,''), queue_state, human_override, blocked, COALESCE(block_reason,''), do_not_contact,
 		COALESCE(source_system,''), COALESCE(source_run_id,''), last_import_run_id, COALESCE(last_payload_hash,''),
-		contracts_json, created_at, updated_at `
+		contracts_json, created_at, updated_at,
+		COALESCE(activation_state,''), activation_score, activation_reason_codes,
+		COALESCE(activation_policy_version,''), activation_evaluated_at, next_best_action_at,
+		activation_expires_at, COALESCE(activation_source_hash,''), COALESCE(message_context_hash,''),
+		score_components `
 
 func scanAccount(row scannable) (*models.OutreachAccount, error) {
 	var a models.OutreachAccount
 	var momentEvid, claims []byte
 	var contracts []byte
+	var reasonCodes, scoreComp []byte
 	err := row.Scan(
 		&a.ID, &a.OrganizationID, &a.SourceLeadID, &a.CNPJ14, &a.CNPJRoot,
 		&a.RazaoSocial, &a.NomeFantasia, &a.Municipio, &a.UF, &a.Website,
@@ -281,13 +288,19 @@ func scanAccount(row scannable) (*models.OutreachAccount, error) {
 		&a.CommercialState, &a.QueueState, &a.HumanOverride, &a.Blocked, &a.BlockReason, &a.DoNotContact,
 		&a.SourceSystem, &a.SourceRunID, &a.LastImportRunID, &a.LastPayloadHash,
 		&contracts, &a.CreatedAt, &a.UpdatedAt,
+		&a.ActivationState, &a.ActivationScore, &reasonCodes,
+		&a.ActivationPolicyVersion, &a.ActivationEvaluatedAt, &a.NextBestActionAt,
+		&a.ActivationExpiresAt, &a.ActivationSourceHash, &a.MessageContextHash,
+		&scoreComp,
 	)
 	if err != nil {
 		return nil, err
 	}
 	_ = json.Unmarshal(momentEvid, &a.MomentEvidenceIDs)
 	_ = json.Unmarshal(claims, &a.ClaimsToAvoid)
+	_ = json.Unmarshal(reasonCodes, &a.ActivationReasonCodes)
 	a.ContractsJSON = contracts
+	a.ScoreComponentsJSON = scoreComp
 	return &a, nil
 }
 
@@ -312,6 +325,14 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 	if len(contracts) == 0 {
 		contracts = []byte("[]")
 	}
+	reasonCodes, _ := json.Marshal(acc.ActivationReasonCodes)
+	if reasonCodes == nil {
+		reasonCodes = []byte("[]")
+	}
+	scoreComp := acc.ScoreComponentsJSON
+	if len(scoreComp) == 0 {
+		scoreComp = []byte("{}")
+	}
 	// Machine fields update; human_override / blocked / dnc preserved when set on existing.
 	var created bool
 	err := r.db.QueryRow(ctx, `
@@ -324,7 +345,10 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 			fact_to_mention, question_to_ask, cta, claims_to_avoid,
 			commercial_state, queue_state, human_override, blocked, block_reason, do_not_contact,
 			source_system, source_run_id, last_import_run_id, last_payload_hash, contracts_json,
-			created_at, updated_at
+			created_at, updated_at,
+			activation_state, activation_score, activation_reason_codes,
+			activation_policy_version, activation_evaluated_at, next_best_action_at,
+			activation_expires_at, activation_source_hash, message_context_hash, score_components
 		) VALUES (
 			$1,$2,$3,$4,$5,
 			$6,$7,$8,$9,$10,
@@ -334,7 +358,10 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 			$24,$25,$26,$27,
 			$28,$29,$30,$31,$32,$33,
 			$34,$35,$36,$37,$38,
-			$39,$40
+			$39,$40,
+			$41,$42,$43,
+			$44,$45,$46,
+			$47,$48,$49,$50
 		)
 		ON CONFLICT (organization_id, cnpj14) DO UPDATE SET
 			source_lead_id = EXCLUDED.source_lead_id,
@@ -372,6 +399,16 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 			last_import_run_id = EXCLUDED.last_import_run_id,
 			last_payload_hash = EXCLUDED.last_payload_hash,
 			contracts_json = EXCLUDED.contracts_json,
+			activation_state = EXCLUDED.activation_state,
+			activation_score = EXCLUDED.activation_score,
+			activation_reason_codes = EXCLUDED.activation_reason_codes,
+			activation_policy_version = EXCLUDED.activation_policy_version,
+			activation_evaluated_at = EXCLUDED.activation_evaluated_at,
+			next_best_action_at = EXCLUDED.next_best_action_at,
+			activation_expires_at = EXCLUDED.activation_expires_at,
+			activation_source_hash = EXCLUDED.activation_source_hash,
+			message_context_hash = EXCLUDED.message_context_hash,
+			score_components = EXCLUDED.score_components,
 			updated_at = EXCLUDED.updated_at,
 			id = outreach_accounts.id
 		RETURNING (xmax = 0) AS inserted, id`,
@@ -384,6 +421,9 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 		acc.CommercialState, acc.QueueState, acc.HumanOverride, acc.Blocked, acc.BlockReason, acc.DoNotContact,
 		acc.SourceSystem, acc.SourceRunID, acc.LastImportRunID, acc.LastPayloadHash, contracts,
 		acc.CreatedAt, acc.UpdatedAt,
+		acc.ActivationState, acc.ActivationScore, reasonCodes,
+		acc.ActivationPolicyVersion, acc.ActivationEvaluatedAt, acc.NextBestActionAt,
+		acc.ActivationExpiresAt, acc.ActivationSourceHash, acc.MessageContextHash, scoreComp,
 	).Scan(&created, &acc.ID)
 	return created, err
 }
@@ -415,7 +455,11 @@ func (r *outreachRepository) ListAccounts(ctx context.Context, orgID uuid.UUID, 
 		args = append(args, "%"+filter.Search+"%")
 		n++
 	}
-	q += fmt.Sprintf(` ORDER BY priority_rank ASC NULLS LAST, updated_at DESC LIMIT $%d OFFSET $%d`, n, n+1)
+	if filter.DynamicPriority {
+		q += fmt.Sprintf(` ORDER BY next_best_action_at ASC NULLS LAST, activation_score DESC, priority_rank ASC NULLS LAST, moment_observed_at DESC NULLS LAST, cnpj14 ASC LIMIT $%d OFFSET $%d`, n, n+1)
+	} else {
+		q += fmt.Sprintf(` ORDER BY priority_rank ASC NULLS LAST, updated_at DESC LIMIT $%d OFFSET $%d`, n, n+1)
+	}
 	args = append(args, limit, offset)
 
 	rows, err := r.db.Query(ctx, q, args...)

@@ -229,6 +229,8 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	tp.DraftID = &draft.ID
 	tp.State = models.TouchpointNeedsReview
 	tp.ServiceCode, tp.FactUsed, tp.EvidenceIDs = acc.ServiceCode, draft.FactUsed, draft.EvidenceIDs
+	// Capture message-material context at generation for stale-approval guard.
+	tp.GeneratedContextHash = acc.MessageContextHash
 	if err := s.repo.UpdateTouchpoint(ctx, tp); err != nil {
 		return nil, errx.New(errx.Internal, "update touchpoint: "+err.Error())
 	}
@@ -434,6 +436,21 @@ func (s *service) QueueTouchpoint(ctx context.Context, orgID, userID, id uuid.UU
 	}
 	if err := CanTransport(tp); err != nil {
 		return nil, errx.New(errx.BadRequest, "send blocked: "+err.Error())
+	}
+	// Final dispatch gate: material context must still match generation-time hash.
+	acc, aerr := s.repo.GetAccount(ctx, orgID, tp.AccountID)
+	if aerr != nil || acc == nil {
+		return nil, errx.New(errx.NotFound, "account not found for dispatch")
+	}
+	if err := AssertMessageContextFresh(acc, tp.GeneratedContextHash); err != nil {
+		tp.State = models.TouchpointNeedsReview
+		tp.StopReason = "context_stale"
+		tp.ContextStale = true
+		tp.ApprovedBy, tp.ApprovedAt = nil, nil
+		tp.ApprovedContentHash = ""
+		_ = s.repo.UpdateTouchpoint(ctx, tp)
+		_ = s.repo.SetAccountHumanFlags(ctx, orgID, tp.AccountID, acc.Blocked, acc.DoNotContact, acc.BlockReason, models.OutreachQueueNeedsReview)
+		return nil, errx.New(errx.Conflict, err.Error())
 	}
 	queued, err := s.repo.CASQueueTouchpoint(ctx, orgID, id, tp.ContentHash)
 	if err != nil {

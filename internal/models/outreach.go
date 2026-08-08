@@ -175,11 +175,25 @@ type OutreachAccount struct {
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 
+	// Activation projection from extra-cli (not local commercial scoring).
+	ActivationState         string     `json:"activation_state,omitempty"`
+	ActivationScore         float64    `json:"activation_score,omitempty"`
+	ActivationReasonCodes   []string   `json:"activation_reason_codes,omitempty"`
+	ActivationPolicyVersion string     `json:"activation_policy_version,omitempty"`
+	ActivationEvaluatedAt   *time.Time `json:"activation_evaluated_at,omitempty"`
+	NextBestActionAt        *time.Time `json:"next_best_action_at,omitempty"`
+	ActivationExpiresAt     *time.Time `json:"activation_expires_at,omitempty"`
+	ActivationSourceHash    string     `json:"activation_source_hash,omitempty"`
+	MessageContextHash      string     `json:"message_context_hash,omitempty"`
+	ScoreComponentsJSON     []byte     `json:"score_components,omitempty"`
+
 	// Joined / computed (not always filled).
 	Contacts  []OutreachContactCandidate `json:"contacts,omitempty"`
 	Evidence  []OutreachEvidence         `json:"evidence,omitempty"`
 	ContactN  int                        `json:"contact_count,omitempty"`
 	EvidenceN int                        `json:"evidence_count,omitempty"`
+	// ContextStale is set when generated content no longer matches message_context_hash.
+	ContextStale bool `json:"context_stale,omitempty"`
 }
 
 // OutreachContactCandidate is a possible recipient before promotion to contacts.
@@ -459,8 +473,11 @@ type OutreachTouchpoint struct {
 	ServiceCode          string           `json:"service_code"`
 	FactUsed             string           `json:"fact_used"`
 	EvidenceIDs          []string         `json:"evidence_ids,omitempty"`
+	GeneratedContextHash string           `json:"generated_context_hash,omitempty"`
 	CreatedAt            time.Time        `json:"created_at"`
 	UpdatedAt            time.Time        `json:"updated_at"`
 	Account              *OutreachAccount `json:"account,omitempty"`
 	Draft                *OutreachDraft   `json:"draft,omitempty"`
+	// ContextStale when GeneratedContextHash != account.MessageContextHash.
+	ContextStale bool `json:"context_stale,omitempty"`
 }

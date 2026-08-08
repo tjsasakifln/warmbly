@@ -53,7 +53,31 @@ type FeedLead struct {
 	Contracts        []json.RawMessage `json:"contracts"`
 	Evidence         []FeedEvidence    `json:"evidence"`
 	CommercialState  string            `json:"commercial_state"`
+	// Activation is optional (additive confenge.outreach.v1). Absent in legacy feeds.
+	Activation *FeedActivation `json:"activation,omitempty"`
 }
+
+// FeedActivation is the extra-cli commercial activation planner projection.
+// activation score is ordering only — never purchase/conversion probability.
+type FeedActivation struct {
+	State            string             `json:"state"`
+	Score            float64            `json:"score"`
+	ReasonCodes      []string           `json:"reason_codes"`
+	PolicyVersion    string             `json:"policy_version"`
+	EvaluatedAt      string             `json:"evaluated_at"`
+	NextBestActionAt string             `json:"next_best_action_at"`
+	ExpiresAt        string             `json:"expires_at"`
+	SourceHash       string             `json:"source_hash"`
+	ScoreComponents  map[string]float64 `json:"score_components"`
+}
+
+// Allowed activation states from extra-cli planner.
+const (
+	ActivationWatch            = "WATCH"
+	ActivationResearchRequired = "RESEARCH_REQUIRED"
+	ActivationActionableNow    = "ACTIONABLE_NOW"
+	ActivationSuppressed       = "SUPPRESSED"
+)
 
 // FeedCompany is Brazilian company identity from the datalake.
 type FeedCompany struct {
@@ -201,6 +225,7 @@ type LeadValidationError struct {
 }
 
 // ValidateLead checks one lead. Missing contact is allowed (NEEDS_CONTACT).
+// Missing activation is allowed (legacy feeds). Invalid activation fails closed.
 func ValidateLead(i int, lead FeedLead) *LeadValidationError {
 	cnpj := digitsOnly(lead.Company.CNPJ14)
 	sid := strings.TrimSpace(lead.SourceLeadID)
@@ -240,7 +265,36 @@ func ValidateLead(i int, lead FeedLead) *LeadValidationError {
 			}
 		}
 	}
+	if lead.Activation != nil {
+		if err := validateActivation(lead.Activation); err != "" {
+			return &LeadValidationError{Index: i, SourceLeadID: sid, CNPJ14: cnpj, Message: err}
+		}
+	}
 	return nil
+}
+
+func validateActivation(a *FeedActivation) string {
+	if a == nil {
+		return ""
+	}
+	st := strings.ToUpper(strings.TrimSpace(a.State))
+	switch st {
+	case ActivationWatch, ActivationResearchRequired, ActivationActionableNow, ActivationSuppressed:
+	default:
+		return fmt.Sprintf("activation.state %q is not allowed", a.State)
+	}
+	if a.Score < 0 || a.Score > 100 {
+		return fmt.Sprintf("activation.score %.4f out of range 0–100", a.Score)
+	}
+	if st == ActivationActionableNow {
+		if len(a.ReasonCodes) == 0 {
+			return "activation ACTIONABLE_NOW requires reason_codes"
+		}
+		if strings.TrimSpace(a.NextBestActionAt) == "" {
+			return "activation ACTIONABLE_NOW requires next_best_action_at"
+		}
+	}
+	return ""
 }
 
 // CanonicalPayloadHash is a stable SHA-256 of the raw payload bytes (hex).
@@ -254,15 +308,16 @@ func CanonicalPayloadHash(raw []byte) string {
 func LeadContentHash(lead FeedLead) string {
 	// Exclude human-only outcomes; include messaging, priority, moment, offer, contacts, evidence ids.
 	type slim struct {
-		SourceLeadID string         `json:"source_lead_id"`
-		Company      FeedCompany    `json:"company"`
-		Priority     FeedPriority   `json:"priority"`
-		Moment       FeedMoment     `json:"moment"`
-		Offer        FeedOffer      `json:"offer"`
-		Messaging    FeedMessaging  `json:"messaging_context"`
-		Contacts     []FeedContact  `json:"contacts"`
-		Evidence     []FeedEvidence `json:"evidence"`
-		State        string         `json:"commercial_state"`
+		SourceLeadID string          `json:"source_lead_id"`
+		Company      FeedCompany     `json:"company"`
+		Priority     FeedPriority    `json:"priority"`
+		Moment       FeedMoment      `json:"moment"`
+		Offer        FeedOffer       `json:"offer"`
+		Messaging    FeedMessaging   `json:"messaging_context"`
+		Contacts     []FeedContact   `json:"contacts"`
+		Evidence     []FeedEvidence  `json:"evidence"`
+		State        string          `json:"commercial_state"`
+		Activation   *FeedActivation `json:"activation,omitempty"`
 	}
 	b, _ := json.Marshal(slim{
 		SourceLeadID: lead.SourceLeadID,
@@ -274,6 +329,66 @@ func LeadContentHash(lead FeedLead) string {
 		Contacts:     lead.Contacts,
 		Evidence:     lead.Evidence,
 		State:        lead.CommercialState,
+		Activation:   lead.Activation,
+	})
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// MessageContextHash hashes only fields that change message truthfulness.
+// Rank / activation score alone must NOT change this hash (no false stale invalidation).
+func MessageContextHash(lead FeedLead) string {
+	type contactSlim struct {
+		Email  string `json:"email"`
+		Name   string `json:"name"`
+		Role   string `json:"role"`
+		Phone  string `json:"phone"`
+		Verify string `json:"verification_status"`
+		Rec    bool   `json:"recommended"`
+	}
+	type evidSlim struct {
+		ID   string `json:"id"`
+		Type string `json:"type"`
+		Date string `json:"date"`
+	}
+	contacts := make([]contactSlim, 0, len(lead.Contacts))
+	for _, c := range lead.Contacts {
+		contacts = append(contacts, contactSlim{
+			Email:  strings.TrimSpace(strings.ToLower(c.Email)),
+			Name:   strings.TrimSpace(c.Name),
+			Role:   strings.TrimSpace(c.Role),
+			Phone:  strings.TrimSpace(c.Phone),
+			Verify: strings.TrimSpace(c.VerificationStatus),
+			Rec:    c.Recommended,
+		})
+	}
+	evid := make([]evidSlim, 0, len(lead.Evidence))
+	for _, e := range lead.Evidence {
+		evid = append(evid, evidSlim{ID: e.ID, Type: e.Type, Date: e.Date})
+	}
+	// Material activation trigger identity only (not score/rank).
+	var actSrc, actReasons string
+	if lead.Activation != nil {
+		actSrc = strings.TrimSpace(lead.Activation.SourceHash)
+		actReasons = strings.Join(lead.Activation.ReasonCodes, ",")
+	}
+	type slim struct {
+		Moment    FeedMoment    `json:"moment"`
+		Offer     FeedOffer     `json:"offer"`
+		Messaging FeedMessaging `json:"messaging_context"`
+		Contacts  []contactSlim `json:"contacts"`
+		Evidence  []evidSlim    `json:"evidence"`
+		ActSrc    string        `json:"activation_source_hash"`
+		ActCodes  string        `json:"activation_reason_codes"`
+	}
+	b, _ := json.Marshal(slim{
+		Moment:    lead.Moment,
+		Offer:     lead.Offer,
+		Messaging: lead.MessagingContext,
+		Contacts:  contacts,
+		Evidence:  evid,
+		ActSrc:    actSrc,
+		ActCodes:  actReasons,
 	})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])

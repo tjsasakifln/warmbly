@@ -162,6 +162,10 @@ export default function ConfengePage() {
             </div>
           ))}
         </div>
+        <p className="text-[12.5px] text-slate-500" data-testid="confenge-activation-hint">
+          Prioridade comercial vem do extra-cli (activation score = ordenação, não chance de compra).
+          Conta com contexto desatualizado exige regenerar e reaprovar antes do envio.
+        </p>
 
         {/* Needs attention cockpit */}
         <section className="rounded-md border border-slate-200 bg-white" data-testid="confenge-needs-attention">

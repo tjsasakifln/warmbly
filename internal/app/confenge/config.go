@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Env keys for CONFENGE outreach. Documented in deploy/config/env.example
@@ -34,6 +35,11 @@ const (
 	EnvWhatsAppEnabled   = "CONFENGE_WHATSAPP_ENABLED"
 	EnvCrossChannelHours = "CONFENGE_CROSS_CHANNEL_MIN_INTERVAL_HOURS"
 	EnvWhatsAppMaxWords  = "CONFENGE_MAX_WHATSAPP_WORDS"
+	// Dynamic activation priority (extra-cli planner). Default OFF (shadow mode).
+	EnvDynamicPriority  = "CONFENGE_DYNAMIC_PRIORITY_ENABLED"
+	EnvFeedSyncEnabled  = "CONFENGE_FEED_SYNC_ENABLED"
+	EnvFeedSyncInterval = "CONFENGE_FEED_SYNC_INTERVAL"
+	EnvManifestURL      = "CONFENGE_EXTRA_CLI_MANIFEST_URL"
 )
 
 // Defaults for conservative cold outreach.
@@ -69,6 +75,13 @@ type Config struct {
 	MaxWhatsAppWords  int
 	// SendingPaused is the env-based kill switch (see also FileKillSwitchActive).
 	SendingPaused bool
+	// DynamicPriority uses activation_state / next_best_action_at for work queue.
+	// When false (default), import may store activation fields but queue order stays legacy.
+	DynamicPriorityEnabled bool
+	// FeedSync continuous pull of extra-cli manifest (fail-closed default off).
+	FeedSyncEnabled  bool
+	FeedSyncInterval time.Duration
+	ManifestURL      string
 }
 
 // SendWindowHours returns whole hours in [start, end) for HH:MM window strings.
@@ -110,23 +123,43 @@ func parseHHMM(s string) (h, m int, ok bool) {
 // LoadConfig reads CONFENGE_* env vars. Safe defaults keep the feature off.
 func LoadConfig() Config {
 	cfg := Config{
-		Enabled:              envBool(EnvEnabled, false),
-		AutoSendEnabled:      envBool(EnvAutoSend, false),
-		FeedURL:              strings.TrimSpace(os.Getenv(EnvFeedURL)),
-		FeedToken:            strings.TrimSpace(os.Getenv(EnvFeedToken)),
-		AllowedHosts:         splitHosts(os.Getenv(EnvAllowedHosts)),
-		OutcomeWebhookURL:    strings.TrimSpace(os.Getenv(EnvOutcomeWebhookURL)),
-		OutcomeWebhookSecret: strings.TrimSpace(os.Getenv(EnvOutcomeWebhookSec)),
-		DefaultDailyLimit:    envInt(EnvDefaultDailyLimit, DefaultCampaignDailyLimit),
-		MaxInitialEmailWords: envInt(EnvMaxInitialWords, DefaultMaxInitialWords),
-		RequireHumanApproval: envBool(EnvRequireHuman, true),
-		MaxFeedPayloadBytes:  int64(envInt(EnvMaxPayloadBytes, DefaultMaxPayloadBytes)),
-		WhatsAppEnabled:      envBool(EnvWhatsAppEnabled, false),
-		CrossChannelHours:    envInt(EnvCrossChannelHours, DefaultCrossChannelHours),
-		MaxWhatsAppWords:     envInt(EnvWhatsAppMaxWords, DefaultMaxWhatsAppWords),
-		SendingPaused:        envBool(EnvSendingPaused, false),
+		Enabled:                envBool(EnvEnabled, false),
+		AutoSendEnabled:        envBool(EnvAutoSend, false),
+		FeedURL:                strings.TrimSpace(os.Getenv(EnvFeedURL)),
+		FeedToken:              strings.TrimSpace(os.Getenv(EnvFeedToken)),
+		AllowedHosts:           splitHosts(os.Getenv(EnvAllowedHosts)),
+		OutcomeWebhookURL:      strings.TrimSpace(os.Getenv(EnvOutcomeWebhookURL)),
+		OutcomeWebhookSecret:   strings.TrimSpace(os.Getenv(EnvOutcomeWebhookSec)),
+		DefaultDailyLimit:      envInt(EnvDefaultDailyLimit, DefaultCampaignDailyLimit),
+		MaxInitialEmailWords:   envInt(EnvMaxInitialWords, DefaultMaxInitialWords),
+		RequireHumanApproval:   envBool(EnvRequireHuman, true),
+		MaxFeedPayloadBytes:    int64(envInt(EnvMaxPayloadBytes, DefaultMaxPayloadBytes)),
+		WhatsAppEnabled:        envBool(EnvWhatsAppEnabled, false),
+		CrossChannelHours:      envInt(EnvCrossChannelHours, DefaultCrossChannelHours),
+		MaxWhatsAppWords:       envInt(EnvWhatsAppMaxWords, DefaultMaxWhatsAppWords),
+		SendingPaused:          envBool(EnvSendingPaused, false),
+		DynamicPriorityEnabled: envBool(EnvDynamicPriority, false),
+		FeedSyncEnabled:        envBool(EnvFeedSyncEnabled, false),
+		FeedSyncInterval:       envDuration(EnvFeedSyncInterval, 15*time.Minute),
+		ManifestURL:            strings.TrimSpace(os.Getenv(EnvManifestURL)),
+	}
+	// Fall back to chunk feed URL for manifest if only FeedURL is set.
+	if cfg.ManifestURL == "" && cfg.FeedURL != "" && strings.HasSuffix(cfg.FeedURL, "manifest.json") {
+		cfg.ManifestURL = cfg.FeedURL
 	}
 	return cfg
+}
+
+func envDuration(key string, def time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < time.Minute {
+		return def
+	}
+	return d
 }
 
 // ValidateStartup fails closed on insecure production combinations.
