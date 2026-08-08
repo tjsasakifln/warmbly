@@ -1085,24 +1085,30 @@ def build_critical_gate_map(
         "restart_no_burst": (
             GATE_PASS
             if restart_ok and sticky.get("no_burst_creates", {}).get("pass")
-            else (
-                GATE_FAIL
-                if sticky.get("no_burst_creates") is not None or restart_ok is False
-                else GATE_NOT_RUN
-            )
+            else sticky_ok("no_burst_creates")
+            if sticky.get("no_burst_creates") is not None
+            else (GATE_FAIL if restart_ok is False else GATE_NOT_RUN)
         ),
         "approval_content_hash": sticky_ok("approval_sticky"),
         "reply_cancels_future": sticky_ok("replied_sticky"),
         # Channel readiness is not a CRITICAL_GATES name but influences READY blockers.
     }
     # External / evidence-backed critical gates — default NOT_RUN (never prior PASS).
+    # If sticky measurement is NOT_RUN, allow current-run evidence files to fill in
+    # (e.g. Playwright-proven approval/edit_invalidation on this HEAD).
     for name in CRITICAL_GATES:
-        if name in gates:
+        if name in gates and gates[name] not in (GATE_NOT_RUN,):
             continue
         if name in ext:
             gates[name] = ext[name]
         else:
-            gates[name] = load_external_gate_status(name)
+            loaded = load_external_gate_status(name)
+            if name not in gates or gates[name] == GATE_NOT_RUN or loaded == GATE_PASS:
+                # Prefer PASS evidence over sticky NOT_RUN; never demote sticky FAIL.
+                if name not in gates or gates[name] == GATE_NOT_RUN:
+                    gates[name] = loaded
+                elif gates[name] != GATE_FAIL and loaded == GATE_PASS:
+                    gates[name] = loaded
 
     # CI is never self-declared green inside this process.
     if gates.get("ci_green") is None:
