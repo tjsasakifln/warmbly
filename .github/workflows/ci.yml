@@ -202,17 +202,29 @@ jobs:
       EVENTBUS_PROVIDER: nats
       CODEC_PROVIDER: json
       APP_ENV: dev
+      APP_URL: http://127.0.0.1:5173
       API_HOST: 127.0.0.1:18080
+      WEBSOCKET_URL: ws://127.0.0.1:4000/socket/websocket
+      GEODB_PATH: /tmp/missing-geolite.mmdb
       BILLING_PROVIDER: none
       AWS_CONFIG_ENABLED: "false"
       CAPTCHA_PROVIDER: none
       KMS_PROVIDER: local
+      KMS_LOCAL_MASTER_KEY: Xr0JA7gqF2POy29a7MRByyqddivTNt8WOyKsOXklazk=
+      CREDENTIALS_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      ENCRYPTED_KEYS_PROVIDER: postgres
       BLOB_PROVIDER: filesystem
+      BLOB_FS_ROOT: /tmp/warmbly-blobs
+      BLOB_PUBLIC_BASE_URL: http://127.0.0.1:18080/public
       TASKS_PROVIDER: local
       AUTH_SECRET: local-dev-auth-secret-minimum-32-characters-long
       INTERNAL_API_TOKEN: local-dev-internal-token
+      EMAIL_NAME: Warmbly Dev
+      EMAIL_ADDRESS: dev@warmbly.local
       SMTP_HOST: 127.0.0.1
       SMTP_PORT: "11025"
+      TRACKING_DOMAIN: t.warmbly.com
+      CORS_ALLOW_ORIGINS: http://127.0.0.1:5173
       CONFENGE_OUTREACH_ENABLED: "true"
       CONFENGE_REQUIRE_HUMAN_APPROVAL: "true"
       CONFENGE_AUTO_SEND_ENABLED: "false"
@@ -225,6 +237,7 @@ jobs:
       CONFENGE_E2E_BASE_URL: http://127.0.0.1:5173
       CONFENGE_GATE_CODE_SHA: ${{ github.sha }}
       CONFENGE_E2E_PROOF_DIR: data/confenge-evidence
+      CONFENGE_E2E_FEED: internal/app/confenge/testdata/demo_3_companies.json
     steps:
       - uses: actions/checkout@v4
 
@@ -259,11 +272,20 @@ jobs:
 
       - name: Start backend
         run: |
-          nohup go run ./cmd/backend > /tmp/confenge-backend.log 2>&1 &
+          mkdir -p /tmp/warmbly-blobs data/confenge-evidence
+          # Build once so the listener is a stable binary (go run may exit on panic after print).
+          go build -o /tmp/warmbly-backend ./cmd/backend
+          nohup /tmp/warmbly-backend > /tmp/confenge-backend.log 2>&1 &
+          echo $! > /tmp/confenge-backend.pid
           for i in $(seq 1 90); do
-            if curl -fsS -o /dev/null -w "%{http_code}" http://127.0.0.1:18080/v1/confenge/status | grep -qE '^[0-9]+$'; then
-              echo "backend up"
-              exit 0
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18080/v1/confenge/status || true)
+            # 401 means API is up (auth required); 200 also ok
+            if [ "$code" = "401" ] || [ "$code" = "200" ]; then
+              echo "backend up code=$code"
+              # ensure process still alive
+              if kill -0 "$(cat /tmp/confenge-backend.pid)" 2>/dev/null; then
+                exit 0
+              fi
             fi
             sleep 2
           done
