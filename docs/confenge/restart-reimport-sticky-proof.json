@@ -1,7 +1,7 @@
 {
   "at": "2026-08-08T03:19:08.708860+00:00",
   "gate_script": "scripts/confenge_readiness_gate.py",
-  "code_sha": "53728b81c5dd050c353ee97d0282f7ed9233b4c1",
+  "code_sha": "48c0d912564950339e03dfaa227816f69b559da4",
   "org": "22222222-0000-0000-0000-000000000001",
   "feed": "/mnt/d/warmbly/data/confenge-feeds/acceptance_real_slice/slice.json",
   "warmbly_root": "/mnt/d/warmbly",
@@ -316,6 +316,6 @@
   },
   "sticky_pass": true,
   "restart_pass": true,
-  "tested_sha": "53728b81c5dd050c353ee97d0282f7ed9233b4c1",
-  "git_sha": "53728b81c5dd050c353ee97d0282f7ed9233b4c1"
+  "tested_sha": "48c0d912564950339e03dfaa227816f69b559da4",
+  "git_sha": "48c0d912564950339e03dfaa227816f69b559da4"
 }

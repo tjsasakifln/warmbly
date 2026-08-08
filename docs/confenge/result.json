@@ -3,7 +3,7 @@
   "emitted_by": "scripts/confenge_readiness_gate.py",
   "at": "2026-08-08T03:19:17.202451+00:00",
   "generated_at": "2026-08-08T03:19:17.202453+00:00",
-  "code_sha": "53728b81c5dd050c353ee97d0282f7ed9233b4c1",
+  "code_sha": "48c0d912564950339e03dfaa227816f69b559da4",
   "gates": {
     "contact_integrity": "PASS",
     "dnc_sticky": "PASS",
@@ -133,6 +133,6 @@
   "ci_exact_head": "PASS",
   "blockers": [],
   "report_only": false,
-  "tested_sha": "53728b81c5dd050c353ee97d0282f7ed9233b4c1",
-  "git_sha": "53728b81c5dd050c353ee97d0282f7ed9233b4c1"
+  "tested_sha": "48c0d912564950339e03dfaa227816f69b559da4",
+  "git_sha": "48c0d912564950339e03dfaa227816f69b559da4"
 }
