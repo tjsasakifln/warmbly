@@ -27,10 +27,10 @@ Clear these three, re-bind evidence, then re-emit GO.
 | REPO | MAIN SHA | DEPLOYED / PRODUCTION | STATUS |
 | --- | --- | --- | --- |
 | extra-cli | `28a31a1bac44d250f6f9dd26bd9c30aa12ae1263` | main includes organic engine; public feed `:8443` serves `confenge.outreach.v1` (168 leads) | MATCH (main); live process tree not re-inspected |
-| warmbly | `eea32a9c9a4baf16b9f0734da620a9d0f4851094` | Last SSH: VPS `.deployed_sha`/`git HEAD`=`9543f387…` (16:55:40Z). **SSH refused since.** Tip includes #20 NO_GO + #21 recovery SOP | **STALE_PROOF** (re-verify blocked) |
+| warmbly | `5841ebc45b6e5ae50458410e688482c1e29c7d1f` | Last SSH: VPS `.deployed_sha`/`git HEAD`=`9543f387…` (16:55:40Z). **SSH refused.** Tip includes #20–#22 NO_GO + recovery SOP | **STALE_PROOF** (re-verify blocked) |
 | web-cfg | `c550e7cc7d9486b5095df66d8b3baa97c588eabd` | Netlify production + live `/.well-known/build-info.json` commit identical, published 2026-08-09T16:36:19Z | **MATCH** |
 
-Warmbly chain: #18 doctrine → #17 VPS pack `b2bebda0` (images built here) → #19 go-live pack `9543f387` → #20 NO_GO rebind → #21 recovery SOP `eea32a9c`.
+Warmbly chain: #18 doctrine → #17 VPS pack `b2bebda0` (images built here) → #19 go-live pack `9543f387` → #20–#22 NO_GO rebind + recovery SOP `5841ebc4`.
 
 ---
 
@@ -87,7 +87,7 @@ Do not claim a full strategy/doctrine package for Monday send selection until dr
 
 ### Human actions before 09:00 (≤3)
 
-1. **Restore VPS SSH** (Netcup SCP VNC → fix/restart `sshd` on 2222; confirm `status.sh`).
+1. **Restore VPS SSH**: Netcup CCP login 397766 + password + **2FA TAN** → SCP server 902196 → VNC → restart `sshd` on 2222.
 2. **Re-bind deploy SHA** (`cat .deployed_sha` == `9543f387…` or later intentional main) + re-run self-smoke SMTP + **IMAP reply stop**.
 3. **Human-edit/approve** only rewritten drafts (not raw template sample).
 

@@ -47,3 +47,11 @@ Without SSH you cannot: re-bind `.deployed_sha`, run `status.sh`, self-smoke, IM
 - Reinstall OS (destroys postgres volumes)
 - Open 8080/5173/15432 publicly
 - Enable GREEN autorun or WhatsApp to "test"
+
+## Credential status (2026-08-09)
+
+- CCP customer: **397766**
+- CCP password: available in Chrome Login Data / agent vault
+- **2FA TAN required** after password (TOTP authenticator)
+- OS root password: `~/.config/extra-consultoria/netcup-rs2000.env` (`ROOT_PASSWORD`)
+- SCP server id: **902196**
