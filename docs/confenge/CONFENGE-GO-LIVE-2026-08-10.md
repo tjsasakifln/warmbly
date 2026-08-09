@@ -36,7 +36,7 @@ Clear (1) with one observed cadence cancel after Unibox ingest (or explicit oper
 | REPO | MAIN SHA | DEPLOYED / PRODUCTION | STATUS |
 | --- | --- | --- | --- |
 | extra-cli | `28a31a1bac44d250f6f9dd26bd9c30aa12ae1263` | feed `:8443` HTTP 200 (stock generated_at 2026-08-08) | PARTIAL stock |
-| warmbly | `5841ebc45b6e5ae50458410e688482c1e29c7d1f` | VPS `.deployed_sha` + `git HEAD` same; `status.sh` PASS | **MATCH** |
+| warmbly | `dd58b2ebe666c49dc965161a2194114bc561f22d` | VPS `.deployed_sha` + `git HEAD` match tip; `status.sh` PASS | **MATCH** |
 | web-cfg | `88d72aeaa72c812fcff7e2bde9c2736f5f22515f` | live `/.well-known/build-info.json` commit match | **MATCH** |
 
 ---
