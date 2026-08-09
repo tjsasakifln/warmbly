@@ -98,17 +98,23 @@ Stack brought up with `deploy/confenge-vps` overlay (existing images, no extra-c
 | Hostinger IMAP 993 | PASS |
 | Hostinger SMTP 465/587 | **PASS** (TCP + AUTH after Mail block delete) |
 | Sealed mailbox `tiago.sasaki@confenge.com.br` | **active**, worker `10c8f5e4-…` |
-| Self-smoke Hostinger send-to-self | **PASS** (`task_id=d6b6faa2-…`, message accepted) |
+| Seed `@warmbly.test` accounts | **inactive** (quarantined; dead SMTP noise) |
+| Self-smoke #1 Hostinger self | **PASS** `task_id=d6b6faa2…` mid=`76d0dfda…` worker accepted |
+| Self-smoke #2 after restart | **PASS** `task_id=66d9d596…` mid=`1610e60c…` |
+| Client disconnect then SMTP | **PASS** (HTTP 200 then worker `Email sent successfully`) |
+| IMAP unibox without laptop | **PASS** (185 msgs; includes self-smoke + Gmail replies) |
 | EXTRA FEED :8443 | PASS |
 | OUTCOME LOOP | PASS |
 | GREEN / WhatsApp / AUTO_SEND | OFF |
 | DISPATCH pause/resume file kill-switch | PASS |
-| Container restart persistence (DB marker) | PASS |
-| Isolated restore into `warmbly_restore_proof` | PASS (185 public tables; probe row present) |
+| Container restart persistence (DB marker) | PASS (`vps-restart-proof-20260809T045123Z`) |
+| Backup (SQL + redacted env) | PASS; secrets bundle 0600 separate; no mailbox password |
+| Isolated restore `warmbly_restore_proof` | PASS (185 public tables; probe row present) |
+| Realtime cgroup | **PASS** after limit **1536M** (512M OOM-looped BEAM exit 137) |
 | Public bind of app ports | None (127.0.0.1 only) |
-| Resource sample | ~5 GiB used / 15 GiB; Warmbly containers well under limits |
+| Resource sample | ~5 GiB used / 15 GiB; Warmbly containers under limits |
 
-**Optional remaining:** full VPS reboot drill; rotate Hostinger app password after ops window; `realtime` OOM-restart (exit 137) is non-blocking for SMTP path.
+**Ops notes:** Full host `reboot` not run (container restart proven; optional drill). Reconnecting Hostinger can hit worker IMAP burst 100/5min and terminate the account; clear Redis `sync:<account_id>:*` and re-activate. Commercial confenge PLANNED touchpoints (e.g. encopav@) were **not** approved. Rotate Hostinger app password after ops window.
 
 ## Netcup Mail block (root cause of SMTP FAIL)
 

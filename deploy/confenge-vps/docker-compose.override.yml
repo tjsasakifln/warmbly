@@ -193,11 +193,14 @@ services:
     logging: *default-logging
     ports: !override
       - "127.0.0.1:4000:4000"
+    # BEAM RSS ~500–520Mi at boot and climbs past 1Gi under load; 512M cgroup OOM-looped.
     deploy:
       resources:
         limits:
-          cpus: "0.5"
-          memory: 512M
+          cpus: "0.75"
+          memory: 1536M
+        reservations:
+          memory: 384M
 
   web:
     <<: *restart
