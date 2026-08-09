@@ -201,47 +201,59 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 	}
 }
 
-// revalidateOpenCampaignPolicyTouchpoints loads every APPROVED/QUEUED CAMPAIGN_POLICY
-// touchpoint for the account and revalidates the live grant. Independent of context hash.
+// revalidateOpenCampaignPolicyTouchpoints finds CAMPAIGN_POLICY-bound touchpoints
+// for the account and checks the live grant. Independent of MessageContextHash.
+// Covers unsent (APPROVED/QUEUED) and residual SENT/FAILED still bearing policy
+// binding so GateCampaignEmail cannot fail open after revoke.
 func (s *service) revalidateOpenCampaignPolicyTouchpoints(ctx context.Context, orgID uuid.UUID, acc *models.OutreachAccount) *CampaignGateResult {
 	if acc == nil {
 		return nil
 	}
-	for _, st := range []string{models.TouchpointApproved, models.TouchpointQueued} {
-		open, err := s.repo.ListTouchpoints(ctx, orgID, acc.ID, st, 50, 0)
-		if err != nil {
-			return &CampaignGateResult{Kind: GateTransient, Reason: ReasonGovernor, Err: err}
+	all, err := s.repo.ListTouchpoints(ctx, orgID, acc.ID, "", 50, 0)
+	if err != nil {
+		return &CampaignGateResult{Kind: GateTransient, Reason: ReasonGovernor, Err: err}
+	}
+	for i := range all {
+		tp := &all[i]
+		if strings.TrimSpace(tp.AuthorizationMode) != AuthorizationModeCampaignPolicy {
+			continue
 		}
-		for i := range open {
-			tp := &open[i]
-			if strings.TrimSpace(tp.AuthorizationMode) != AuthorizationModeCampaignPolicy {
+		switch tp.State {
+		case models.TouchpointApproved, models.TouchpointQueued, models.TouchpointSent, models.TouchpointFailed:
+		default:
+			if models.TouchpointTerminalStates[tp.State] {
 				continue
 			}
-			if block := s.revalidateCampaignPolicyAtSend(ctx, orgID, tp); block != nil {
-				return block
-			}
+		}
+		// Grant liveness only (no CanTransport): SENT residuals must still surface revoke.
+		if block := s.revalidateCampaignPolicyGrant(ctx, orgID, tp, tp.State != models.TouchpointSent && tp.State != models.TouchpointFailed); block != nil {
+			return block
 		}
 	}
 	return nil
 }
 
-// revalidateCampaignPolicyAtSend blocks transport when the bound grant is gone,
-// revoked, hash-mismatched, or channel no longer matches. Always loads the grant
-// from the policy store — structural CanTransport alone is insufficient after revoke.
-func (s *service) revalidateCampaignPolicyAtSend(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint) *CampaignGateResult {
+// revalidateCampaignPolicyGrant loads the bound grant and fails closed if missing,
+// revoked, hash-mismatched, or channel-mismatched. clearOnFail controls ClearApproval.
+func (s *service) revalidateCampaignPolicyGrant(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint, clearOnFail bool) *CampaignGateResult {
 	if tp == nil {
 		return &CampaignGateResult{Kind: GateTransient, Reason: "nil_touchpoint", Err: fmt.Errorf("nil touchpoint")}
 	}
 	if strings.TrimSpace(tp.AuthorizationMode) != AuthorizationModeCampaignPolicy {
 		return nil
 	}
+	fail := func(reason string, err error) *CampaignGateResult {
+		if clearOnFail {
+			ClearApproval(tp)
+			tp.StopReason = reason
+			_ = s.repo.UpdateTouchpoint(ctx, tp)
+		}
+		return &CampaignGateResult{Kind: GateDeferred, Reason: reason, NextSlot: time.Now().UTC().Add(time.Minute), Err: err}
+	}
 	if tp.CampaignPolicyAuthorizationID == nil || *tp.CampaignPolicyAuthorizationID == uuid.Nil {
-		ClearApproval(tp)
-		_ = s.repo.UpdateTouchpoint(ctx, tp)
-		return &CampaignGateResult{Kind: GateDeferred, Reason: "policy_binding_missing", NextSlot: time.Now().UTC().Add(time.Minute)}
+		return fail("policy_binding_missing", nil)
 	}
 	if s.policyStore == nil {
-		// Fail-closed: cannot prove grant is live.
 		return &CampaignGateResult{Kind: GateTransient, Reason: "policy_store_missing", Err: fmt.Errorf("policy store not wired")}
 	}
 	auth, err := s.policyStore.GetCampaignPolicyByID(ctx, orgID, *tp.CampaignPolicyAuthorizationID)
@@ -250,37 +262,38 @@ func (s *service) revalidateCampaignPolicyAtSend(ctx context.Context, orgID uuid
 	}
 	now := time.Now().UTC()
 	if auth == nil || !auth.Active(now) {
-		ClearApproval(tp)
-		tp.StopReason = "policy_revoked"
-		_ = s.repo.UpdateTouchpoint(ctx, tp)
-		return &CampaignGateResult{Kind: GateDeferred, Reason: "policy_revoked", NextSlot: now.Add(time.Minute)}
+		return fail("policy_revoked", nil)
 	}
 	wantHash := PolicyAuthorizationHash(auth)
-	// Empty stored hash or mismatch both fail closed.
 	if strings.TrimSpace(tp.AuthorizationPolicyHash) == "" || tp.AuthorizationPolicyHash != wantHash {
-		ClearApproval(tp)
-		tp.StopReason = "policy_hash_mismatch"
-		_ = s.repo.UpdateTouchpoint(ctx, tp)
-		return &CampaignGateResult{Kind: GateDeferred, Reason: "policy_hash_mismatch", NextSlot: now.Add(time.Minute)}
+		return fail("policy_hash_mismatch", nil)
 	}
 	if strings.ToUpper(strings.TrimSpace(auth.Channel)) != "" &&
 		strings.ToUpper(strings.TrimSpace(auth.Channel)) != strings.ToUpper(strings.TrimSpace(tp.Channel)) {
-		ClearApproval(tp)
-		tp.StopReason = "policy_channel_mismatch"
-		_ = s.repo.UpdateTouchpoint(ctx, tp)
-		return &CampaignGateResult{Kind: GateDeferred, Reason: "policy_channel_mismatch", NextSlot: now.Add(time.Minute)}
+		return fail("policy_channel_mismatch", nil)
+	}
+	return nil
+}
+
+// revalidateCampaignPolicyAtSend blocks transport when the bound grant is gone,
+// revoked, hash-mismatched, or channel no longer matches, then checks structural
+// CanTransport. Always loads the grant from the policy store.
+func (s *service) revalidateCampaignPolicyAtSend(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint) *CampaignGateResult {
+	if block := s.revalidateCampaignPolicyGrant(ctx, orgID, tp, true); block != nil {
+		return block
 	}
 	if err := CanTransport(tp); err != nil {
 		ClearApproval(tp)
 		tp.StopReason = "transport_invalid"
 		_ = s.repo.UpdateTouchpoint(ctx, tp)
-		return &CampaignGateResult{Kind: GateDeferred, Reason: "transport_invalid", NextSlot: now.Add(time.Minute), Err: err}
+		return &CampaignGateResult{Kind: GateDeferred, Reason: "transport_invalid", NextSlot: time.Now().UTC().Add(time.Minute), Err: err}
 	}
 	return nil
 }
 
 // AssertTransportable is the single pre-send gate for a touchpoint: structural
 // CanTransport plus live CAMPAIGN_POLICY grant revalidation when applicable.
+// Used by QueueTouchpoint, dispatchEmailTouch, requireTouchTransport (EnrollDraft, WhatsApp).
 func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint) error {
 	if err := CanTransport(tp); err != nil {
 		return err

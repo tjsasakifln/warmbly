@@ -293,6 +293,155 @@ func TestAssertTransportableAfterRevokeFails(t *testing.T) {
 	_ = CanTransport(tp)
 }
 
+// TestRequireTouchTransportAfterRevokeBlocks is the EnrollDraft/API path:
+// requireTouchTransport must use AssertTransportable, not structural CanTransport only.
+func TestRequireTouchTransportAfterRevokeBlocks(t *testing.T) {
+	ctx := context.Background()
+	repo := newMemRepo()
+	org, user, camp := uuid.New(), uuid.New(), uuid.New()
+	accID, candID := uuid.New(), uuid.New()
+
+	svc := NewService(Config{Enabled: true, AppEnv: "test", RequireHumanApproval: true}, repo, nil).(*service)
+	store := newMemPolicyStore()
+	svc.WirePolicyAuth(store)
+
+	acc := &models.OutreachAccount{
+		ID: accID, OrganizationID: org, CNPJ14: "55443322000155",
+		ServiceCode: "REAJUSTE", FactToMention: "f", MessageContextHash: "ctx-e",
+	}
+	_, _ = repo.UpsertAccount(ctx, acc)
+	cand := &models.OutreachContactCandidate{
+		ID: candID, OrganizationID: org, AccountID: accID,
+		Email: "enroll.revoke@example.com", VerificationStatus: models.OutreachVerifyOfficialSource,
+		EmailSendReady: true, OwnershipStatus: "COMPANY_OWNED", Recommended: true,
+	}
+	_, _ = repo.UpsertCandidate(ctx, cand)
+
+	auth, xerr := svc.AuthorizeCampaignPolicy(ctx, org, user, &models.CampaignPolicyAuthorization{
+		CampaignID: camp, Channel: "EMAIL", AllowedRiskClass: "GREEN",
+		EffectiveAt: time.Now().UTC().Add(-time.Minute), SenderMailbox: "tiago.sasaki@confenge.com.br",
+	})
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+
+	draft := &models.OutreachDraft{
+		OrganizationID: org, AccountID: accID, ContactCandidateID: &candID,
+		Channel: models.OutreachChannelEmail, Subject: "S", BodyText: "body content here",
+		RecipientEmail: cand.Email, Status: models.OutreachDraftApproved,
+		ServiceCode: "REAJUSTE", RiskClass: "GREEN", FactUsed: "f",
+	}
+	_ = repo.UpsertDraft(ctx, draft)
+
+	tp := &models.OutreachTouchpoint{
+		OrganizationID: org, AccountID: accID, ContactCandidateID: &candID,
+		DraftID: &draft.ID, Ordinal: 1, Channel: "EMAIL", Purpose: models.TouchpointPurposeInitial,
+		State: models.TouchpointNeedsReview, Recipient: cand.Email,
+		Subject: draft.Subject, BodyText: draft.BodyText, ServiceCode: "REAJUSTE", FactUsed: "f",
+		GeneratedContextHash: "ctx-e", IdempotencyKey: "enroll-revoke-1",
+	}
+	RecomputeContentHash(tp)
+	if err := ApplyCampaignPolicyAuthorization(tp, auth, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	_ = repo.InsertTouchpoint(ctx, tp)
+
+	if err := CanTransport(tp); err != nil {
+		t.Fatalf("structural CanTransport: %v", err)
+	}
+	if xerr := AssertTransportAllowed(tp); xerr != nil {
+		t.Fatalf("structural AssertTransportAllowed: %v", xerr)
+	}
+
+	if ok, _ := svc.RevokeCampaignPolicy(ctx, org, camp, user); !ok {
+		t.Fatal("revoke")
+	}
+
+	_, xerr = svc.requireTouchTransport(ctx, org, draft.ID)
+	if xerr == nil {
+		t.Fatal("requireTouchTransport MUST fail after policy revoke")
+	}
+	msg := strings.ToLower(xerr.Message)
+	if !strings.Contains(msg, "policy") && !strings.Contains(msg, "revok") && !strings.Contains(msg, "blocked") {
+		t.Fatalf("unexpected requireTouchTransport error: %s", xerr.Message)
+	}
+
+	_, xerr = svc.EnrollDraft(ctx, org, user, draft.ID)
+	if xerr == nil {
+		t.Fatal("EnrollDraft MUST fail after policy revoke")
+	}
+}
+
+// TestGateCampaignEmailBlocksRevokedPolicyAfterSentResidual covers residual SENT
+// touchpoints still bearing CAMPAIGN_POLICY binding after QueueTouchpoint→SENT.
+func TestGateCampaignEmailBlocksRevokedPolicyAfterSentResidual(t *testing.T) {
+	ctx := context.Background()
+	repo := newMemRepo()
+	org, user, camp := uuid.New(), uuid.New(), uuid.New()
+	accID, candID := uuid.New(), uuid.New()
+
+	svc := NewService(Config{Enabled: true, AppEnv: "test"}, repo, nil).(*service)
+	store := newMemPolicyStore()
+	svc.WirePolicyAuth(store)
+	loc, _ := time.LoadLocation("America/Sao_Paulo")
+	fixed := time.Date(2026, 8, 10, 12, 0, 0, 0, loc) // Monday business hours
+	clock := &dispatch.FixedClock{T: fixed.UTC()}
+	cfg := dispatch.LoadConfig()
+	cfg.BusinessDaysOnly = true
+	svc.WireDispatchGovernor(dispatch.NewGovernor(cfg, dispatch.NewMemoryStore(), clock))
+
+	acc := &models.OutreachAccount{
+		ID: accID, OrganizationID: org, CNPJ14: "44332211000166",
+		ServiceCode: "REAJUSTE", MessageContextHash: "ctx-s",
+	}
+	_, _ = repo.UpsertAccount(ctx, acc)
+	cand := &models.OutreachContactCandidate{
+		ID: candID, OrganizationID: org, AccountID: accID,
+		Email: "sent.residual@example.com", VerificationStatus: models.OutreachVerifyOfficialSource,
+		EmailSendReady: true, OwnershipStatus: "COMPANY_OWNED",
+	}
+	_, _ = repo.UpsertCandidate(ctx, cand)
+
+	auth, xerr := svc.AuthorizeCampaignPolicy(ctx, org, user, &models.CampaignPolicyAuthorization{
+		CampaignID: camp, Channel: "EMAIL", AllowedRiskClass: "GREEN",
+		EffectiveAt: time.Now().UTC().Add(-time.Minute), SenderMailbox: "tiago.sasaki@confenge.com.br",
+		MaxRatePerHour: 10,
+	})
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+
+	tp := &models.OutreachTouchpoint{
+		OrganizationID: org, AccountID: accID, ContactCandidateID: &candID,
+		Channel: "EMAIL", State: models.TouchpointNeedsReview, Recipient: cand.Email,
+		Subject: "S", BodyText: "body", GeneratedContextHash: "ctx-s",
+		IdempotencyKey: "sent-residual-1",
+	}
+	RecomputeContentHash(tp)
+	if err := ApplyCampaignPolicyAuthorization(tp, auth, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	tp.State = models.TouchpointSent
+	now := time.Now().UTC()
+	tp.SentAt = &now
+	_ = repo.InsertTouchpoint(ctx, tp)
+
+	if ok, _ := svc.RevokeCampaignPolicy(ctx, org, camp, user); !ok {
+		t.Fatal("revoke")
+	}
+
+	res := svc.GateCampaignEmail(ctx, org, "CONFENGE Residual", cand.Email, camp, candID, uuid.New())
+	if res.Kind == GateProceed {
+		t.Fatalf("GateCampaignEmail must not Proceed after revoke with residual SENT policy TP; reason=%s", res.Reason)
+	}
+	if res.Reason == "outside_business_day" || res.Reason == "outside_send_window" {
+		t.Fatalf("got window deferral %q instead of policy_revoked — revoke not enforced on residual SENT", res.Reason)
+	}
+	if res.Reason != "policy_revoked" && res.Reason != "policy_binding_missing" && res.Reason != "policy_hash_mismatch" {
+		t.Logf("gate kind=%d reason=%s (must not be Proceed)", res.Kind, res.Reason)
+	}
+}
+
 // TestNoEditAfterAuthorizationDerivedFromHash proves the predicate is not a constant true.
 func TestNoEditAfterAuthorizationDerivedFromHash(t *testing.T) {
 	ctx := context.Background()

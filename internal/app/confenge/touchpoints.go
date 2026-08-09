@@ -658,8 +658,9 @@ func (s *service) assertPriorReleased(ctx context.Context, orgID uuid.UUID, tp *
 }
 
 // requireTouchTransport fails closed: every CONFENGE outbound must be backed by a
-// touchpoint whose approved_content_hash matches content_hash and has human approved_by.
-// Draft-only APPROVED status is never enough.
+// touchpoint that is structurally transportable AND (for CAMPAIGN_POLICY) still
+// bound to a live, non-revoked grant. Draft-only APPROVED is never enough.
+// Used by EnrollDraft and WhatsApp send paths — must not use structural CanTransport alone.
 func (s *service) requireTouchTransport(ctx context.Context, orgID, draftID uuid.UUID) (*models.OutreachTouchpoint, *errx.Error) {
 	tp, err := s.repo.GetTouchpointByDraft(ctx, orgID, draftID)
 	if err != nil {
@@ -668,8 +669,9 @@ func (s *service) requireTouchTransport(ctx context.Context, orgID, draftID uuid
 	if tp == nil {
 		return nil, errx.New(errx.BadRequest, "CONFENGE transport requires an approved touchpoint; use the per-touch review queue (draft-only approval cannot send)")
 	}
-	if xerr := AssertTransportAllowed(tp); xerr != nil {
-		return nil, xerr
+	// Live grant revalidation: revoke must block EnrollDraft / WhatsApp / API transport.
+	if err := s.AssertTransportable(ctx, orgID, tp); err != nil {
+		return nil, errx.New(errx.BadRequest, "CONFENGE transport blocked: "+err.Error())
 	}
 	if xerr := s.assertPriorReleased(ctx, orgID, tp); xerr != nil {
 		return nil, xerr
