@@ -117,12 +117,10 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 					continue
 				}
 				if err := AssertMessageContextFresh(acc, tp.GeneratedContextHash); err != nil {
-					// Invalidate approval so stale copy cannot be retried as "approved".
-					tp.State = models.TouchpointNeedsReview
+					// Canonical invalidation: clears human + CAMPAIGN_POLICY binding.
+					ClearApproval(tp)
 					tp.StopReason = "context_stale"
 					tp.ContextStale = true
-					tp.ApprovedBy, tp.ApprovedAt = nil, nil
-					tp.ApprovedContentHash = ""
 					_ = s.repo.UpdateTouchpoint(ctx, tp)
 					_ = s.repo.SetAccountHumanFlags(ctx, orgID, acc.ID, acc.Blocked, acc.DoNotContact, acc.BlockReason, models.OutreachQueueNeedsReview)
 					due := time.Now().UTC().Add(time.Minute)
@@ -133,16 +131,31 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 						Err:      err,
 					}
 				}
+				// Final transport revalidation for CAMPAIGN_POLICY grants.
+				if strings.TrimSpace(tp.AuthorizationMode) == AuthorizationModeCampaignPolicy {
+					if block := s.revalidateCampaignPolicyAtSend(ctx, orgID, tp); block != nil {
+						return *block
+					}
+				}
 			}
 		}
 	}
 	_ = sequenceID // campaign step id (not a draft/touchpoint id)
+
+	// Effective hourly cap = min(adaptive runtime, active campaign policy rate).
+	capOverride := 0
+	if s.policyStore != nil {
+		if pol, _ := s.policyStore.GetActiveCampaignPolicy(ctx, orgID, campaignID, time.Now().UTC()); pol != nil && pol.MaxRatePerHour > 0 {
+			capOverride = pol.MaxRatePerHour
+		}
+	}
 
 	key := MessageKeyCampaignEmail(campaignID, contactID, sequenceID)
 	res, err := s.governor.TryReserve(ctx, dispatch.ReserveRequest{
 		OrganizationID: orgID,
 		Channel:        dispatch.ChannelEmail,
 		MessageKey:     key,
+		CapOverride:    capOverride,
 	})
 	if err != nil {
 		// Store / control / clock failures are always transient.
@@ -171,6 +184,54 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 		ReservationID: res.Reservation.ID,
 		Reason:        res.Reason,
 	}
+}
+
+// revalidateCampaignPolicyAtSend blocks transport when the bound grant is gone,
+// revoked, hash-mismatched, or channel/risk no longer match.
+func (s *service) revalidateCampaignPolicyAtSend(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint) *CampaignGateResult {
+	if tp == nil {
+		return &CampaignGateResult{Kind: GateTransient, Reason: "nil_touchpoint", Err: fmt.Errorf("nil touchpoint")}
+	}
+	if tp.CampaignPolicyAuthorizationID == nil || *tp.CampaignPolicyAuthorizationID == uuid.Nil {
+		ClearApproval(tp)
+		_ = s.repo.UpdateTouchpoint(ctx, tp)
+		return &CampaignGateResult{Kind: GateDeferred, Reason: "policy_binding_missing", NextSlot: time.Now().UTC().Add(time.Minute)}
+	}
+	if s.policyStore == nil {
+		return &CampaignGateResult{Kind: GateTransient, Reason: "policy_store_missing", Err: fmt.Errorf("policy store not wired")}
+	}
+	auth, err := s.policyStore.GetCampaignPolicyByID(ctx, orgID, *tp.CampaignPolicyAuthorizationID)
+	if err != nil {
+		return &CampaignGateResult{Kind: GateTransient, Reason: ReasonGovernor, Err: err}
+	}
+	now := time.Now().UTC()
+	if auth == nil || !auth.Active(now) {
+		ClearApproval(tp)
+		tp.StopReason = "policy_revoked"
+		_ = s.repo.UpdateTouchpoint(ctx, tp)
+		return &CampaignGateResult{Kind: GateDeferred, Reason: "policy_revoked", NextSlot: now.Add(time.Minute)}
+	}
+	wantHash := PolicyAuthorizationHash(auth)
+	if tp.AuthorizationPolicyHash != "" && tp.AuthorizationPolicyHash != wantHash {
+		ClearApproval(tp)
+		tp.StopReason = "policy_hash_mismatch"
+		_ = s.repo.UpdateTouchpoint(ctx, tp)
+		return &CampaignGateResult{Kind: GateDeferred, Reason: "policy_hash_mismatch", NextSlot: now.Add(time.Minute)}
+	}
+	if strings.ToUpper(strings.TrimSpace(auth.Channel)) != "" &&
+		strings.ToUpper(strings.TrimSpace(auth.Channel)) != strings.ToUpper(strings.TrimSpace(tp.Channel)) {
+		ClearApproval(tp)
+		tp.StopReason = "policy_channel_mismatch"
+		_ = s.repo.UpdateTouchpoint(ctx, tp)
+		return &CampaignGateResult{Kind: GateDeferred, Reason: "policy_channel_mismatch", NextSlot: now.Add(time.Minute)}
+	}
+	if err := CanTransport(tp); err != nil {
+		ClearApproval(tp)
+		tp.StopReason = "transport_invalid"
+		_ = s.repo.UpdateTouchpoint(ctx, tp)
+		return &CampaignGateResult{Kind: GateDeferred, Reason: "transport_invalid", NextSlot: now.Add(time.Minute), Err: err}
+	}
+	return nil
 }
 
 // CommitCampaignEmail records a successful CONFENGE campaign outbound.

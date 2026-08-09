@@ -127,16 +127,14 @@ for a in rows:
 ")
 fi
 if [ -n "$ACC_ID" ]; then
-  # Professional PT-BR signature text; image is attached at SMTP send via CID
-  # when HTML body includes cid:tiago-sasaki-signature@confenge (see confenge.BodyToHTML).
-  SIG_PLAIN=$'Atenciosamente,\n\nEng. Tiago Sasaki\nCONFENGE\ntiago.sasaki@confenge.com.br'
-  SIG_HTML='<div style="margin-top:16px;font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#1e293b"><p style="margin:0 0 8px 0">Atenciosamente,</p><p style="margin:0"><strong>Eng. Tiago Sasaki</strong><br>CONFENGE<br><a href="mailto:tiago.sasaki@confenge.com.br">tiago.sasaki@confenge.com.br</a></p><p style="margin:12px 0 0 0"><img src="cid:tiago-sasaki-signature@confenge" alt="Assinatura Tiago Sasaki" width="400" style="max-width:100%;height:auto;border:0" /></p></div>'
-  PATCH=$(python3 -c "import json,os; print(json.dumps({'signature_plain':os.environ['SIG_PLAIN'],'signature_html':os.environ['SIG_HTML'],'signature_sync':True}))" \
-    SIG_PLAIN="$SIG_PLAIN" SIG_HTML="$SIG_HTML")
+  # Signature is applied by confenge.BodyToHTML at enroll: "Atenciosamente," + CID image only.
+  # Do not store Best Regards / name / company / email text on the mailbox (image carries identity).
+  # signature_sync=false so campaign send does not double-append after BodyToHTML.
+  PATCH='{"signature_plain":"","signature_html":"","signature_sync":false}'
   PRESP=$(curl -sS -w '\n%{http_code}' -X PATCH "$BASE/emails/$ACC_ID" \
     -H "$AUTH" -H 'Content-Type: application/json' -d "$PATCH")
   PCODE=$(echo "$PRESP" | tail -1)
-  echo "signature_patch_http=$PCODE account=$ACC_ID"
+  echo "signature_patch_http=$PCODE account=$ACC_ID (Atenciosamente+image via BodyToHTML; mailbox sig cleared)"
 fi
 echo "HOSTINGER_SMTP_IMAP_CONNECTED=ok"
 echo "Set CONFENGE_SIGNATURE_IMAGE_PATH=data/confenge/tiago-sasaki-assinatura.jpeg for worker SMTP CID attach."

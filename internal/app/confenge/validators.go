@@ -560,8 +560,8 @@ func TemplateDraftChannel(channel string, acc *models.OutreachAccount, cand *mod
 		if service != "" {
 			body += "Seguimos disponíveis para " + strings.ToLower(service) + " se ainda for útil.\n\n"
 		}
-		// Short close only; full signature + image applied at enroll/send.
-		body += question + " " + cta + "\n\nAbraço,\nTiago Sasaki\nCONFENGE"
+		// No text identity close; Atenciosamente + image applied at enroll/send.
+		body += question + " " + cta
 		subj = "Re: " + company
 		if utf8.RuneCountInString(subj) > 80 || company == "" {
 			subj = "Re: conversa anterior"
@@ -574,7 +574,7 @@ func TemplateDraftChannel(channel string, acc *models.OutreachAccount, cand *mod
 		if service != "" {
 			body += "posso detalhar como trabalhamos " + strings.ToLower(service) + ". "
 		}
-		body += question + " " + cta + "\n\nAbraço,\nTiago Sasaki\nCONFENGE"
+		body += question + " " + cta
 		subj = "Re: " + firstNonEmpty(company, "sua mensagem")
 	default:
 		if weakFact {
@@ -582,7 +582,7 @@ func TemplateDraftChannel(channel string, acc *models.OutreachAccount, cand *mod
 			if service != "" {
 				body += "Para " + company + ", o ponto de entrada seria " + strings.ToLower(service) + " a partir do que vocês já publicam.\n\n"
 			}
-			body += "Há algum processo de aditivo ou reajuste em que uma leitura externa ajude agora? " + cta + "\n\nAbraço,\nTiago Sasaki\nCONFENGE"
+			body += "Há algum processo de aditivo ou reajuste em que uma leitura externa ajude agora? " + cta
 			if fact == "" {
 				fact = "abordagem diagnóstica sem fato público forte"
 			}
@@ -597,7 +597,7 @@ func TemplateDraftChannel(channel string, acc *models.OutreachAccount, cand *mod
 			if service != "" {
 				body += "Ajudamos times de engenharia com " + strings.ToLower(service) + ", sempre a partir de fatos públicos e sem pressa.\n\n"
 			}
-			body += question + " " + cta + "\n\nAbraço,\nTiago Sasaki\nCONFENGE"
+			body += question + " " + cta
 		}
 		subj = "Sobre " + company
 		if company == "" || utf8.RuneCountInString(subj) > 80 {

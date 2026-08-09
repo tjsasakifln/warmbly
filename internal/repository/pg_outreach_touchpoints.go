@@ -19,6 +19,8 @@ const outreachTouchpointSelect = `
 		COALESCE(recipient,''), COALESCE(subject,''), COALESCE(body_text,''),
 		COALESCE(content_hash,''), COALESCE(approved_content_hash,''), approved_by, approved_at,
 		COALESCE(authorization_mode,''),
+		campaign_policy_authorization_id, COALESCE(authorization_policy_hash,''), authorization_at,
+		COALESCE(signature_version,''),
 		queued_at, sent_at, COALESCE(provider_message_id,''), COALESCE(stop_reason,''),
 		previous_touchpoint_id, COALESCE(idempotency_key,''),
 		COALESCE(policy_version,''), COALESCE(service_code,''), COALESCE(fact_used,''), evidence_ids,
@@ -35,6 +37,8 @@ func scanTouchpoint(row scannable) (*models.OutreachTouchpoint, error) {
 		&t.Recipient, &t.Subject, &t.BodyText,
 		&t.ContentHash, &t.ApprovedContentHash, &t.ApprovedBy, &t.ApprovedAt,
 		&t.AuthorizationMode,
+		&t.CampaignPolicyAuthorizationID, &t.AuthorizationPolicyHash, &t.AuthorizationAt,
+		&t.SignatureVersion,
 		&t.QueuedAt, &t.SentAt, &t.ProviderMessageID, &t.StopReason,
 		&t.PreviousTouchpointID, &t.IdempotencyKey,
 		&t.PolicyVersion, &t.ServiceCode, &t.FactUsed, &evid,
@@ -77,19 +81,21 @@ func (r *outreachRepository) InsertTouchpoint(ctx context.Context, t *models.Out
 			recipient, subject, body_text,
 			content_hash, approved_content_hash, approved_by, approved_at,
 			authorization_mode,
+			campaign_policy_authorization_id, authorization_policy_hash, authorization_at, signature_version,
 			queued_at, sent_at, provider_message_id, stop_reason,
 			previous_touchpoint_id, idempotency_key,
 			policy_version, service_code, fact_used, evidence_ids,
 			generated_context_hash,
 			created_at, updated_at
 		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36
 		)`,
 		t.ID, t.OrganizationID, t.AccountID, t.ContactCandidateID,
 		t.Ordinal, t.CadenceStep, t.Channel, t.Purpose, t.DueAt, t.State, t.DraftID,
 		t.Recipient, t.Subject, t.BodyText,
 		t.ContentHash, t.ApprovedContentHash, t.ApprovedBy, t.ApprovedAt,
 		t.AuthorizationMode,
+		t.CampaignPolicyAuthorizationID, t.AuthorizationPolicyHash, t.AuthorizationAt, t.SignatureVersion,
 		t.QueuedAt, t.SentAt, t.ProviderMessageID, t.StopReason,
 		t.PreviousTouchpointID, t.IdempotencyKey,
 		t.PolicyVersion, t.ServiceCode, t.FactUsed, evid,
@@ -111,14 +117,16 @@ func (r *outreachRepository) UpdateTouchpoint(ctx context.Context, t *models.Out
 			recipient=$9, subject=$10, body_text=$11,
 			content_hash=$12, approved_content_hash=$13, approved_by=$14, approved_at=$15,
 			authorization_mode=$16,
-			queued_at=$17, sent_at=$18, provider_message_id=$19, stop_reason=$20,
-			service_code=$21, fact_used=$22, evidence_ids=$23, generated_context_hash=$24, updated_at=$25
+			campaign_policy_authorization_id=$17, authorization_policy_hash=$18, authorization_at=$19, signature_version=$20,
+			queued_at=$21, sent_at=$22, provider_message_id=$23, stop_reason=$24,
+			service_code=$25, fact_used=$26, evidence_ids=$27, generated_context_hash=$28, updated_at=$29
 		WHERE organization_id=$1 AND id=$2`,
 		t.OrganizationID, t.ID,
 		t.ContactCandidateID, t.Channel, t.Purpose, t.DueAt, t.State, t.DraftID,
 		t.Recipient, t.Subject, t.BodyText,
 		t.ContentHash, t.ApprovedContentHash, t.ApprovedBy, t.ApprovedAt,
 		t.AuthorizationMode,
+		t.CampaignPolicyAuthorizationID, t.AuthorizationPolicyHash, t.AuthorizationAt, t.SignatureVersion,
 		t.QueuedAt, t.SentAt, t.ProviderMessageID, t.StopReason,
 		t.ServiceCode, t.FactUsed, evid, t.GeneratedContextHash, t.UpdatedAt,
 	)
@@ -262,7 +270,7 @@ func collectTouchpoints(rows pgx.Rows) ([]models.OutreachTouchpoint, error) {
 func (r *outreachRepository) CASQueueTouchpoint(ctx context.Context, orgID, id uuid.UUID, expectedContentHash string) (*models.OutreachTouchpoint, error) {
 	now := time.Now().UTC()
 	// Must match outreachTouchpointSelect / scanTouchpoint field count.
-	const ret = `id, organization_id, account_id, contact_candidate_id, ordinal, COALESCE(cadence_step,''), COALESCE(channel,'EMAIL'), COALESCE(purpose,''), due_at, state, draft_id, COALESCE(recipient,''), COALESCE(subject,''), COALESCE(body_text,''), COALESCE(content_hash,''), COALESCE(approved_content_hash,''), approved_by, approved_at, COALESCE(authorization_mode,''), queued_at, sent_at, COALESCE(provider_message_id,''), COALESCE(stop_reason,''), previous_touchpoint_id, COALESCE(idempotency_key,''), COALESCE(policy_version,''), COALESCE(service_code,''), COALESCE(fact_used,''), evidence_ids, COALESCE(generated_context_hash,''), created_at, updated_at`
+	const ret = `id, organization_id, account_id, contact_candidate_id, ordinal, COALESCE(cadence_step,''), COALESCE(channel,'EMAIL'), COALESCE(purpose,''), due_at, state, draft_id, COALESCE(recipient,''), COALESCE(subject,''), COALESCE(body_text,''), COALESCE(content_hash,''), COALESCE(approved_content_hash,''), approved_by, approved_at, COALESCE(authorization_mode,''), campaign_policy_authorization_id, COALESCE(authorization_policy_hash,''), authorization_at, COALESCE(signature_version,''), queued_at, sent_at, COALESCE(provider_message_id,''), COALESCE(stop_reason,''), previous_touchpoint_id, COALESCE(idempotency_key,''), COALESCE(policy_version,''), COALESCE(service_code,''), COALESCE(fact_used,''), evidence_ids, COALESCE(generated_context_hash,''), created_at, updated_at`
 	// Human path: approved_by set. Policy path: authorization_mode=CAMPAIGN_POLICY and approved_by null.
 	row := r.db.QueryRow(ctx, `
 		UPDATE outreach_touchpoints
@@ -286,7 +294,7 @@ func (r *outreachRepository) CancelOpenTouchpoints(ctx context.Context, orgID, a
 		terminalState = models.TouchpointCancelled
 	}
 	now := time.Now().UTC()
-	ct, err := r.db.Exec(ctx, `UPDATE outreach_touchpoints SET state=$4, stop_reason=$5, approved_by=NULL, approved_at=NULL, approved_content_hash='', updated_at=$6 WHERE organization_id=$1 AND account_id=$2 AND state=ANY($3::text[])`,
+	ct, err := r.db.Exec(ctx, `UPDATE outreach_touchpoints SET state=$4, stop_reason=$5, approved_by=NULL, approved_at=NULL, approved_content_hash='', authorization_mode='', campaign_policy_authorization_id=NULL, authorization_policy_hash='', authorization_at=NULL, updated_at=$6 WHERE organization_id=$1 AND account_id=$2 AND state=ANY($3::text[])`,
 		orgID, accountID, []string{models.TouchpointPlanned, models.TouchpointDue, models.TouchpointDrafted, models.TouchpointNeedsReview, models.TouchpointApproved, models.TouchpointQueued}, terminalState, stopReason, now)
 	if err != nil {
 		return 0, err

@@ -73,6 +73,12 @@ func (g *Governor) TryReserve(ctx context.Context, req ReserveRequest) (ReserveR
 
 	now := g.clock.Now().UTC()
 	capN := g.cfg.SendsPerHour
+	if req.CapOverride > 0 && (capN < 1 || req.CapOverride < capN) {
+		capN = req.CapOverride
+	}
+	if capN < 1 {
+		capN = DefaultSendsPerHour
+	}
 	out := ReserveResult{Cap: capN}
 
 	if req.MessageKey == "" {

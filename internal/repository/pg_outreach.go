@@ -295,13 +295,14 @@ const outreachAccountSelect = `
 		COALESCE(activation_state,''), activation_score, activation_reason_codes,
 		COALESCE(activation_policy_version,''), activation_evaluated_at, next_best_action_at,
 		activation_expires_at, COALESCE(activation_source_hash,''), COALESCE(message_context_hash,''),
-		score_components `
+		score_components,
+		COALESCE(target_fit_send_tier,''), target_fit_reasons, COALESCE(email_send_ready,false) `
 
 func scanAccount(row scannable) (*models.OutreachAccount, error) {
 	var a models.OutreachAccount
 	var momentEvid, claims []byte
 	var contracts []byte
-	var reasonCodes, scoreComp []byte
+	var reasonCodes, scoreComp, fitReasons []byte
 	err := row.Scan(
 		&a.ID, &a.OrganizationID, &a.SourceLeadID, &a.CNPJ14, &a.CNPJRoot,
 		&a.RazaoSocial, &a.NomeFantasia, &a.Municipio, &a.UF, &a.Website,
@@ -316,6 +317,7 @@ func scanAccount(row scannable) (*models.OutreachAccount, error) {
 		&a.ActivationPolicyVersion, &a.ActivationEvaluatedAt, &a.NextBestActionAt,
 		&a.ActivationExpiresAt, &a.ActivationSourceHash, &a.MessageContextHash,
 		&scoreComp,
+		&a.TargetFitSendTier, &fitReasons, &a.EmailSendReady,
 	)
 	if err != nil {
 		return nil, err
@@ -323,6 +325,7 @@ func scanAccount(row scannable) (*models.OutreachAccount, error) {
 	_ = json.Unmarshal(momentEvid, &a.MomentEvidenceIDs)
 	_ = json.Unmarshal(claims, &a.ClaimsToAvoid)
 	_ = json.Unmarshal(reasonCodes, &a.ActivationReasonCodes)
+	_ = json.Unmarshal(fitReasons, &a.TargetFitReasons)
 	a.ContractsJSON = contracts
 	a.ScoreComponentsJSON = scoreComp
 	return &a, nil
@@ -357,6 +360,10 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 	if len(scoreComp) == 0 {
 		scoreComp = []byte("{}")
 	}
+	fitReasons, _ := json.Marshal(acc.TargetFitReasons)
+	if fitReasons == nil {
+		fitReasons = []byte("[]")
+	}
 	// Machine fields update; human_override / blocked / dnc preserved when set on existing.
 	var created bool
 	err := r.db.QueryRow(ctx, `
@@ -372,7 +379,8 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 			created_at, updated_at,
 			activation_state, activation_score, activation_reason_codes,
 			activation_policy_version, activation_evaluated_at, next_best_action_at,
-			activation_expires_at, activation_source_hash, message_context_hash, score_components
+			activation_expires_at, activation_source_hash, message_context_hash, score_components,
+			target_fit_send_tier, target_fit_reasons, email_send_ready
 		) VALUES (
 			$1,$2,$3,$4,$5,
 			$6,$7,$8,$9,$10,
@@ -385,7 +393,8 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 			$39,$40,
 			$41,$42,$43,
 			$44,$45,$46,
-			$47,$48,$49,$50
+			$47,$48,$49,$50,
+			$51,$52,$53
 		)
 		ON CONFLICT (organization_id, cnpj14) DO UPDATE SET
 			source_lead_id = EXCLUDED.source_lead_id,
@@ -433,6 +442,9 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 			activation_source_hash = EXCLUDED.activation_source_hash,
 			message_context_hash = EXCLUDED.message_context_hash,
 			score_components = EXCLUDED.score_components,
+			target_fit_send_tier = EXCLUDED.target_fit_send_tier,
+			target_fit_reasons = EXCLUDED.target_fit_reasons,
+			email_send_ready = EXCLUDED.email_send_ready,
 			updated_at = EXCLUDED.updated_at,
 			id = outreach_accounts.id
 		RETURNING (xmax = 0) AS inserted, id`,
@@ -448,6 +460,7 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 		acc.ActivationState, acc.ActivationScore, reasonCodes,
 		acc.ActivationPolicyVersion, acc.ActivationEvaluatedAt, acc.NextBestActionAt,
 		acc.ActivationExpiresAt, acc.ActivationSourceHash, acc.MessageContextHash, scoreComp,
+		acc.TargetFitSendTier, fitReasons, acc.EmailSendReady,
 	).Scan(&created, &acc.ID)
 	return created, err
 }
@@ -742,6 +755,8 @@ const outreachCandidateSelect = `
 		COALESCE(linkedin_url,''), COALESCE(source_url,''), COALESCE(source_document,''), source_date,
 		verification_status, COALESCE(confidence,''), recommended,
 		warmbly_contact_id, promoted_at, blocked, COALESCE(block_reason,''), do_not_contact, bounced,
+		COALESCE(email_send_ready,false), COALESCE(mailbox_purpose,''), COALESCE(mailbox_purpose_send_blocked,false),
+		COALESCE(ownership_status,''), COALESCE(recipient_commercial_suitability,''),
 		last_import_run_id, created_at, updated_at `
 
 func scanCandidate(row scannable) (*models.OutreachContactCandidate, error) {
@@ -755,6 +770,8 @@ func scanCandidate(row scannable) (*models.OutreachContactCandidate, error) {
 		&c.LinkedInURL, &c.SourceURL, &c.SourceDocument, &c.SourceDate,
 		&c.VerificationStatus, &c.Confidence, &c.Recommended,
 		&c.WarmblyContactID, &c.PromotedAt, &c.Blocked, &c.BlockReason, &c.DoNotContact, &c.Bounced,
+		&c.EmailSendReady, &c.MailboxPurpose, &c.MailboxPurposeSendBlocked,
+		&c.OwnershipStatus, &c.RecipientCommercialSuitability,
 		&c.LastImportRunID, &c.CreatedAt, &c.UpdatedAt,
 	)
 	if err != nil {
@@ -797,6 +814,8 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 				linkedin_url, source_url, source_document, source_date,
 				verification_status, confidence, recommended,
 				blocked, block_reason, do_not_contact, bounced,
+				email_send_ready, mailbox_purpose, mailbox_purpose_send_blocked,
+				ownership_status, recipient_commercial_suitability,
 				last_import_run_id, created_at, updated_at
 			) VALUES (
 				$1,$2,$3,$4,
@@ -806,7 +825,9 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 				$16,$17,$18,$19,
 				$20,$21,$22,
 				$23,$24,$25,$26,
-				$27,$28,$29
+				$27,$28,$29,
+				$30,$31,
+				$32,$33,$34
 			)
 			ON CONFLICT (organization_id, account_id, source_contact_id) WHERE source_contact_id <> '' DO UPDATE SET
 				name = EXCLUDED.name,
@@ -847,6 +868,11 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 				do_not_contact = outreach_contact_candidates.do_not_contact OR EXCLUDED.do_not_contact,
 				bounced = outreach_contact_candidates.bounced OR EXCLUDED.bounced,
 				blocked = outreach_contact_candidates.blocked OR EXCLUDED.blocked,
+				email_send_ready = EXCLUDED.email_send_ready,
+				mailbox_purpose = EXCLUDED.mailbox_purpose,
+				mailbox_purpose_send_blocked = EXCLUDED.mailbox_purpose_send_blocked,
+				ownership_status = EXCLUDED.ownership_status,
+				recipient_commercial_suitability = EXCLUDED.recipient_commercial_suitability,
 				last_import_run_id = EXCLUDED.last_import_run_id,
 				updated_at = EXCLUDED.updated_at,
 				id = outreach_contact_candidates.id
@@ -858,6 +884,8 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 			c.LinkedInURL, c.SourceURL, c.SourceDocument, c.SourceDate,
 			c.VerificationStatus, c.Confidence, c.Recommended,
 			c.Blocked, c.BlockReason, c.DoNotContact, c.Bounced,
+			c.EmailSendReady, c.MailboxPurpose, c.MailboxPurposeSendBlocked,
+			c.OwnershipStatus, c.RecipientCommercialSuitability,
 			c.LastImportRunID, c.CreatedAt, c.UpdatedAt,
 		).Scan(&created, &c.ID)
 		return created, err
@@ -872,9 +900,11 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 			linkedin_url, source_url, source_document, source_date,
 			verification_status, confidence, recommended,
 			blocked, block_reason, do_not_contact, bounced,
+			email_send_ready, mailbox_purpose, mailbox_purpose_send_blocked,
+			ownership_status, recipient_commercial_suitability,
 			last_import_run_id, created_at, updated_at
 		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34
 		)`,
 		c.ID, c.OrganizationID, c.AccountID, c.SourceContactID,
 		c.Name, c.Role, c.Email, c.Phone,
@@ -883,6 +913,8 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 		c.LinkedInURL, c.SourceURL, c.SourceDocument, c.SourceDate,
 		c.VerificationStatus, c.Confidence, c.Recommended,
 		c.Blocked, c.BlockReason, c.DoNotContact, c.Bounced,
+		c.EmailSendReady, c.MailboxPurpose, c.MailboxPurposeSendBlocked,
+		c.OwnershipStatus, c.RecipientCommercialSuitability,
 		c.LastImportRunID, c.CreatedAt, c.UpdatedAt,
 	)
 	return true, err

@@ -231,7 +231,8 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 		// RED may enroll only after explicit approve (already APPROVED); allowed but audited.
 	}
 
-	// Professional PT-BR signature + HTML with signature image CID (worker attaches JPEG).
+	// First-touch close: text only (Abraço + name + title + phone). No CID image
+	// so cold mail does not show a paperclip/attachment indicator in Gmail.
 	d.BodyText = AppendSignaturePlain(d.BodyText)
 	d.BodyHTML = BodyToHTML(d.BodyText)
 

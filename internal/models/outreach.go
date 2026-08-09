@@ -187,6 +187,13 @@ type OutreachAccount struct {
 	MessageContextHash      string     `json:"message_context_hash,omitempty"`
 	ScoreComponentsJSON     []byte     `json:"score_components,omitempty"`
 
+	// Send-fit imported from extra-cli. Never derived from activation_state.
+	// Empty TargetFitSendTier = legacy feed: import OK, GREEN autorun forbidden.
+	TargetFitSendTier string   `json:"target_fit_send_tier,omitempty"`
+	TargetFitReasons  []string `json:"target_fit_reasons,omitempty"`
+	// Company-level rollup of best-contact email_send_ready from extra-cli.
+	EmailSendReady bool `json:"email_send_ready,omitempty"`
+
 	// Joined / computed (not always filled).
 	Contacts  []OutreachContactCandidate `json:"contacts,omitempty"`
 	Evidence  []OutreachEvidence         `json:"evidence,omitempty"`
@@ -227,9 +234,15 @@ type OutreachContactCandidate struct {
 	BlockReason                 string     `json:"block_reason,omitempty"`
 	DoNotContact                bool       `json:"do_not_contact"`
 	Bounced                     bool       `json:"bounced"`
-	LastImportRunID             *uuid.UUID `json:"last_import_run_id,omitempty"`
-	CreatedAt                   time.Time  `json:"created_at"`
-	UpdatedAt                   time.Time  `json:"updated_at"`
+	// Imported readiness (extra-cli). Never inferred from email syntax alone.
+	EmailSendReady                 bool       `json:"email_send_ready,omitempty"`
+	MailboxPurpose                 string     `json:"mailbox_purpose,omitempty"`
+	MailboxPurposeSendBlocked      bool       `json:"mailbox_purpose_send_blocked,omitempty"`
+	OwnershipStatus                string     `json:"ownership_status,omitempty"`
+	RecipientCommercialSuitability string     `json:"recipient_commercial_suitability,omitempty"`
+	LastImportRunID                *uuid.UUID `json:"last_import_run_id,omitempty"`
+	CreatedAt                      time.Time  `json:"created_at"`
+	UpdatedAt                      time.Time  `json:"updated_at"`
 }
 
 // CanEnroll reports whether this candidate may be put into a campaign.
@@ -461,6 +474,7 @@ var TouchpointTerminalStates = map[string]bool{
 // After this authorization, GREEN messages may autoqueue when GreenAutorunEnabled.
 // Never forges approved_by=<human> for messages the human did not review.
 type CampaignPolicyAuthorization struct {
+	ID                       uuid.UUID  `json:"id,omitempty"`
 	CampaignID               uuid.UUID  `json:"campaign_id"`
 	PromptPolicyVersion      string     `json:"prompt_policy_version"`
 	ValidatorVersion         string     `json:"validator_version"`
@@ -512,7 +526,13 @@ type OutreachTouchpoint struct {
 	ApprovedBy          *uuid.UUID `json:"approved_by,omitempty"`
 	ApprovedAt          *time.Time `json:"approved_at,omitempty"`
 	// AuthorizationMode: HUMAN_TOUCHPOINT_APPROVAL | CAMPAIGN_POLICY (empty = legacy human).
-	AuthorizationMode    string           `json:"authorization_mode,omitempty"`
+	AuthorizationMode string `json:"authorization_mode,omitempty"`
+	// Campaign policy binding (CAMPAIGN_POLICY path only). Cleared with ClearApproval.
+	CampaignPolicyAuthorizationID *uuid.UUID `json:"campaign_policy_authorization_id,omitempty"`
+	AuthorizationPolicyHash       string     `json:"authorization_policy_hash,omitempty"`
+	AuthorizationAt               *time.Time `json:"authorization_at,omitempty"`
+	// SignatureVersion is post-auth decoration id (deterministic CID/text close).
+	SignatureVersion     string           `json:"signature_version,omitempty"`
 	QueuedAt             *time.Time       `json:"queued_at,omitempty"`
 	SentAt               *time.Time       `json:"sent_at,omitempty"`
 	ProviderMessageID    string           `json:"provider_message_id,omitempty"`

@@ -50,6 +50,8 @@ func RecomputeContentHash(tp *models.OutreachTouchpoint) {
 	tp.ContentHash = ContentHash(tp.Channel, tp.Recipient, tp.Subject, tp.BodyText, tp.Purpose)
 }
 
+// ClearApproval is the single canonical invalidation of any authorization
+// (human or CAMPAIGN_POLICY). Material mutations and context_stale MUST use this.
 func ClearApproval(tp *models.OutreachTouchpoint) {
 	if tp == nil {
 		return
@@ -58,6 +60,9 @@ func ClearApproval(tp *models.OutreachTouchpoint) {
 	tp.ApprovedAt = nil
 	tp.ApprovedContentHash = ""
 	tp.AuthorizationMode = ""
+	tp.CampaignPolicyAuthorizationID = nil
+	tp.AuthorizationPolicyHash = ""
+	tp.AuthorizationAt = nil
 	if tp.State == models.TouchpointApproved || tp.State == models.TouchpointQueued {
 		tp.State = models.TouchpointNeedsReview
 	}
@@ -94,9 +99,13 @@ func ApplyHumanApproval(tp *models.OutreachTouchpoint, humanUserID uuid.UUID, no
 
 // ApplyCampaignPolicyAuthorization marks a GREEN touchpoint queueable under
 // CAMPAIGN_POLICY without forging approved_by to a human who never reviewed it.
-func ApplyCampaignPolicyAuthorization(tp *models.OutreachTouchpoint, now time.Time) error {
+// auth must be the active grant; its ID and policy hash are bound for audit/revalidation.
+func ApplyCampaignPolicyAuthorization(tp *models.OutreachTouchpoint, auth *models.CampaignPolicyAuthorization, now time.Time) error {
 	if tp == nil {
 		return fmt.Errorf("nil touchpoint")
+	}
+	if auth == nil || auth.ID == uuid.Nil {
+		return fmt.Errorf("campaign policy authorization id required")
 	}
 	if tp.ContentHash == "" {
 		RecomputeContentHash(tp)
@@ -106,6 +115,9 @@ func ApplyCampaignPolicyAuthorization(tp *models.OutreachTouchpoint, now time.Ti
 	}
 	if tp.Recipient == "" {
 		return fmt.Errorf("cannot policy-authorize without exact recipient")
+	}
+	if tp.ContactCandidateID == nil || *tp.ContactCandidateID == uuid.Nil {
+		return fmt.Errorf("cannot policy-authorize without contact candidate")
 	}
 	switch tp.State {
 	case models.TouchpointDrafted, models.TouchpointNeedsReview, models.TouchpointApproved:
@@ -117,6 +129,14 @@ func ApplyCampaignPolicyAuthorization(tp *models.OutreachTouchpoint, now time.Ti
 	tp.ApprovedAt = &now
 	tp.ApprovedContentHash = tp.ContentHash
 	tp.AuthorizationMode = AuthorizationModeCampaignPolicy
+	id := auth.ID
+	tp.CampaignPolicyAuthorizationID = &id
+	tp.AuthorizationPolicyHash = PolicyAuthorizationHash(auth)
+	at := now
+	tp.AuthorizationAt = &at
+	if tp.SignatureVersion == "" {
+		tp.SignatureVersion = SignatureVersion
+	}
 	tp.State = models.TouchpointApproved
 	return nil
 }
@@ -138,9 +158,15 @@ func CanTransport(tp *models.OutreachTouchpoint) error {
 	}
 	mode := strings.TrimSpace(tp.AuthorizationMode)
 	if mode == AuthorizationModeCampaignPolicy {
-		// Policy path: must not invent a human reviewer.
+		// Policy path: must not invent a human reviewer; must bind grant.
 		if tp.ApprovedBy != nil && *tp.ApprovedBy != uuid.Nil {
 			return fmt.Errorf("campaign_policy must not set approved_by")
+		}
+		if tp.CampaignPolicyAuthorizationID == nil || *tp.CampaignPolicyAuthorizationID == uuid.Nil {
+			return fmt.Errorf("campaign_policy missing authorization binding")
+		}
+		if strings.TrimSpace(tp.AuthorizationPolicyHash) == "" {
+			return fmt.Errorf("campaign_policy missing authorization_policy_hash")
 		}
 		return nil
 	}

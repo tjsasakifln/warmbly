@@ -456,6 +456,12 @@ func leadToAccount(orgID uuid.UUID, lead FeedLead, feed *Feed, runID uuid.UUID, 
 	}
 	// Store activation projection from extra-cli (no local commercial re-score).
 	applyActivationToAccount(acc, lead)
+	// Imported send-fit only — never promote ACTIONABLE_NOW → A_AUTOMATIC.
+	acc.TargetFitSendTier = strings.ToUpper(SanitizeText(lead.TargetFitSendTier, 40))
+	acc.TargetFitReasons = lead.TargetFitReasons
+	if lead.EmailSendReady != nil {
+		acc.EmailSendReady = *lead.EmailSendReady
+	}
 	if existing != nil {
 		acc.ID = existing.ID
 		acc.HumanOverride = existing.HumanOverride
@@ -475,6 +481,14 @@ func leadToAccount(orgID uuid.UUID, lead FeedLead, feed *Feed, runID uuid.UUID, 
 			acc.ActivationSourceHash = existing.ActivationSourceHash
 			acc.ScoreComponentsJSON = existing.ScoreComponentsJSON
 		}
+		// Preserve send-fit when legacy feed omits tier (do not invent A_AUTOMATIC).
+		if acc.TargetFitSendTier == "" && existing.TargetFitSendTier != "" {
+			acc.TargetFitSendTier = existing.TargetFitSendTier
+			acc.TargetFitReasons = existing.TargetFitReasons
+		}
+		if lead.EmailSendReady == nil {
+			acc.EmailSendReady = existing.EmailSendReady
+		}
 	}
 	return acc
 }
@@ -491,30 +505,39 @@ func leadToCandidate(orgID, accountID, runID uuid.UUID, fc FeedContact) *models.
 		rawPhone = fc.Phone
 	}
 	cand := &models.OutreachContactCandidate{
-		OrganizationID:              orgID,
-		AccountID:                   accountID,
-		SourceContactID:             SanitizeText(fc.SourceContactID, 200),
-		Name:                        SanitizeText(fc.Name, 300),
-		Role:                        SanitizeText(fc.Role, 200),
-		Email:                       email,
-		Phone:                       SanitizeText(rawPhone, 50),
-		PhoneE164:                   SanitizeText(phoneFacts.E164, 30),
-		PhoneSource:                 SanitizeText(phoneFacts.Source, 100),
-		PhoneSourceURL:              SanitizeText(phoneFacts.SourceURL, 1000),
-		WhatsAppConsentStatus:       phoneFacts.ConsentStatus,
-		WhatsAppConsentSource:       SanitizeText(phoneFacts.ConsentSource, 200),
-		WhatsAppConsentAt:           phoneFacts.ConsentAt,
-		WhatsAppConsentProvenanceOK: phoneFacts.ProvenanceOK,
-		LinkedInURL:                 SanitizeText(fc.LinkedInURL, 500),
-		SourceURL:                   SanitizeText(fc.SourceURL, 1000),
-		SourceDocument:              SanitizeText(fc.SourceDocument, 500),
-		SourceDate:                  ParseDate(fc.SourceDate),
-		VerificationStatus:          vs,
-		Confidence:                  SanitizeText(fc.Confidence, 50),
-		Recommended:                 fc.Recommended,
-		DoNotContact:                dnc,
-		Bounced:                     bounced,
-		LastImportRunID:             &runID,
+		OrganizationID:                 orgID,
+		AccountID:                      accountID,
+		SourceContactID:                SanitizeText(fc.SourceContactID, 200),
+		Name:                           SanitizeText(fc.Name, 300),
+		Role:                           SanitizeText(fc.Role, 200),
+		Email:                          email,
+		Phone:                          SanitizeText(rawPhone, 50),
+		PhoneE164:                      SanitizeText(phoneFacts.E164, 30),
+		PhoneSource:                    SanitizeText(phoneFacts.Source, 100),
+		PhoneSourceURL:                 SanitizeText(phoneFacts.SourceURL, 1000),
+		WhatsAppConsentStatus:          phoneFacts.ConsentStatus,
+		WhatsAppConsentSource:          SanitizeText(phoneFacts.ConsentSource, 200),
+		WhatsAppConsentAt:              phoneFacts.ConsentAt,
+		WhatsAppConsentProvenanceOK:    phoneFacts.ProvenanceOK,
+		LinkedInURL:                    SanitizeText(fc.LinkedInURL, 500),
+		SourceURL:                      SanitizeText(fc.SourceURL, 1000),
+		SourceDocument:                 SanitizeText(fc.SourceDocument, 500),
+		SourceDate:                     ParseDate(fc.SourceDate),
+		VerificationStatus:             vs,
+		Confidence:                     SanitizeText(fc.Confidence, 50),
+		Recommended:                    fc.Recommended,
+		DoNotContact:                   dnc,
+		Bounced:                        bounced,
+		MailboxPurpose:                 SanitizeText(fc.MailboxPurpose, 80),
+		OwnershipStatus:                strings.ToUpper(SanitizeText(fc.OwnershipStatus, 40)),
+		RecipientCommercialSuitability: SanitizeText(fc.RecipientCommercialSuitability, 80),
+		LastImportRunID:                &runID,
+	}
+	if fc.EmailSendReady != nil {
+		cand.EmailSendReady = *fc.EmailSendReady
+	}
+	if fc.MailboxPurposeSendBlocked != nil {
+		cand.MailboxPurposeSendBlocked = *fc.MailboxPurposeSendBlocked
 	}
 	if cand.WhatsAppConsentStatus == "" {
 		cand.WhatsAppConsentStatus = "UNKNOWN"

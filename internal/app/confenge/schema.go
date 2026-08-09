@@ -55,6 +55,13 @@ type FeedLead struct {
 	CommercialState  string            `json:"commercial_state"`
 	// Activation is optional (additive confenge.outreach.v1). Absent in legacy feeds.
 	Activation *FeedActivation `json:"activation,omitempty"`
+	// Send-fit imported from extra-cli. Absent in legacy feeds → autorun forbidden.
+	// Never derive TargetFitSendTier from Activation.State.
+	TargetFitSendTier string   `json:"target_fit_send_tier,omitempty"`
+	TargetFitReasons  []string `json:"target_fit_reasons,omitempty"`
+	EmailSendReady    *bool    `json:"email_send_ready,omitempty"`
+	MailboxPurpose    string   `json:"mailbox_purpose,omitempty"`
+	OwnershipStatus   string   `json:"ownership_status,omitempty"`
 }
 
 // FeedActivation is the extra-cli commercial activation planner projection.
@@ -141,6 +148,12 @@ type FeedContact struct {
 	VerificationStatus string        `json:"verification_status"`
 	Confidence         string        `json:"confidence"`
 	Recommended        bool          `json:"recommended"`
+	// Imported readiness — never inferred by Warmbly from email syntax.
+	EmailSendReady                 *bool  `json:"email_send_ready,omitempty"`
+	MailboxPurpose                 string `json:"mailbox_purpose,omitempty"`
+	MailboxPurposeSendBlocked      *bool  `json:"mailbox_purpose_send_blocked,omitempty"`
+	OwnershipStatus                string `json:"ownership_status,omitempty"`
+	RecipientCommercialSuitability string `json:"recipient_commercial_suitability,omitempty"`
 }
 
 // FeedEvidence is one evidence item (text only; HTML stripped on import).

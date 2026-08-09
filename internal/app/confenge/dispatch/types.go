@@ -126,6 +126,9 @@ type ReserveRequest struct {
 	MessageKey     string
 	DraftID        *uuid.UUID
 	WorkerToken    string
+	// CapOverride, when >0, tightens the hourly cap for this reserve to min(SendsPerHour, CapOverride).
+	// Used so campaign_policy max_rate_per_hour cannot be exceeded by adaptive ramp.
+	CapOverride int
 }
 
 type ReserveResult struct {

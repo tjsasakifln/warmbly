@@ -363,20 +363,27 @@ func toGraphAttachments(in []Attachment) []msgraph.Attachment {
 	return out
 }
 
-// confengeInlineSignature attaches the Tiago Sasaki signature JPEG when the
-// HTML body references the known CID (CONFENGE commercial mail).
+// confengeInlineSignature attaches the optimized Tiago Sasaki signature image
+// when the HTML body references the known CID (CONFENGE commercial mail).
 func confengeInlineSignature(bodyHTML string) (Attachment, bool) {
 	if bodyHTML == "" || !strings.Contains(bodyHTML, confenge.SignatureImageCID) {
 		return Attachment{}, false
 	}
-	jpeg, err := confenge.LoadSignatureJPEG()
-	if err != nil || len(jpeg) == 0 {
+	data, err := confenge.LoadSignatureJPEG()
+	if err != nil || len(data) == 0 {
 		return Attachment{}, false
 	}
+	filename, mime, _ := confenge.SignatureImageMeta()
+	if filename == "" {
+		filename = confenge.SignatureImageFilename
+	}
+	if mime == "" {
+		mime = "image/jpeg"
+	}
 	return Attachment{
-		Filename:  confenge.SignatureImageFilename,
-		MimeType:  "image/jpeg",
-		Data:      jpeg,
+		Filename:  filename,
+		MimeType:  mime,
+		Data:      data,
 		ContentID: confenge.SignatureImageCID,
 	}, true
 }

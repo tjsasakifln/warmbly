@@ -16,6 +16,7 @@ import (
 type ConfengePolicyRepository interface {
 	InsertCampaignPolicy(ctx context.Context, orgID uuid.UUID, auth *models.CampaignPolicyAuthorization) (uuid.UUID, error)
 	GetActiveCampaignPolicy(ctx context.Context, orgID, campaignID uuid.UUID, now time.Time) (*models.CampaignPolicyAuthorization, error)
+	GetCampaignPolicyByID(ctx context.Context, orgID, authID uuid.UUID) (*models.CampaignPolicyAuthorization, error)
 	RevokeCampaignPolicy(ctx context.Context, orgID, campaignID, actor uuid.UUID, now time.Time) (bool, error)
 	ListCampaignPolicies(ctx context.Context, orgID, campaignID uuid.UUID, limit int) ([]models.CampaignPolicyAuthorization, error)
 }
@@ -33,7 +34,10 @@ func (r *confengePolicyRepository) InsertCampaignPolicy(ctx context.Context, org
 	if auth == nil {
 		return uuid.Nil, errors.New("nil policy")
 	}
-	id := uuid.New()
+	id := auth.ID
+	if id == uuid.Nil {
+		id = uuid.New()
+	}
 	now := time.Now().UTC()
 	ch := auth.Channel
 	if ch == "" {
@@ -61,6 +65,9 @@ func (r *confengePolicyRepository) InsertCampaignPolicy(ctx context.Context, org
 		auth.SenderMailbox, ch, rc, rate, auth.AllowPolicyTemplateGREEN,
 		auth.EffectiveAt, auth.AuthorizedBy, auth.AuthorizedByLabel, auth.RevokedAt, now, now,
 	)
+	if err == nil {
+		auth.ID = id
+	}
 	return id, err
 }
 
@@ -69,7 +76,7 @@ func (r *confengePolicyRepository) GetActiveCampaignPolicy(ctx context.Context, 
 		now = time.Now().UTC()
 	}
 	row := r.db.QueryRow(ctx, `
-		SELECT campaign_id, prompt_policy_version, validator_version, contact_policy_version, template_policy_version,
+		SELECT id, campaign_id, prompt_policy_version, validator_version, contact_policy_version, template_policy_version,
 			sender_mailbox, channel, allowed_risk_class, max_rate_per_hour, allow_policy_template_green,
 			effective_at, authorized_by, authorized_by_label, revoked_at
 		FROM confenge_campaign_policy_authorizations
@@ -80,7 +87,32 @@ func (r *confengePolicyRepository) GetActiveCampaignPolicy(ctx context.Context, 
 		LIMIT 1`, orgID, campaignID, now)
 	var a models.CampaignPolicyAuthorization
 	err := row.Scan(
-		&a.CampaignID, &a.PromptPolicyVersion, &a.ValidatorVersion, &a.ContactPolicyVersion, &a.TemplatePolicyVersion,
+		&a.ID, &a.CampaignID, &a.PromptPolicyVersion, &a.ValidatorVersion, &a.ContactPolicyVersion, &a.TemplatePolicyVersion,
+		&a.SenderMailbox, &a.Channel, &a.AllowedRiskClass, &a.MaxRatePerHour, &a.AllowPolicyTemplateGREEN,
+		&a.EffectiveAt, &a.AuthorizedBy, &a.AuthorizedByLabel, &a.RevokedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+func (r *confengePolicyRepository) GetCampaignPolicyByID(ctx context.Context, orgID, authID uuid.UUID) (*models.CampaignPolicyAuthorization, error) {
+	if authID == uuid.Nil {
+		return nil, nil
+	}
+	row := r.db.QueryRow(ctx, `
+		SELECT id, campaign_id, prompt_policy_version, validator_version, contact_policy_version, template_policy_version,
+			sender_mailbox, channel, allowed_risk_class, max_rate_per_hour, allow_policy_template_green,
+			effective_at, authorized_by, authorized_by_label, revoked_at
+		FROM confenge_campaign_policy_authorizations
+		WHERE organization_id=$1 AND id=$2`, orgID, authID)
+	var a models.CampaignPolicyAuthorization
+	err := row.Scan(
+		&a.ID, &a.CampaignID, &a.PromptPolicyVersion, &a.ValidatorVersion, &a.ContactPolicyVersion, &a.TemplatePolicyVersion,
 		&a.SenderMailbox, &a.Channel, &a.AllowedRiskClass, &a.MaxRatePerHour, &a.AllowPolicyTemplateGREEN,
 		&a.EffectiveAt, &a.AuthorizedBy, &a.AuthorizedByLabel, &a.RevokedAt,
 	)
@@ -114,7 +146,7 @@ func (r *confengePolicyRepository) ListCampaignPolicies(ctx context.Context, org
 		limit = 20
 	}
 	rows, err := r.db.Query(ctx, `
-		SELECT campaign_id, prompt_policy_version, validator_version, contact_policy_version, template_policy_version,
+		SELECT id, campaign_id, prompt_policy_version, validator_version, contact_policy_version, template_policy_version,
 			sender_mailbox, channel, allowed_risk_class, max_rate_per_hour, allow_policy_template_green,
 			effective_at, authorized_by, authorized_by_label, revoked_at
 		FROM confenge_campaign_policy_authorizations
@@ -129,7 +161,7 @@ func (r *confengePolicyRepository) ListCampaignPolicies(ctx context.Context, org
 	for rows.Next() {
 		var a models.CampaignPolicyAuthorization
 		if err := rows.Scan(
-			&a.CampaignID, &a.PromptPolicyVersion, &a.ValidatorVersion, &a.ContactPolicyVersion, &a.TemplatePolicyVersion,
+			&a.ID, &a.CampaignID, &a.PromptPolicyVersion, &a.ValidatorVersion, &a.ContactPolicyVersion, &a.TemplatePolicyVersion,
 			&a.SenderMailbox, &a.Channel, &a.AllowedRiskClass, &a.MaxRatePerHour, &a.AllowPolicyTemplateGREEN,
 			&a.EffectiveAt, &a.AuthorizedBy, &a.AuthorizedByLabel, &a.RevokedAt,
 		); err != nil {

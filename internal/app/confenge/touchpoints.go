@@ -317,10 +317,10 @@ func jitCompose(tp *models.OutreachTouchpoint, acc *models.OutreachAccount, cand
 		if fact != "" {
 			body += "Contexto: " + fact + "\n\n"
 		}
-		body += "Se fizer sentido, respondo em poucos minutos.\n\nAbraço,\nTiago Sasaki\nCONFENGE"
+		body += "Se fizer sentido, respondo em poucos minutos."
 	case models.TouchpointPurposeClose:
 		subject = "Re: " + company
-		body = greeting + ",\n\nEncerro por aqui para não ocupar sua caixa. Se fizer sentido no futuro, é só responder este fio.\n\nAbraço,\nTiago Sasaki\nCONFENGE"
+		body = greeting + ",\n\nEncerro por aqui para não ocupar sua caixa. Se fizer sentido no futuro, é só responder este fio."
 	default:
 		out := TemplateDraft(acc, cand)
 		subject, body = out.Subject, out.BodyText
@@ -495,14 +495,18 @@ func (s *service) QueueTouchpoint(ctx context.Context, orgID, userID, id uuid.UU
 		return nil, errx.New(errx.NotFound, "account not found for dispatch")
 	}
 	if err := AssertMessageContextFresh(acc, tp.GeneratedContextHash); err != nil {
-		tp.State = models.TouchpointNeedsReview
+		ClearApproval(tp)
 		tp.StopReason = "context_stale"
 		tp.ContextStale = true
-		tp.ApprovedBy, tp.ApprovedAt = nil, nil
-		tp.ApprovedContentHash = ""
 		_ = s.repo.UpdateTouchpoint(ctx, tp)
 		_ = s.repo.SetAccountHumanFlags(ctx, orgID, tp.AccountID, acc.Blocked, acc.DoNotContact, acc.BlockReason, models.OutreachQueueNeedsReview)
 		return nil, errx.New(errx.Conflict, err.Error())
+	}
+	// Final revalidation for CAMPAIGN_POLICY before queue/transport.
+	if strings.TrimSpace(tp.AuthorizationMode) == AuthorizationModeCampaignPolicy {
+		if block := s.revalidateCampaignPolicyAtSend(ctx, orgID, tp); block != nil {
+			return nil, errx.New(errx.Conflict, "campaign policy revalidation: "+block.Reason)
+		}
 	}
 	queued, err := s.repo.CASQueueTouchpoint(ctx, orgID, id, tp.ContentHash)
 	if err != nil {

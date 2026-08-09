@@ -25,8 +25,12 @@ func (m *memPolicyStore) key(org, camp uuid.UUID) string {
 
 func (m *memPolicyStore) InsertCampaignPolicy(ctx context.Context, orgID uuid.UUID, auth *models.CampaignPolicyAuthorization) (uuid.UUID, error) {
 	cp := *auth
+	if cp.ID == uuid.Nil {
+		cp.ID = uuid.New()
+	}
+	auth.ID = cp.ID
 	m.byKey[m.key(orgID, auth.CampaignID)] = &cp
-	return uuid.New(), nil
+	return cp.ID, nil
 }
 
 func (m *memPolicyStore) GetActiveCampaignPolicy(ctx context.Context, orgID, campaignID uuid.UUID, now time.Time) (*models.CampaignPolicyAuthorization, error) {
@@ -36,6 +40,16 @@ func (m *memPolicyStore) GetActiveCampaignPolicy(ctx context.Context, orgID, cam
 	}
 	cp := *a
 	return &cp, nil
+}
+
+func (m *memPolicyStore) GetCampaignPolicyByID(ctx context.Context, orgID, authID uuid.UUID) (*models.CampaignPolicyAuthorization, error) {
+	for _, a := range m.byKey {
+		if a != nil && a.ID == authID {
+			cp := *a
+			return &cp, nil
+		}
+	}
+	return nil, nil
 }
 
 func (m *memPolicyStore) RevokeCampaignPolicy(ctx context.Context, orgID, campaignID, actor uuid.UUID, now time.Time) (bool, error) {
@@ -68,7 +82,8 @@ func TestCampaignPolicyGreenAutoqueueNoFakeApprovedBy(t *testing.T) {
 		RazaoSocial: "Engenharia Alpha LTDA", NomeFantasia: "Alpha Eng",
 		ServiceCode: "REAJUSTE", ServiceName: "reajuste de contratos",
 		FactToMention:   "prorrogação do contrato 001/2025 no PNCP",
-		ActivationState: "ACTIONABLE_NOW", ActivationReasonCodes: []string{"A_AUTOMATIC"},
+		ActivationState: "ACTIONABLE_NOW", ActivationReasonCodes: []string{"WINDOW_OPEN"},
+		TargetFitSendTier: "A_AUTOMATIC", EmailSendReady: true,
 		MessageContextHash: "ctx-hash-1", QueueState: models.OutreachQueueNeedsReview,
 	}
 	_, _ = repo.UpsertAccount(ctx, acc)
@@ -76,6 +91,7 @@ func TestCampaignPolicyGreenAutoqueueNoFakeApprovedBy(t *testing.T) {
 		ID: uuid.New(), OrganizationID: org, AccountID: accID,
 		Name: "Ana Silva", Email: "ana.silva@alphaeng.com.br",
 		VerificationStatus: models.OutreachVerifyOfficialSource, Confidence: "HIGH", Recommended: true,
+		EmailSendReady: true, OwnershipStatus: "COMPANY_OWNED",
 	}
 	_, _ = repo.UpsertCandidate(ctx, cand)
 
@@ -137,7 +153,7 @@ func TestCampaignPolicyGreenAutoqueueNoFakeApprovedBy(t *testing.T) {
 	// Mock QueueTouchpoint path: TryGreenAutorun calls Queue which needs campaigns.
 	// For this unit test, verify ApplyCampaignPolicyAuthorization + CAS queue path directly
 	// when EvaluateGreenAutorun allows — full Queue needs execution wiring.
-	in := svc.buildGreenAutorunInput(ctx, org, tp)
+	in := svc.buildGreenAutorunInput(ctx, org, tp, auth)
 	// Force GREEN draft risk into input
 	in.RiskClass = "GREEN"
 	in.ValidationOK = true
@@ -150,8 +166,7 @@ func TestCampaignPolicyGreenAutoqueueNoFakeApprovedBy(t *testing.T) {
 	in.VerificationAllowed = true
 	in.FactualHookAnchored = true
 	in.GovernorHealthy = true
-	in.InSendWindow = true
-	in.ProviderHealthy = true
+	in.HasContactCandidate = true
 	in.CopyWithinLimits = true
 	in.MessageContextHashCurrent = true
 	in.NoEditAfterAuthorization = true
@@ -172,7 +187,7 @@ func TestCampaignPolicyGreenAutoqueueNoFakeApprovedBy(t *testing.T) {
 		t.Fatalf("mode=%s", dec.AuthorizationMode)
 	}
 
-	if err := ApplyCampaignPolicyAuthorization(tp, now); err != nil {
+	if err := ApplyCampaignPolicyAuthorization(tp, auth, now); err != nil {
 		t.Fatal(err)
 	}
 	if tp.ApprovedBy != nil {
@@ -203,7 +218,7 @@ func TestCampaignPolicyGreenAutoqueueNoFakeApprovedBy(t *testing.T) {
 func TestYellowAndRedStayOutOfAutorun(t *testing.T) {
 	now := time.Now().UTC()
 	auth := &models.CampaignPolicyAuthorization{
-		CampaignID: uuid.New(), Channel: "EMAIL", AllowedRiskClass: "GREEN",
+		ID: uuid.New(), CampaignID: uuid.New(), Channel: "EMAIL", AllowedRiskClass: "GREEN",
 		EffectiveAt: now.Add(-time.Hour), AuthorizedBy: uuid.New(),
 		AllowPolicyTemplateGREEN: true,
 	}
