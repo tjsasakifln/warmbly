@@ -27,10 +27,10 @@ Clear these three, re-bind evidence, then re-emit GO.
 | REPO | MAIN SHA | DEPLOYED / PRODUCTION | STATUS |
 | --- | --- | --- | --- |
 | extra-cli | `28a31a1bac44d250f6f9dd26bd9c30aa12ae1263` | main includes organic engine; public feed `:8443` serves `confenge.outreach.v1` (168 leads) | MATCH (main); live process tree not re-inspected |
-| warmbly | `9543f38785dac9e66e9b9b8ea38ef96d443d005c` | Last SSH: VPS `.deployed_sha` + `git HEAD` = `9543f387…` (16:55:40Z). **Now SSH refused** | **STALE_PROOF** (was MATCH; re-verify blocked) |
-| web-cfg | `c550e7cc7d9486b5095df66d8b3baa97c588eabd` | Netlify production deploy id `6a78ac6daa29e2000892eac5`, `commit_ref` identical, published 2026-08-09T16:36:19Z | **MATCH** |
+| warmbly | `2b9e745757d08a3bf2fe754fcea811dbaa14dcc6` | Last SSH: VPS `.deployed_sha` + `git HEAD` = `9543f387…` (16:55:40Z). **SSH refused since; tip is #20 NO_GO card** | **STALE_PROOF** (re-verify blocked) |
+| web-cfg | `c550e7cc7d9486b5095df66d8b3baa97c588eabd` | Netlify production + live `/.well-known/build-info.json` commit identical, published 2026-08-09T16:36:19Z | **MATCH** |
 
-Warmbly chain: #18 doctrine → #17 VPS pack `b2bebda0` (images built here) → #19 go-live pack `9543f387` (docs + `confenge-feed:host-gateway` alias; no app image rebuild required for #19).
+Warmbly chain: #18 doctrine → #17 VPS pack `b2bebda0` (images built here) → #19 go-live pack `9543f387` → #20 NO_GO rebind `2b9e7457`.
 
 ---
 
@@ -110,17 +110,29 @@ Live receptor is `serve-outcomes --memory-store` (in-process). HMAC, idempotency
 
 ## Re-GO checklist (operator)
 
-When SSH is back:
+### 0. Restore SSH first (Netcup SCP VNC)
+
+Host is up (ping + `:8443`) but **sshd is not accepting on 2222/22**. Agent cannot recover this without console.
+
+1. https://www.customercontrolpanel.de/ → RS 2000 → **SCP** → **VNC Console**
+2. As root: `systemctl status ssh || systemctl status sshd`; `ss -lntp | grep -E '22|2222'`
+3. Fix/restart sshd; confirm laptop `ssh ec-prod 'hostname'`
+
+### 1–3. Re-bind evidence (must be fresh, not historical)
 
 ```bash
 ssh ec-prod
 cd /opt/warmbly-confenge
+git fetch origin main && git checkout --detach origin/main
+# restore deploy/confenge-vps/.env from /root backup if needed
+echo "$(git rev-parse HEAD)" > .deployed_sha
 test "$(cat .deployed_sha)" = "$(git rev-parse HEAD)"
 bash deploy/confenge-vps/status.sh
-# kill switch still paused
-CONFENGE_SELF_SMOKE_TO=<operator@you> bash deploy/confenge-vps/self-smoke.sh
-# reply from second operator client → confirm Unibox IMAP + cadence cancel
-# then re-emit GO only if IMAP reply stop + SHA MATCH + status PASS
+docker exec warmbly-confenge-backend-1 cat /data/confenge-ops/kill-switch
+CONFENGE_SELF_SMOKE_TO=<operator-owned@you> bash deploy/confenge-vps/self-smoke.sh
+# Reply from a second operator client → Unibox IMAP ingest + touchpoint cancel
+# Human-rewrite drafts (why_you/micro_offer empty in raw sample) before any lead send
+# Re-emit GO only if SHA MATCH + SMTP + IMAP reply-stop + status PASS
 ```
 
 Until then:
