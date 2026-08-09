@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math/rand"
-	"net/mail"
 	"strings"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 	warmupapp "github.com/warmbly/warmbly/internal/app/warmup"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/pkg/emailaddr"
 	"github.com/warmbly/warmbly/internal/repository"
 	"github.com/warmbly/warmbly/internal/tasks/proto"
 	"github.com/warmbly/warmbly/internal/tasksched"
@@ -699,17 +699,8 @@ func (s *service) SelectVariant(ctx context.Context, organizationID, campaignID,
 }
 
 func parseSenderEmail(addrs []string) string {
-	if len(addrs) == 0 {
-		return ""
-	}
-	primary := strings.TrimSpace(addrs[0])
-	if primary == "" {
-		return ""
-	}
-	if parsed, err := mail.ParseAddress(primary); err == nil {
-		return strings.ToLower(strings.TrimSpace(parsed.Address))
-	}
-	return strings.ToLower(strings.Trim(primary, "<>"))
+	// Normalize Hostinger/live Unibox forms (" (a@b)", "Name (a@b)") as well as RFC5322.
+	return emailaddr.ExtractFirst(addrs)
 }
 
 func cleanMessageID(mid string) string {

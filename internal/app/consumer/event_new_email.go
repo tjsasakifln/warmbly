@@ -13,6 +13,7 @@ import (
 	"github.com/warmbly/warmbly/internal/config"
 	"github.com/warmbly/warmbly/internal/infrastructure/pubsub"
 	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/pkg/emailaddr"
 )
 
 func (s *JobsService) HandleNewEmail(ctx context.Context, e *models.JobEventNewEmail) error {
@@ -77,10 +78,8 @@ func (s *JobsService) HandleNewEmail(ctx context.Context, e *models.JobEventNewE
 	// CONFENGE outcome loop: attribute human-looking inbound mail to staged leads.
 	if s.ConfengeOutcomes != nil && s.ConfengeOutcomes.Enabled() && e.Message != nil {
 		if account, err := s.EmailRepository.GetByID(ctx, e.Message.EmailID); err == nil && account != nil && account.OrganizationID != nil {
-			from := ""
-			if len(e.Message.FromAddr) > 0 {
-				from = e.Message.FromAddr[0]
-			}
+			// Same normalizer as ProcessIncomingReply so Hostinger " (a@b)" From matches candidates.
+			from := emailaddr.ExtractFirst(e.Message.FromAddr)
 			_ = s.ConfengeOutcomes.NoteReply(ctx, *account.OrganizationID, from, map[string]any{
 				"subject":    e.Message.Subject,
 				"message_id": e.Message.ID.String(),
