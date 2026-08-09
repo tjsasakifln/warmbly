@@ -123,3 +123,19 @@ Operator fix (official):
 Then: `deploy/confenge-vps/prove-hostinger-net.sh` should show HOSTINGER_SMTP=PASS.
 
 Reference: https://www.netcup.com/en/helpcenter/documentation/server/firewall
+
+
+## Network proof update (2026-08-09 after SCP Mail block delete)
+
+Via Playwright: Netcup SCP → Firewall → Delete **netcup Mail block** → Save.
+
+| Endpoint | Result |
+| --- | --- |
+| TCP smtp.hostinger.com:465 | **OPEN** |
+| TCP smtp.hostinger.com:587 | **OPEN** |
+| TCP imap.hostinger.com:993 | **OPEN** |
+| status.sh HOSTINGER SMTP | **PASS** |
+| status.sh HOSTINGER IMAP | **PASS** |
+| Full stack status | all PASS (GREEN OFF) |
+
+Mailbox `tiago.sasaki@confenge.com.br` not yet sealed in Warmbly DB (seed accounts only). Next: interactive `connect-hostinger.sh` + optional sink self-smoke.
