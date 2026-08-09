@@ -132,11 +132,14 @@ func (c *Client) Folders() ([]models.Mailbox, *errx.MailError) {
 	var resp []models.Mailbox
 
 	// LIST-STATUS: without requesting these, f.Status is nil for every
-	// folder and the sync loop sees an empty account.
+	// folder and the sync loop sees an empty account. NumMessages/UIDNext
+	// back the EXISTS/UIDNEXT fallback when CONDSTORE HighestModSeq stalls.
 	cmd := c.client.List("", "%", &imap.ListOptions{
 		ReturnStatus: &imap.StatusOptions{
 			UIDValidity:   true,
 			HighestModSeq: true,
+			NumMessages:   true,
+			UIDNext:       true,
 		},
 	})
 
@@ -155,11 +158,17 @@ func (c *Client) Folders() ([]models.Mailbox, *errx.MailError) {
 			continue
 		}
 
+		var num uint32
+		if f.Status.NumMessages != nil {
+			num = *f.Status.NumMessages
+		}
 		resp = append(resp, models.Mailbox{
 			Name:          f.Mailbox,
 			Attrs:         attrs,
 			UIDValidity:   f.Status.UIDValidity,
 			HighestModSeq: f.Status.HighestModSeq,
+			NumMessages:   num,
+			UIDNext:       uint32(f.Status.UIDNext),
 		})
 	}
 
@@ -199,17 +208,25 @@ func (c *Client) FetchChanges(ctx context.Context, lastModSeq uint64, count uint
 	if count == 0 {
 		return nil
 	}
+	return c.FetchSeqWindow(ctx, lastModSeq, 1, count)
+}
+
+// FetchSeqWindow walks inclusive sequence numbers [lo, hi] in bounded batches.
+// Used by the EXISTS/UIDNEXT fallback to fetch only newly appended messages
+// when CONDSTORE HighestModSeq does not advance.
+func (c *Client) FetchSeqWindow(ctx context.Context, lastModSeq uint64, lo, hi uint32) *errx.MailError {
+	if lo == 0 || hi == 0 || lo > hi {
+		return nil
+	}
 	const batch = uint32(config.ImapFetchBatchSize)
-	for lo := uint32(1); lo <= count; lo += batch {
-		hi := lo + batch - 1
-		if hi > count {
-			hi = count
+	for start := lo; start <= hi; start += batch {
+		end := start + batch - 1
+		if end > hi {
+			end = hi
 		}
-		if err := c.fetchRange(ctx, lastModSeq, lo, hi); err != nil {
+		if err := c.fetchRange(ctx, lastModSeq, start, end); err != nil {
 			return err
 		}
-		// The caller's context is the mailbox's sync context; abandon a long
-		// walk promptly when the mailbox is removed or the worker shuts down.
 		if ctx.Err() != nil {
 			return nil
 		}
