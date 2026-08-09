@@ -2,7 +2,7 @@ package wmail
 
 import "github.com/warmbly/warmbly/internal/models"
 
-// mailboxSyncPlan decides how to fetch when LIST-STATUS reports a change.
+// mailboxSyncPlan decides how to fetch when SELECT status reports a change.
 // CONDSTORE HighestModSeq is preferred; when only EXISTS/UIDNEXT advances
 // (Hostinger CONDSTORE stall), walk the new sequence window with ChangedSince 0.
 type mailboxSyncPlan struct {
