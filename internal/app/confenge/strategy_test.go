@@ -61,6 +61,9 @@ func TestPlanStrategyAnnualidadeNoUnpaidClaim(t *testing.T) {
 	if st.CTAType != CTATypePermissionOffer {
 		t.Fatalf("cta %s", st.CTAType)
 	}
+	if strings.Contains(st.ImplicationHypothesis, "reconstituting") {
+		t.Fatalf("implication must be pure PT-BR: %q", st.ImplicationHypothesis)
+	}
 	// No score fields exist on struct — compile-time guarantee via JSON tags check
 	blob, _ := json.Marshal(st)
 	for _, banned := range []string{"lead_score", "priority_score", "commercial_score", "conversion_score"} {
@@ -87,6 +90,21 @@ func TestPlanStrategyAnnualidadeNoUnpaidClaim(t *testing.T) {
 		if !strings.Contains(low, "posso") {
 			t.Fatalf("expected verify/offer language: %s", out.BodyText)
 		}
+	}
+}
+
+func TestGenerationChannelForTouch(t *testing.T) {
+	if GenerationChannelForTouch(1, models.TouchpointPurposeInitial) != ChannelEmailInitial {
+		t.Fatal("touch 1")
+	}
+	if GenerationChannelForTouch(2, models.TouchpointPurposeFollowUp) != ChannelEmailFollowup {
+		t.Fatal("touch 2")
+	}
+	if GenerationChannelForTouch(5, models.TouchpointPurposeClose) != ChannelEmailFollowup {
+		t.Fatal("touch 5")
+	}
+	if SequencePositionForTouch(1, models.TouchpointPurposeFollowUp) < 2 {
+		t.Fatal("follow-up purpose elevates position")
 	}
 }
 

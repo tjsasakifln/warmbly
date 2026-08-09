@@ -238,24 +238,23 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	evidIDs := evidenceIDsFrom(evidence, acc)
 	factUsed := SanitizeText(firstNonEmpty(acc.FactToMention, tp.FactUsed), 2000)
 	pb, _ := LoadPlaybook()
-	pos := tp.Ordinal
-	if pos <= 0 {
-		pos = 1
-	}
+	pos := SequencePositionForTouch(tp.Ordinal, tp.Purpose)
+	genCh := GenerationChannelForTouch(tp.Ordinal, tp.Purpose)
 	st := PlanOutreachStrategy(pb, acc, cand, evidence, pos)
 	if factUsed != "" {
 		st.ObservedFact = factUsed
 	}
 	// Classify risk with the same validators as GenerateDraft. Policy-authorized
 	// deterministic templates may stay GREEN when AllowPolicyTemplateGREEN is set.
+	// Follow-up/close use EMAIL_FOLLOWUP so legitimate "Re:" subjects are not first-touch fakes.
 	synth := &DraftOutput{
 		Subject: subject, BodyText: body, ServiceCode: acc.ServiceCode,
 		FactUsed: factUsed, EvidenceIDs: evidIDs, Claims: claimsFromFact(factUsed, evidIDs),
-		Channel: ChannelEmailInitial, Rationale: "touchpoint strategy compose",
+		Channel: genCh, Rationale: "touchpoint strategy compose",
 		CTA: st.CTASuggested, Question: st.CTASuggested,
 	}
 	val := ValidateDraft(synth, acc, cand, ValidateOpts{
-		MaxWords: s.cfg.MaxInitialEmailWords, Evidence: evidence, Channel: ChannelEmailInitial,
+		MaxWords: s.cfg.MaxInitialEmailWords, Evidence: evidence, Channel: genCh,
 		Strategy: &st, Playbook: pb,
 	})
 	recipient := tp.Recipient
@@ -367,23 +366,13 @@ func jitCompose(tp *models.OutreachTouchpoint, acc *models.OutreachAccount, cand
 	}
 	// Strategy-first compose by ordinal (1=SIGNAL … 5=CLOSE). Signature applied at enroll/send.
 	pb, _ := LoadPlaybook()
-	pos := tp.Ordinal
-	if pos <= 0 {
-		pos = 1
-	}
-	switch tp.Purpose {
-	case models.TouchpointPurposeFollowUp:
-		if pos < 2 {
-			pos = 2
-		}
-	case models.TouchpointPurposeClose:
-		pos = 5
-	}
+	pos := SequencePositionForTouch(tp.Ordinal, tp.Purpose)
+	genCh := GenerationChannelForTouch(tp.Ordinal, tp.Purpose)
 	st := PlanOutreachStrategy(pb, acc, cand, evidence, pos)
 	if fact != "" {
 		st.ObservedFact = fact
 	}
-	out := ComposeFromStrategy(st, acc, cand, ChannelEmailInitial)
+	out := ComposeFromStrategy(st, acc, cand, genCh)
 	subject, body = out.Subject, out.BodyText
 	_ = greeting
 	_ = company
@@ -401,6 +390,7 @@ func (s *service) EditTouchpoint(ctx context.Context, orgID, userID, id uuid.UUI
 	if models.TouchpointTerminalStates[tp.State] || tp.State == models.TouchpointQueued || tp.State == models.TouchpointSent {
 		return nil, errx.New(errx.BadRequest, "cannot edit touchpoint in state "+tp.State)
 	}
+	origBody := tp.BodyText
 	ch, rec, sub, bod := tp.Channel, tp.Recipient, tp.Subject, tp.BodyText
 	if channel != nil && *channel != "" {
 		ch = strings.ToUpper(strings.TrimSpace(*channel))
@@ -446,6 +436,17 @@ func (s *service) EditTouchpoint(ctx context.Context, orgID, userID, id uuid.UUI
 			}
 			d.HumanEdited, d.Status = true, models.OutreachDraftNeedsReview
 			d.ApprovedBy, d.ApprovedAt = nil, nil
+			// Operator edit learning signal (accumulate only; no auto-train).
+			if sig := NewOperatorEditSignal(d.ID.String(), origBody, tp.BodyText); len(sig.Codes) > 0 {
+				var val ValidationResult
+				if len(d.ValidationJSON) > 0 {
+					_ = json.Unmarshal(d.ValidationJSON, &val)
+				}
+				val.OperatorEdit = &sig
+				if b, err := json.Marshal(val); err == nil {
+					d.ValidationJSON = b
+				}
+			}
 			_ = s.repo.UpsertDraft(ctx, d)
 			_ = s.repo.UpdateTouchpoint(ctx, tp)
 		}
@@ -517,6 +518,25 @@ func (s *service) RejectOrSkipTouchpointReason(ctx context.Context, orgID, userI
 	}
 	tp.State, tp.StopReason = state, stop
 	ClearApproval(tp)
+	// Persist operator rejection learning signal on the draft when present.
+	if (action == "reject" || action == "REJECTED") && tp.DraftID != nil {
+		if d, _ := s.repo.GetDraft(ctx, orgID, *tp.DraftID); d != nil {
+			rej := NewOperatorRejection(strings.TrimPrefix(stop, "REJECTED:"), d.ID.String(), tp.ServiceCode, "")
+			if rej.Reason == "REJECTED" || rej.Reason == "" {
+				rej.Reason = "other"
+			}
+			var val ValidationResult
+			if len(d.ValidationJSON) > 0 {
+				_ = json.Unmarshal(d.ValidationJSON, &val)
+			}
+			val.OperatorReject = &rej
+			if b, err := json.Marshal(val); err == nil {
+				d.ValidationJSON = b
+				d.Status = models.OutreachDraftRejected
+				_ = s.repo.UpsertDraft(ctx, d)
+			}
+		}
+	}
 	if err := s.repo.UpdateTouchpoint(ctx, tp); err != nil {
 		return nil, errx.New(errx.Internal, "update failed")
 	}

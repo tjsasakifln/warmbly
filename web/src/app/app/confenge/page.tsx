@@ -20,6 +20,7 @@ import {
   usePauseConfengeDispatch,
   usePlanConfengeCadence,
   useResumeConfengeDispatch,
+  useRejectConfengeTouchpoint,
   useSkipConfengeTouchpoint,
 } from "@/lib/api/hooks/app/confenge/useConfenge";
 import type {
@@ -46,6 +47,7 @@ export default function ConfengePage() {
   const genTouch = useGenerateConfengeTouchpoint();
   const approveQueue = useApproveAndQueueTouchpoint();
   const skip = useSkipConfengeTouchpoint();
+  const reject = useRejectConfengeTouchpoint();
   const dnc = useDncConfengeAccount();
   const dispatchStatus = useConfengeDispatchStatus(enabled);
   const pauseDispatch = usePauseConfengeDispatch();
@@ -544,6 +546,45 @@ export default function ConfengePage() {
                     <Ban className="inline h-3.5 w-3.5 mr-1" />
                     DNC
                   </button>
+                </div>
+                <div
+                  className="flex flex-wrap gap-1 pt-1"
+                  data-testid="confenge-reject-reasons"
+                >
+                  <span className="text-[10px] uppercase tracking-[0.14em] text-slate-400 w-full">
+                    Reject reason
+                  </span>
+                  {(
+                    [
+                      "factual_error",
+                      "too_generic",
+                      "too_salesy",
+                      "wrong_offer",
+                      "unsupported_claim",
+                      "creepy",
+                      "too_long",
+                      "tone",
+                      "other",
+                    ] as const
+                  ).map((reason) => (
+                    <button
+                      key={reason}
+                      type="button"
+                      disabled={reject.isPending}
+                      className="h-6 px-2 rounded border border-slate-200 text-[11px] text-slate-600 hover:bg-rose-50 hover:border-rose-200 hover:text-rose-700 disabled:opacity-50"
+                      onClick={() =>
+                        reject.mutate(
+                          { id: current.id, reason },
+                          {
+                            onSuccess: () =>
+                              setIdx((i) => Math.min(i, Math.max(0, queue.length - 2))),
+                          },
+                        )
+                      }
+                    >
+                      {reason.replace(/_/g, " ")}
+                    </button>
+                  ))}
                 </div>
                 <p className="text-[11px] text-slate-400">
                   Editing clears approval. No approve whole sequence.

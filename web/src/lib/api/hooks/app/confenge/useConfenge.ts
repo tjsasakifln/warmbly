@@ -257,6 +257,19 @@ export function useSkipConfengeTouchpoint() {
     });
 }
 
+export function useRejectConfengeTouchpoint() {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({ id, reason }: { id: string; reason: string }) =>
+            decideConfengeTouchpoint(id, "reject", reason),
+        onSuccess: () => {
+            void qc.invalidateQueries({ queryKey: KEY });
+            toast.success("Rejected");
+        },
+        onError: (e: Error) => toast.error(e.message || "Reject failed"),
+    });
+}
+
 export function useDncConfengeAccount() {
     const qc = useQueryClient();
     return useMutation({

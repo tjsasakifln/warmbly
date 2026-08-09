@@ -176,7 +176,7 @@ func PlanOutreachStrategy(
 	if isAnnualidadeContext(st.ActivationTrigger, st.TriggerSummary, st.ObservedFact) {
 		st.RiskFlags = appendUnique(st.RiskFlags, "annualidade_verify_only")
 		st.ProblemHypothesis = "pode haver documentos e memórias de reajuste a conferir neste ciclo (hipótese, não crédito comprovado)"
-		st.ImplicationHypothesis = "sem verificação, a equipe pode perder tempo reconstituting memória depois"
+		st.ImplicationHypothesis = "sem verificação, a equipe pode perder tempo reconstituindo a memória documental depois"
 		st.CommercialReframe = "Anualidade é sinal de verificação, não prova de reajuste devido."
 		st.MicroOfferCode = "REAJUSTE_CHECK"
 		st.ClaimsToAvoid = appendUnique(st.ClaimsToAvoid,
@@ -417,4 +417,34 @@ func itoa(n int) string {
 		b[i] = '-'
 	}
 	return string(b[i:])
+}
+
+// SequencePositionForTouch maps touchpoint ordinal/purpose to doctrine sequence position (1–5).
+func SequencePositionForTouch(ordinal int, purpose string) int {
+	pos := ordinal
+	if pos <= 0 {
+		pos = 1
+	}
+	switch purpose {
+	case models.TouchpointPurposeFollowUp:
+		if pos < 2 {
+			pos = 2
+		}
+	case models.TouchpointPurposeClose:
+		pos = 5
+	}
+	if pos > 5 {
+		pos = 5
+	}
+	return pos
+}
+
+// GenerationChannelForTouch maps sequence position to generation/validation channel.
+// Follow-ups and close must use EMAIL_FOLLOWUP so legitimate in-thread "Re:" subjects
+// are not treated as fake first-touch Re/Fwd.
+func GenerationChannelForTouch(ordinal int, purpose string) string {
+	if SequencePositionForTouch(ordinal, purpose) >= 2 {
+		return ChannelEmailFollowup
+	}
+	return ChannelEmailInitial
 }

@@ -179,8 +179,17 @@ export async function queueConfengeTouchpoint(id: string): Promise<ConfengeTouch
   return res.data;
 }
 
-export async function decideConfengeTouchpoint(id: string, action: "skip" | "reject"): Promise<ConfengeTouchpoint> {
-  const res = await Request<{ data: ConfengeTouchpoint }>({ method: "POST", url: `/confenge/touchpoints/${id}/decision`, authorization: true, data: { action } });
+export async function decideConfengeTouchpoint(
+  id: string,
+  action: "skip" | "reject",
+  reason?: string,
+): Promise<ConfengeTouchpoint> {
+  const res = await Request<{ data: ConfengeTouchpoint }>({
+    method: "POST",
+    url: `/confenge/touchpoints/${id}/decision`,
+    authorization: true,
+    data: { action, reason: reason || undefined },
+  });
   return res.data;
 }
 

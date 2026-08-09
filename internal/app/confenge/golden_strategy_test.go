@@ -8,6 +8,8 @@ import (
 	"github.com/warmbly/warmbly/internal/models"
 )
 
+// models used for TouchpointPurpose* in purposeForPos.
+
 // Golden fixtures (~20 scenarios) assert strategy properties, not one universal template.
 func TestGoldenStrategyFixtures(t *testing.T) {
 	pb := MustPlaybook()
@@ -84,23 +86,79 @@ func TestGoldenStrategyFixtures(t *testing.T) {
 			if strings.Contains(string(raw), "lead_score") || strings.Contains(string(raw), "conversion_score") {
 				t.Fatal("scores leaked")
 			}
-			out := ComposeFromStrategy(st, acc, cand, ChannelEmailInitial)
+			// Production channel mapping: pos>=2 uses EMAIL_FOLLOWUP so legitimate Re: is allowed.
+			genCh := GenerationChannelForTouch(f.pos, purposeForPos(f.pos))
+			if f.pos >= 2 && genCh != ChannelEmailFollowup {
+				t.Fatalf("pos %d must map to EMAIL_FOLLOWUP, got %s", f.pos, genCh)
+			}
+			if f.pos <= 1 && genCh != ChannelEmailInitial {
+				t.Fatalf("pos %d must map to EMAIL_INITIAL, got %s", f.pos, genCh)
+			}
+			out := ComposeFromStrategy(st, acc, cand, genCh)
 			low := strings.ToLower(out.BodyText + " " + out.Subject)
 			for _, bad := range f.mustNotBody {
 				if bad != "" && strings.Contains(low, strings.ToLower(bad)) {
 					t.Fatalf("body contains %q: %s", bad, out.BodyText)
 				}
 			}
-			dqa := ValidateDoctrineCopy(&out, &st, pb, ChannelEmailInitial)
+			dqa := ValidateDoctrineCopy(&out, &st, pb, genCh)
 			for _, e := range dqa.Errors {
 				if strings.Contains(e, "annualidade must not") || strings.Contains(e, "empty follow-up") {
 					t.Fatalf("doctrine: %s", e)
 				}
+				// Legitimate in-thread Re: on follow-up must not fail as fake first-touch Re.
+				if strings.Contains(e, "fake Re") {
+					t.Fatalf("production channel mapping should allow Re: on follow-up: %s subj=%q", e, out.Subject)
+				}
+			}
+			if f.pos >= 2 && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(out.Subject)), "re:") {
+				t.Fatalf("follow-up subject should be Re: got %q", out.Subject)
 			}
 			ex := ExplainStrategy(st, cand.Email)
 			if ex.Doctrine == "" || (f.pos == 1 && ex.WhyNow == "") {
 				t.Fatalf("explain incomplete: %+v", ex)
 			}
 		})
+	}
+}
+
+func purposeForPos(pos int) string {
+	switch {
+	case pos >= 5:
+		return models.TouchpointPurposeClose
+	case pos >= 2:
+		return models.TouchpointPurposeFollowUp
+	default:
+		return models.TouchpointPurposeInitial
+	}
+}
+
+// Production path: GenerateTouchpointDraft validation channel for ordinal>=2 must accept Re: subjects.
+func TestFollowUpChannelAllowsReSubject(t *testing.T) {
+	pb := MustPlaybook()
+	acc := testAccount("REAJUSTE", "ANUALIDADE", "contrato 1149 aniversário de reajuste")
+	cand := testCand("Sócio")
+	ev := []models.OutreachEvidence{{SourceEvidenceID: "ev-1", EpistemicClass: models.OutreachEpistemicConfirmedFact, Synthesis: acc.FactToMention}}
+
+	for _, pos := range []int{2, 3, 4, 5} {
+		genCh := GenerationChannelForTouch(pos, purposeForPos(pos))
+		if genCh != ChannelEmailFollowup {
+			t.Fatalf("pos %d channel %s", pos, genCh)
+		}
+		st := PlanOutreachStrategy(pb, acc, cand, ev, SequencePositionForTouch(pos, purposeForPos(pos)))
+		out := ComposeFromStrategy(st, acc, cand, genCh)
+		out.Channel = genCh
+		val := ValidateDraft(&out, acc, cand, ValidateOpts{
+			MaxWords: 200, Evidence: ev, Channel: genCh, Strategy: &st, Playbook: pb,
+		})
+		for _, e := range val.Errors {
+			if strings.Contains(e, "fake Re") {
+				t.Fatalf("pos %d: Re: subject wrongly rejected: %s subj=%q", pos, e, out.Subject)
+			}
+		}
+		// Implication body must not leak English mash from annualidade strategy.
+		if strings.Contains(out.BodyText, "reconstituting") {
+			t.Fatalf("pos %d: English leak in body: %s", pos, out.BodyText)
+		}
 	}
 }
