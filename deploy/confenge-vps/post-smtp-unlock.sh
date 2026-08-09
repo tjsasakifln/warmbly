@@ -12,7 +12,7 @@ cd "$ROOT"
 echo "== 1/3 Hostinger network premise =="
 if ! "$ROOT/deploy/confenge-vps/prove-hostinger-net.sh"; then
   echo "BLOCKED: SMTP still unreachable from this VPS." >&2
-  echo "Unlock outbound TCP 465/587 in Netcup CCP/SCP (mail server freischalten)." >&2
+  echo "In Netcup SCP → Firewall, DELETE the policy "netcup Mail block", then Save." >&2
   echo "Do not install Postfix/Exim/Mailcow." >&2
   exit 3
 fi

@@ -109,3 +109,17 @@ Stack brought up with `deploy/confenge-vps` overlay (existing images, no extra-c
 | Resource sample | ~5 GiB used / 15 GiB; Warmbly containers well under limits |
 
 **Operator still required for:** Netcup SMTP unlock; interactive `connect-hostinger.sh` (mailbox password); explicit self-smoke `CONFENGE_SELF_SMOKE_TO`; optional full VPS reboot drill.
+
+## Netcup Mail block (root cause of SMTP FAIL)
+
+Guest ufw/iptables do **not** block outbound 465/587 (OUTPUT policy ACCEPT). Connectivity still fails because Netcup SCP cloud firewall applies the default policy **netcup Mail block** (blocks inbound and outbound SMTP).
+
+Operator fix (official):
+
+1. SCP → server → **Firewall**
+2. Delete **netcup Mail block**
+3. **Save**
+
+Then: `deploy/confenge-vps/prove-hostinger-net.sh` should show HOSTINGER_SMTP=PASS.
+
+Reference: https://www.netcup.com/en/helpcenter/documentation/server/firewall

@@ -118,6 +118,20 @@ No Postfix/Exim/Mailcow. No PTR-based direct send. No M365/Graph.
 
 **Network blocker observed on Netcup:** outbound TCP 465/587 to Hostinger timed out while IMAP 993 worked (also blocked to Gmail/O365/SES submission ports). This is provider egress policy, not a local ufw rule. Unlock outbound SMTP with Netcup before production self-smoke. See `vps-execution-inventory.md`.
 
+### Netcup Mail block (SCP firewall)
+
+Outbound SMTP (25/465/587) is blocked by Netcup's **cloud** firewall policy **netcup Mail block**, not by guest ufw. Guest `iptables OUTPUT` remains ACCEPT while connections still time out.
+
+Operator fix (official Netcup docs):
+
+1. Open **Server Control Panel (SCP)** for this VPS.
+2. Open the **Firewall** menu.
+3. On the **netcup Mail block** policy, click **Delete**.
+4. Click **Save** (applies immediately; no reboot).
+
+Reference: [netcup Firewall / Mail block](https://www.netcup.com/en/helpcenter/documentation/server/firewall).
+
+
 ### Operator go-live after Netcup SMTP unlock
 
 ```bash
