@@ -95,32 +95,34 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
     echo "INTERNAL_API_TOKEN=local-dev-internal-token"
     echo "CONFENGE_OUTCOME_WEBHOOK_SECRET=test-outcome-secret-not-real"
   } >>"$TMPENV"
+  COMPOSE_OUT="$(mktemp)"
+  COMPOSE_LOG="$(mktemp)"
   if COMPOSE_PROJECT_NAME=warmbly-confenge docker compose \
     -f docker-compose.yml \
     -f "$PACK/docker-compose.override.yml" \
     --env-file "$TMPENV" \
-    config >/tmp/grok-goal-de15e1cb5156/implementer/compose-config.yml 2>/tmp/grok-goal-de15e1cb5156/implementer/compose-config.log; then
+    config >"$COMPOSE_OUT" 2>"$COMPOSE_LOG"; then
     echo "OK docker compose config"
     # Assert loopback binds for sensitive ports
-    if grep -E 'published: (15432|16379|4222|8080|5173)' /tmp/grok-goal-de15e1cb5156/implementer/compose-config.yml | head -20; then
+    if grep -E 'published: (15432|16379|4222|8080|5173)' "$COMPOSE_OUT" | head -20; then
       :
     fi
-    if grep -q '0.0.0.0:15432' /tmp/grok-goal-de15e1cb5156/implementer/compose-config.yml 2>/dev/null; then
+    if grep -q '0.0.0.0:15432' "$COMPOSE_OUT" 2>/dev/null; then
       echo "FAIL postgres published on all interfaces"
       fail=1
     else
       echo "OK postgres not on 0.0.0.0"
     fi
-    if grep -q 'CONFENGE_GREEN_AUTORUN_ENABLED: "false"\|CONFENGE_GREEN_AUTORUN_ENABLED: false' /tmp/grok-goal-de15e1cb5156/implementer/compose-config.yml \
-      || grep -q 'CONFENGE_GREEN_AUTORUN_ENABLED: \${CONFENGE_GREEN_AUTORUN_ENABLED:-false}' /tmp/grok-goal-de15e1cb5156/implementer/compose-config.yml; then
+    if grep -q 'CONFENGE_GREEN_AUTORUN_ENABLED: "false"\|CONFENGE_GREEN_AUTORUN_ENABLED: false' "$COMPOSE_OUT" \
+      || grep -q 'CONFENGE_GREEN_AUTORUN_ENABLED: \${CONFENGE_GREEN_AUTORUN_ENABLED:-false}' "$COMPOSE_OUT"; then
       echo "OK green autorun default false in compose model"
     fi
   else
     echo "FAIL docker compose config (see compose-config.log)"
-    cat /tmp/grok-goal-de15e1cb5156/implementer/compose-config.log | tail -40
+    tail -40 "$COMPOSE_LOG"
     fail=1
   fi
-  rm -f "$TMPENV"
+  rm -f "$TMPENV" "$COMPOSE_OUT" "$COMPOSE_LOG"
 else
   echo "SKIP docker compose (docker not available)"
 fi
