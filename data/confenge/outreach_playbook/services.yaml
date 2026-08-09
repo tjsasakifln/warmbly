@@ -1,0 +1,152 @@
+# Service playbooks mapped to real-ish CONFENGE service_code patterns used in feeds.
+# Codes are matched case-insensitively by exact code or prefix (e.g. REAJUSTE_14133 → REAJUSTE).
+outreach_doctrine_version: confenge-outreach-v1
+
+services:
+  - code: REAJUSTE
+    name: Reajuste contratual
+    aliases: [REAJUSTE_14133, REAJUSTE_CONTRATUAL, reajuste]
+    commercial_insight: |
+      Anualidade e marco temporal mudam quais documentos e memórias deveriam ser conferidos,
+      mas não provam sozinhos crédito econômico ou reajuste não pago.
+    common_miss: Tratar aniversário contratual como prova de valor a receber.
+    problem_hypotheses:
+      - índice aplicável não formalizado no prazo esperado
+      - memória de cálculo incompleta para o ciclo
+      - base de reajuste divergente da cláusula
+    implications:
+      - atraso de fluxo se o pedido precisar de reconstituição documental
+      - risco de pleito frágil se a evidência pública for lida como certeza
+    disallowed_claims:
+      - vocês têm reajuste a receber
+      - o órgão deixou de pagar o reajuste
+      - identificamos perda de
+      - crédito de reajuste confirmado
+    default_micro_offer: REAJUSTE_CHECK
+    cta_families: [permission_checklist, permission_points]
+
+  - code: REEQUILIBRIO
+    name: Reequilíbrio econômico-financeiro
+    aliases: [REEQUILIBRIO_ECO, REEQUILIBRIO_ECONOMICO, reequilibrio]
+    commercial_insight: |
+      Eventos de desequilíbrio pedem nexo, quantificação e memória; publicação isolada raramente basta.
+    common_miss: Confundir dificuldade operacional com direito ao reequilíbrio.
+    problem_hypotheses:
+      - evento extraordinário sem memória organizada
+      - nexo causal ainda não documentado
+    implications:
+      - pedido frágil ou tardio
+    disallowed_claims:
+      - vocês têm direito ao reequilíbrio
+      - o contrato está desequilibrado
+    default_micro_offer: CLAIM_READINESS_CHECK
+    cta_families: [permission_checklist, permission_snapshot]
+
+  - code: MEDICOES
+    name: Medições e medições contratuais
+    aliases: [MEDICAO, MEDICOES, MEDIÇÃO, MEDICÃO]
+    commercial_insight: |
+      Medição é onde volume, critério e evidência de campo se encontram; divergência costuma nascer em memória, não só em planilha.
+    common_miss: Tratar atraso de medição como mero problema de cobrança.
+    problem_hypotheses:
+      - critério de medição ambíguo em trecho crítico
+      - divergência entre campo e planilha
+    implications:
+      - glosa ou atraso de faturamento
+    disallowed_claims:
+      - o órgão glosou indevidamente
+      - há medição não paga de
+    default_micro_offer: MEDICAO_CHECK
+    cta_families: [permission_points, permission_checklist]
+
+  - code: ADITIVOS
+    name: Aditivos contratuais
+    aliases: [ADITIVO, ADDITIVE_REVIEW, ADITIVOS, additive_review]
+    commercial_insight: |
+      Aditivo recente muda o escopo e a base de comparação; o risco está no que deixa de ser revisado depois da assinatura.
+    common_miss: Celebrar o aditivo e não revalidar planilha, prazos e reajustes derivados.
+    problem_hypotheses:
+      - inconsistência entre aditivo e planilha base
+      - efeito em reajuste ou medição não mapeado
+    implications:
+      - execução e cobrança desalinhadas ao instrumento
+    disallowed_claims:
+      - o aditivo está irregular
+      - vocês perderam valor no aditivo
+    default_micro_offer: ADITIVO_RISK_CHECK
+    cta_families: [permission_snapshot, permission_points]
+
+  - code: EXTRACONTRATUAIS
+    name: Serviços e custos extracontratuais
+    aliases: [EXTRA, EXTRACONTRATUAL, EXTRAS]
+    commercial_insight: |
+      Trabalho fora do instrumento precisa de ordem, evidência e enquadramento; volume sozinho não sustenta pedido.
+    common_miss: Acumular extras sem trilha documental contemporânea.
+    problem_hypotheses:
+      - extras executados sem formalização suficiente
+    implications:
+      - dificuldade de reconhecimento e cobrança
+    disallowed_claims:
+      - o órgão deve pagar os extras
+    default_micro_offer: DOCUMENT_CHECKLIST
+    cta_families: [permission_checklist]
+
+  - code: PLANILHAS
+    name: Planilhas e quantitativos
+    aliases: [PLANILHA, QUANTITATIVOS, ORCAMENTO]
+    commercial_insight: |
+      Planilha é a memória econômica do contrato; divergência silenciosa vira disputa tarde demais.
+    common_miss: Atualizar planilha só no fechamento.
+    problem_hypotheses:
+      - quantitativos desalinhados da execução
+    implications:
+      - reajuste/medição em base frágil
+    disallowed_claims:
+      - a planilha está errada em
+    default_micro_offer: DOCUMENT_CHECKLIST
+    cta_families: [permission_points]
+
+  - code: ENCERRAMENTO_CONTRATUAL
+    name: Encerramento e close-out
+    aliases: [ENCERRAMENTO, CLOSEOUT, CLOSE_OUT, TERMINO]
+    commercial_insight: |
+      Proximidade de fim de vigência concentra o que ainda pode ser regularizado documentalmente.
+    common_miss: Deixar close-out para o último mês sem checklist.
+    problem_hypotheses:
+      - pendências de medição/reajuste perto do término
+    implications:
+      - perda de janela operacional para regularização
+    disallowed_claims:
+      - o contrato vence sem quitação
+    default_micro_offer: CLOSEOUT_CHECK
+    cta_families: [permission_checklist, permission_timeline]
+
+  - code: APOIO_LICITACAO
+    name: Apoio a licitação e propostas
+    aliases: [LICITACAO, BID_SUPPORT, PROPOSTA]
+    commercial_insight: |
+      Risco de proposta nasce em premissas e quantitativos, não só no preço final.
+    common_miss: Revisar só o valor unitário e ignorar inconsistências de edital/planilha.
+    problem_hypotheses:
+      - premissas de edital subavaliadas
+    implications:
+      - margem e execução sob pressão
+    disallowed_claims:
+      - vocês vão perder a licitação
+    default_micro_offer: PROCUREMENT_RISK_SNAPSHOT
+    cta_families: [permission_snapshot]
+
+  - code: MONITORAMENTO_CONTRATUAL
+    name: Monitoramento contratual contínuo
+    aliases: [MONITORAMENTO, PORTFOLIO, ACOMPANHAMENTO]
+    commercial_insight: |
+      Carteira grande esconde eventos de baixo ruído; o valor está em priorizar o que merece leitura agora.
+    common_miss: Tratar todos os contratos com a mesma atenção.
+    problem_hypotheses:
+      - eventos públicos relevantes sem triagem
+    implications:
+      - sobrecarga e atraso em temas de maior impacto
+    disallowed_claims:
+      - sua carteira está descontrolada
+    default_micro_offer: PUBLIC_DATA_SNAPSHOT
+    cta_families: [permission_snapshot, permission_points]

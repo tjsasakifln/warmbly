@@ -9,8 +9,10 @@ There is **no research** in this path: the model receives structured JSON and re
 | --- | --- |
 | `confenge.draft.v1` | Initial evidence-bound email generator + template fallback |
 | `confenge.draft.v2` | Channel-aware modes, `claims[]`, internal `rationale`, anti-template linter, near-dup single regen |
+| `confenge.draft.v3` | Strategy-first composition (`OutreachStrategy`), doctrine `confenge-outreach-v1`, micro-offers, doctrine QA |
 
 Constant: `internal/app/confenge/validators.go` → `PromptVersion`.
+Doctrine: `OutreachDoctrineVersion` + `internal/app/confenge/outreach_playbook/`.
 
 Bump the constant when the system prompt schema or hard safety rules change. Store the version on each `OutreachDraft.PromptVersion` for audit.
 

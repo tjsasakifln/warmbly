@@ -205,6 +205,19 @@ export type ConfengeAttentionItem = {
 };
 
 
+export type ConfengeStrategyExplain = {
+  why_now?: string;
+  fact_used?: string;
+  hypothesis?: string;
+  service?: string;
+  offer?: string;
+  recipient?: string;
+  sources?: string[];
+  touch?: string;
+  experiment?: string;
+  doctrine_version?: string;
+};
+
 export type ConfengeTouchpoint = {
   id: string;
   organization_id: string;
@@ -223,6 +236,9 @@ export type ConfengeTouchpoint = {
   fact_used: string;
   evidence_ids?: string[];
   account?: ConfengeAccount;
+  strategy_explain?: ConfengeStrategyExplain;
+  doctrine_alerts?: string[];
+  draft?: ConfengeDraft;
 };
 
 export type ConfengeDispatchFailure = {

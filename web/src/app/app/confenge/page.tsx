@@ -89,7 +89,10 @@ export default function ConfengePage() {
       { label: "Ready", value: s?.ready_to_generate ?? 0 },
       { label: "Review", value: s?.needs_review ?? w?.needs_review ?? 0 },
       { label: "Sent", value: s?.sent ?? 0 },
-      { label: "Replied", value: s?.replied ?? 0 },
+      { label: "Human reply", value: s?.replied ?? 0 },
+      { label: "Meeting", value: s?.meeting ?? 0 },
+      { label: "Proposal", value: s?.proposal ?? 0 },
+      { label: "Won", value: s?.won ?? 0 },
       { label: "DNC", value: s?.do_not_contact ?? 0 },
     ];
     if (w) {
@@ -409,6 +412,40 @@ export default function ConfengePage() {
                     {current.channel} · {current.service_code || "—"}
                   </div>
                 </div>
+
+                {/* Operator strategy cockpit (not prospect-facing) */}
+                <div
+                  className="rounded-md border border-slate-200 bg-slate-50 p-2 space-y-1.5"
+                  data-testid="confenge-strategy-explain"
+                >
+                  <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                    Strategy {current.strategy_explain?.doctrine_version || "confenge-outreach-v1"}
+                  </div>
+                  <StrategyRow label="Por que agora" value={current.strategy_explain?.why_now || current.account?.moment_summary} />
+                  <StrategyRow label="Fato usado" value={current.strategy_explain?.fact_used || current.fact_used} />
+                  <StrategyRow label="Hipótese" value={current.strategy_explain?.hypothesis} />
+                  <StrategyRow label="Serviço" value={current.strategy_explain?.service || current.service_code} />
+                  <StrategyRow label="Oferta" value={current.strategy_explain?.offer} />
+                  <StrategyRow label="Destinatário" value={current.strategy_explain?.recipient || current.recipient} />
+                  <StrategyRow
+                    label="Fontes"
+                    value={(current.strategy_explain?.sources || current.evidence_ids || []).join(", ")}
+                  />
+                  <StrategyRow label="Touch" value={current.strategy_explain?.touch || String(current.ordinal)} />
+                  <StrategyRow label="Experimento" value={current.strategy_explain?.experiment} />
+                </div>
+                {(current.doctrine_alerts?.length ?? 0) > 0 && (
+                  <div className="space-y-1" data-testid="confenge-doctrine-alerts">
+                    {current.doctrine_alerts!.map((a) => (
+                      <div
+                        key={a}
+                        className="text-[11px] text-amber-800 bg-amber-50 border border-amber-100 rounded px-2 py-1"
+                      >
+                        ⚠ {a}
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <div>
                   <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">
                     Fact / evidence
@@ -517,6 +554,16 @@ export default function ConfengePage() {
         </section>
       </div>
     </Page>
+  );
+}
+
+function StrategyRow({ label, value }: { label: string; value?: string | null }) {
+  if (!value) return null;
+  return (
+    <div>
+      <span className="text-[10px] uppercase tracking-[0.12em] text-slate-400">{label}</span>
+      <div className="text-slate-800 text-[12.5px] leading-snug">{value}</div>
+    </div>
   );
 }
 

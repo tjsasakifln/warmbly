@@ -10,7 +10,8 @@ import (
 )
 
 // PromptVersion tags generation prompt revisions (see docs/confenge/copy-generation.md).
-const PromptVersion = "confenge.draft.v2"
+// v3: strategy-first composition + outreach doctrine confenge-outreach-v1.
+const PromptVersion = "confenge.draft.v3"
 
 // DraftClaim is one auditable fact/phrase anchored to evidence ids.
 type DraftClaim struct {
@@ -47,13 +48,19 @@ type DraftFollowup struct {
 
 // ValidationResult is deterministic pre-send / pre-approve checks.
 type ValidationResult struct {
-	OK           bool         `json:"ok"`
-	Errors       []string     `json:"errors,omitempty"`
-	Warnings     []string     `json:"warnings,omitempty"`
-	Claims       []DraftClaim `json:"claims,omitempty"`
-	Rationale    string       `json:"rationale,omitempty"`
-	Channel      string       `json:"channel,omitempty"`
-	NearDupScore float64      `json:"near_dup_score,omitempty"`
+	OK              bool                `json:"ok"`
+	Errors          []string            `json:"errors,omitempty"`
+	Warnings        []string            `json:"warnings,omitempty"`
+	Claims          []DraftClaim        `json:"claims,omitempty"`
+	Rationale       string              `json:"rationale,omitempty"`
+	Channel         string              `json:"channel,omitempty"`
+	NearDupScore    float64             `json:"near_dup_score,omitempty"`
+	DoctrineVersion string              `json:"doctrine_version,omitempty"`
+	Strategy        *OutreachStrategy   `json:"strategy,omitempty"`
+	StrategyExplain *StrategyExplain    `json:"strategy_explain,omitempty"`
+	DoctrineAlerts  []string            `json:"doctrine_alerts,omitempty"`
+	OperatorEdit    *OperatorEditSignal `json:"operator_edit,omitempty"`
+	OperatorReject  *OperatorRejection  `json:"operator_reject,omitempty"`
 }
 
 // ValidateOpts configures deterministic validation for a channel.
@@ -64,6 +71,8 @@ type ValidateOpts struct {
 	RecentBodies           []string
 	ServiceOverrideAudited bool
 	SkipEmailRecipient     bool
+	Strategy               *OutreachStrategy
+	Playbook               *Playbook
 }
 
 var bannedPhrases = []string{
@@ -299,6 +308,20 @@ func ValidateDraft(out *DraftOutput, acc *models.OutreachAccount, cand *models.O
 			res.Errors = append(res.Errors, "internal rationale leaked into body_text")
 		}
 	}
+
+	// Doctrine QA (strategy-first commercial constraints).
+	st := opts.Strategy
+	pb := opts.Playbook
+	dqa := ValidateDoctrineCopy(out, st, pb, channel)
+	MergeDoctrineIntoValidation(&res, dqa)
+	res.DoctrineAlerts = append(res.DoctrineAlerts, dqa.Alerts...)
+	if st != nil {
+		res.DoctrineVersion = st.DoctrineVersion
+		res.Strategy = st
+	} else {
+		res.DoctrineVersion = OutreachDoctrineVersion
+	}
+
 	if !res.OK && len(res.Errors) == 0 {
 		res.Errors = append(res.Errors, "validation failed")
 	}
