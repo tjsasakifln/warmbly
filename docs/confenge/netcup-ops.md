@@ -1,74 +1,69 @@
-# Netcup ops notes (CONFENGE intelligence plane only)
+# Netcup ops notes (CONFENGE)
 
-Canonical topology: the VPS runs **extra-cli + feed + outcome receptor**.
-Warmbly execution (Hostinger SMTP/IMAP on the operator laptop) runs on
-**WSL/Windows**, not on the VPS. No Graph/M365 secrets on either side for CONFENGE.
+Canonical topology: the VPS runs **extra-cli (intelligence)** and **Warmbly
+`warmbly-confenge` (execution)**. They share the host, not the database.
 
-See [architecture-split.md](./architecture-split.md).
+See [architecture-split.md](./architecture-split.md) and
+[vps-execution-plane.md](./vps-execution-plane.md).
 
-## What belongs on the VPS
+## On the VPS
 
-- extra-cli / datalake
-- continuous enrichment and EMAIL_SEND_READY supply
-- `confenge.outreach.v1` feed generation under `/var/lib/extra-consultoria/warmbly-feed`
-- HTTPS feed front (`/opt/confenge-plane`, port **8443**)
-- HMAC outcome receptor (`serve-outcomes` on loopback **8790**, proxied at
-  `https://<vps>:8443/webhooks/warmbly/outcome`)
+| Plane | Path / project | Role |
+| --- | --- | --- |
+| Intelligence | `/opt/confenge-plane`, extra-cli under `/opt/extra-consultoria` | Feed :8443, outcome HMAC, datalake |
+| Execution | `/opt/warmbly-confenge` project `warmbly-confenge` | Approve state, governor, Hostinger client, CRM |
 
-Do **not** store mailbox passwords, Hostinger credentials, or any OAuth secrets on the VPS.
-The production CONFENGE mailbox is **Hostinger SMTP/IMAP** on the operator laptop, not Microsoft 365.
+Deploy pack in repo: `deploy/confenge-vps/`.
 
 ## Integration path
 
 ```text
-extra-cli (VPS) → HTTPS feed :8443
-        → local Warmbly CONFENGE_EXTRA_CLI_FEED_URL (file pull or HTTPS)
-local Warmbly outcome outbox
-        → CONFENGE_OUTCOME_WEBHOOK_URL=https://<vps>:8443/webhooks/warmbly/outcome
+extra-cli → HTTPS feed :8443
+Warmbly feed sync (host-gateway) → confenge.outreach.v1
+Warmbly outcome outbox → CONFENGE_OUTCOME_WEBHOOK_URL (HMAC retained)
 ```
 
-## Local Warmbly env (laptop)
+## Operator laptop
+
+```text
+ssh tunnel → http://127.0.0.1:5173
+review / approve / pause
+```
+
+No Hostinger password on the laptop after VPS connect. No local worker required
+for due sends after approval.
+
+## Safety
 
 ```env
-CONFENGE_OUTREACH_ENABLED=true
+CONFENGE_GREEN_AUTORUN_ENABLED=false
 CONFENGE_AUTO_SEND_ENABLED=false
 CONFENGE_REQUIRE_HUMAN_APPROVAL=true
-CONFENGE_GREEN_AUTORUN_ENABLED=true
-# after: scripts/confenge_pull_feed_from_vps.sh
-CONFENGE_EXTRA_CLI_FEED_URL=file:///…/data/confenge-plane/email_send_ready_feed.json
-CONFENGE_OUTCOME_WEBHOOK_URL=https://159.195.18.88:8443/webhooks/warmbly/outcome
-CONFENGE_OUTCOME_WEBHOOK_SECRET=<from VPS /opt/confenge-plane/outcome.secret>
-# LOCAL ONLY — Hostinger (not Graph/M365):
-CONFENGE_MAILBOX_EMAIL=tiago.sasaki@confenge.com.br
-CONFENGE_SMTP_HOST=smtp.hostinger.com
-CONFENGE_SMTP_PORT=587
-CONFENGE_IMAP_HOST=imap.hostinger.com
-CONFENGE_IMAP_PORT=993
-CONFENGE_MAILBOX_PASSWORD=...
-```
-
-Connect + smoke (laptop, after stack is up):
-
-```bash
-scripts/confenge_hostinger_connect.sh
-scripts/confenge_self_smoke.sh   # self-send only; no leads
+CONFENGE_WHATSAPP_ENABLED=false
+HOSTINGER_PLAN_CLASS=BUSINESS_EMAIL_STARTER
+# provider ceiling 1000/rolling 24h/mailbox; ops pace stays 10→20/h, daily 200
+CONFENGE_RATE_MAX_PER_HOUR=20
+CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=200
 ```
 
 ## Public exposure
 
 | Open on VPS | Purpose |
 | --- | --- |
-| TCP 8443 | Feed download + outcome webhook for the laptop |
-| TCP 2222 | SSH ops |
+| TCP 8443 | Feed + outcome webhook (existing plane) |
+| TCP 2222 | SSH ops + operator tunnel |
+| Warmbly 8080/5173 | **Loopback only** |
 
-Legacy `warmbly-confenge` compose on the VPS may remain stopped with volumes
-intact for recovery; it is not the execution plane.
+## Hostinger egress
+
+Prove with `deploy/confenge-vps/prove-hostinger-net.sh`. If SMTP 465/587 fail from
+the VPS while IMAP works, request Netcup outbound SMTP unlock. Do not install
+an MTA on the VPS.
 
 ## Proof bar
 
-1. VPS feed serves current EMAIL_SEND_READY stock
-2. Local Warmbly imports feed (file or HTTPS)
-3. Hostinger SMTP/IMAP self-send/reply/bounce on operator-owned address only
-   (`scripts/confenge_self_smoke.sh`; no Azure / Graph)
-4. Outcome HMAC delivery to VPS receptor
-5. Kill switch on local Warmbly (`make confenge-stop-sending`)
+1. Stack recovers after reboot without laptop
+2. Feed + outcome contracts only (no SQL coupling)
+3. Hostinger IMAP 24/7; SMTP after egress unlock
+4. Human approval persists; kill switch works
+5. No lead sends in validation; GREEN off

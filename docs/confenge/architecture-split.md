@@ -1,24 +1,33 @@
 # CONFENGE architecture split (canonical)
 
 Warmbly is the **execution plane**. extra-cli is the **intelligence plane**.
-They do not share a host in the go-live topology.
+They may share a physical VPS but **never** share application databases.
 
 ```text
 ┌──────────────────────────── VPS (Netcup) ────────────────────────────┐
 │  extra-cli + datalake                                                 │
 │  enrichment / activation / EMAIL_SEND_READY supply                    │
-│  confenge.outreach.v1 feed drop                                       │
+│  confenge.outreach.v1 feed                                            │
 │  HTTPS :8443  → static feed + /webhooks/warmbly/outcome (HMAC)        │
-│  NO Warmbly runtime · NO mailbox passwords · NO Graph/M365            │
-└───────────────────────────────────┬──────────────────────────────────┘
-                                    │ pull feed / push outcomes
-┌───────────────────────────────────▼──────────────────────────────────┐
-│  Operator WSL / Windows (while machine is on)                         │
-│  Warmbly (make confenge-local / backend+worker+web)                   │
-│  Hostinger SMTP:587 + IMAP:993 for tiago.sasaki@confenge.com.br       │
-│  Governor, GREEN policy path, Unibox, CRM                             │
+│  NO Warmbly tables · NO mailbox passwords in extra-cli                │
+│                                                                        │
+│  Warmbly project warmbly-confenge (Docker, isolated volumes)          │
+│  generation / human approval state / content_hash / cadence           │
+│  governor · Hostinger SMTP/IMAP client · reply/bounce/DNC · CRM       │
+│  confenge.outcome.v1 → loopback/HTTPS → outcome receptor              │
+└──────────────────────────────────────────────────────────────────────┘
+          │
+          │ browser (SSH tunnel to loopback UI) when human is online
+          ▼
+┌──────────────── Operator laptop ─────────────────────────────────────┐
+│  Review exact message · Approve / Edit / Reject / DNC · pause/resume │
+│  No requirement for local Docker / WSL / worker for scheduled sends  │
 └──────────────────────────────────────────────────────────────────────┘
 ```
+
+Historical note: go-live docs briefly kept Warmbly on the laptop only. The
+always-on execution plane moves Warmbly to the VPS; the laptop remains the
+human review surface. See [vps-execution-plane.md](./vps-execution-plane.md).
 
 ## Email channel (factual)
 
@@ -26,44 +35,34 @@ They do not share a host in the go-live topology.
 | --- | --- |
 | Address | `tiago.sasaki@confenge.com.br` |
 | Host | **Hostinger** (not Exchange Online / M365) |
-| SMTP | `smtp.hostinger.com:587` STARTTLS |
+| SMTP | `smtp.hostinger.com:587` STARTTLS (465 also supported by Warmbly) |
 | IMAP | `imap.hostinger.com:993` SSL |
-| Graph / Azure app | **Not required** for CONFENGE go-live |
-| Mailpit | Local tests only |
+| Graph / Azure app | **Not required** |
+| Mailpit | Tests / system OTP only |
+| Plan class | Hostinger **Business Email Starter** (`HOSTINGER_PLAN_CLASS=BUSINESS_EMAIL_STARTER`) |
+| Provider ceiling | **1000** msgs / rolling 24h / mailbox (hPanel SoT; not cPanel) |
+| Operational pace | adaptive **10→20/h**, daily shell **200** (reputation; not provider max) |
 
 ## Operator loop (minimal)
 
-1. VPS: extra-cli expands EMAIL_SEND_READY and refreshes feed.
-2. Laptop session start:
-   - `scripts/confenge_pull_feed_from_vps.sh`
-   - `make confenge-local` (use `CONFENGE_API_HOST=127.0.0.1:18080` if :8080 is taken)
-   - `scripts/confenge_hostinger_connect.sh` (needs `CONFENGE_MAILBOX_PASSWORD`)
-   - `scripts/confenge_self_smoke.sh` before any lead send
-3. Outcomes → VPS via `CONFENGE_OUTCOME_WEBHOOK_URL`.
-
-## Local env keys
-
-| Variable | Notes |
-| --- | --- |
-| `CONFENGE_EXTRA_CLI_FEED_URL` | `file://…/email_send_ready_feed.json` after pull |
-| `CONFENGE_OUTCOME_WEBHOOK_URL` | `https://159.195.18.88:8443/webhooks/warmbly/outcome` |
-| `CONFENGE_OUTCOME_WEBHOOK_SECRET` | VPS `/opt/confenge-plane/outcome.secret` |
-| `CONFENGE_MAILBOX_EMAIL` | `tiago.sasaki@confenge.com.br` |
-| `CONFENGE_SMTP_HOST/PORT` | `smtp.hostinger.com` / `587` |
-| `CONFENGE_IMAP_HOST/PORT` | `imap.hostinger.com` / `993` |
-| `CONFENGE_MAILBOX_PASSWORD` | local only; never VPS; never git |
+1. VPS: extra-cli refreshes feed; Warmbly feed sync imports on a timer.
+2. Human (any browser via SSH tunnel): open `/app/confenge`, approve exact content.
+3. VPS worker: when due, governor + Hostinger SMTP; IMAP for replies 24/7.
+4. Outcomes → confenge-plane HMAC webhook on the same VPS.
 
 ## Public exposure
 
 | Exposure | Required? |
 | --- | --- |
-| VPS :8443 feed + outcome webhook | Yes (or SSH tunnel) |
-| VPS Warmbly UI | No |
-| Mailbox password on VPS | **Forbidden** |
+| VPS :8443 feed + outcome | Yes (intelligence plane; already live) |
+| VPS Warmbly UI public | **No** (loopback + SSH tunnel preferred) |
+| Postgres/Redis/NATS public | **Forbidden** |
+| Mailbox password in git/env long-term | **Forbidden** (sealed in Warmbly DB) |
 
-## Kill switch (laptop)
+## Kill switch
 
 ```bash
-make confenge-stop-sending
-make confenge-resume-sending
+deploy/confenge-vps/pause.sh
+deploy/confenge-vps/resume.sh
+# or UI dispatch pause when authenticated
 ```
