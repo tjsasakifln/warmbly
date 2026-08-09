@@ -105,6 +105,25 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 			risk = "YELLOW"
 		}
 	}
+	// Template fallback + incomplete commercial context → never send-ready.
+	incomplete := containsStr(st.RiskFlags, "incomplete_strategy") ||
+		containsStr(st.RiskFlags, "incomplete_copy_context") ||
+		containsStr(st.RiskFlags, "unknown_service_code") ||
+		containsStr(st.RiskFlags, "missing_service_code") ||
+		strings.TrimSpace(st.MicroOfferCode) == "" ||
+		strings.TrimSpace(st.WhyThisAccount) == "" ||
+		strings.TrimSpace(st.WhyNow) == "" ||
+		strings.TrimSpace(st.ObservedFact) == ""
+	if usedTemplate && incomplete {
+		flags = append(flags, "template_fallback_incomplete_context", "needs_review")
+		risk = "RED"
+	}
+	if incomplete {
+		flags = append(flags, "incomplete_copy_context")
+		if risk == "GREEN" {
+			risk = "YELLOW"
+		}
+	}
 	val.Claims = out.Claims
 	val.Rationale = out.Rationale
 	val.Channel = out.Channel

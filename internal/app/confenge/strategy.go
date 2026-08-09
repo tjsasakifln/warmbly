@@ -161,6 +161,11 @@ func PlanOutreachStrategy(
 		if st.ServiceName == "" {
 			st.ServiceName = svc.Name
 		}
+		// Normalize service code to playbook canonical (never invent REAJUSTE for unknown).
+		if st.ServiceCode != "" && !strings.EqualFold(st.ServiceCode, svc.Code) {
+			// Keep upstream code in strategy but resolve playbook via svc.Code for offers.
+			st.ServiceName = svc.Name
+		}
 		st.CommercialReframe = strings.TrimSpace(svc.CommercialInsight)
 		if len(svc.ProblemHypotheses) > 0 {
 			st.ProblemHypothesis = svc.ProblemHypotheses[0]
@@ -170,10 +175,21 @@ func PlanOutreachStrategy(
 		}
 		st.ClaimsToAvoid = appendUnique(st.ClaimsToAvoid, svc.DisallowedClaims...)
 		st.MicroOfferCode = svc.DefaultMicroOffer
+	} else if strings.TrimSpace(st.ServiceCode) != "" {
+		// Unknown service from extra-cli: fail closed — never map to REAJUSTE.
+		st.RiskFlags = appendUnique(st.RiskFlags, "unknown_service_code", "needs_review", "service_unmapped")
+		st.MicroOfferCode = ""
+		st.ProblemHypothesis = ""
+		st.CommercialReframe = "Serviço upstream não mapeado no playbook; não inventar especialidade."
+	} else {
+		st.RiskFlags = appendUnique(st.RiskFlags, "missing_service_code", "needs_review")
 	}
 
-	// Annualidade special case: never claim unpaid reajuste
-	if isAnnualidadeContext(st.ActivationTrigger, st.TriggerSummary, st.ObservedFact) {
+	// Annualidade special case: never claim unpaid reajuste.
+	// Only when service is already reajuste-family — do not force REAJUSTE onto other services.
+	reajusteFamily := (svc != nil && strings.EqualFold(svc.Code, "REAJUSTE")) ||
+		strings.Contains(strings.ToUpper(st.ServiceCode), "REAJUSTE")
+	if isAnnualidadeContext(st.ActivationTrigger, st.TriggerSummary, st.ObservedFact) && reajusteFamily {
 		st.RiskFlags = appendUnique(st.RiskFlags, "annualidade_verify_only")
 		st.ProblemHypothesis = "pode haver documentos e memórias de reajuste a conferir neste ciclo (hipótese, não crédito comprovado)"
 		st.ImplicationHypothesis = "sem verificação, a equipe pode perder tempo reconstituindo a memória documental depois"
@@ -221,7 +237,8 @@ func PlanOutreachStrategy(
 			}
 		}
 	}
-	if st.MicroOfferCode == "" && pb != nil {
+	// Only apply generic LOW fallback when service is known; unknown must stay empty (NEEDS_REVIEW).
+	if st.MicroOfferCode == "" && pb != nil && svc != nil {
 		st.MicroOfferCode = fallbackLOWOffer(pb, st.ServiceCode)
 		if o := pb.FindOffer(st.MicroOfferCode); o != nil {
 			st.MicroOfferDescription = o.Description
@@ -230,6 +247,12 @@ func PlanOutreachStrategy(
 				st.CTASuggested = o.CTAPatterns[0]
 			}
 		}
+	}
+	if st.MicroOfferCode == "" {
+		st.RiskFlags = appendUnique(st.RiskFlags, "incomplete_strategy", "needs_review")
+	}
+	if st.WhyThisAccount == "" || st.WhyNow == "" || st.ObservedFact == "" {
+		st.RiskFlags = appendUnique(st.RiskFlags, "incomplete_copy_context", "needs_review")
 	}
 
 	// Sequence-specific CTA

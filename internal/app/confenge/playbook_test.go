@@ -57,6 +57,50 @@ func TestResolveServiceAndOffer(t *testing.T) {
 	if !pb.OfferApplicable(o, "REAJUSTE", true) {
 		t.Fatal("offer should apply to REAJUSTE cold")
 	}
+	// extra-cli service_id aliases must resolve to the same playbook family
+	// (never fall through to empty → REAJUSTE invent).
+	cases := map[string]string{
+		"estruturacao_pleito_reajuste":   "REAJUSTE",
+		"reequilibrio_economico_financeiro": "REEQUILIBRIO",
+		"aditivos_extracontratuais":      "ADITIVOS",
+		"medicoes_glosas_memoria":        "MEDICOES",
+		"auditoria_orcamento_bdi":        "PLANILHAS",
+		"gestao_monitoramento_contratual": "MONITORAMENTO_CONTRATUAL",
+		"apoio_licitacoes_propostas":     "APOIO_LICITACAO",
+		"inteligencia_pncp_mercado":      "INTELIGENCIA_PNCP",
+		"diagnostico_contratual_b2g":     "DIAGNOSTICO",
+		"reforco_temporario_backoffice":  "BACKOFFICE",
+	}
+	for in, want := range cases {
+		got := pb.ResolveServicePlaybook(in)
+		if got == nil || got.Code != want {
+			t.Fatalf("alias %s: got %+v want %s", in, got, want)
+		}
+	}
+	if pb.ResolveServicePlaybook("TOTALLY_UNKNOWN_SERVICE_XYZ") != nil {
+		t.Fatal("unknown must not resolve (never invent REAJUSTE)")
+	}
+}
+
+func TestUnknownServiceStrategyNotReajuste(t *testing.T) {
+	pb := MustPlaybook()
+	acc := testAccount("TOTALLY_UNKNOWN_SERVICE_XYZ", "PORTFOLIO", "contrato público de pavimentação")
+	st := PlanOutreachStrategy(pb, acc, nil, nil, 1)
+	if st.ServiceCode != "TOTALLY_UNKNOWN_SERVICE_XYZ" {
+		t.Fatalf("must preserve upstream service, got %q", st.ServiceCode)
+	}
+	if st.MicroOfferCode != "" && st.MicroOfferCode == "REAJUSTE_CHECK" {
+		t.Fatalf("unknown must not fall back to REAJUSTE_CHECK, got %q", st.MicroOfferCode)
+	}
+	hasUnknown := false
+	for _, f := range st.RiskFlags {
+		if f == "unknown_service_code" || f == "needs_review" {
+			hasUnknown = true
+		}
+	}
+	if !hasUnknown {
+		t.Fatalf("expected unknown_service_code/needs_review flags, got %v", st.RiskFlags)
+	}
 }
 
 func TestMapBuyerRoleNeverInfersFromGeneric(t *testing.T) {
