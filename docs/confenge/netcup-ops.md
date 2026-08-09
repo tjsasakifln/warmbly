@@ -1,65 +1,74 @@
-# Netcup deployment notes (CONFENGE Warmbly)
+# Netcup ops notes (CONFENGE intelligence plane only)
 
-Deploy Warmbly as an **isolated Compose project** next to extra-cli. Do not share
-Postgres, Redis, or Kafka with the intelligence plane.
+Canonical topology: the VPS runs **extra-cli + feed + outcome receptor**.
+Warmbly execution (Hostinger SMTP/IMAP on the operator laptop) runs on
+**WSL/Windows**, not on the VPS. No Graph/M365 secrets on either side for CONFENGE.
 
-## Preflight checklist
+See [architecture-split.md](./architecture-split.md).
 
-- Inventory ports, volumes, reverse proxy, DNS, TLS, disk, RAM, and extra-cli
-  services already running on the VPS.
-- Choose non-colliding names: project `warmbly-confenge`, network
-  `warmbly_confenge_net`, volumes `warmbly_confenge_pg` / `_redis`.
-- Do not mount the extra-cli datalake volume into Warmbly.
-- Do not grant Warmbly credentials to the extra-cli database.
+## What belongs on the VPS
+
+- extra-cli / datalake
+- continuous enrichment and EMAIL_SEND_READY supply
+- `confenge.outreach.v1` feed generation under `/var/lib/extra-consultoria/warmbly-feed`
+- HTTPS feed front (`/opt/confenge-plane`, port **8443**)
+- HMAC outcome receptor (`serve-outcomes` on loopback **8790**, proxied at
+  `https://<vps>:8443/webhooks/warmbly/outcome`)
+
+Do **not** store mailbox passwords, Hostinger credentials, or any OAuth secrets on the VPS.
+The production CONFENGE mailbox is **Hostinger SMTP/IMAP** on the operator laptop, not Microsoft 365.
 
 ## Integration path
 
 ```text
-extra-cli export feed (HTTPS or file drop)
-        → Warmbly CONFENGE_EXTRA_CLI_FEED_URL
-Warmbly outcome outbox
-        → CONFENGE_OUTCOME_WEBHOOK_URL (extra-cli receiver)
+extra-cli (VPS) → HTTPS feed :8443
+        → local Warmbly CONFENGE_EXTRA_CLI_FEED_URL (file pull or HTTPS)
+local Warmbly outcome outbox
+        → CONFENGE_OUTCOME_WEBHOOK_URL=https://<vps>:8443/webhooks/warmbly/outcome
 ```
 
-## Required env (minimum)
+## Local Warmbly env (laptop)
 
 ```env
 CONFENGE_OUTREACH_ENABLED=true
 CONFENGE_AUTO_SEND_ENABLED=false
 CONFENGE_REQUIRE_HUMAN_APPROVAL=true
-CONFENGE_EXTRA_CLI_FEED_URL=https://...
-CONFENGE_EXTRA_CLI_ALLOWED_HOSTS=...
-CONFENGE_OUTCOME_WEBHOOK_URL=https://...
-CONFENGE_OUTCOME_WEBHOOK_SECRET=...
-BOX_OUTLOOK_CLIENT_ID=...
-BOX_OUTLOOK_CLIENT_SECRET=...
+CONFENGE_GREEN_AUTORUN_ENABLED=true
+# after: scripts/confenge_pull_feed_from_vps.sh
+CONFENGE_EXTRA_CLI_FEED_URL=file:///…/data/confenge-plane/email_send_ready_feed.json
+CONFENGE_OUTCOME_WEBHOOK_URL=https://159.195.18.88:8443/webhooks/warmbly/outcome
+CONFENGE_OUTCOME_WEBHOOK_SECRET=<from VPS /opt/confenge-plane/outcome.secret>
+# LOCAL ONLY — Hostinger (not Graph/M365):
+CONFENGE_MAILBOX_EMAIL=tiago.sasaki@confenge.com.br
+CONFENGE_SMTP_HOST=smtp.hostinger.com
+CONFENGE_SMTP_PORT=587
+CONFENGE_IMAP_HOST=imap.hostinger.com
+CONFENGE_IMAP_PORT=993
+CONFENGE_MAILBOX_PASSWORD=...
 ```
 
-Use Microsoft Graph OAuth already supported by Warmbly. Do not put mailbox
-passwords in `.env`.
+Connect + smoke (laptop, after stack is up):
 
-## Ops
+```bash
+scripts/confenge_hostinger_connect.sh
+scripts/confenge_self_smoke.sh   # self-send only; no leads
+```
 
-| Action | Notes |
+## Public exposure
+
+| Open on VPS | Purpose |
 | --- | --- |
-| Deploy | Isolated compose up; migrations apply on backend boot |
-| Smoke | `/health`, import fixture dry-run, generate template draft |
-| Backup | Postgres volume only for Warmbly project |
-| Restore | Restore volume, restart backend, verify migration version |
-| Rollback | Set `CONFENGE_OUTREACH_ENABLED=false`; optional down migrations |
-| Upgrade | Pull image/tag, recreate containers, watch migrations |
+| TCP 8443 | Feed download + outcome webhook for the laptop |
+| TCP 2222 | SSH ops |
 
-## External access
-
-If DNS/TLS is not ready, use SSH tunnel to the dashboard/API. Do not expose an
-unauthenticated panel.
+Legacy `warmbly-confenge` compose on the VPS may remain stopped with volumes
+intact for recovery; it is not the execution plane.
 
 ## Proof bar
 
-Do not declare production ready without:
-
-1. Clean import of synthetic feed
-2. Review + approve path
-3. Mailbox Graph connection test to an operator-owned address
-4. Outcome outbox delivery or documented export path
-5. Backup/restore drill
+1. VPS feed serves current EMAIL_SEND_READY stock
+2. Local Warmbly imports feed (file or HTTPS)
+3. Hostinger SMTP/IMAP self-send/reply/bounce on operator-owned address only
+   (`scripts/confenge_self_smoke.sh`; no Azure / Graph)
+4. Outcome HMAC delivery to VPS receptor
+5. Kill switch on local Warmbly (`make confenge-stop-sending`)

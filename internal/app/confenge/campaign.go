@@ -105,12 +105,16 @@ func (s *service) BootstrapCampaign(ctx context.Context, orgID, userID uuid.UUID
 	return created, nil
 }
 
-// defaultCadenceSteps is a single placeholder step for the Warmbly campaign shell.
-// CONFENGE follow-ups authority is outreach_touchpoints (per-touch human approval).
+// defaultCadenceSteps is a single step for the Warmbly campaign shell.
+// Body/subject come from contact custom fields written at enroll time
+// (approved touchpoint payload). Follow-ups authority remains outreach_touchpoints.
 func defaultCadenceSteps() []models.CreateSequenceInput {
 	return []models.CreateSequenceInput{{
-		Name: "CONFENGE touch (human-approved)", Subject: "{{.Company}}",
-		BodyPlain: "<!-- body injected per approved touchpoint -->", WaitAfter: nil,
+		Name:      "CONFENGE touch (policy or human approved)",
+		Subject:   "{{.confenge_subject}}",
+		BodyPlain: "{{.confenge_body}}",
+		BodyHTML:  "{{.confenge_body_html}}",
+		WaitAfter: nil,
 	}}
 }
 
@@ -209,6 +213,8 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 		return nil, errx.New(errx.BadRequest, "contact is not enrollable")
 	}
 
+	// Validate the approved copy BEFORE appending the commercial signature
+	// (signature is fixed operator branding, not part of the risk/copy gates).
 	out := DraftOutput{
 		Subject: d.Subject, BodyText: d.BodyText, FactUsed: d.FactUsed,
 		ServiceCode: d.ServiceCode, EvidenceIDs: d.EvidenceIDs,
@@ -225,6 +231,10 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 		// RED may enroll only after explicit approve (already APPROVED); allowed but audited.
 	}
 
+	// Professional PT-BR signature + HTML with signature image CID (worker attaches JPEG).
+	d.BodyText = AppendSignaturePlain(d.BodyText)
+	d.BodyHTML = BodyToHTML(d.BodyText)
+
 	camp, xerr := s.BootstrapCampaign(ctx, orgID, userID)
 	if xerr != nil {
 		return nil, xerr
@@ -240,11 +250,12 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 		Phone:     cand.Phone,
 		Campaigns: []string{camp.ID.String()},
 		CustomFields: map[string]string{
-			"cnpj14":           acc.CNPJ14,
-			"confenge_subject": d.Subject,
-			"confenge_body":    d.BodyText,
-			"confenge_service": d.ServiceCode,
-			"confenge_fact":    d.FactUsed,
+			"cnpj14":             acc.CNPJ14,
+			"confenge_subject":   d.Subject,
+			"confenge_body":      d.BodyText,
+			"confenge_body_html": d.BodyHTML,
+			"confenge_service":   d.ServiceCode,
+			"confenge_fact":      d.FactUsed,
 		},
 	}})
 	if xerr != nil {

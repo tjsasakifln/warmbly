@@ -14,6 +14,7 @@ import (
 	"github.com/warmbly/warmbly/internal/api/middleware"
 	"github.com/warmbly/warmbly/internal/app/confenge"
 	"github.com/warmbly/warmbly/internal/errx"
+	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/repository"
 )
 
@@ -1069,4 +1070,134 @@ func (h *Handler) ResumeConfengeAccount(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": acc})
+}
+
+// AuthorizeConfengeCampaignPolicy — POST /confenge/campaign/policy/authorize
+func (h *Handler) AuthorizeConfengeCampaignPolicy(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	var body struct {
+		CampaignID               string `json:"campaign_id"`
+		PromptPolicyVersion      string `json:"prompt_policy_version"`
+		ValidatorVersion         string `json:"validator_version"`
+		ContactPolicyVersion     string `json:"contact_policy_version"`
+		TemplatePolicyVersion    string `json:"template_policy_version"`
+		SenderMailbox            string `json:"sender_mailbox"`
+		Channel                  string `json:"channel"`
+		AllowedRiskClass         string `json:"allowed_risk_class"`
+		MaxRatePerHour           int    `json:"max_rate_per_hour"`
+		AllowPolicyTemplateGREEN bool   `json:"allow_policy_template_green"`
+		AuthorizedByLabel        string `json:"authorized_by_label"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		errx.JSON(c, errx.ErrInvalid)
+		return
+	}
+	cid, err := uuid.Parse(strings.TrimSpace(body.CampaignID))
+	if err != nil {
+		errx.JSON(c, errx.New(errx.BadRequest, "campaign_id required"))
+		return
+	}
+	auth := &models.CampaignPolicyAuthorization{
+		CampaignID:               cid,
+		PromptPolicyVersion:      body.PromptPolicyVersion,
+		ValidatorVersion:         body.ValidatorVersion,
+		ContactPolicyVersion:     body.ContactPolicyVersion,
+		TemplatePolicyVersion:    body.TemplatePolicyVersion,
+		SenderMailbox:            body.SenderMailbox,
+		Channel:                  body.Channel,
+		AllowedRiskClass:         body.AllowedRiskClass,
+		MaxRatePerHour:           body.MaxRatePerHour,
+		AllowPolicyTemplateGREEN: body.AllowPolicyTemplateGREEN,
+		AuthorizedByLabel:        body.AuthorizedByLabel,
+		EffectiveAt:              time.Now().UTC(),
+	}
+	out, xerr := h.ConfengeService.AuthorizeCampaignPolicy(c.Request.Context(), orgID, userID, auth)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": out, "authorization_mode": confenge.AuthorizationModeCampaignPolicy})
+}
+
+// GetConfengeCampaignPolicy — GET /confenge/campaign/policy?campaign_id=
+func (h *Handler) GetConfengeCampaignPolicy(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	cid, err := uuid.Parse(strings.TrimSpace(c.Query("campaign_id")))
+	if err != nil {
+		errx.JSON(c, errx.New(errx.BadRequest, "campaign_id query required"))
+		return
+	}
+	out, xerr := h.ConfengeService.GetActiveCampaignPolicy(c.Request.Context(), orgID, cid)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": out})
+}
+
+// GreenAutorunConfengeTouchpoint — POST /confenge/touchpoints/:id/green-autorun
+func (h *Handler) GreenAutorunConfengeTouchpoint(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	tp, dec, xerr := h.ConfengeService.TryGreenAutorun(c.Request.Context(), orgID, userID, id)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"data":               tp,
+		"allow":              dec.Allow,
+		"authorization_mode": dec.AuthorizationMode,
+		"reasons":            dec.Reasons,
+	})
+}
+
+// BatchGreenAutorunConfenge — POST /confenge/campaign/green-autorun/batch
+func (h *Handler) BatchGreenAutorunConfenge(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	var body struct {
+		Limit int `json:"limit"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	queued, skipped, details, xerr := h.ConfengeService.RunGreenAutorunBatch(c.Request.Context(), orgID, userID, body.Limit)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"queued":  queued,
+		"skipped": skipped,
+		"details": details,
+	})
 }

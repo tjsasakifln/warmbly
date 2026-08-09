@@ -95,6 +95,13 @@ type Service interface {
 	RejectOrSkipTouchpoint(ctx context.Context, orgID, userID, id uuid.UUID, action string) (*models.OutreachTouchpoint, *errx.Error)
 	QueueTouchpoint(ctx context.Context, orgID, userID, id uuid.UUID) (*models.OutreachTouchpoint, *errx.Error)
 	CancelAccountTouchpoints(ctx context.Context, orgID, userID, accountID uuid.UUID, reason string) (int, *errx.Error)
+
+	// CAMPAIGN_POLICY_AUTHORIZATION + GREEN autorun (no fake approved_by).
+	WirePolicyAuth(store repository.ConfengePolicyRepository)
+	AuthorizeCampaignPolicy(ctx context.Context, orgID, userID uuid.UUID, auth *models.CampaignPolicyAuthorization) (*models.CampaignPolicyAuthorization, *errx.Error)
+	GetActiveCampaignPolicy(ctx context.Context, orgID, campaignID uuid.UUID) (*models.CampaignPolicyAuthorization, *errx.Error)
+	TryGreenAutorun(ctx context.Context, orgID, actorID, touchpointID uuid.UUID) (*models.OutreachTouchpoint, GreenAutorunDecision, *errx.Error)
+	RunGreenAutorunBatch(ctx context.Context, orgID, actorID uuid.UUID, limit int) (queued, skipped int, details []map[string]any, xerr *errx.Error)
 }
 
 // ImportOptions controls dry-run, idempotency, and source tracking.
@@ -105,17 +112,18 @@ type ImportOptions struct {
 }
 
 type service struct {
-	cfg       Config
-	repo      repository.OutreachRepository
-	audit     AuditLogger
-	fetch     *FeedFetcher
-	ai        generation.Provider
-	campaigns CampaignAPI
-	contacts  ContactAPI
-	crm       CRMAPI
-	wa        WhatsAppSender
-	waStore   WhatsAppStateStore
-	governor  *dispatch.Governor
+	cfg         Config
+	repo        repository.OutreachRepository
+	audit       AuditLogger
+	fetch       *FeedFetcher
+	ai          generation.Provider
+	campaigns   CampaignAPI
+	contacts    ContactAPI
+	crm         CRMAPI
+	wa          WhatsAppSender
+	waStore     WhatsAppStateStore
+	governor    *dispatch.Governor
+	policyStore repository.ConfengePolicyRepository
 }
 
 // NewService wires confenge outreach. When cfg.Enabled is false, mutators return 404-style disabled errors.

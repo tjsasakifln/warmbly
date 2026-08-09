@@ -45,17 +45,24 @@ extra-cli containers) was available in this environment.
 `docs/confenge/netcup-ops.md` describes an isolated `warmbly-confenge` project.
 Do **not** declare production until preflight + smoke on the real VPS.
 
-## 4. Microsoft 365 / Graph
+## 4. Email channel (Hostinger, not M365)
 
-Warmbly already supports Outlook OAuth (`BOX_OUTLOOK_CLIENT_ID` /
-`BOX_OUTLOOK_CLIENT_SECRET`, redirect `/addresses/outlook/callback`).  
-No operator Azure app credentials or test mailbox were available here.
-Smoke steps for Tiago:
+**Fact:** `tiago.sasaki@confenge.com.br` is **Hostinger-hosted** (SMTP/IMAP).
+It is **not** Microsoft 365 / Exchange Online. CONFENGE go-live does **not**
+require Azure app registration, Graph client ID, or client secret.
 
-1. Register / reuse Azure app with Mail.Send, Mail.Read, offline_access
-2. Set BOX_OUTLOOK_* on backend + workers
-3. Connect confenge.com.br mailbox in dashboard
-4. Send test to an address Tiago owns (never to real leads)
+| Item | Value |
+| --- | --- |
+| SMTP | `smtp.hostinger.com:587` STARTTLS |
+| IMAP | `imap.hostinger.com:993` SSL |
+| Env | `CONFENGE_SMTP_*` / `CONFENGE_IMAP_*` / `CONFENGE_MAILBOX_*` (local `.env.confenge` only) |
+| Connect | `scripts/confenge_hostinger_connect.sh` |
+| Smoke | `scripts/confenge_self_smoke.sh` (operator address only; no leads) |
+| Mailpit | Local tests only |
+
+Warmbly still has optional Outlook OAuth (`BOX_OUTLOOK_*`) for other products;
+it is **not** a CONFENGE go-live dependency. Do not put Hostinger passwords on
+the VPS.
 
 ## 5. extra-cli feed / outcome receptor
 

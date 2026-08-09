@@ -55,10 +55,14 @@ at `http://localhost:18025`. Nothing real is sent.
 
 ## Email
 
-- Local: seed SMTP mailboxes → Mailpit (`SMTP` port 11025, UI 18025)
-- M365 / Outlook: connect OAuth from the dashboard (already supported)
-- SMTP/IMAP: connect from the dashboard
-- Smoke only to addresses you control
+- **Tests:** seed SMTP mailboxes → Mailpit (`SMTP` port 11025, UI 18025)
+- **CONFENGE production mailbox:** Hostinger SMTP/IMAP for
+  `tiago.sasaki@confenge.com.br` (not Microsoft 365 / Graph)
+  - set `CONFENGE_MAILBOX_*` / `CONFENGE_SMTP_*` / `CONFENGE_IMAP_*` in `.env.confenge`
+  - `scripts/confenge_hostinger_connect.sh` then `scripts/confenge_self_smoke.sh`
+  - self-smoke only to an address you control (`CONFENGE_SELF_SMOKE_TO`); never leads
+- Optional Outlook OAuth exists in the product for other tenants; it is **not**
+  required for CONFENGE go-live
 
 ## WhatsApp
 

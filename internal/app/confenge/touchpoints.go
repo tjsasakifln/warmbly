@@ -2,6 +2,7 @@ package confenge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -194,6 +195,50 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 			tp.Recipient = cand.Email
 		}
 	}
+	// Prefer real evidence rows over opaque moment evidence ids for validators.
+	evidIDs := evidenceIDsFrom(evidence, acc)
+	factUsed := SanitizeText(firstNonEmpty(acc.FactToMention, tp.FactUsed), 2000)
+	// Classify risk with the same validators as GenerateDraft. Policy-authorized
+	// deterministic templates may stay GREEN when AllowPolicyTemplateGREEN is set.
+	synth := &DraftOutput{
+		Subject: subject, BodyText: body, ServiceCode: acc.ServiceCode,
+		FactUsed: factUsed, EvidenceIDs: evidIDs, Claims: claimsFromFact(factUsed, evidIDs),
+		Channel: ChannelEmailInitial, Rationale: "touchpoint jit template",
+	}
+	val := ValidateDraft(synth, acc, cand, ValidateOpts{
+		MaxWords: s.cfg.MaxInitialEmailWords, Evidence: evidence, Channel: ChannelEmailInitial,
+	})
+	// Persist validation for green-autorun / review UI.
+	valJSON, _ := json.Marshal(val)
+	risk, flags := ClassifyRisk(acc, cand, synth, val)
+	allowTemplateGREEN := false
+	if s.cfg.GreenAutorunEnabled && s.policyStore != nil {
+		if settings, _ := s.repo.GetOrgSettings(ctx, orgID); settings != nil && settings.CampaignID != nil {
+			if auth, _ := s.policyStore.GetActiveCampaignPolicy(ctx, orgID, *settings.CampaignID, time.Now().UTC()); auth != nil && auth.Active(time.Now().UTC()) {
+				allowTemplateGREEN = auth.AllowPolicyTemplateGREEN
+			}
+		}
+	}
+	modelName := "jit_" + tp.Purpose
+	// Policy-authorized deterministic template: GREEN when validators pass and
+	// ClassifyRisk did not raise RED (YELLOW product topics are allowed).
+	if allowTemplateGREEN && val.OK && risk != "RED" {
+		risk = "GREEN"
+		modelName = "policy_approved_v1"
+		flags = append(flags, "policy_approved_template")
+		cleaned := flags[:0]
+		for _, f := range flags {
+			if f != "template_fallback" {
+				cleaned = append(cleaned, f)
+			}
+		}
+		flags = cleaned
+	} else if risk == "GREEN" {
+		// Unaudited template path stays human-review YELLOW unless policy grants template GREEN.
+		risk = "YELLOW"
+		flags = append(flags, "template_fallback")
+	}
+	flags = append(flags, "per_touch", "jit")
 	// One active draft per account (unique index). Reuse when present so
 	// generate is not blocked by outreach_drafts_org_account_active_uidx.
 	draft, _ := s.repo.GetActiveDraftForAccount(ctx, orgID, tp.AccountID)
@@ -201,23 +246,28 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 		draft = &models.OutreachDraft{
 			OrganizationID: orgID, AccountID: tp.AccountID, ContactCandidateID: tp.ContactCandidateID,
 			Channel: tp.Channel, Subject: subject, BodyText: body, ServiceCode: acc.ServiceCode,
-			FactUsed: SanitizeText(acc.FactToMention, 2000), EvidenceIDs: acc.MomentEvidenceIDs,
-			Provider: "template", Model: "jit_" + tp.Purpose, PromptVersion: PromptVersion + "+touch",
-			Status: models.OutreachDraftNeedsReview, RiskClass: "YELLOW", RiskFlags: []string{"per_touch_approval", "jit"},
+			FactUsed: factUsed, EvidenceIDs: evidIDs,
+			Provider: "template", Model: modelName, PromptVersion: PromptVersion + "+touch",
+			Status: models.OutreachDraftNeedsReview, RiskClass: risk, RiskFlags: flags,
+			ValidationJSON: valJSON,
 		}
 	} else {
 		draft.ContactCandidateID = tp.ContactCandidateID
 		draft.Channel = tp.Channel
 		draft.Subject, draft.BodyText = subject, body
 		draft.ServiceCode = acc.ServiceCode
-		draft.FactUsed = SanitizeText(acc.FactToMention, 2000)
-		draft.EvidenceIDs = acc.MomentEvidenceIDs
-		draft.Provider, draft.Model = "template", "jit_"+tp.Purpose
+		draft.FactUsed = factUsed
+		draft.EvidenceIDs = evidIDs
+		draft.Provider, draft.Model = "template", modelName
 		draft.PromptVersion = PromptVersion + "+touch"
 		draft.Status = models.OutreachDraftNeedsReview
+		draft.RiskClass, draft.RiskFlags = risk, flags
+		draft.ValidationJSON = valJSON
 		draft.ApprovedBy, draft.ApprovedAt = nil, nil
 		draft.HumanEdited = false
 	}
+	ok := val.OK
+	draft.ValidationOK = &ok
 	if cand != nil {
 		draft.RecipientName, draft.RecipientRole, draft.RecipientEmail = cand.Name, cand.Role, cand.Email
 		draft.RecipientPhoneE164, draft.VerificationStatus = cand.PhoneE164, cand.VerificationStatus
@@ -249,9 +299,9 @@ func jitCompose(tp *models.OutreachTouchpoint, acc *models.OutreachAccount, cand
 	if cand != nil {
 		name = strings.TrimSpace(strings.Split(cand.Name, " ")[0])
 	}
-	greeting := "Ola"
+	greeting := "Olá"
 	if name != "" {
-		greeting = "Ola " + name
+		greeting = "Olá, " + name
 	}
 	if tp.Channel == models.OutreachChannelWhatsApp {
 		body = BuildWhatsAppCopy(acc, cand)
@@ -267,10 +317,10 @@ func jitCompose(tp *models.OutreachTouchpoint, acc *models.OutreachAccount, cand
 		if fact != "" {
 			body += "Contexto: " + fact + "\n\n"
 		}
-		body += "Se fizer sentido, respondo em poucos minutos.\n\nAbraco,\nCONFENGE"
+		body += "Se fizer sentido, respondo em poucos minutos.\n\nAbraço,\nTiago Sasaki\nCONFENGE"
 	case models.TouchpointPurposeClose:
 		subject = "Re: " + company
-		body = greeting + ",\n\nEncerro por aqui para nao ocupar sua caixa. Se fizer sentido no futuro, e so responder este fio.\n\nAbraco."
+		body = greeting + ",\n\nEncerro por aqui para não ocupar sua caixa. Se fizer sentido no futuro, é só responder este fio.\n\nAbraço,\nTiago Sasaki\nCONFENGE"
 	default:
 		out := TemplateDraft(acc, cand)
 		subject, body = out.Subject, out.BodyText
@@ -372,6 +422,8 @@ func (s *service) ApproveTouchpoint(ctx context.Context, orgID, userID, id uuid.
 	}
 	return tp, nil
 }
+
+// note: QueueTouchpoint + CanTransport accept CAMPAIGN_POLICY without approved_by.
 
 func (s *service) RejectOrSkipTouchpoint(ctx context.Context, orgID, userID, id uuid.UUID, action string) (*models.OutreachTouchpoint, *errx.Error) {
 	if xerr := s.requireEnabled(); xerr != nil {

@@ -57,6 +57,7 @@ func ClearApproval(tp *models.OutreachTouchpoint) {
 	tp.ApprovedBy = nil
 	tp.ApprovedAt = nil
 	tp.ApprovedContentHash = ""
+	tp.AuthorizationMode = ""
 	if tp.State == models.TouchpointApproved || tp.State == models.TouchpointQueued {
 		tp.State = models.TouchpointNeedsReview
 	}
@@ -86,6 +87,36 @@ func ApplyHumanApproval(tp *models.OutreachTouchpoint, humanUserID uuid.UUID, no
 	tp.ApprovedBy = &humanUserID
 	tp.ApprovedAt = &now
 	tp.ApprovedContentHash = tp.ContentHash
+	tp.AuthorizationMode = AuthorizationModeHumanTouchpoint
+	tp.State = models.TouchpointApproved
+	return nil
+}
+
+// ApplyCampaignPolicyAuthorization marks a GREEN touchpoint queueable under
+// CAMPAIGN_POLICY without forging approved_by to a human who never reviewed it.
+func ApplyCampaignPolicyAuthorization(tp *models.OutreachTouchpoint, now time.Time) error {
+	if tp == nil {
+		return fmt.Errorf("nil touchpoint")
+	}
+	if tp.ContentHash == "" {
+		RecomputeContentHash(tp)
+	}
+	if tp.ContentHash == "" || tp.BodyText == "" {
+		return fmt.Errorf("cannot policy-authorize empty content")
+	}
+	if tp.Recipient == "" {
+		return fmt.Errorf("cannot policy-authorize without exact recipient")
+	}
+	switch tp.State {
+	case models.TouchpointDrafted, models.TouchpointNeedsReview, models.TouchpointApproved:
+	default:
+		return fmt.Errorf("cannot policy-authorize from state %s", tp.State)
+	}
+	// Explicit: no human approved_by for policy path.
+	tp.ApprovedBy = nil
+	tp.ApprovedAt = &now
+	tp.ApprovedContentHash = tp.ContentHash
+	tp.AuthorizationMode = AuthorizationModeCampaignPolicy
 	tp.State = models.TouchpointApproved
 	return nil
 }
@@ -99,14 +130,23 @@ func CanTransport(tp *models.OutreachTouchpoint) error {
 	default:
 		return fmt.Errorf("touchpoint state %s is not transportable", tp.State)
 	}
-	if tp.ApprovedBy == nil || *tp.ApprovedBy == uuid.Nil {
-		return fmt.Errorf("missing human approved_by")
-	}
 	if tp.ContentHash == "" || tp.ApprovedContentHash == "" {
 		return fmt.Errorf("missing content hash")
 	}
 	if tp.ApprovedContentHash != tp.ContentHash {
 		return fmt.Errorf("approved_content_hash does not match content_hash")
+	}
+	mode := strings.TrimSpace(tp.AuthorizationMode)
+	if mode == AuthorizationModeCampaignPolicy {
+		// Policy path: must not invent a human reviewer.
+		if tp.ApprovedBy != nil && *tp.ApprovedBy != uuid.Nil {
+			return fmt.Errorf("campaign_policy must not set approved_by")
+		}
+		return nil
+	}
+	// Human (or legacy empty mode) requires a real human approver.
+	if tp.ApprovedBy == nil || *tp.ApprovedBy == uuid.Nil {
+		return fmt.Errorf("missing human approved_by")
 	}
 	return nil
 }

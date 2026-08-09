@@ -690,17 +690,19 @@ confenge-local:
 	trap 'kill 0' INT TERM; \
 	$(MAKE) --no-print-directory confenge-backend & \
 	$(MAKE) --no-print-directory consumer & \
-	$(MAKE) --no-print-directory worker & \
+	$(MAKE) --no-print-directory confenge-worker & \
 	$(MAKE) --no-print-directory web & \
 	wait
 
 # Backend with CONFENGE flags and local-safe bind.
+# API_HOST must come from shell after sourcing .env.confenge (Make's
+# $(CONFENGE_API_HOST) expands too early and ignores operator overrides).
 confenge-backend:
 	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
 	$(GO_DEV_ENV) \
 	$(CONFENGE_DEV_ENV) \
 	$(AI_DEV_ENV) \
-	API_HOST=$(CONFENGE_API_HOST) \
+	API_HOST=$${CONFENGE_API_HOST:-127.0.0.1:8080} \
 	GIN_MODE=debug \
 	APP_URL=http://$(WEB_HOST):5173 \
 	CORS_ALLOW_ORIGINS=$(CORS_ORIGINS) \
@@ -714,6 +716,19 @@ confenge-backend:
 	GEODB_PATH=data/GeoLite2-City.mmdb \
 	INTERNAL_API_TOKEN=local-dev-internal-token \
 	go run ./cmd/backend
+
+# Worker wired to confenge-backend (same API_HOST / DEK URL). Uses Hostinger
+# SMTP/IMAP accounts via credentials sealed by the backend; no Graph/M365.
+confenge-worker:
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	api_base="http://$${CONFENGE_API_HOST:-127.0.0.1:8080}"; \
+	$(WORKER_DEV_ENV) \
+	WORKER_ID=10c8f5e4-1c39-5b2a-9c8b-3d2f0a8b1a01 \
+	WORKER_TIER=shared \
+	ENCRYPTED_KEYS_PROVIDER=http \
+	ENCRYPTED_KEYS_BACKEND_URL=$$api_base \
+	ENCRYPTED_KEYS_WORKER_TOKEN=local-dev-internal-token \
+	go run ./cmd/worker
 
 confenge-preflight:
 	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
@@ -775,7 +790,7 @@ confenge-playwright:
 		CONFENGE_GATE_CODE_SHA=$$(git rev-parse HEAD) \
 		pnpm test:e2e:confenge:live
 
-.PHONY: confenge-local confenge-backend confenge-preflight confenge-bootstrap confenge-import confenge-stop-sending confenge-resume-sending confenge-db-backup confenge-db-restore confenge-readiness confenge-readiness-report confenge-playwright
+.PHONY: confenge-local confenge-backend confenge-worker confenge-preflight confenge-bootstrap confenge-import confenge-stop-sending confenge-resume-sending confenge-db-backup confenge-db-restore confenge-readiness confenge-readiness-report confenge-playwright
 
 # ─── admin bootstrap (local/test only) ──────────────────────────────────
 #

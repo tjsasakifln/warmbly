@@ -457,26 +457,62 @@ var TouchpointTerminalStates = map[string]bool{
 	TouchpointCancelled: true, TouchpointFailed: true,
 }
 
+// CampaignPolicyAuthorization is an explicit, auditable campaign/policy grant.
+// After this authorization, GREEN messages may autoqueue when GreenAutorunEnabled.
+// Never forges approved_by=<human> for messages the human did not review.
+type CampaignPolicyAuthorization struct {
+	CampaignID               uuid.UUID  `json:"campaign_id"`
+	PromptPolicyVersion      string     `json:"prompt_policy_version"`
+	ValidatorVersion         string     `json:"validator_version"`
+	ContactPolicyVersion     string     `json:"contact_policy_version"`
+	SenderMailbox            string     `json:"sender_mailbox"`
+	Channel                  string     `json:"channel"`            // EMAIL
+	AllowedRiskClass         string     `json:"allowed_risk_class"` // GREEN
+	MaxRatePerHour           int        `json:"max_rate_per_hour"`
+	EffectiveAt              time.Time  `json:"effective_at"`
+	AuthorizedBy             uuid.UUID  `json:"authorized_by"`
+	AuthorizedByLabel        string     `json:"authorized_by_label,omitempty"`
+	RevokedAt                *time.Time `json:"revoked_at,omitempty"`
+	TemplatePolicyVersion    string     `json:"template_policy_version,omitempty"`
+	AllowPolicyTemplateGREEN bool       `json:"allow_policy_template_green"`
+}
+
+// Active reports whether the authorization is currently valid at now.
+func (a *CampaignPolicyAuthorization) Active(now time.Time) bool {
+	if a == nil {
+		return false
+	}
+	if a.RevokedAt != nil && !a.RevokedAt.After(now) {
+		return false
+	}
+	if a.EffectiveAt.IsZero() {
+		return false
+	}
+	return !a.EffectiveAt.After(now)
+}
+
 // OutreachTouchpoint is one human-gated message in a CONFENGE cadence.
 type OutreachTouchpoint struct {
-	ID                   uuid.UUID        `json:"id"`
-	OrganizationID       uuid.UUID        `json:"organization_id"`
-	AccountID            uuid.UUID        `json:"account_id"`
-	ContactCandidateID   *uuid.UUID       `json:"contact_candidate_id,omitempty"`
-	Ordinal              int              `json:"ordinal"`
-	CadenceStep          string           `json:"cadence_step"`
-	Channel              string           `json:"channel"`
-	Purpose              string           `json:"purpose"`
-	DueAt                time.Time        `json:"due_at"`
-	State                string           `json:"state"`
-	DraftID              *uuid.UUID       `json:"draft_id,omitempty"`
-	Recipient            string           `json:"recipient"`
-	Subject              string           `json:"subject"`
-	BodyText             string           `json:"body_text"`
-	ContentHash          string           `json:"content_hash"`
-	ApprovedContentHash  string           `json:"approved_content_hash"`
-	ApprovedBy           *uuid.UUID       `json:"approved_by,omitempty"`
-	ApprovedAt           *time.Time       `json:"approved_at,omitempty"`
+	ID                  uuid.UUID  `json:"id"`
+	OrganizationID      uuid.UUID  `json:"organization_id"`
+	AccountID           uuid.UUID  `json:"account_id"`
+	ContactCandidateID  *uuid.UUID `json:"contact_candidate_id,omitempty"`
+	Ordinal             int        `json:"ordinal"`
+	CadenceStep         string     `json:"cadence_step"`
+	Channel             string     `json:"channel"`
+	Purpose             string     `json:"purpose"`
+	DueAt               time.Time  `json:"due_at"`
+	State               string     `json:"state"`
+	DraftID             *uuid.UUID `json:"draft_id,omitempty"`
+	Recipient           string     `json:"recipient"`
+	Subject             string     `json:"subject"`
+	BodyText            string     `json:"body_text"`
+	ContentHash         string     `json:"content_hash"`
+	ApprovedContentHash string     `json:"approved_content_hash"`
+	ApprovedBy          *uuid.UUID `json:"approved_by,omitempty"`
+	ApprovedAt          *time.Time `json:"approved_at,omitempty"`
+	// AuthorizationMode: HUMAN_TOUCHPOINT_APPROVAL | CAMPAIGN_POLICY (empty = legacy human).
+	AuthorizationMode    string           `json:"authorization_mode,omitempty"`
 	QueuedAt             *time.Time       `json:"queued_at,omitempty"`
 	SentAt               *time.Time       `json:"sent_at,omitempty"`
 	ProviderMessageID    string           `json:"provider_message_id,omitempty"`

@@ -423,7 +423,10 @@ func ClassifyRisk(acc *models.OutreachAccount, cand *models.OutreachContactCandi
 	}
 	if cand != nil {
 		switch cand.VerificationStatus {
-		case models.OutreachVerifyOfficialSource, models.OutreachVerifyMultipleSources, models.OutreachVerifyPublicDocumentRecent:
+		case models.OutreachVerifyOfficialSource, models.OutreachVerifyMultipleSources,
+			models.OutreachVerifyPublicDocumentRecent, models.OutreachVerifyVerified,
+			models.OutreachVerifyHumanConfirmed:
+			// Enrollable verified contacts stay GREEN-eligible.
 		case models.OutreachVerifyInstitutionalGeneric:
 			raise("YELLOW", "institutional_generic_recipient")
 		case models.OutreachVerifyPublicPossiblyStale:
@@ -447,12 +450,9 @@ func ClassifyRisk(acc *models.OutreachAccount, cand *models.OutreachContactCandi
 				break
 			}
 		}
-		for _, k := range []string{"ADDITIVE", "ADITIVO", "EXTENSION", "PRORROG", "REAJUSTE"} {
-			if strings.Contains(code, k) {
-				raise("YELLOW", "contract_sensitive_topic")
-				break
-			}
-		}
+		// REAJUSTE/ADITIVO/PRORROG are core CONFENGE product moments — informational
+		// only, not automatic YELLOW. Human review of generic templates still uses
+		// template_fallback demotion when policy does not authorize template GREEN.
 		if acc.FactToMention == "" {
 			raise("YELLOW", "missing_public_fact")
 		}
@@ -560,6 +560,7 @@ func TemplateDraftChannel(channel string, acc *models.OutreachAccount, cand *mod
 		if service != "" {
 			body += "Seguimos disponíveis para " + strings.ToLower(service) + " se ainda for útil.\n\n"
 		}
+		// Short close only; full signature + image applied at enroll/send.
 		body += question + " " + cta + "\n\nAbraço,\nTiago Sasaki\nCONFENGE"
 		subj = "Re: " + company
 		if utf8.RuneCountInString(subj) > 80 || company == "" {

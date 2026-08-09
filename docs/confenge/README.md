@@ -4,6 +4,12 @@ Warmbly is the **execution plane** for CONFENGE commercial outreach. The
 `extra-cli` remains the **intelligence plane** (datalake, signals, evidence,
 scoring, Decision & Outcome Memory).
 
+**Email channel (factual):** production mailbox
+`tiago.sasaki@confenge.com.br` is **Hostinger** SMTP/IMAP on the operator
+WSL laptop (local-first). Not Microsoft 365 / Graph. No Azure app registration
+for go-live. Mailpit is for local tests only. See
+[architecture-split.md](./architecture-split.md).
+
 ```text
 datalake (VPS) → extra-cli → versioned feed → Warmbly staging → review → campaign → outcomes → extra-cli
 ```

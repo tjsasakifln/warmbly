@@ -57,13 +57,17 @@ Driven by `TestProductAcceptanceMultichannelSum` (and `TestProcessInboundHandoff
 
 CI without production secrets does **not** prove:
 
-- Real inbox deliverability (Gmail/Microsoft reputation)
-- Real Microsoft 365 tenant Graph send
+- Real inbox deliverability (Gmail / Hostinger reputation)
+- Real Hostinger SMTP/IMAP send + IMAP reply sync for
+  `tiago.sasaki@confenge.com.br` (operator self-smoke; not Mailpit)
 - Real WhatsApp Business Account (WABA) / Evolution production
 - Meta-approved marketing template
 - Opt-in provenance for real leads
 
-Treat those as **operator smoke** on owned addresses only. Never send to real leads in CI or acceptance automation.
+CONFENGE go-live does **not** depend on Microsoft 365 / Graph. The production
+mailbox is Hostinger SMTP/IMAP. Treat real-channel checks as **operator smoke**
+on owned addresses only (`scripts/confenge_self_smoke.sh`). Never send to real
+leads in CI or acceptance automation.
 
 ## Operator smoke (Tiago)
 

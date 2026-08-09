@@ -30,6 +30,7 @@ type memRepo struct {
 	orgOwner    map[uuid.UUID]uuid.UUID
 	feedSync    map[uuid.UUID]*models.OutreachFeedSyncState
 	advLocks    map[int64]bool
+	settings    map[uuid.UUID]*models.OutreachOrgSettings
 }
 
 func newMemRepo() *memRepo {
@@ -39,6 +40,7 @@ func newMemRepo() *memRepo {
 		cands: map[uuid.UUID][]models.OutreachContactCandidate{}, evidence: map[uuid.UUID][]models.OutreachEvidence{},
 		drafts: map[uuid.UUID]*models.OutreachDraft{}, touchpoints: map[uuid.UUID]*models.OutreachTouchpoint{},
 		outcomeBy: map[string]*models.OutreachOutcome{}, orgOwner: map[uuid.UUID]uuid.UUID{},
+		settings: map[uuid.UUID]*models.OutreachOrgSettings{},
 	}
 }
 
@@ -367,9 +369,23 @@ func (m *memRepo) UpdateDraftStatus(ctx context.Context, d *models.OutreachDraft
 	return m.UpsertDraft(ctx, d)
 }
 func (m *memRepo) GetOrgSettings(ctx context.Context, orgID uuid.UUID) (*models.OutreachOrgSettings, error) {
-	return nil, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := m.settings[orgID]
+	if s == nil {
+		return nil, nil
+	}
+	cp := *s
+	return &cp, nil
 }
 func (m *memRepo) UpsertOrgSettings(ctx context.Context, s *models.OutreachOrgSettings) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.settings == nil {
+		m.settings = map[uuid.UUID]*models.OutreachOrgSettings{}
+	}
+	cp := *s
+	m.settings[s.OrganizationID] = &cp
 	return nil
 }
 func (m *memRepo) EnqueueOutcome(ctx context.Context, ev *models.OutreachOutcome) error {
@@ -539,7 +555,15 @@ func (m *memRepo) CASQueueTouchpoint(ctx context.Context, orgID, id uuid.UUID, e
 	if t == nil || t.OrganizationID != orgID || t.State != models.TouchpointApproved {
 		return nil, nil
 	}
-	if t.ContentHash != expectedContentHash || t.ApprovedContentHash != t.ContentHash || t.ApprovedBy == nil {
+	if t.ContentHash != expectedContentHash || t.ApprovedContentHash != t.ContentHash {
+		return nil, nil
+	}
+	// Human path needs approved_by; CAMPAIGN_POLICY must leave approved_by nil.
+	if t.AuthorizationMode == AuthorizationModeCampaignPolicy {
+		if t.ApprovedBy != nil {
+			return nil, nil
+		}
+	} else if t.ApprovedBy == nil {
 		return nil, nil
 	}
 	now := time.Now().UTC()
