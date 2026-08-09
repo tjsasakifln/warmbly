@@ -88,3 +88,24 @@ Warmbly resource limits in override (~6–8 GiB ceiling if all hit limits) leave
 | Theoretical ops max | ~180/day (20×9h) under provider 1000/day headroom |
 
 provider ceiling ≠ operational target. Do not apply cPanel 200/h.
+
+
+## Live pack proof (2026-08-09, sanitized)
+
+Stack brought up with `deploy/confenge-vps` overlay (existing images, no extra-cli disruption):
+
+| Check | Result |
+| --- | --- |
+| Backend/worker/consumer/postgres/redis/nats | PASS |
+| Hostinger IMAP 993 | PASS |
+| Hostinger SMTP 465/587 | FAIL (provider egress; all common SMTP targets blocked) |
+| EXTRA FEED :8443 | PASS |
+| OUTCOME LOOP | PASS |
+| GREEN / WhatsApp | OFF |
+| DISPATCH pause/resume file kill-switch | PASS |
+| Container restart persistence (DB marker) | PASS |
+| Isolated restore into `warmbly_restore_proof` | PASS (185 public tables; probe row present) |
+| Public bind of app ports | None (127.0.0.1 only) |
+| Resource sample | ~5 GiB used / 15 GiB; Warmbly containers well under limits |
+
+**Operator still required for:** Netcup SMTP unlock; interactive `connect-hostinger.sh` (mailbox password); explicit self-smoke `CONFENGE_SELF_SMOKE_TO`; optional full VPS reboot drill.

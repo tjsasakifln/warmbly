@@ -127,6 +127,10 @@ services:
       - confenge_ops:/data/confenge-ops
       - confenge_keys:/data/confenge-keys:ro
       - blobs:/data/blobs
+      # GeoIP DB required by current backend boot path when GEODB_PATH is set.
+      - ${GEODB_HOST_PATH:-./data/GeoLite2-City.mmdb}:/app/data/GeoLite2-City.mmdb:ro
+      # Private CA for same-host confenge-plane HTTPS (host file or system CA copy).
+      - ${CONFENGE_FEED_CA_HOST_PATH:-./ops/feed-tls/ca-bundle.crt}:/etc/ssl/confenge-ca-bundle.crt:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     deploy:

@@ -35,6 +35,11 @@ fi
 echo "Bringing up project=$COMPOSE_PROJECT_NAME ..."
 compose_cmd up -d --remove-orphans
 
+
+# Ensure kill-switch volume writable by backend user (uid 1000).
+docker run --rm -v "${COMPOSE_PROJECT_NAME:-warmbly-confenge}_confenge_ops:/data" alpine \
+  sh -c "chmod 777 /data" >/dev/null 2>&1 || true
+
 echo "Waiting for backend health..."
 for i in $(seq 1 60); do
   if curl -sS -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:8080/health" 2>/dev/null | grep -q 200; then
