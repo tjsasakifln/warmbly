@@ -550,4 +550,7 @@ type OutreachTouchpoint struct {
 	Draft                *OutreachDraft   `json:"draft,omitempty"`
 	// ContextStale when GeneratedContextHash != account.MessageContextHash.
 	ContextStale bool `json:"context_stale,omitempty"`
+	// StrategyExplain is operator cockpit metadata (not prospect-facing; not a DB column).
+	StrategyExplain map[string]any `json:"strategy_explain,omitempty"`
+	DoctrineAlerts  []string       `json:"doctrine_alerts,omitempty"`
 }

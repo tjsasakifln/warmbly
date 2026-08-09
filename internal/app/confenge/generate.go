@@ -46,6 +46,7 @@ type AIDraftGenerator struct {
 }
 
 // Generate asks the model for JSON only from structured inputs (no research).
+// Strategy is planned first; the model only words within those constraints.
 func (g *AIDraftGenerator) Generate(ctx context.Context, in GenerateInput) (DraftOutput, string, string, error) {
 	if g == nil || g.Provider == nil {
 		return DraftOutput{}, "", "", generation.ErrNotConfigured
@@ -54,8 +55,10 @@ func (g *AIDraftGenerator) Generate(ctx context.Context, in GenerateInput) (Draf
 	if channel == "" {
 		channel = ChannelEmailInitial
 	}
-	system := draftSystemPrompt(channel)
-	user := draftUserPrompt(in)
+	pb, _ := LoadPlaybook()
+	st := PlanOutreachStrategy(pb, in.Account, in.Contact, in.Evidence, sequencePosFromChannel(channel, in.Touches))
+	system := draftSystemPromptDoctrine(channel, st)
+	user := draftUserPromptWithStrategy(in, st)
 	model := g.Model
 	if model == "" {
 		model = g.Provider.ModelForTier(true)
@@ -66,6 +69,13 @@ func (g *AIDraftGenerator) Generate(ctx context.Context, in GenerateInput) (Draf
 	}
 	out.Channel = channel
 	out.ServiceOverrideAudited = in.ServiceOverrideAudited
+	if out.ServiceCode == "" {
+		out.ServiceCode = st.ServiceCode
+	}
+	if out.CTA == "" {
+		out.CTA = st.CTASuggested
+	}
+	out.RiskFlags = appendUnique(out.RiskFlags, st.RiskFlags...)
 
 	if in.AllowNearDupRegen && len(in.RecentBodies) > 0 {
 		if _, hit := NearDuplicate(out.BodyText, in.RecentBodies); hit {
@@ -75,12 +85,24 @@ func (g *AIDraftGenerator) Generate(ctx context.Context, in GenerateInput) (Draf
 				out2.Channel = channel
 				out2.ServiceOverrideAudited = in.ServiceOverrideAudited
 				out2.RiskFlags = append(out2.RiskFlags, "near_dup_regenerated")
+				out2.RiskFlags = appendUnique(out2.RiskFlags, st.RiskFlags...)
 				return out2, g.Provider.Name(), usedModel2, nil
 			}
 			out.RiskFlags = append(out.RiskFlags, "near_dup_regen_failed")
 		}
 	}
 	return out, g.Provider.Name(), usedModel, nil
+}
+
+func sequencePosFromChannel(channel string, touches []TouchSummary) int {
+	if channel == ChannelEmailFollowup {
+		n := len(touches) + 2
+		if n > 5 {
+			n = 5
+		}
+		return n
+	}
+	return 1
 }
 
 func (g *AIDraftGenerator) completeOnce(ctx context.Context, system, user, model string) (DraftOutput, string, error) {
@@ -107,7 +129,13 @@ func (TemplateGenerator) Generate(ctx context.Context, in GenerateInput) (DraftO
 	if ch == "" {
 		ch = ChannelEmailInitial
 	}
-	out := TemplateDraftChannel(ch, in.Account, in.Contact, in.Evidence)
+	pb, _ := LoadPlaybook()
+	st := PlanOutreachStrategy(pb, in.Account, in.Contact, in.Evidence, sequencePosFromChannel(ch, in.Touches))
+	out := ComposeFromStrategy(st, in.Account, in.Contact, ch)
+	if IsWhatsAppChannel(ch) || ch == ChannelReplyDraft {
+		out = TemplateDraftChannel(ch, in.Account, in.Contact, in.Evidence)
+		out.RiskFlags = appendUnique(out.RiskFlags, st.RiskFlags...)
+	}
 	out.ServiceOverrideAudited = in.ServiceOverrideAudited
 	if in.AllowNearDupRegen && len(in.RecentBodies) > 0 {
 		if _, hit := NearDuplicate(out.BodyText, in.RecentBodies); hit {
@@ -123,6 +151,12 @@ func varyTemplateHook(body string) string {
 	const to = "Escrevo da CONFENGE."
 	if strings.Contains(body, from) {
 		return strings.Replace(body, from, to, 1)
+	}
+	if strings.Contains(body, "Pelo que está público") {
+		return strings.Replace(body, "Pelo que está público", "Nas informações públicas", 1)
+	}
+	if strings.Contains(body, "Escrevo da CONFENGE") {
+		return strings.Replace(body, "Escrevo da CONFENGE", "Falo da CONFENGE", 1)
 	}
 	if strings.HasPrefix(body, "Olá") {
 		return strings.Replace(body, "Olá", "Bom dia", 1)

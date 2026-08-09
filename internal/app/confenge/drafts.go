@@ -71,14 +71,17 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 
 	recent := recentDraftBodies(ctx, s, orgID, accountID, models.OutreachChannelEmail)
 	in := BuildGenerateInput(ChannelEmailInitial, acc, cand, evidence, recent)
+	pb, _ := LoadPlaybook()
+	st := PlanOutreachStrategy(pb, acc, cand, evidence, 1)
 	gen := s.generator()
 	out, provider, model, genErr := gen.Generate(ctx, in)
 	usedTemplate := false
 	if genErr != nil {
-		out = TemplateDraftChannel(ChannelEmailInitial, acc, cand, evidence)
+		out = ComposeFromStrategy(st, acc, cand, ChannelEmailInitial)
 		provider = "template"
-		model = "deterministic"
+		model = "strategy_compose"
 		usedTemplate = true
+		out.RiskFlags = append(out.RiskFlags, "generation_failed_strategy_compose")
 	}
 	if out.ServiceCode == "" {
 		out.ServiceCode = acc.ServiceCode
@@ -93,6 +96,7 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 	val := ValidateDraft(&out, acc, cand, ValidateOpts{
 		MaxWords: s.cfg.MaxInitialEmailWords, Evidence: evidence,
 		Channel: ChannelEmailInitial, RecentBodies: recent,
+		Strategy: &st, Playbook: pb,
 	})
 	risk, flags := ClassifyRisk(acc, cand, &out, val)
 	if usedTemplate {
@@ -104,14 +108,18 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 	val.Claims = out.Claims
 	val.Rationale = out.Rationale
 	val.Channel = out.Channel
-
-	valJSON, _ := json.Marshal(val)
+	recipient := cand.Email
+	if cand.Name != "" {
+		recipient = cand.Name + " <" + cand.Email + ">"
+	}
+	valJSON := PackValidationWithStrategy(val, st, recipient)
 	followJSON, _ := json.Marshal(out.Followups)
 	draft.Subject = SanitizeText(out.Subject, 200)
 	draft.BodyText = SanitizeText(out.BodyText, 8000)
 	draft.BodyHTML = ""
 	draft.FollowupsJSON = followJSON
 	draft.ServiceCode = SanitizeText(out.ServiceCode, 100)
+	draft.StrategyCode = SanitizeText(StrategyCodeFor(st), 200)
 	draft.FactUsed = SanitizeText(out.FactUsed, 2000)
 	draft.EvidenceIDs = collectEvidenceIDs(&out)
 	draft.Question = SanitizeText(out.Question, 1000)

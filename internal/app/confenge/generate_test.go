@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/pkg/generation"
 )
@@ -282,6 +284,7 @@ func TestWhatsAppNotEmailPaste(t *testing.T) {
 
 func TestNearDupSingleRegenCap(t *testing.T) {
 	acc := &models.OutreachAccount{
+		ID:           uuid.MustParse("11111111-1111-1111-1111-111111111111"),
 		NomeFantasia: "ACME", FactToMention: "contrato 001/2025 prorrogado no PNCP",
 		ServiceCode: "ADDITIVE_REVIEW", ServiceName: "revisao",
 		QuestionToAsk: "Faz sentido?", CTA: "Posso enviar?",
@@ -291,8 +294,14 @@ func TestNearDupSingleRegenCap(t *testing.T) {
 		Name: "Ana", Email: "a@example.com", VerificationStatus: models.OutreachVerifyOfficialSource,
 	}
 	ev := []models.OutreachEvidence{{SourceEvidenceID: "e1"}}
-	first := TemplateDraftChannel(ChannelEmailInitial, acc, cand, ev)
 	gen := TemplateGenerator{}
+	// First body from the same strategy-compose path so near-dup is meaningful.
+	first, _, _, err := gen.Generate(context.Background(), GenerateInput{
+		Channel: ChannelEmailInitial, Account: acc, Contact: cand, Evidence: ev,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	in := GenerateInput{
 		Channel: ChannelEmailInitial, Account: acc, Contact: cand, Evidence: ev,
 		RecentBodies: []string{first.BodyText}, AllowNearDupRegen: true,
@@ -353,8 +362,11 @@ func TestDraftUserPromptContainsNoResearchInstruction(t *testing.T) {
 	var _ generation.Provider
 }
 
-func TestPromptVersionV2(t *testing.T) {
-	if PromptVersion != "confenge.draft.v2" {
+func TestPromptVersionV3(t *testing.T) {
+	if PromptVersion != "confenge.draft.v3" {
 		t.Fatalf("PromptVersion=%s", PromptVersion)
+	}
+	if OutreachDoctrineVersion != "confenge-outreach-v1" {
+		t.Fatalf("doctrine=%s", OutreachDoctrineVersion)
 	}
 }

@@ -832,12 +832,13 @@ func (h *Handler) RejectSkipConfengeTouchpoint(c *gin.Context) {
 	}
 	var body struct {
 		Action string `json:"action" binding:"required"`
+		Reason string `json:"reason"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		errx.JSON(c, errx.ErrInvalid)
 		return
 	}
-	tp, xerr := h.ConfengeService.RejectOrSkipTouchpoint(c.Request.Context(), orgID, userID, id, body.Action)
+	tp, xerr := h.ConfengeService.RejectOrSkipTouchpointReason(c.Request.Context(), orgID, userID, id, body.Action, body.Reason)
 	if xerr != nil {
 		errx.JSON(c, xerr)
 		return

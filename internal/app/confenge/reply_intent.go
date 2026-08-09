@@ -18,6 +18,26 @@ const (
 	IntentDoNotContact     = "DO_NOT_CONTACT"
 	IntentOutOfOffice      = "OUT_OF_OFFICE"
 	IntentUnknown          = "UNKNOWN"
+
+	// Fine-grained commercial reply classes (doctrine mapping; next strategy, not auto-send).
+	ReplyClassPositiveInterest     = "POSITIVE_INTEREST"
+	ReplyClassOfferAccepted        = "OFFER_ACCEPTED"
+	ReplyClassSendMoreInfo         = "SEND_MORE_INFO"
+	ReplyClassWrongPerson          = "WRONG_PERSON"
+	ReplyClassReferral             = "REFERRAL"
+	ReplyClassAlreadyHandled       = "ALREADY_HANDLED_INTERNAL"
+	ReplyClassAlreadyHasConsultant = "ALREADY_HAS_CONSULTANT"
+	ReplyClassNotAPriority         = "NOT_A_PRIORITY"
+	ReplyClassNotInterested        = "NOT_INTERESTED"
+	ReplyClassContactLater         = "CONTACT_LATER"
+	ReplyClassPriceQuestion        = "PRICE_QUESTION"
+	ReplyClassCredibilityQuestion  = "CREDIBILITY_QUESTION"
+	ReplyClassTechnicalQuestion    = "TECHNICAL_QUESTION"
+	ReplyClassProcurementConcern   = "PROCUREMENT_CONCERN"
+	ReplyClassDNC                  = "DNC"
+	ReplyClassOutOfOffice          = "OUT_OF_OFFICE"
+	ReplyClassAutoReply            = "AUTO_REPLY"
+	ReplyClassOther                = "OTHER"
 )
 
 type CommercialIntent struct {
@@ -120,24 +140,30 @@ func ExtractOOODate(text string) *time.Time {
 
 func SuggestNextAction(intent string, oooDate *time.Time, referralHint string) string {
 	switch intent {
-	case IntentPositiveInterest:
+	case IntentPositiveInterest: // same string as ReplyClassPositiveInterest
 		return "Priorizar: redigir resposta consultiva e marcar follow-up humano (nao marcar Ganho)."
-	case IntentReferral:
+	case ReplyClassOfferAccepted:
+		return "Cumprir micro-oferta prometida (fulfillment draft) antes de pedir reuniao; aprovacao humana."
+	case ReplyClassSendMoreInfo:
+		return "Enviar material especifico ao problema do fio (nao brochure generico); aprovacao humana."
+	case IntentReferral, ReplyClassReferral, ReplyClassWrongPerson:
 		if referralHint != "" {
 			return "Atualizar destinatario para o contato indicado (" + referralHint + ") sem perder a timeline; gerar novo toque com aprovacao."
 		}
 		return "Pedir o contato indicado e trocar o destinatario sem perder a timeline da conta."
-	case IntentQuestion:
+	case IntentQuestion, ReplyClassTechnicalQuestion, ReplyClassCredibilityQuestion:
 		return "Responder a pergunta com fatos do dossie; sem inventar numeros ou prazos."
-	case IntentObjection:
-		return "Reconhecer a objecao, esclarecer com fatos do dossie; nao discutir juridicamente nem inventar fatos."
-	case IntentNotNow:
+	case ReplyClassPriceQuestion:
+		return "Responder faixa/escopo conforme offer/service; nao esconder preco artificialmente; aprovacao humana."
+	case IntentObjection, ReplyClassAlreadyHandled, ReplyClassAlreadyHasConsultant, ReplyClassProcurementConcern:
+		return "Reconhecer a objecao, posicionar complementaridade; nao discutir juridicamente nem inventar fatos."
+	case IntentNotNow, ReplyClassContactLater, ReplyClassNotAPriority:
 		return "Oferecer retomar em data X (toque futuro explicito, sujeito a aprovacao). Nao reabrir cadencia automaticamente."
-	case IntentNegative:
+	case IntentNegative, ReplyClassNotInterested:
 		return "Registrar desinteresse, interromper cadencia. Nao insistir."
-	case IntentDoNotContact:
+	case IntentDoNotContact, ReplyClassDNC:
 		return "Bloqueio sticky DO_NOT_CONTACT: parar todos os toques e suprimir contato."
-	case IntentOutOfOffice:
+	case IntentOutOfOffice, ReplyClassAutoReply: // OUT_OF_OFFICE shared with ReplyClassOutOfOffice
 		if oooDate != nil {
 			return "OOO com data clara: sugerir retomar apos " + oooDate.UTC().Format("2006-01-02") + " (toque futuro com aprovacao)."
 		}
@@ -145,6 +171,72 @@ func SuggestNextAction(intent string, oooDate *time.Time, referralHint string) s
 	default:
 		return "Classificacao manual necessaria; IA opcional desligada ou inconclusiva."
 	}
+}
+
+// MapCommercialReplyClass refines intent into doctrine commercial reply classes.
+// Positive reply is distinct from any human reply (e.g. DNC is reply but not success).
+func MapCommercialReplyClass(intent string, subject, body string) string {
+	text := strings.ToLower(strings.TrimSpace(subject + "\n" + body))
+	switch intent {
+	case IntentDoNotContact:
+		return ReplyClassDNC
+	case IntentOutOfOffice:
+		return ReplyClassOutOfOffice
+	case IntentReferral:
+		return ReplyClassReferral
+	case IntentNotNow:
+		return ReplyClassContactLater
+	case IntentNegative:
+		return ReplyClassNotInterested
+	case IntentObjection:
+		if strings.Contains(text, "jurídico") || strings.Contains(text, "juridico") {
+			return ReplyClassAlreadyHandled
+		}
+		if strings.Contains(text, "consultor") || strings.Contains(text, "já temos") || strings.Contains(text, "ja temos") {
+			return ReplyClassAlreadyHasConsultant
+		}
+		return ReplyClassNotAPriority
+	case IntentQuestion:
+		if strings.Contains(text, "quanto custa") || strings.Contains(text, "preço") || strings.Contains(text, "preco") {
+			return ReplyClassPriceQuestion
+		}
+		if strings.Contains(text, "quem é") || strings.Contains(text, "quem e") || strings.Contains(text, "confenge") {
+			return ReplyClassCredibilityQuestion
+		}
+		return ReplyClassTechnicalQuestion
+	case IntentPositiveInterest:
+		for _, kw := range offerAcceptedKeywords {
+			if strings.Contains(text, kw) {
+				return ReplyClassOfferAccepted
+			}
+		}
+		for _, kw := range sendMoreInfoKeywords {
+			if strings.Contains(text, kw) {
+				return ReplyClassSendMoreInfo
+			}
+		}
+		return ReplyClassPositiveInterest
+	default:
+		if strings.Contains(text, "não sou a pessoa") || strings.Contains(text, "nao sou a pessoa") {
+			return ReplyClassWrongPerson
+		}
+		return ReplyClassOther
+	}
+}
+
+// IsPositiveCommercialReply reports success-class replies (not mere human reply).
+func IsPositiveCommercialReply(class string) bool {
+	switch class {
+	case ReplyClassPositiveInterest, ReplyClassOfferAccepted, ReplyClassSendMoreInfo, ReplyClassReferral:
+		return true
+	default:
+		return false
+	}
+}
+
+// NextCommercialStrategy returns the playbook next step label for a reply class.
+func NextCommercialStrategy(class string) string {
+	return SuggestNextAction(class, nil, "")
 }
 
 func ObjectionReplyGuardrails() []string {
@@ -266,3 +358,5 @@ var objectionKeywords = []string{"muito caro", "too expensive", "sem orcamento",
 var questionKeywords = []string{"quanto custa", "how much", "qual o prazo", "como funciona", "pode enviar", "pode detalhar", "what does", "could you", "voce pode", "você pode", "tem case", "tem material"}
 var positiveCommercialKeywords = []string{"tenho interesse", "interessado", "interessada", "vamos agendar", "pode ligar", "marcamos", "bora conversar", "sounds good", "interested", "let's chat", "lets chat", "agendar uma call", "enviar proposta"}
 var negativeCommercialKeywords = []string{"not interested", "sem interesse", "nao tenho interesse", "não tenho interesse", "no thanks", "no thank you", "dispenso", "nao precisamos", "não precisamos"}
+var offerAcceptedKeywords = []string{"manda", "pode enviar", "pode mandar", "quero ver", "envia o checklist", "envia o recorte", "sim, pode", "sim pode", "pode sim", "send it", "please send"}
+var sendMoreInfoKeywords = []string{"manda material", "mais informações", "mais informacoes", "send more", "mais detalhes", "tem material"}
