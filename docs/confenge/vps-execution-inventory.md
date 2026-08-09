@@ -57,13 +57,11 @@ Warmbly UI/API/Postgres/Redis/NATS must remain **loopback-bound** (this pack enf
 | Endpoint | Result from VPS |
 | --- | --- |
 | DNS smtp/imap.hostinger.com | Resolves (Cloudflare) |
-| TCP smtp:465 | **FAIL** (timeout) |
-| TCP smtp:587 | **FAIL** (timeout) |
+| TCP smtp:465 | **PASS** (after SCP Mail block delete) |
+| TCP smtp:587 | **PASS** (after SCP Mail block delete) |
 | TCP imap:993 | **PASS** (+ TLS cert CN=hostinger.com) |
 
-Local operator machine: SMTP 465/587 and IMAP 993 all OPEN.
-
-**Conclusion:** Netcup (or upstream) blocks outbound SMTP submission from this VPS. IMAP is ready. Production Hostinger SMTP requires provider unlock of outbound 465/587. No local MTA.
+**Resolution (2026-08-09):** Netcup SCP default policy **netcup Mail block** was blocking outbound 465/587. Guest ufw was not the cause. After deleting that cloud firewall block, Hostinger SMTP AUTH and real send both PASS. No local MTA.
 
 ## Capacity headroom (sample idle)
 
@@ -98,17 +96,19 @@ Stack brought up with `deploy/confenge-vps` overlay (existing images, no extra-c
 | --- | --- |
 | Backend/worker/consumer/postgres/redis/nats | PASS |
 | Hostinger IMAP 993 | PASS |
-| Hostinger SMTP 465/587 | FAIL (provider egress; all common SMTP targets blocked) |
+| Hostinger SMTP 465/587 | **PASS** (TCP + AUTH after Mail block delete) |
+| Sealed mailbox `tiago.sasaki@confenge.com.br` | **active**, worker `10c8f5e4-…` |
+| Self-smoke Hostinger send-to-self | **PASS** (`task_id=d6b6faa2-…`, message accepted) |
 | EXTRA FEED :8443 | PASS |
 | OUTCOME LOOP | PASS |
-| GREEN / WhatsApp | OFF |
+| GREEN / WhatsApp / AUTO_SEND | OFF |
 | DISPATCH pause/resume file kill-switch | PASS |
 | Container restart persistence (DB marker) | PASS |
 | Isolated restore into `warmbly_restore_proof` | PASS (185 public tables; probe row present) |
 | Public bind of app ports | None (127.0.0.1 only) |
 | Resource sample | ~5 GiB used / 15 GiB; Warmbly containers well under limits |
 
-**Operator still required for:** Netcup SMTP unlock; interactive `connect-hostinger.sh` (mailbox password); explicit self-smoke `CONFENGE_SELF_SMOKE_TO`; optional full VPS reboot drill.
+**Optional remaining:** full VPS reboot drill; rotate Hostinger app password after ops window; `realtime` OOM-restart (exit 137) is non-blocking for SMTP path.
 
 ## Netcup Mail block (root cause of SMTP FAIL)
 
