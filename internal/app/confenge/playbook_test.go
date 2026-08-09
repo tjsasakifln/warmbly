@@ -1,6 +1,7 @@
 package confenge
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -100,6 +101,58 @@ func TestUnknownServiceStrategyNotReajuste(t *testing.T) {
 	}
 	if !hasUnknown {
 		t.Fatalf("expected unknown_service_code/needs_review flags, got %v", st.RiskFlags)
+	}
+}
+
+func TestAllServiceFamiliesStrategyPreservesCode(t *testing.T) {
+	// Criterion 3: each canonical family reaches OutreachStrategy with same service
+	// (extra-cli id or warmbly code), never silently rewritten to REAJUSTE.
+	pb := MustPlaybook()
+	families := []struct {
+		in   string
+		want string // resolved playbook code after ResolveServicePlaybook
+	}{
+		{"estruturacao_pleito_reajuste", "REAJUSTE"},
+		{"reequilibrio_economico_financeiro", "REEQUILIBRIO"},
+		{"aditivos_extracontratuais", "ADITIVOS"},
+		{"medicoes_glosas_memoria", "MEDICOES"},
+		{"auditoria_orcamento_bdi", "PLANILHAS"},
+		{"gestao_monitoramento_contratual", "MONITORAMENTO_CONTRATUAL"},
+		{"apoio_licitacoes_propostas", "APOIO_LICITACAO"},
+		{"inteligencia_pncp_mercado", "INTELIGENCIA_PNCP"},
+		{"diagnostico_contratual_b2g", "DIAGNOSTICO"},
+		{"reforco_temporario_backoffice", "BACKOFFICE"},
+	}
+	for _, tc := range families {
+		acc := testAccount(tc.in, "PORTFOLIO", "execução de obra de pavimentação asfáltica CBUQ no município X")
+		acc.MomentSummary = "Aditivo/evento documental específico no contrato DEINFRA 033/2023"
+		st := PlanOutreachStrategy(pb, acc, nil, nil, 1)
+		if st.ServiceCode != tc.in {
+			t.Fatalf("%s: strategy ServiceCode mutated to %q", tc.in, st.ServiceCode)
+		}
+		sp := pb.ResolveServicePlaybook(st.ServiceCode)
+		if sp == nil || sp.Code != tc.want {
+			t.Fatalf("%s: resolve got %+v want %s", tc.in, sp, tc.want)
+		}
+		if tc.want != "REAJUSTE" && strings.EqualFold(st.MicroOfferCode, "REAJUSTE_CHECK") {
+			// Only reajuste family may use REAJUSTE_CHECK as default micro-offer.
+			t.Fatalf("%s: must not get REAJUSTE_CHECK micro-offer, got %q", tc.in, st.MicroOfferCode)
+		}
+		if st.MicroOfferCode == "" {
+			t.Fatalf("%s: micro offer empty", tc.in)
+		}
+		if isGenericWhyThisAccount(st.WhyThisAccount) {
+			t.Fatalf("%s: WhyThisAccount still generic: %q", tc.in, st.WhyThisAccount)
+		}
+	}
+}
+
+func TestGenericWhyThisAccountDetected(t *testing.T) {
+	if !isGenericWhyThisAccount("empresa com momento comercial público: ACME") {
+		t.Fatal("expected generic")
+	}
+	if isGenericWhyThisAccount("ACME — fato público: execução de obra de pavimentação asfáltica CBUQ no município de Coxilha") {
+		t.Fatal("specific fact must not be generic")
 	}
 }
 

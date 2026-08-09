@@ -112,7 +112,8 @@ func PlanOutreachStrategy(
 		st.ObservedFact = strings.TrimSpace(acc.FactToMention)
 		st.ClaimsToAvoid = append([]string{}, acc.ClaimsToAvoid...)
 		company := firstNonEmpty(acc.NomeFantasia, acc.RazaoSocial)
-		st.WhyThisAccount = "empresa com momento comercial público: " + firstNonEmpty(company, acc.CNPJ14)
+		// Prefer concrete public fact over hollow "momento comercial público" boilerplate.
+		st.WhyThisAccount = buildWhyThisAccount(company, acc.CNPJ14, st.ObservedFact, st.TriggerSummary)
 		st.AccountArchetype = inferArchetype(acc, evidence)
 	}
 	if cand != nil {
@@ -251,7 +252,8 @@ func PlanOutreachStrategy(
 	if st.MicroOfferCode == "" {
 		st.RiskFlags = appendUnique(st.RiskFlags, "incomplete_strategy", "needs_review")
 	}
-	if st.WhyThisAccount == "" || st.WhyNow == "" || st.ObservedFact == "" {
+	if st.WhyThisAccount == "" || st.WhyNow == "" || st.ObservedFact == "" ||
+		isGenericWhyThisAccount(st.WhyThisAccount) || isGenericWhyNow(st.WhyNow) {
 		st.RiskFlags = appendUnique(st.RiskFlags, "incomplete_copy_context", "needs_review")
 	}
 
@@ -334,6 +336,99 @@ func ExplainStrategy(st OutreachStrategy, recipient string) StrategyExplain {
 		Experiment: exp,
 		Doctrine:   st.DoctrineVersion,
 	}
+}
+
+func buildWhyThisAccount(company, cnpj, fact, momentSummary string) string {
+	fact = strings.TrimSpace(fact)
+	company = strings.TrimSpace(company)
+	momentSummary = strings.TrimSpace(momentSummary)
+	if fact != "" && len(fact) >= 24 && !isGenericPublicFact(fact) {
+		if company != "" {
+			return company + " — fato público: " + truncateRunes(fact, 180)
+		}
+		return "fato público: " + truncateRunes(fact, 180)
+	}
+	if momentSummary != "" && !isGenericWhyNow(momentSummary) && len(momentSummary) >= 24 {
+		if company != "" {
+			return company + " — " + truncateRunes(momentSummary, 160)
+		}
+		return truncateRunes(momentSummary, 160)
+	}
+	// Hollow fallback is intentionally weak so incomplete_copy_context fires.
+	if company != "" {
+		return "empresa com momento comercial público: " + company
+	}
+	return "empresa com momento comercial público: " + strings.TrimSpace(cnpj)
+}
+
+func isGenericWhyThisAccount(s string) bool {
+	t := strings.ToLower(strings.TrimSpace(s))
+	if t == "" || len([]rune(t)) < 40 {
+		return true
+	}
+	hollow := []string{
+		"empresa com momento comercial público",
+		"portfólio público observável",
+		"portfolio publico observavel",
+		"empresa com portfólio público",
+	}
+	for _, h := range hollow {
+		if strings.Contains(t, h) {
+			// Still hollow unless a concrete contractual token appears.
+			if !hasConcreteContractToken(t) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isGenericWhyNow(s string) bool {
+	t := strings.ToLower(strings.TrimSpace(s))
+	if t == "" {
+		return true
+	}
+	hollow := []string{
+		"momento comercial indicado pelo extra-cli",
+		"portfólio público de contratos de engenharia/construção observado",
+		"portfolio publico de contratos",
+		"há portfólio público observável sem dor contratual",
+		"ha portfolio publico observavel sem dor contratual",
+	}
+	for _, h := range hollow {
+		if strings.Contains(t, h) && !hasConcreteContractToken(t) {
+			return true
+		}
+	}
+	return false
+}
+
+func isGenericPublicFact(s string) bool {
+	t := strings.ToLower(strings.TrimSpace(s))
+	if t == "" {
+		return true
+	}
+	// Portfolio-count boilerplate from intelligence layers.
+	if strings.Contains(t, "portfólio público observado com") && strings.Contains(t, "contrato") {
+		return true
+	}
+	if strings.Contains(t, "ufs observadas nos contratos") {
+		return true
+	}
+	return false
+}
+
+func hasConcreteContractToken(t string) bool {
+	for _, c := range []string{
+		"objeto", "paviment", "obra", "engenharia", "aditivo", "medição", "medicao",
+		"orgão", "orgao", "prefeitura", "dnit", "empreitada", "saneamento", "reabilitação",
+		"reabilitacao", "contrato ", "fato público:",
+	} {
+		if strings.Contains(t, c) {
+			return true
+		}
+	}
+	return false
 }
 
 func isAnnualidadeContext(trigger, summary, fact string) bool {
