@@ -187,17 +187,41 @@ func (c *Client) Mailbox(mailbox string, uidvali, opts *imap.SelectOptions) erro
 	return nil
 }
 
+// SyncMailboxStatus is SELECT/EXAMINE state used by the IMAP sync planner.
+// Prefer these over LIST-STATUS: some hosts (Hostinger) advertise CONDSTORE
+// but leave LIST-STATUS NumMessages/UIDNext empty while SELECT EXISTS works.
+type SyncMailboxStatus struct {
+	NumMessages   uint32
+	UIDNext       uint32
+	HighestModSeq uint64
+	UIDValidity   uint32
+}
+
 // SelectForSync opens a mailbox read-only with CONDSTORE enabled and returns
 // its message count. FETCH is only valid against a selected mailbox, so the
 // sync loop must call this before FetchChanges; CONDSTORE on the SELECT is
 // what arms ChangedSince. The count lets the caller skip the fetch entirely
 // for an empty mailbox, where a 1:* set is a server error.
 func (c *Client) SelectForSync(mailbox string) (uint32, *errx.MailError) {
+	st, err := c.SelectForSyncInfo(mailbox)
+	if err != nil {
+		return 0, err
+	}
+	return st.NumMessages, nil
+}
+
+// SelectForSyncInfo is SelectForSync plus UIDNEXT/HIGHESTMODSEQ for EXISTS fallback.
+func (c *Client) SelectForSyncInfo(mailbox string) (*SyncMailboxStatus, *errx.MailError) {
 	data, err := c.client.Select(mailbox, &imap.SelectOptions{ReadOnly: true, CondStore: true}).Wait()
 	if err != nil {
-		return 0, c.handleError(err)
+		return nil, c.handleError(err)
 	}
-	return data.NumMessages, nil
+	return &SyncMailboxStatus{
+		NumMessages:   data.NumMessages,
+		UIDNext:       uint32(data.UIDNext),
+		HighestModSeq: data.HighestModSeq,
+		UIDValidity:   data.UIDValidity,
+	}, nil
 }
 
 // FetchChanges walks the selected mailbox in bounded sequence windows, emitting
