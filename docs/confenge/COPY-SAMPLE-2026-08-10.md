@@ -3,6 +3,13 @@
 Generated 2026-08-09 on VPS against real EMAIL_SEND_READY accounts.
 Status: NEEDS_REVIEW. Do not auto-approve.
 
+## Honesty (do not oversell)
+
+- `why_you` and `micro_offer` were **empty** in the API response for all ten samples.
+- Bodies are near-identical portfolio templates; subjects are `Contrato <name>`.
+- Doctrine risk flags include `economic_or_legal_claim_language` / `evidence_requires_hypothesis_language`.
+- Suitable as a **rewrite queue for a human**, not as send-ready commercial copy.
+
 ## 1. ROSA IMOVEIS LTDA.
 - CNPJ: `00172255000131`
 - Contact: `atendimento.loc@rosaimoveis.com.br`
