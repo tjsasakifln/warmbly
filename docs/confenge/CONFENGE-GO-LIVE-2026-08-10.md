@@ -36,10 +36,12 @@ Clear (1) with one observed cadence cancel after Unibox ingest (or explicit oper
 | REPO | MAIN SHA | DEPLOYED / PRODUCTION | STATUS |
 | --- | --- | --- | --- |
 | extra-cli | `28a31a1bac44d250f6f9dd26bd9c30aa12ae1263` | feed `:8443` HTTP 200 (stock generated_at 2026-08-08) | PARTIAL stock |
-| warmbly | `dd58b2ebe666c49dc965161a2194114bc561f22d` | VPS `.deployed_sha` + `git HEAD` match tip; `status.sh` PASS | **MATCH** |
+| warmbly | `283e78d2dac661da3677e6bc9e50fc106f508c26` (origin/main at last docs bind; rebind VPS after merge) | VPS: `.deployed_sha` **must equal** `git rev-parse HEAD` | **MATCH** when equal |
 | web-cfg | `88d72aeaa72c812fcff7e2bde9c2736f5f22515f` | live `/.well-known/build-info.json` commit match | **MATCH** |
 
 ---
+
+Live SHA bind note: after VPS `git checkout` of this tip, operator verifies `test "$(cat .deployed_sha)" = "$(git rev-parse HEAD)"` (expected `283e78d2dac661da3677e6bc9e50fc106f508c26` or newer main tip).
 
 ## What already converged (keep; do not redo)
 
