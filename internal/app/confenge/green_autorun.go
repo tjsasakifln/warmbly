@@ -329,15 +329,16 @@ func (s *service) buildGreenAutorunInput(ctx context.Context, orgID uuid.UUID, t
 		NoClaimsToAvoidViolated:   false,
 		ValidationOK:              false,
 		MessageContextHashCurrent: false,
-		NoEditAfterAuthorization:  true, // content hash vs approved handled separately when re-queueing
-		CopyWithinLimits:          false,
-		GovernorHealthy:           s.governor != nil,
-		HasContactCandidate:       tp.ContactCandidateID != nil && *tp.ContactCandidateID != uuid.Nil,
-		RiskClass:                 "YELLOW", // fail-closed until draft proves GREEN
-		RuntimePromptVersion:      PromptVersion,
-		RuntimeValidatorVersion:   ValidatorVersionV1,
-		RuntimeContactPolicy:      ContactPolicyVersionV1,
-		ServiceCode:               tp.ServiceCode,
+		// Fail-closed: proven only when no prior approval, or content matches approved hash.
+		NoEditAfterAuthorization: false,
+		CopyWithinLimits:         false,
+		GovernorHealthy:          s.governor != nil,
+		HasContactCandidate:      tp.ContactCandidateID != nil && *tp.ContactCandidateID != uuid.Nil,
+		RiskClass:                "YELLOW", // fail-closed until draft proves GREEN
+		RuntimePromptVersion:     PromptVersion,
+		RuntimeValidatorVersion:  ValidatorVersionV1,
+		RuntimeContactPolicy:     ContactPolicyVersionV1,
+		ServiceCode:              tp.ServiceCode,
 	}
 	if auth != nil {
 		in.RuntimeSenderMailbox = strings.TrimSpace(auth.SenderMailbox)
@@ -492,6 +493,18 @@ func (s *service) buildGreenAutorunInput(ctx context.Context, orgID uuid.UUID, t
 				in.RuntimePromptVersion = d.PromptVersion
 			}
 		}
+	}
+
+	// NoEditAfterAuthorization: proven only when there is no prior approval, or
+	// content_hash still equals approved_content_hash (no silent material edit).
+	if strings.TrimSpace(tp.ApprovedContentHash) == "" {
+		// Not yet authorized: no post-authorization edit possible.
+		in.NoEditAfterAuthorization = true
+	} else {
+		if tp.ContentHash == "" {
+			RecomputeContentHash(tp)
+		}
+		in.NoEditAfterAuthorization = tp.ContentHash != "" && tp.ContentHash == tp.ApprovedContentHash
 	}
 
 	// Word limits for initial email.

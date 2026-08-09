@@ -486,7 +486,8 @@ func (s *service) QueueTouchpoint(ctx context.Context, orgID, userID, id uuid.UU
 	if xerr := s.assertPriorReleased(ctx, orgID, tp); xerr != nil {
 		return nil, xerr
 	}
-	if err := CanTransport(tp); err != nil {
+	// Structural + live CAMPAIGN_POLICY grant revalidation (revoke blocks here).
+	if err := s.AssertTransportable(ctx, orgID, tp); err != nil {
 		return nil, errx.New(errx.BadRequest, "send blocked: "+err.Error())
 	}
 	// Final dispatch gate: material context must still match generation-time hash.
@@ -501,12 +502,6 @@ func (s *service) QueueTouchpoint(ctx context.Context, orgID, userID, id uuid.UU
 		_ = s.repo.UpdateTouchpoint(ctx, tp)
 		_ = s.repo.SetAccountHumanFlags(ctx, orgID, tp.AccountID, acc.Blocked, acc.DoNotContact, acc.BlockReason, models.OutreachQueueNeedsReview)
 		return nil, errx.New(errx.Conflict, err.Error())
-	}
-	// Final revalidation for CAMPAIGN_POLICY before queue/transport.
-	if strings.TrimSpace(tp.AuthorizationMode) == AuthorizationModeCampaignPolicy {
-		if block := s.revalidateCampaignPolicyAtSend(ctx, orgID, tp); block != nil {
-			return nil, errx.New(errx.Conflict, "campaign policy revalidation: "+block.Reason)
-		}
 	}
 	queued, err := s.repo.CASQueueTouchpoint(ctx, orgID, id, tp.ContentHash)
 	if err != nil {
@@ -536,6 +531,10 @@ func (s *service) QueueTouchpoint(ctx context.Context, orgID, userID, id uuid.UU
 }
 
 func (s *service) dispatchEmailTouch(ctx context.Context, orgID, userID uuid.UUID, tp *models.OutreachTouchpoint) *errx.Error {
+	// Re-assert live policy grant immediately before enroll/SMTP (revoke-after-queue).
+	if err := s.AssertTransportable(ctx, orgID, tp); err != nil {
+		return errx.New(errx.Conflict, err.Error())
+	}
 	if tp.DraftID == nil {
 		return errx.New(errx.BadRequest, "touchpoint has no draft")
 	}
