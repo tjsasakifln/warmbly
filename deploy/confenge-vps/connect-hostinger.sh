@@ -57,10 +57,11 @@ ORG="${CONFENGE_FEED_SYNC_ORG_ID:-22222222-0000-0000-0000-000000000001}"
 curl -sS -X POST "$BASE/organization/switch/$ORG" -H "Authorization: Bearer $TOKEN" >/dev/null || true
 AUTH="Authorization: Bearer $TOKEN"
 
-# Build JSON without putting password on command-line arguments of curl via env to python only
-BODY="$(
-  PASS="$PASS" EMAIL="$EMAIL" NAME="$NAME" SMTP_HOST="$SMTP_HOST" SMTP_PORT="$SMTP_PORT" \
-    IMAP_HOST="$IMAP_HOST" IMAP_PORT="$IMAP_PORT" python3 - <<'PY'
+# Build JSON on a 0600 temp file; POST via --data-binary @file so password never appears in curl argv/ps.
+BODY_FILE="$(mktemp)"
+chmod 600 "$BODY_FILE"
+PASS="$PASS" EMAIL="$EMAIL" NAME="$NAME" SMTP_HOST="$SMTP_HOST" SMTP_PORT="$SMTP_PORT" \
+  IMAP_HOST="$IMAP_HOST" IMAP_PORT="$IMAP_PORT" python3 - <<'PY' >"$BODY_FILE"
 import json, os
 print(json.dumps({
   "email": os.environ["EMAIL"],
@@ -79,7 +80,6 @@ print(json.dumps({
   },
 }))
 PY
-)"
 
 # Drop password from shell env ASAP after JSON build
 PASS=""
@@ -88,9 +88,8 @@ unset CONFENGE_MAILBOX_PASSWORD || true
 
 echo "Connecting SMTP/IMAP (worker validates live credentials)..."
 RESP="$(curl -sS -w '\n%{http_code}' -X POST "$BASE/emails/onboarding/smtp-imap" \
-  -H "$AUTH" -H 'Content-Type: application/json' -d "$BODY")"
-# Clear body from shell
-BODY=""
+  -H "$AUTH" -H 'Content-Type: application/json' --data-binary @"$BODY_FILE")"
+rm -f "$BODY_FILE"
 CODE="$(printf '%s' "$RESP" | tail -1)"
 BODY_OUT="$(printf '%s' "$RESP" | sed '$d')"
 echo "http=$CODE"

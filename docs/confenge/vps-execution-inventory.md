@@ -101,6 +101,7 @@ Stack brought up with `deploy/confenge-vps` overlay (existing images, no extra-c
 | Seed `@warmbly.test` accounts | **inactive** (quarantined; dead SMTP noise) |
 | Self-smoke #1 Hostinger self | **PASS** `task_id=d6b6faa2…` mid=`76d0dfda…` worker accepted |
 | Self-smoke #2 after restart | **PASS** `task_id=66d9d596…` mid=`1610e60c…` |
+| Confenge approve → queue → SMTP (sink) | **PASS** TP `c51010aa…` → Mailpit `sink-approve-e2e@warmbly.local` (`smtp-approved:…`); AUTO_SEND=false |
 | Client disconnect then SMTP | **PASS** (HTTP 200 then worker `Email sent successfully`) |
 | IMAP unibox without laptop | **PASS** (185 msgs; includes self-smoke + Gmail replies) |
 | EXTRA FEED :8443 | PASS |

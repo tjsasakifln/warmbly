@@ -74,6 +74,9 @@ class TestConfengeVpsPack(unittest.TestCase):
         # password must not be passed as curl --data with shell expansion of raw argv pattern
         self.assertNotRegex(src, r"curl.*--password")
         self.assertIn("unset CONFENGE_MAILBOX_PASSWORD", src)
+        # JSON body from temp file via --data-binary (never -d "$BODY"; password must not be in argv/ps)
+        self.assertIn("--data-binary @", src)
+        self.assertNotRegex(src, r'curl[^\n]*-d\s+"\$BODY"')
 
     def test_no_mta_install(self) -> None:
         for path in PACK.rglob("*"):
