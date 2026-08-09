@@ -139,3 +139,9 @@ Via Playwright: Netcup SCP → Firewall → Delete **netcup Mail block** → Sav
 | Full stack status | all PASS (GREEN OFF) |
 
 Mailbox `tiago.sasaki@confenge.com.br` not yet sealed in Warmbly DB (seed accounts only). Next: interactive `connect-hostinger.sh` + optional sink self-smoke.
+
+## Mailbox connect (same day)
+
+- Stable `WORKER_ID=10c8f5e4-1c39-5b2a-9c8b-3d2f0a8b1a01` required so backend can route validate/send (compose override).
+- Hostinger app password generated in hPanel (not committed); sealed via `connect-hostinger.sh`.
+- Account `tiago.sasaki@confenge.com.br` status **active** after SMTP unlock.

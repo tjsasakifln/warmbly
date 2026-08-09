@@ -160,6 +160,9 @@ services:
     logging: *default-logging
     environment:
       <<: *confenge-env
+      # Stable worker id so backend can route validate/send commands (hostname is not a UUID).
+      WORKER_ID: ${WORKER_ID:-10c8f5e4-1c39-5b2a-9c8b-3d2f0a8b1a01}
+      WORKER_TIER: ${WORKER_TIER:-shared}
       # Production Hostinger uses real TLS. Override only for Mailpit sink tests.
       MAIL_TLS_INSECURE: ${MAIL_TLS_INSECURE:-false}
     volumes:
