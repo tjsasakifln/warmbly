@@ -3,209 +3,128 @@
 ## Verdict
 
 ```text
-GO_FOR_CONTROLLED_PILOT
+NO_GO
 ```
 
-Binary decision for supervised commercial pilot start. Not unrestricted autorun.
+Binary decision. Not "mostly ready". Not a soft green.
 
-Emitted 2026-08-09 after cross-repo merge, Netcup deploy to `main`, full host reboot, Hostinger self-smoke, feed sync, 10 real no-send drafts, and outcome HMAC roundtrip.
+Emitted 2026-08-09T17:25Z after re-audit of skeptic gaps. Convergence and earlier live proofs remain valuable, but **current operator control plane access is broken** and **IMAP reply stop was never closed on the live cycle**.
+
+---
+
+## Blockers (only real pilot-stoppers)
+
+1. **VPS SSH down** (`159.195.18.88:2222` Connection refused at evidence bind). Host ping and feed/outcome `:8443` still respond, so the machine is up, but the operator cannot run status/pause/resume/self-smoke/draft review against Warmbly loopback APIs. Monday pilot is not operable without SSH or Netcup SCP VNC recovery of `sshd`.
+2. **IMAP reply ingest + stop-on-reply** not proven on the converged live cycle. Self-smoke proved Hostinger **SMTP send** only (`task 02196ba2…` / `Email sent successfully`). Unit suite proves reply/DNC cancel futures in-process; that is **not** a live IMAP proof.
+3. **Warmbly deploy identity re-verify blocked** by (1). Last SSH-verified MATCH was `9543f387…` at 16:55:40Z; cannot re-confirm `.deployed_sha` now. Objective requires exact current MATCH, not stale last-seen.
+
+Clear these three, re-bind evidence, then re-emit GO.
 
 ---
 
 ## SHA audit
 
-| REPO | MAIN SHA | DEPLOYED SHA | STATUS |
+| REPO | MAIN SHA | DEPLOYED / PRODUCTION | STATUS |
 | --- | --- | --- | --- |
-| extra-cli | `28a31a1bac44d250f6f9dd26bd9c30aa12ae1263` | VPS `/opt/extra-consultoria` (intelligence plane; organic engine merged) | MATCH (PR #210 merged) |
-| warmbly | `b2bebda08482ce820927ee122c3de331168a5f72` | VPS `/opt/warmbly-confenge` `.deployed_sha` + `git HEAD` | MATCH |
-| web-cfg | `c550e7cc7d9486b5095df66d8b3baa97c588eabd` | Netlify production (main push site-ci green; site 200) | MATCH (PR #56 merged) |
+| extra-cli | `28a31a1bac44d250f6f9dd26bd9c30aa12ae1263` | main includes organic engine; public feed `:8443` serves `confenge.outreach.v1` (168 leads) | MATCH (main); live process tree not re-inspected |
+| warmbly | `9543f38785dac9e66e9b9b8ea38ef96d443d005c` | Last SSH: VPS `.deployed_sha` + `git HEAD` = `9543f387…` (16:55:40Z). **Now SSH refused** | **STALE_PROOF** (was MATCH; re-verify blocked) |
+| web-cfg | `c550e7cc7d9486b5095df66d8b3baa97c588eabd` | Netlify production deploy id `6a78ac6daa29e2000892eac5`, `commit_ref` identical, published 2026-08-09T16:36:19Z | **MATCH** |
 
-Warmbly intermediate: #18 doctrine `55ecb0c9` then #17 VPS pack `b2bebda0` on top of hardening main.
-
----
-
-## Merges completed (convergence order)
-
-1. **extra-cli #210** Organic Opportunity Engine (squash) — does not touch `confenge_activation` / hot set / send readiness
-2. **web-cfg #56** inbound opportunity engine + pilot cohort (squash) — required checks site-ci + pSEO green
-3. **warmbly #18** evidence-led outreach doctrine + learning loop (squash)
-4. **warmbly #17** Netcup always-on execution plane, rebased on post-#18 main (clean rebase; portable `mktemp` fix in `validate.sh`) then squash-merged
+Warmbly chain: #18 doctrine → #17 VPS pack `b2bebda0` (images built here) → #19 go-live pack `9543f387` (docs + `confenge-feed:host-gateway` alias; no app image rebuild required for #19).
 
 ---
 
-## Deploy inventory (Netcup)
+## What already converged (keep; do not redo)
 
-| Field | Value |
+| Item | Status |
 | --- | --- |
-| deployed_repo | `tjsasakifln/warmbly` |
-| deployed_branch | `main` (detached HEAD at merge commit) |
-| deployed_sha | `b2bebda08482ce820927ee122c3de331168a5f72` |
-| deployed_at | 2026-08-09T16:43:00Z (build+up); post-reboot 2026-08-09T16:46:40Z |
-| host | `159.195.18.88` / `v2202607385716487230` |
-| project | `warmbly-confenge` under `/opt/warmbly-confenge` |
-| compose | `docker-compose.yml` + `deploy/confenge-vps/docker-compose.override.yml` |
-| schema | migrations through **91** |
-| mailbox | `tiago.sasaki@confenge.com.br` active (`smtp_imap`) |
-| feed plane | `/opt/confenge-plane` :8443 + outcome receptor :8790 |
-
-Containers post-reboot: backend/worker/consumer/web/postgres/redis/nats/tracking/realtime/mailpit + confenge-plane-feed. Restart policies keep stack up after full host reboot.
-
-### Go-live ops fix (feed DNS/TLS)
-
-Feed container is `network_mode: host` with cert CN `confenge-feed`. Backend needs:
-
-- `extra_hosts: confenge-feed:host-gateway` (baked into override on VPS + this pack)
-- env URLs `https://confenge-feed:8443/...` (not bare `host.docker.internal`, which fails TLS name check)
-
-Verified: `POST /confenge/sync` → `200` `skipped_same_snapshot` for 168-lead feed.
+| extra-cli #210 | MERGED |
+| web-cfg #56 | MERGED + Netlify production MATCH |
+| warmbly #18 | MERGED |
+| warmbly #17 rebased on post-#18 main (clean) | MERGED |
+| warmbly #19 go-live pack | MERGED |
+| Full host reboot drill | EXECUTED PASS (while SSH worked) |
+| Migrations | 91 at last verify |
+| Hostinger SMTP self-smoke | PASS (historical live log) |
+| Hostinger TCP IMAP | PASS at last status.sh |
+| Feed sync | PASS (168 leads, same-snapshot noop) |
+| Outcome HMAC create + replay + no auto-WON | PASS on live receptor (`--memory-store`) |
+| Kill switch / GREEN off / WhatsApp off / dispatch paused | PASS at last verify |
+| confenge unit/contract suite (excl. Mailpit e2e) | PASS on `9543f387` |
+| Authority: organic ≠ activation | PASS |
 
 ---
 
-## Safety posture (must hold through Monday open)
+## Draft sample honesty (§12)
 
-| Control | State |
+10 real-account drafts generated as `NEEDS_REVIEW` (see `COPY-SAMPLE-2026-08-10.md`).
+
+| Field | Observation |
 | --- | --- |
-| Kill switch file `/data/confenge-ops/kill-switch` | **paused** |
-| `CONFENGE_SENDING_PAUSED` | **true** (until operator resume Monday) |
-| `CONFENGE_GREEN_AUTORUN_ENABLED` | **false** |
-| `CONFENGE_AUTO_SEND_ENABLED` | **false** |
-| `CONFENGE_REQUIRE_HUMAN_APPROVAL` | **true** |
-| `CONFENGE_WHATSAPP_ENABLED` | **false** |
-| Mode | `EMAIL_ONLY` |
-| Rate | adaptive start **10/h**, max **20/h** |
-| Window | 09:00–18:00 `America/Sao_Paulo`, business days only |
-| Campaign daily shell | 200 (governor + window → effective ~90 theoretical slots/day at 10/h) |
+| Real companies / CNPJ / contacts | Yes |
+| Strategy-driven **why_you** | **Empty** in API payload |
+| **micro_offer** | **Empty** |
+| why_now | Populated from activation moment summary (often portfolio boilerplate) |
+| Bodies | Near-template; doctrine risk flags include `economic_or_legal_claim_language` |
+| Commercial usability | **Not** send-ready without human rewrite |
 
-Do **not** enable unrestricted GREEN autorun for day-1. Pre-authorize only within already-approved policy path after human review.
+Do not claim a full strategy/doctrine package for Monday send selection until drafts are regenerated or heavily edited by a human.
 
 ---
 
-## Monday pilot policy (explicit)
+## Monday policy (frozen for when GO is re-earned)
 
 | Item | Value |
 | --- | --- |
-| Start | **2026-08-10 09:00 America/Sao_Paulo** |
-| Channel | EMAIL_ONLY (WhatsApp OFF) |
-| Initial rate | **10 sends/hour** |
-| Progression | metrics-gated only (see ramp) |
-| Approval | human review of drafts; no mass auto-approve |
-| Resume path | clear kill switch + `deploy/confenge-vps/resume.sh` (and set `CONFENGE_SENDING_PAUSED=false` only when ready) |
-| Pause path | `deploy/confenge-vps/pause.sh` |
+| Start | 2026-08-10 09:00 America/Sao_Paulo |
+| Channel | EMAIL_ONLY |
+| WhatsApp | OFF |
+| Initial rate | 10/h |
+| GREEN autorun | OFF |
+| Human approval | required |
+| Ramp | 10→15→20 only on bounce/auth/queue/health metrics (not open rate, not clock) |
+| Stop | fail-closed on policy revoke, DNC leak, unauthorized send, dup send, stale context, SHA mismatch, auth failure, queue burst |
 
-### Ramp gate (10 → 15 → 20 /h)
+### Human actions before 09:00 (≤3)
 
-**Stay at 10/h if any of:** elevated bounce, provider failures, spam complaints, mailbox auth failure, queue anomaly, contact precision concern, unexpected DNC/unsubscribe, mailbox health degradation, safety violation.
-
-**Consider 15/h only after:** minimum sample of successful supervised sends, bounce acceptable, mailbox stable, zero safety violations, operator review OK.
-
-**Consider 20/h only after:** second stable window under 15/h with same gates.
-
-Do **not** use open rate as primary ramp gate.
-
-### Stop conditions (fail closed)
-
-Immediate outbound stop if:
-
-- CAMPAIGN_POLICY invalid/revoked
-- mailbox auth failure
-- provider ban/warning
-- DNC leak
-- send without approval/policy
-- duplicate sends
-- stale context bypass
-- unexpected queue burst
-- bounce above operational limit
-- missing ownership / contact integrity regression
-- deployment SHA mismatch vs this card
-- outcome path corrupting commercial state
+1. **Restore VPS SSH** (Netcup SCP VNC → fix/restart `sshd` on 2222; confirm `status.sh`).
+2. **Re-bind deploy SHA** (`cat .deployed_sha` == `9543f387…` or later intentional main) + re-run self-smoke SMTP + **IMAP reply stop**.
+3. **Human-edit/approve** only rewritten drafts (not raw template sample).
 
 ---
 
-## Proof matrix (2026-08-09)
+## Outcome memory honesty
 
-| Gate | Result | Evidence |
-| --- | --- | --- |
-| PRs converged | PASS | #210, #56, #18, #17 MERGED |
-| Warmbly main = VPS SHA | PASS | `b2bebda0…` both |
-| Migrations coherent | PASS | schema version **91** after deploy |
-| Hostinger SMTP | PASS | TCP+AUTH; worker `Email sent successfully` |
-| Hostinger IMAP | PASS | status + prove-hostinger-net |
-| Self-smoke (operator mailbox only) | PASS | task `02196ba2-…` → Hostinger send OK; subject `CONFENGE SELF_SMOKE 20260809T164501Z` |
-| Kill switch | PASS | file pause survives reboot |
-| Governor / dispatch paused | PASS | status DISPATCH PAUSED; sending_allowed false |
-| Full VPS reboot | PASS | host rebooted; docker auto-start; data 332 accounts retained; no send burst |
-| Feed import/sync | PASS | 168-lead stock; sync 200 noop same snapshot |
-| Real drafts (no send) | PASS | 10× `NEEDS_REVIEW` drafts written; sample `/root/golive-draft-sample.json` on VPS |
-| Outcome HMAC roundtrip | PASS | CONTACTED create + duplicate replay; auto-WON 422 rejected |
-| WhatsApp | OFF | env + status |
-| GREEN autorun | OFF | env + status |
-
-### Observability snapshot (pre-Monday)
-
-| Metric | Value |
-| --- | --- |
-| Imported accounts | 332 |
-| Ready to generate | 167 |
-| Needs contact | 163 |
-| Needs review (drafts) | generated sample 10; product queue was 0 before sample |
-| Approved / enrolled | 0 / 2 (prior enrollments) |
-| Sent / bounced / replied / DNC | 0 / 0 / 0 / 0 (commercial) |
-| Feed age at last check | ~16h (refresh before Monday open) |
-| Outcome loop | ready (receptor active) |
-| Kill switch | on |
+Live receptor is `serve-outcomes --memory-store` (in-process). HMAC, idempotency, and no-auto-WON were proven. **Durable Decision Memory DB was not the production receptor path.** Treat durable DM as follow-up ops work, not a silent PASS.
 
 ---
 
-## Human review packs (Sunday focus)
+## Non-blockers (explicit)
 
-### A. Contact sample
-
-Use existing extra-cli contact-enrichment pilot artifacts (accepted / rejected / unresolved). Do not expand enrichment scope before pilot.
-
-### B. Copy sample (10 real drafts)
-
-Generated on VPS against real EMAIL_SEND_READY accounts. All `NEEDS_REVIEW`. Typical risk flags seen:
-
-- `economic_or_legal_claim_language`
-- `strategy_compose`
-- `evidence_requires_hypothesis_language`
-
-Subjects are still template-leaning (`Contrato <short name>`). Bodies use public-portfolio framing and avoid treating annualidade as automatic credit. **Human must edit/approve before any lead send.** Full JSON: VPS `/root/golive-draft-sample.json`.
-
-### C. This go-live card
-
-Code, mailbox, safety, volume, first-day policy, kill switch, blockers.
+- Draft quality / empty why_you (process with human rewrite; not a silent safety hole)
+- Consumer `EMAIL_SENT` handler warn on generic send path
+- CodeQL historical noise on web-cfg #56 (non-required)
+- SEO indexation
 
 ---
 
-## Operator open checklist (Monday 08:45–09:00)
+## Re-GO checklist (operator)
 
-1. Confirm `git -C /opt/warmbly-confenge rev-parse HEAD` == `b2bebda08482ce820927ee122c3de331168a5f72` (or later intentional main only)
-2. `bash deploy/confenge-vps/status.sh` all PASS; GREEN OFF; WhatsApp OFF
-3. Refresh extra-cli feed if age > 24h; `POST /confenge/sync`
-4. Human-approve only reviewed drafts (content-hash path)
-5. Clear kill switch + resume dispatch **only when first approved batch is ready**
-6. Keep rate at 10/h; watch bounce/auth/queue for first hour
-7. Pause immediately on any stop condition
+When SSH is back:
 
----
+```bash
+ssh ec-prod
+cd /opt/warmbly-confenge
+test "$(cat .deployed_sha)" = "$(git rev-parse HEAD)"
+bash deploy/confenge-vps/status.sh
+# kill switch still paused
+CONFENGE_SELF_SMOKE_TO=<operator@you> bash deploy/confenge-vps/self-smoke.sh
+# reply from second operator client → confirm Unibox IMAP + cadence cancel
+# then re-emit GO only if IMAP reply stop + SHA MATCH + status PASS
+```
 
-## Known non-blockers
+Until then:
 
-- Draft copy is commercially usable only after human edit (risk flags expected under doctrine QA)
-- Consumer may log `no handler registered for EMAIL_SENT` on generic account send path; self-smoke SMTP still PASS
-- Outcome receptor uses `--memory-store` (not durable Decision Memory DB); HMAC/idempotency/WON policy still proven
-- web-cfg CodeQL job failed historically on #56; not a required branch check; site-ci/pSEO green
-- Inbound SEO ranking not required for outbound pilot
-
----
-
-## Blockers
-
-**None** that prevent a supervised EMAIL_ONLY pilot at 10/h with human approval and kill switch.
-
----
-
-## Non-goals (do not open during pilot week)
-
-Stakeholder Graph, Revenue Conversion OS, WhatsApp cold, mass pSEO publication, unrestricted autorun, 50+/h, multi-mailbox scale.
+```text
+NO_GO
+```
