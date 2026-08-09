@@ -11,7 +11,7 @@ for f in \
   docker-compose.override.yml env.example lib.sh \
   gen-secrets.sh connect-hostinger.sh status.sh pause.sh resume.sh \
   backup.sh restore.sh up.sh down.sh install.sh \
-  prove-hostinger-net.sh prove-restart.sh self-smoke.sh validate.sh
+  prove-hostinger-net.sh prove-restart.sh self-smoke.sh post-smtp-unlock.sh validate.sh
 do
   if [[ -f "$PACK/$f" ]]; then
     echo "OK $f"

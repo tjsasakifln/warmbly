@@ -30,6 +30,7 @@ class TestConfengeVpsPack(unittest.TestCase):
             "prove-hostinger-net.sh",
             "prove-restart.sh",
             "self-smoke.sh",
+            "post-smtp-unlock.sh",
             "gen-secrets.sh",
             "install.sh",
             "lib.sh",

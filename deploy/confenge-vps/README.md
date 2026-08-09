@@ -15,6 +15,8 @@ Quick start (on VPS checkout at `/opt/warmbly-confenge`):
 deploy/confenge-vps/install.sh
 deploy/confenge-vps/prove-hostinger-net.sh   # SMTP must pass (Netcup unlock if not)
 deploy/confenge-vps/up.sh
+# After Netcup unlocks outbound 465/587:
+#   CONFENGE_SELF_SMOKE_TO=<you> deploy/confenge-vps/post-smtp-unlock.sh
 deploy/confenge-vps/connect-hostinger.sh     # interactive password; seals in DB
 deploy/confenge-vps/status.sh
 ```

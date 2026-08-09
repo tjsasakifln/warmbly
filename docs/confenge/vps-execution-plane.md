@@ -116,7 +116,26 @@ recipient reply → Hostinger → IMAP TLS → Warmbly worker/consumer
 
 No Postfix/Exim/Mailcow. No PTR-based direct send. No M365/Graph.
 
-**Network blocker observed on Netcup:** outbound TCP 465/587 to Hostinger timed out while IMAP 993 worked. Unlock outbound SMTP with Netcup before production self-smoke. See `vps-execution-inventory.md`.
+**Network blocker observed on Netcup:** outbound TCP 465/587 to Hostinger timed out while IMAP 993 worked (also blocked to Gmail/O365/SES submission ports). This is provider egress policy, not a local ufw rule. Unlock outbound SMTP with Netcup before production self-smoke. See `vps-execution-inventory.md`.
+
+### Operator go-live after Netcup SMTP unlock
+
+```bash
+# On VPS as root, repo at /opt/warmbly-confenge
+# 1) Netcup CCP/SCP: freischalten outbound mail (TCP 465 + 587). No local MTA.
+
+deploy/confenge-vps/prove-hostinger-net.sh   # expect SMTP=PASS IMAP=PASS
+
+# Or one-shot after unlock (interactive mailbox password):
+export CONFENGE_OPS_PASSWORD='…'             # Warmbly UI user password
+CONFENGE_SELF_SMOKE_TO=tiago.sasaki@confenge.com.br \
+  deploy/confenge-vps/post-smtp-unlock.sh
+
+# Optional full reboot drill:
+# sudo reboot && … && deploy/confenge-vps/status.sh
+```
+
+Daily laptop path remains browser-only via SSH tunnel (below).
 
 ## Isolation from extra-cli
 
