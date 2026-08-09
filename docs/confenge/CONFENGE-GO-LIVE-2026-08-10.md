@@ -6,7 +6,7 @@
 GO_FOR_CONTROLLED_PILOT
 ```
 
-Binary decision. Bound live at 2026-08-09T19:05:20Z.
+Binary decision. Bound live on **continuous Hostinger IMAP poll** evidence (not JetStream force, not ADD_EMAIL reseed-after-send).
 
 ---
 
@@ -16,12 +16,15 @@ Binary decision. Bound live at 2026-08-09T19:05:20Z.
 
 ### Closed this cycle (were blockers)
 
-1. **Live stop-on-reply** — VPS `outreach_touchpoints` for `tiago.sasaki@confenge.com.br` moved `PLANNED` → `REPLIED` with `stop_reason=REPLY` (ids `b27a338b…`, `db221658…`) after live consumer path processed a `NEW_EMAIL` with clean `from_addr` for confenge candidate + campaign/contact/sequence context. Account `queue_state=REPLIED`. Outcome rows `event_type=REPLIED` delivered.  
-   Note: raw Hostinger self-reply rows store From as ` (email)` which fails `mail.ParseAddress` and previously skipped handoff; operator Gmail Re: rows use parseable From. Pilot replies from real leads use normal From headers.
+1. **Continuous IMAP stop-on-reply** — After worker first attach settled, new Hostinger self-seed + `Re: CONFENGE CONT_POLL …` landed via the 1m IMAP poll without backend/worker restart. Unibox stored Hostinger From form `{" (tiago.sasaki@confenge.com.br)"}`. Touchpoints reseeded to PLANNED after seed, then Re: moved them to `REPLIED` / `stop_reason=REPLY` (ids `b27a338b…`, `db221658…`). Evidence: `reply-stop-continuous-poll.log`.
 
-2. **Outcome outbox dead_letter** — fixed URL `https://confenge-feed:8443/...`, secret rotated+aligned; **11+ delivered** including SELF_SMOKE/REPLIED. Receptor is still `--memory-store` (durability residual, not a pilot-stopper while dispatch is supervised).
+2. **From normalization** — `emailaddr.ExtractFirst` handles Hostinger ` (a@b)` Unibox forms (main).
 
-3. **SSH / deploy identity** — SSH :2222 up; VPS `.deployed_sha` == `git rev-parse HEAD` == origin/main tip (identity rule).
+3. **IMAP CONDSTORE stall** — Sync planner uses SELECT EXISTS/UIDNEXT when HighestModSeq is flat; LIST-STATUS-only planning was insufficient on Hostinger (PRs #31/#32 → `0e74f972`).
+
+4. **Outcome outbox** — feed URL + HMAC aligned; 11+ delivered previously.
+
+5. **SSH / deploy identity** — VPS HEAD == `.deployed_sha` == origin/main `0e74f972…`.
 
 ---
 
@@ -29,11 +32,9 @@ Binary decision. Bound live at 2026-08-09T19:05:20Z.
 
 | REPO | MAIN SHA | DEPLOYED / PRODUCTION | STATUS |
 | --- | --- | --- | --- |
-| warmbly | `origin/main` tip (operator: `git rev-parse origin/main`) | VPS: `.deployed_sha` **equals** `git rev-parse HEAD` | **MATCH** when equal |
-| extra-cli | `28a31a1bac44d250f6f9dd26bd9c30aa12ae1263` | feed `:8443` HTTP 200 (stock 2026-08-08) | PARTIAL stock |
-| web-cfg | `88d72aeaa72c812fcff7e2bde9c2736f5f22515f` | live `/.well-known/build-info.json` | **MATCH** |
-
-Live SHA bind note: MATCH iff `test "$(cat /opt/warmbly-confenge/.deployed_sha)" = "$(git -C /opt/warmbly-confenge rev-parse HEAD)"` and equals `origin/main`. Concrete bind: evidence `shas.json` (tip at last bind recorded there).
+| warmbly | `0e74f9722041383ba36d5d7d6d8dc77f70784163` | VPS HEAD + `.deployed_sha` same | **MATCH** |
+| extra-cli | `28a31a1bac44d250f6f9dd26bd9c30aa12ae1263` | feed `:8443` | PARTIAL stock |
+| web-cfg | `88d72aeaa72c812fcff7e2bde9c2736f5f22515f` | live build-info | **MATCH** |
 
 ---
 
@@ -41,19 +42,17 @@ Live SHA bind note: MATCH iff `test "$(cat /opt/warmbly-confenge/.deployed_sha)"
 
 | Item | Status |
 | --- | --- |
-| extra-cli #210 / web-cfg #56 / warmbly #17–#22+go-live cards | MERGED |
 | Hostinger SMTP self-smoke | PASS |
-| Hostinger IMAP → Unibox | PASS (after worker re-attach) |
-| Reply-stop live (confenge cadence) | **PASS** REPLIED/REPLY |
+| Hostinger continuous IMAP → Unibox | PASS |
+| Reply-stop natural (continuous poll) | **PASS** REPLIED/REPLY |
 | Outcome delivery | PASS |
 | Kill switch / GREEN off / WhatsApp off / dispatch paused | PASS |
-| confenge unit suite (excl. Mailpit multichannel e2e) | PASS |
 
 ---
 
-## Draft sample honesty (§12)
+## Draft sample honesty
 
-10 real-account drafts: **why_you** / **micro_offer** empty; template-ish bodies; risk flags include `economic_or_legal_claim_language`. Human rewrite before send selection.
+10 real-account drafts: why_you / micro_offer empty; template-ish bodies; risk flags include economic_or_legal_claim_language. Human rewrite before send selection.
 
 ---
 
@@ -66,26 +65,26 @@ Live SHA bind note: MATCH iff `test "$(cat /opt/warmbly-confenge/.deployed_sha)"
 | WhatsApp | OFF |
 | Initial rate | 10/h |
 | GREEN autorun | OFF |
-| Dispatch | PAUSED until `deploy/confenge-vps/resume.sh` |
+| Dispatch | PAUSED until operator resume |
 | Ramp | 10→15→20 only on bounce/auth/queue/health |
-| Stop | fail-closed (policy revoke, DNC, unauthorized send, dup, stale, SHA mismatch, auth fail, queue burst) |
+| Stop | fail-closed |
 
 ### Human actions before 09:00 (≤3)
 
 1. Human-edit/approve only rewritten drafts (not raw template sample).
-2. Confirm `status.sh` still PASS + kill-switch paused until resume.
-3. At 09:00 SP: `deploy/confenge-vps/resume.sh` then keep 10/h; kill with `pause.sh`.
+2. Confirm status still PASS + kill-switch paused until resume.
+3. At 09:00 SP: resume dispatch then keep 10/h; kill with pause.
 
 ---
 
 ## Residuals (non-blocking)
 
-- Outcome receptor `--memory-store` (delivery proven; durable DM follow-up)
-- Feed stock age 2026-08-08 (refresh preferred; not safety-critical while paused)
-- Self-reply FromAddr parsing quirk (` (email)` form) — real lead From headers parse; optional hardening later
+- Outcome receptor `--memory-store`
+- Feed stock age 2026-08-08
+- First mailbox attach after worker recreate still needs one ADD_EMAIL (normal in-memory worker design); continuous poll after settle is proven
 
 ---
 
 ## Evidence
 
-`/tmp/grok-goal-16829f704c38/implementer/evidence/` — `reply-stop-live-pass.log`, `outcome-delivery-proof.log`, `self-smoke.log`, `post_status.txt`, `shas.json`, `sha-audit.md`.
+`/tmp/grok-goal-16829f704c38/implementer/evidence/` — `reply-stop-continuous-poll.log`, `deploy-imap-select-status.log`, `deploy-sha-transcript.log`, `shas.json`, `sha-audit.md`, `deploy-warmbly.json`, `GO-NO-GO.md`.
