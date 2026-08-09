@@ -133,6 +133,7 @@ services:
       - ${CONFENGE_FEED_CA_HOST_PATH:-./ops/feed-tls/ca-bundle.crt}:/etc/ssl/confenge-ca-bundle.crt:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "confenge-feed:host-gateway"
     deploy:
       resources:
         limits:
@@ -171,6 +172,7 @@ services:
       - ${CONFENGE_SIGNATURE_IMAGE_HOST_PATH:-./data/confenge}:/data/confenge:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "confenge-feed:host-gateway"
     deploy:
       resources:
         limits:
