@@ -35,11 +35,16 @@ var (
 		regexp.MustCompile(`(?i)^synthetic@`),
 		regexp.MustCompile(`(?i)^example@`),
 	}
+	// URL markers for clear synthetic hosts/paths. Do NOT include bare
+	// "example.com" as a substring — unit fixtures use acme.example.com etc.
 	fixtureURLMarkers = []string{
 		"fixture",
 		"/fixtures/",
-		"example.com",
-		"example.org",
+		"://example.com",
+		"://example.org",
+		"://example.net",
+		"@example.com",
+		"@example.org",
 		"demo000obra",
 		"demo001obra",
 		"demo002obra",

@@ -260,18 +260,21 @@ func (c *OutreachContactCandidate) CanEnroll() bool {
 	if OutreachUnenrollableVerification[c.VerificationStatus] {
 		return false
 	}
-	// Defense-in-depth: demo/fixture domains never enroll (even if VERIFIED/COMPANY_OWNED).
+	// Defense-in-depth: known synthetic demo00Xobra channels never enroll
+	// even if labeled VERIFIED/COMPANY_OWNED. Broader fixture heuristics
+	// (example.com) are enforced at import (leadToCandidate taint gate), not
+	// here — unit fixtures legitimately use @example.com.
 	email := strings.ToLower(strings.TrimSpace(c.Email))
 	if strings.Contains(email, "@demo") && strings.Contains(email, "obra.com.br") {
 		return false
 	}
-	if strings.HasSuffix(email, "@example.com") || strings.HasSuffix(email, "@example.org") {
-		return false
-	}
-	if strings.HasPrefix(email, "demo@") || strings.HasPrefix(email, "test@") || strings.HasPrefix(email, "fixture@") {
+	if strings.HasPrefix(email, "fixture@") || strings.HasPrefix(email, "synthetic@") {
 		return false
 	}
 	if strings.Contains(c.BlockReason, "provenance_taint") || strings.Contains(c.BlockReason, "provenance_chain") {
+		return false
+	}
+	if strings.Contains(c.BlockReason, "PROVENANCE_CONTAMINATION") {
 		return false
 	}
 	return true
