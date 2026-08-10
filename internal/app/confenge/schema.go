@@ -154,6 +154,11 @@ type FeedContact struct {
 	MailboxPurposeSendBlocked      *bool  `json:"mailbox_purpose_send_blocked,omitempty"`
 	OwnershipStatus                string `json:"ownership_status,omitempty"`
 	RecipientCommercialSuitability string `json:"recipient_commercial_suitability,omitempty"`
+	// Provenance trust fields (extra-cli). Optional; absence + demo patterns still fail closed.
+	ProvenanceChainValid *bool  `json:"provenance_chain_valid,omitempty"`
+	ProvenanceTrust      string `json:"provenance_trust,omitempty"`
+	RootSourceType       string `json:"root_source_type,omitempty"`
+	DerivedFromFixture   *bool  `json:"derived_from_fixture,omitempty"`
 }
 
 // FeedEvidence is one evidence item (text only; HTML stripped on import).

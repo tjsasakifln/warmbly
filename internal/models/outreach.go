@@ -1,6 +1,7 @@
 package models
 
 import (
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -257,6 +258,20 @@ func (c *OutreachContactCandidate) CanEnroll() bool {
 		return false
 	}
 	if OutreachUnenrollableVerification[c.VerificationStatus] {
+		return false
+	}
+	// Defense-in-depth: demo/fixture domains never enroll (even if VERIFIED/COMPANY_OWNED).
+	email := strings.ToLower(strings.TrimSpace(c.Email))
+	if strings.Contains(email, "@demo") && strings.Contains(email, "obra.com.br") {
+		return false
+	}
+	if strings.HasSuffix(email, "@example.com") || strings.HasSuffix(email, "@example.org") {
+		return false
+	}
+	if strings.HasPrefix(email, "demo@") || strings.HasPrefix(email, "test@") || strings.HasPrefix(email, "fixture@") {
+		return false
+	}
+	if strings.Contains(c.BlockReason, "provenance_taint") || strings.Contains(c.BlockReason, "provenance_chain") {
 		return false
 	}
 	return true
