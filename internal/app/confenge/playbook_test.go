@@ -61,16 +61,16 @@ func TestResolveServiceAndOffer(t *testing.T) {
 	// extra-cli service_id aliases must resolve to the same playbook family
 	// (never fall through to empty → REAJUSTE invent).
 	cases := map[string]string{
-		"estruturacao_pleito_reajuste":   "REAJUSTE",
+		"estruturacao_pleito_reajuste":      "REAJUSTE",
 		"reequilibrio_economico_financeiro": "REEQUILIBRIO",
-		"aditivos_extracontratuais":      "ADITIVOS",
-		"medicoes_glosas_memoria":        "MEDICOES",
-		"auditoria_orcamento_bdi":        "PLANILHAS",
-		"gestao_monitoramento_contratual": "MONITORAMENTO_CONTRATUAL",
-		"apoio_licitacoes_propostas":     "APOIO_LICITACAO",
-		"inteligencia_pncp_mercado":      "INTELIGENCIA_PNCP",
-		"diagnostico_contratual_b2g":     "DIAGNOSTICO",
-		"reforco_temporario_backoffice":  "BACKOFFICE",
+		"aditivos_extracontratuais":         "ADITIVOS",
+		"medicoes_glosas_memoria":           "MEDICOES",
+		"auditoria_orcamento_bdi":           "PLANILHAS",
+		"gestao_monitoramento_contratual":   "MONITORAMENTO_CONTRATUAL",
+		"apoio_licitacoes_propostas":        "APOIO_LICITACAO",
+		"inteligencia_pncp_mercado":         "INTELIGENCIA_PNCP",
+		"diagnostico_contratual_b2g":        "DIAGNOSTICO",
+		"reforco_temporario_backoffice":     "BACKOFFICE",
 	}
 	for in, want := range cases {
 		got := pb.ResolveServicePlaybook(in)

@@ -267,13 +267,44 @@ func (s *service) ReviewDraft(ctx context.Context, orgID, userID, draftID uuid.U
 			Question: d.Question, CTA: d.CTA, Channel: channelKindFromDraft(d),
 		}
 		ev, _ := s.repo.ListEvidence(ctx, orgID, d.AccountID)
+		pb, _ := LoadPlaybook()
+		st := PlanOutreachStrategy(pb, acc, cand, ev, 1)
+		if out.ServiceCode == "" && acc != nil {
+			out.ServiceCode = acc.ServiceCode
+		}
+		if out.FactUsed == "" && acc != nil {
+			out.FactUsed = acc.FactToMention
+		}
 		val := ValidateDraft(&out, acc, cand, ValidateOpts{
 			MaxWords: maxWordsForDraft(s, d), Evidence: ev, Channel: out.Channel,
 			SkipEmailRecipient: d.Channel == models.OutreachChannelWhatsApp,
+			Strategy:           &st, Playbook: pb,
 		})
 		risk, flags := ClassifyRisk(acc, cand, &out, val)
-		valJSON, _ := json.Marshal(val)
-		d.ValidationJSON = valJSON
+		// Persist structural incompleteness flags so approve cannot ignore them.
+		for _, f := range st.RiskFlags {
+			if f != "" && !containsStr(flags, f) {
+				flags = append(flags, f)
+			}
+		}
+		if incomplete := StructuralApproveBlockers(acc, cand, &st, d, pb); len(incomplete) > 0 {
+			if !containsStr(flags, "incomplete_copy_context") {
+				flags = append(flags, "incomplete_copy_context")
+			}
+			if risk == "GREEN" {
+				risk = "YELLOW"
+			}
+			// incomplete structural gates demote to not-OK for operator clarity
+			val.OK = false
+			for _, b := range incomplete {
+				val.Errors = append(val.Errors, b)
+			}
+		}
+		recipient := d.RecipientEmail
+		if cand != nil && cand.Name != "" {
+			recipient = cand.Name + " <" + cand.Email + ">"
+		}
+		d.ValidationJSON = PackValidationWithStrategy(val, st, recipient)
 		ok := val.OK
 		d.ValidationOK = &ok
 		d.RiskClass = risk
@@ -288,18 +319,54 @@ func (s *service) ReviewDraft(ctx context.Context, orgID, userID, draftID uuid.U
 		out := DraftOutput{
 			Subject: d.Subject, BodyText: d.BodyText, FactUsed: d.FactUsed,
 			ServiceCode: d.ServiceCode, EvidenceIDs: d.EvidenceIDs,
+			Question: d.Question, CTA: d.CTA,
 			Channel: channelKindFromDraft(d),
 		}
 		ev, _ := s.repo.ListEvidence(ctx, orgID, d.AccountID)
+		pb, _ := LoadPlaybook()
+		// Rebuild strategy from persisted account/evidence — do not trust a
+		// weaker text-only revalidation path.
+		st := PlanOutreachStrategy(pb, acc, cand, ev, 1)
+		if persisted := strategyFromDraft(d); persisted != nil {
+			// Merge persisted micro-offer / why fields when human-repaired via regen
+			// but keep fail-closed risk flags from both.
+			st.RiskFlags = appendUnique(st.RiskFlags, persisted.RiskFlags...)
+			if st.MicroOfferCode == "" {
+				st.MicroOfferCode = persisted.MicroOfferCode
+			}
+			if st.WhyThisAccount == "" {
+				st.WhyThisAccount = persisted.WhyThisAccount
+			}
+			if st.WhyNow == "" {
+				st.WhyNow = persisted.WhyNow
+			}
+			if st.ObservedFact == "" {
+				st.ObservedFact = persisted.ObservedFact
+			}
+		}
+		if out.ServiceCode == "" && acc != nil {
+			out.ServiceCode = acc.ServiceCode
+		}
+		if out.FactUsed == "" {
+			fact := st.ObservedFact
+			if fact == "" && acc != nil {
+				fact = acc.FactToMention
+			}
+			out.FactUsed = fact
+		}
 		val := ValidateDraft(&out, acc, cand, ValidateOpts{
 			MaxWords: maxWordsForDraft(s, d), Evidence: ev, Channel: out.Channel,
 			SkipEmailRecipient: d.Channel == models.OutreachChannelWhatsApp,
+			Strategy:           &st, Playbook: pb,
 		})
 		if !val.OK {
 			return nil, errx.New(errx.BadRequest, "draft failed validation: "+joinErrs(val.Errors))
 		}
+		if blockers := StructuralApproveBlockers(acc, cand, &st, d, pb); len(blockers) > 0 {
+			return nil, errx.New(errx.BadRequest, FormatApproveBlockers(blockers))
+		}
 		if d.Provider == "template" && s.cfg.RequireHumanApproval {
-			// Template is allowed after explicit human approve.
+			// Template is allowed after explicit human approve (still structural-gated).
 		}
 		now := time.Now().UTC()
 		d.Status = models.OutreachDraftApproved
