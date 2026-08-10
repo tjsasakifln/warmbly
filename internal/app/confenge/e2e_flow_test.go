@@ -72,9 +72,11 @@ func TestSyntheticOperationalFlow(t *testing.T) {
 		t.Fatal("expected approve to fail on banned phrase")
 	}
 
-	// Clean human edit + approve
-	subj := "Sobre ACME"
-	body := "Ola Ana,\n\nNotei " + acme.FactToMention + ".\n\nFaz sentido conversarmos?\n\nPosso enviar checklist?"
+	// Clean human edit + approve (body must clear structural min-word/fact-anchor floors)
+	subj := "Sobre a prorrogacao na ACME"
+	body := "Ola Ana,\n\nNotei " + acme.FactToMention + ".\n\n" +
+		"Faz sentido conversarmos sobre o controle de aditivos desta obra?\n\n" +
+		"Posso enviar um checklist de 1 pagina?\n\nAbracos"
 	if _, xerr = svc.ReviewDraft(context.Background(), org, user, draft.ID, "edit", &DraftEdit{Subject: &subj, BodyText: &body}); xerr != nil {
 		t.Fatal(xerr)
 	}
