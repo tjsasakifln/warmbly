@@ -4,8 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/warmbly/warmbly/internal/models"
+)
+
+// Minimum commercial surface for human approve (email). WhatsApp uses a lower floor.
+const (
+	minApproveSubjectRunes  = 8
+	minApproveEmailWords    = 25
+	minApproveWhatsAppWords = 12
 )
 
 // StructuralApproveBlockers reconstructs commercial completeness from persisted
@@ -145,7 +153,96 @@ func StructuralApproveBlockers(
 		add("red_incomplete", "RED draft with structural incompleteness cannot be approved")
 	}
 
+	// Draft surface completeness: a human edit that hollows subject/body must
+	// not become APPROVED merely because account strategy fields remain rich.
+	// Case A (prod no-send): subject "x" + body "Oi" must fail closed.
+	subj := strings.TrimSpace(d.Subject)
+	body := strings.TrimSpace(d.BodyText)
+	isWA := d.Channel == models.OutreachChannelWhatsApp || strings.EqualFold(strings.TrimSpace(d.Channel), "whatsapp")
+	if !isWA {
+		if subj == "" {
+			add("incomplete_subject", "subject is empty")
+		} else if utf8.RuneCountInString(subj) < minApproveSubjectRunes {
+			add("incomplete_subject", "subject too short for commercial outreach")
+		}
+	}
+	if body == "" {
+		add("incomplete_body", "body is empty")
+	} else {
+		minWords := minApproveEmailWords
+		if isWA {
+			minWords = minApproveWhatsAppWords
+		}
+		if countWords(body) < minWords {
+			add("incomplete_body", fmt.Sprintf("body too short (%d words; need >=%d)", countWords(body), minWords))
+		}
+		if isHollowDraftBody(body) {
+			add("hollow_body", "body is greeting-only or commercially hollow")
+		}
+		// If we have a concrete observed fact, body should anchor at least one
+		// non-trivial token so approve cannot rubber-stamp unrelated fluff.
+		if obs != "" && !isGenericPublicFact(obs) && !bodyAnchorsFact(body, obs) {
+			add("body_missing_fact_anchor", "body does not reference the observed public fact")
+		}
+	}
+
 	return blockers
+}
+
+// isHollowDraftBody detects greeting-only / placeholder human edits.
+func isHollowDraftBody(body string) bool {
+	b := strings.TrimSpace(strings.ToLower(body))
+	if b == "" {
+		return true
+	}
+	// Strip common punctuation and collapse whitespace.
+	repl := strings.NewReplacer(
+		",", " ", ".", " ", "!", " ", "?", " ", ";", " ", ":", " ",
+		"\n", " ", "\r", " ", "\t", " ",
+	)
+	b = strings.Join(strings.Fields(repl.Replace(b)), " ")
+	hollowExact := map[string]bool{
+		"oi": true, "olá": true, "ola": true, "bom dia": true, "boa tarde": true,
+		"boa noite": true, "hello": true, "hi": true, "hey": true, "test": true,
+		"teste": true, "ok": true, "obrigado": true, "obrigada": true,
+	}
+	if hollowExact[b] {
+		return true
+	}
+	// Extremely short after stripping (e.g. "Oi", "x", "abc")
+	if countWords(b) <= 2 && utf8.RuneCountInString(b) < 12 {
+		return true
+	}
+	return false
+}
+
+// bodyAnchorsFact reports whether body shares a non-trivial token with the fact.
+func bodyAnchorsFact(body, fact string) bool {
+	bodyL := strings.ToLower(body)
+	// Prefer multi-digit contract-like tokens and significant words (>=5 runes).
+	for _, tok := range strings.FieldsFunc(strings.ToLower(fact), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '/' && r != '-'
+	}) {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
+		// digits / contract numbers
+		hasDigit := false
+		for _, r := range tok {
+			if r >= '0' && r <= '9' {
+				hasDigit = true
+				break
+			}
+		}
+		if hasDigit && len(tok) >= 3 && strings.Contains(bodyL, tok) {
+			return true
+		}
+		if utf8.RuneCountInString(tok) >= 6 && strings.Contains(bodyL, tok) {
+			return true
+		}
+	}
+	return false
 }
 
 func containsAnyFlag(flags []string, want ...string) bool {

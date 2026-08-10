@@ -225,11 +225,49 @@ func TestStructuralApproveAllowsAAutomaticTier(t *testing.T) {
 	acc.MomentEvidenceIDs = []string{"ev-1"}
 	cand := testCand("Engenheira de contratos")
 	st := PlanOutreachStrategy(pb, acc, cand, nil, 1)
-	d := &models.OutreachDraft{ServiceCode: acc.ServiceCode, FactUsed: acc.FactToMention, RiskClass: "YELLOW"}
+	// Surface-complete draft so only tier logic is under test.
+	d := &models.OutreachDraft{
+		ServiceCode: acc.ServiceCode,
+		FactUsed:    acc.FactToMention,
+		RiskClass:   "YELLOW",
+		Subject:     "Sobre a prorrogacao do contrato 001/2025",
+		BodyText: "Ola Ana,\n\nVi a prorrogacao do contrato 001/2025 publicada no PNCP em julho/2026. " +
+			"Faz sentido conversarmos sobre o controle de aditivos desta obra?\n\n" +
+			"Posso enviar um checklist de 1 pagina?\n\nAbracos",
+	}
 	blockers := StructuralApproveBlockers(acc, cand, &st, d, pb)
 	for _, b := range blockers {
 		if strings.Contains(b, "target_not_confirmed") {
 			t.Fatalf("A_AUTOMATIC must not be target_not_confirmed: %v", blockers)
 		}
+	}
+}
+
+func TestStructuralApproveBlocksHollowHumanEdit(t *testing.T) {
+	// Prod no-send case A: complete account strategy + hollow body/subject must fail closed.
+	pb := MustPlaybook()
+	acc := testAccount("ADITIVOS", "CONTRACT_EXTENSION", "Prorrogacao do contrato 001/2025 publicada no PNCP em julho/2026 para obra de pavimentacao")
+	acc.TargetFitSendTier = "A_AUTOMATIC"
+	acc.MomentEvidenceIDs = []string{"ev-1"}
+	cand := testCand("Engenheira de contratos")
+	st := PlanOutreachStrategy(pb, acc, cand, nil, 1)
+	d := &models.OutreachDraft{
+		ServiceCode: acc.ServiceCode,
+		FactUsed:    acc.FactToMention,
+		RiskClass:   "GREEN",
+		RiskFlags:   []string{"low_send_risk"},
+		Subject:     "x",
+		BodyText:    "Oi",
+		Channel:     models.OutreachChannelEmail,
+	}
+	blockers := StructuralApproveBlockers(acc, cand, &st, d, pb)
+	if len(blockers) == 0 {
+		t.Fatal("hollow subject/body must block approve even when account strategy is complete")
+	}
+	joined := strings.Join(blockers, " ")
+	if !strings.Contains(joined, "incomplete_subject") &&
+		!strings.Contains(joined, "incomplete_body") &&
+		!strings.Contains(joined, "hollow_body") {
+		t.Fatalf("expected incomplete/hollow surface blockers, got %v", blockers)
 	}
 }
