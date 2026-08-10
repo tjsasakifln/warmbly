@@ -1,6 +1,7 @@
 package models
 
 import (
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -257,6 +258,23 @@ func (c *OutreachContactCandidate) CanEnroll() bool {
 		return false
 	}
 	if OutreachUnenrollableVerification[c.VerificationStatus] {
+		return false
+	}
+	// Defense-in-depth: known synthetic demo00Xobra channels never enroll
+	// even if labeled VERIFIED/COMPANY_OWNED. Broader fixture heuristics
+	// (example.com) are enforced at import (leadToCandidate taint gate), not
+	// here — unit fixtures legitimately use @example.com.
+	email := strings.ToLower(strings.TrimSpace(c.Email))
+	if strings.Contains(email, "@demo") && strings.Contains(email, "obra.com.br") {
+		return false
+	}
+	if strings.HasPrefix(email, "fixture@") || strings.HasPrefix(email, "synthetic@") {
+		return false
+	}
+	if strings.Contains(c.BlockReason, "provenance_taint") || strings.Contains(c.BlockReason, "provenance_chain") {
+		return false
+	}
+	if strings.Contains(c.BlockReason, "PROVENANCE_CONTAMINATION") {
 		return false
 	}
 	return true

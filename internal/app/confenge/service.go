@@ -540,6 +540,27 @@ func leadToCandidate(orgID, accountID, runID uuid.UUID, fc FeedContact) *models.
 	if fc.MailboxPurposeSendBlocked != nil {
 		cand.MailboxPurposeSendBlocked = *fc.MailboxPurposeSendBlocked
 	}
+	// Fail-closed provenance taint: demo/fixture never becomes send_ready even if feed claims VERIFIED.
+	derivedFixture := fc.DerivedFromFixture != nil && *fc.DerivedFromFixture
+	if fc.ProvenanceChainValid != nil && !*fc.ProvenanceChainValid {
+		cand.EmailSendReady = false
+		cand.Recommended = false
+		if cand.BlockReason == "" {
+			cand.BlockReason = "provenance_chain_invalid"
+		}
+	}
+	if t, reason := ContactProvenanceTainted(fc.Email, fc.SourceURL, fc.RootSourceType, fc.VerificationStatus, derivedFixture); t {
+		cand.EmailSendReady = false
+		cand.Recommended = false
+		cand.Blocked = true
+		if cand.BlockReason == "" {
+			cand.BlockReason = "provenance_taint:" + reason
+		}
+	}
+	if fc.RecipientCommercialSuitability == "UNSUITABLE_PROVENANCE" {
+		cand.EmailSendReady = false
+		cand.Recommended = false
+	}
 	if cand.WhatsAppConsentStatus == "" {
 		cand.WhatsAppConsentStatus = "UNKNOWN"
 	}
