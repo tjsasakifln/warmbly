@@ -271,3 +271,34 @@ func TestStructuralApproveBlocksHollowHumanEdit(t *testing.T) {
 		t.Fatalf("expected incomplete/hollow surface blockers, got %v", blockers)
 	}
 }
+
+func TestStructuralApproveDoesNotStickyPoisonAfterRepair(t *testing.T) {
+	// After a hollow edit, draft.RiskFlags may still list incomplete_copy_context.
+	// A repaired body must not stay blocked solely by sticky draft flags.
+	pb := MustPlaybook()
+	acc := testAccount("ADITIVOS", "CONTRACT_EXTENSION", "Prorrogacao do contrato 001/2025 publicada no PNCP em julho/2026 para obra de pavimentacao")
+	acc.TargetFitSendTier = "A_AUTOMATIC"
+	acc.MomentEvidenceIDs = []string{"ev-1"}
+	cand := testCand("Engenheira de contratos")
+	st := PlanOutreachStrategy(pb, acc, cand, nil, 1)
+	d := &models.OutreachDraft{
+		ServiceCode: acc.ServiceCode,
+		FactUsed:    acc.FactToMention,
+		RiskClass:   "YELLOW",
+		RiskFlags:   []string{"low_send_risk", "incomplete_copy_context"},
+		Subject:     "Sobre a prorrogacao do contrato 001/2025",
+		BodyText: "Ola Ana,\n\nVi a prorrogacao do contrato 001/2025 publicada no PNCP em julho/2026. " +
+			"Faz sentido conversarmos sobre o controle de aditivos desta obra?\n\n" +
+			"Posso enviar um checklist de 1 pagina?\n\nAbracos",
+		Channel: models.OutreachChannelEmail,
+	}
+	blockers := StructuralApproveBlockers(acc, cand, &st, d, pb)
+	for _, b := range blockers {
+		if strings.Contains(b, "incomplete_copy_context") {
+			t.Fatalf("sticky draft incomplete_copy_context must not block repaired draft: %v", blockers)
+		}
+		if strings.Contains(b, "incomplete_body") || strings.Contains(b, "hollow_body") || strings.Contains(b, "incomplete_subject") {
+			t.Fatalf("repaired surface must not be incomplete: %v", blockers)
+		}
+	}
+}

@@ -82,7 +82,7 @@ func StructuralApproveBlockers(
 		}
 	}
 
-	// Prefer reconstructed strategy; fall back to draft risk flags / validation JSON.
+	// Prefer reconstructed strategy; fall back to draft validation JSON.
 	if st == nil {
 		st = strategyFromDraft(d)
 	}
@@ -92,10 +92,11 @@ func StructuralApproveBlockers(
 		st = &tmp
 	}
 
+	// Use strategy risk flags only. Draft.RiskFlags are outputs of prior
+	// classify/structural runs and stick across human repairs (e.g. hollow
+	// body → incomplete_copy_context must not permanently poison approve after
+	// a valid edit). Recompute incompleteness from strategy + draft surface.
 	flags := append([]string{}, st.RiskFlags...)
-	if d != nil {
-		flags = append(flags, d.RiskFlags...)
-	}
 
 	serviceCode := strings.TrimSpace(firstNonEmpty(st.ServiceCode, d.ServiceCode, acc.ServiceCode))
 	if serviceCode == "" {
