@@ -112,7 +112,8 @@ func PlanOutreachStrategy(
 		st.ObservedFact = strings.TrimSpace(acc.FactToMention)
 		st.ClaimsToAvoid = append([]string{}, acc.ClaimsToAvoid...)
 		company := firstNonEmpty(acc.NomeFantasia, acc.RazaoSocial)
-		st.WhyThisAccount = "empresa com momento comercial público: " + firstNonEmpty(company, acc.CNPJ14)
+		// Prefer concrete public fact over hollow "momento comercial público" boilerplate.
+		st.WhyThisAccount = buildWhyThisAccount(company, acc.CNPJ14, st.ObservedFact, st.TriggerSummary)
 		st.AccountArchetype = inferArchetype(acc, evidence)
 	}
 	if cand != nil {
@@ -161,6 +162,11 @@ func PlanOutreachStrategy(
 		if st.ServiceName == "" {
 			st.ServiceName = svc.Name
 		}
+		// Normalize service code to playbook canonical (never invent REAJUSTE for unknown).
+		if st.ServiceCode != "" && !strings.EqualFold(st.ServiceCode, svc.Code) {
+			// Keep upstream code in strategy but resolve playbook via svc.Code for offers.
+			st.ServiceName = svc.Name
+		}
 		st.CommercialReframe = strings.TrimSpace(svc.CommercialInsight)
 		if len(svc.ProblemHypotheses) > 0 {
 			st.ProblemHypothesis = svc.ProblemHypotheses[0]
@@ -170,10 +176,21 @@ func PlanOutreachStrategy(
 		}
 		st.ClaimsToAvoid = appendUnique(st.ClaimsToAvoid, svc.DisallowedClaims...)
 		st.MicroOfferCode = svc.DefaultMicroOffer
+	} else if strings.TrimSpace(st.ServiceCode) != "" {
+		// Unknown service from extra-cli: fail closed — never map to REAJUSTE.
+		st.RiskFlags = appendUnique(st.RiskFlags, "unknown_service_code", "needs_review", "service_unmapped")
+		st.MicroOfferCode = ""
+		st.ProblemHypothesis = ""
+		st.CommercialReframe = "Serviço upstream não mapeado no playbook; não inventar especialidade."
+	} else {
+		st.RiskFlags = appendUnique(st.RiskFlags, "missing_service_code", "needs_review")
 	}
 
-	// Annualidade special case: never claim unpaid reajuste
-	if isAnnualidadeContext(st.ActivationTrigger, st.TriggerSummary, st.ObservedFact) {
+	// Annualidade special case: never claim unpaid reajuste.
+	// Only when service is already reajuste-family — do not force REAJUSTE onto other services.
+	reajusteFamily := (svc != nil && strings.EqualFold(svc.Code, "REAJUSTE")) ||
+		strings.Contains(strings.ToUpper(st.ServiceCode), "REAJUSTE")
+	if isAnnualidadeContext(st.ActivationTrigger, st.TriggerSummary, st.ObservedFact) && reajusteFamily {
 		st.RiskFlags = appendUnique(st.RiskFlags, "annualidade_verify_only")
 		st.ProblemHypothesis = "pode haver documentos e memórias de reajuste a conferir neste ciclo (hipótese, não crédito comprovado)"
 		st.ImplicationHypothesis = "sem verificação, a equipe pode perder tempo reconstituindo a memória documental depois"
@@ -221,7 +238,8 @@ func PlanOutreachStrategy(
 			}
 		}
 	}
-	if st.MicroOfferCode == "" && pb != nil {
+	// Only apply generic LOW fallback when service is known; unknown must stay empty (NEEDS_REVIEW).
+	if st.MicroOfferCode == "" && pb != nil && svc != nil {
 		st.MicroOfferCode = fallbackLOWOffer(pb, st.ServiceCode)
 		if o := pb.FindOffer(st.MicroOfferCode); o != nil {
 			st.MicroOfferDescription = o.Description
@@ -230,6 +248,13 @@ func PlanOutreachStrategy(
 				st.CTASuggested = o.CTAPatterns[0]
 			}
 		}
+	}
+	if st.MicroOfferCode == "" {
+		st.RiskFlags = appendUnique(st.RiskFlags, "incomplete_strategy", "needs_review")
+	}
+	if st.WhyThisAccount == "" || st.WhyNow == "" || st.ObservedFact == "" ||
+		isGenericWhyThisAccount(st.WhyThisAccount) || isGenericWhyNow(st.WhyNow) {
+		st.RiskFlags = appendUnique(st.RiskFlags, "incomplete_copy_context", "needs_review")
 	}
 
 	// Sequence-specific CTA
@@ -311,6 +336,99 @@ func ExplainStrategy(st OutreachStrategy, recipient string) StrategyExplain {
 		Experiment: exp,
 		Doctrine:   st.DoctrineVersion,
 	}
+}
+
+func buildWhyThisAccount(company, cnpj, fact, momentSummary string) string {
+	fact = strings.TrimSpace(fact)
+	company = strings.TrimSpace(company)
+	momentSummary = strings.TrimSpace(momentSummary)
+	if fact != "" && len(fact) >= 24 && !isGenericPublicFact(fact) {
+		if company != "" {
+			return company + " — fato público: " + truncateRunes(fact, 180)
+		}
+		return "fato público: " + truncateRunes(fact, 180)
+	}
+	if momentSummary != "" && !isGenericWhyNow(momentSummary) && len(momentSummary) >= 24 {
+		if company != "" {
+			return company + " — " + truncateRunes(momentSummary, 160)
+		}
+		return truncateRunes(momentSummary, 160)
+	}
+	// Hollow fallback is intentionally weak so incomplete_copy_context fires.
+	if company != "" {
+		return "empresa com momento comercial público: " + company
+	}
+	return "empresa com momento comercial público: " + strings.TrimSpace(cnpj)
+}
+
+func isGenericWhyThisAccount(s string) bool {
+	t := strings.ToLower(strings.TrimSpace(s))
+	if t == "" || len([]rune(t)) < 40 {
+		return true
+	}
+	hollow := []string{
+		"empresa com momento comercial público",
+		"portfólio público observável",
+		"portfolio publico observavel",
+		"empresa com portfólio público",
+	}
+	for _, h := range hollow {
+		if strings.Contains(t, h) {
+			// Still hollow unless a concrete contractual token appears.
+			if !hasConcreteContractToken(t) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isGenericWhyNow(s string) bool {
+	t := strings.ToLower(strings.TrimSpace(s))
+	if t == "" {
+		return true
+	}
+	hollow := []string{
+		"momento comercial indicado pelo extra-cli",
+		"portfólio público de contratos de engenharia/construção observado",
+		"portfolio publico de contratos",
+		"há portfólio público observável sem dor contratual",
+		"ha portfolio publico observavel sem dor contratual",
+	}
+	for _, h := range hollow {
+		if strings.Contains(t, h) && !hasConcreteContractToken(t) {
+			return true
+		}
+	}
+	return false
+}
+
+func isGenericPublicFact(s string) bool {
+	t := strings.ToLower(strings.TrimSpace(s))
+	if t == "" {
+		return true
+	}
+	// Portfolio-count boilerplate from intelligence layers.
+	if strings.Contains(t, "portfólio público observado com") && strings.Contains(t, "contrato") {
+		return true
+	}
+	if strings.Contains(t, "ufs observadas nos contratos") {
+		return true
+	}
+	return false
+}
+
+func hasConcreteContractToken(t string) bool {
+	for _, c := range []string{
+		"objeto", "paviment", "obra", "engenharia", "aditivo", "medição", "medicao",
+		"orgão", "orgao", "prefeitura", "dnit", "empreitada", "saneamento", "reabilitação",
+		"reabilitacao", "contrato ", "fato público:",
+	} {
+		if strings.Contains(t, c) {
+			return true
+		}
+	}
+	return false
 }
 
 func isAnnualidadeContext(trigger, summary, fact string) bool {

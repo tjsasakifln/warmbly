@@ -117,6 +117,40 @@ offers:
     cta_patterns:
       - Quer um snapshot do que eu verificaria no edital/instrumento?
 
+  - code: DIAGNOSTIC_CHECKLIST
+    description: Checklist diagnóstico do que conferir no portfólio público (sem especialidade inventada)
+    buyer_value: Clareza sobre o próximo passo factual antes de ofertar serviço especializado
+    fulfillment_path: draft_from_evidence
+    fulfillment_cost: LOW
+    required_evidence: [any]
+    applicable_service_codes: [DIAGNOSTICO, MONITORAMENTO_CONTRATUAL, INTELIGENCIA_PNCP]
+    prohibited_claims: [reajuste a receber, crédito confirmado]
+    cta_patterns:
+      - Posso te mandar o checklist diagnóstico do que eu conferiria primeiro?
+      - Faz sentido eu te enviar o recorte público para validarmos juntos?
+
+  - code: MARKET_BRIEF
+    description: Briefing curto de mercado/PNCP a partir de dados públicos
+    buyer_value: Leitura priorizada de órgãos e oportunidades aderentes
+    fulfillment_path: draft_from_evidence
+    fulfillment_cost: LOW
+    required_evidence: [public_fact]
+    applicable_service_codes: [INTELIGENCIA_PNCP, APOIO_LICITACAO]
+    prohibited_claims: [garantimos vitória]
+    cta_patterns:
+      - Posso te mandar o briefing público que montei sobre o seu recorte de mercado?
+
+  - code: BACKOFFICE_SCOPE_CHECK
+    description: Escopo mínimo de reforço pontual (sem presumir falta de capacidade interna)
+    buyer_value: Separar pico operacional de necessidade estrutural
+    fulfillment_path: draft_from_evidence
+    fulfillment_cost: LOW
+    required_evidence: [moment_or_contract]
+    applicable_service_codes: [BACKOFFICE, MONITORAMENTO_CONTRATUAL]
+    prohibited_claims: [vocês não têm estrutura, precisam terceirizar tudo]
+    cta_patterns:
+      - Posso te mostrar o escopo mínimo que eu validaria antes de qualquer reforço?
+
 # Explicitly not auto-offered on cold path
 restricted_offers:
   - code: FULL_DIAGNOSTIC
