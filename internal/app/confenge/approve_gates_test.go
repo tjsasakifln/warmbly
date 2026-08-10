@@ -217,3 +217,19 @@ func stringsSliceKeys(ss []string) []string {
 	}
 	return out
 }
+
+func TestStructuralApproveAllowsAAutomaticTier(t *testing.T) {
+	pb := MustPlaybook()
+	acc := testAccount("ADITIVOS", "CONTRACT_EXTENSION", "Prorrogacao do contrato 001/2025 publicada no PNCP em julho/2026 para obra de pavimentacao")
+	acc.TargetFitSendTier = "A_AUTOMATIC"
+	acc.MomentEvidenceIDs = []string{"ev-1"}
+	cand := testCand("Engenheira de contratos")
+	st := PlanOutreachStrategy(pb, acc, cand, nil, 1)
+	d := &models.OutreachDraft{ServiceCode: acc.ServiceCode, FactUsed: acc.FactToMention, RiskClass: "YELLOW"}
+	blockers := StructuralApproveBlockers(acc, cand, &st, d, pb)
+	for _, b := range blockers {
+		if strings.Contains(b, "target_not_confirmed") {
+			t.Fatalf("A_AUTOMATIC must not be target_not_confirmed: %v", blockers)
+		}
+	}
+}
