@@ -234,11 +234,71 @@ async function ensureDraftLinked(token: string, tp: Touchpoint): Promise<Touchpo
   return getTouchpoint(token, tp.id);
 }
 
+async function preparePilotReviewTouchpoint(token: string): Promise<{
+  accountId: string;
+  touchpointId: string;
+}> {
+  const accounts = await apiJSON<{ data?: Array<{ id: string }> }>(
+    token,
+    "GET",
+    "/v1/confenge/accounts?limit=100",
+  );
+  let lastBlock = "no account returned by the current feed";
+  for (const account of accounts.data || []) {
+    const res = await fetch(`${API}/v1/confenge/pilot/cohort/prepare`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": `confenge-e2e-${account.id}`,
+      },
+      body: JSON.stringify({ account_ids: [account.id] }),
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      lastBlock = `account ${account.id}: HTTP ${res.status} ${text.slice(0, 200)}`;
+      continue;
+    }
+    const cohort = JSON.parse(text) as {
+      data?: {
+        results?: Array<{
+          status?: string;
+          reason_code?: string;
+          touchpoint_id?: string;
+        }>;
+      };
+    };
+    const result = cohort.data?.results?.[0];
+    if ((result?.status || "").toUpperCase() !== "PREPARED" || !result?.touchpoint_id) {
+      lastBlock = `account ${account.id}: ${result?.reason_code || "not_prepared"}`;
+      continue;
+    }
+    const touchpoint = await getTouchpoint(token, result.touchpoint_id);
+    if ((touchpoint.state || "").toUpperCase() !== "NEEDS_REVIEW") {
+      lastBlock = `account ${account.id}: prepared touchpoint is ${touchpoint.state || "unknown"}`;
+      continue;
+    }
+    await isolateReviewTouchpoint(token, result.touchpoint_id);
+    return { accountId: account.id, touchpointId: result.touchpoint_id };
+  }
+  throw new Error(`pilot cohort could not prepare a review touchpoint: ${lastBlock}`);
+}
+
 /** Plan + generate until a NEEDS_REVIEW touch sits alone at the front of the review queue. */
 async function ensureReviewTouchpoint(token: string): Promise<{
   accountId: string;
   touchpointId: string;
 }> {
+  // Approval and dispatch are pilot-only. Always enter through the durable
+  // cohort transaction so stale pre-import touchpoints cannot seed acceptance.
+  try {
+    return await preparePilotReviewTouchpoint(token);
+  } catch (error) {
+    if (process.env.CONFENGE_E2E_LEGACY_FALLBACK !== "1") throw error;
+  }
+
+  // This opt-in fallback is diagnostic only. CI and product acceptance never
+  // approve touchpoints that were not claimed by the pilot cohort transaction.
   // Reuse an already-reviewable touch if present (with body).
   const existing = await apiJSON<{ data?: Touchpoint[] }>(
     token,
@@ -693,7 +753,7 @@ test.describe("CONFENGE product acceptance UI", () => {
         tokens.access_token,
         "POST",
         `/v1/confenge/touchpoints/${seeded.touchpointId}/approve`,
-        {},
+        { generic_recipient_acknowledged: true },
       )
     ).data;
     const st1 = (tp.state || "").toUpperCase();
@@ -724,7 +784,7 @@ test.describe("CONFENGE product acceptance UI", () => {
         tokens.access_token,
         "POST",
         `/v1/confenge/touchpoints/${seeded.touchpointId}/approve`,
-        {},
+        { generic_recipient_acknowledged: true },
       )
     ).data;
     expect((tp.state || "").toUpperCase()).toBe("APPROVED");
@@ -812,6 +872,12 @@ test.describe("CONFENGE product acceptance UI", () => {
     const uiBody = page.getByTestId("confenge-body-input");
     const uiText = (await uiBody.inputValue()).replace(/\s+$/, "") + " [ui]";
     await uiBody.fill(uiText);
+    const genericAcknowledgement = page.getByText(
+      /Confirmei que a mensagem trata esta caixa como canal institucional/i,
+    );
+    if (await genericAcknowledgement.isVisible().catch(() => false)) {
+      await genericAcknowledgement.click();
+    }
     const approve = page.getByTestId("confenge-approve");
     await expect(approve).toBeEnabled({ timeout: 10_000 });
     await approve.click();
