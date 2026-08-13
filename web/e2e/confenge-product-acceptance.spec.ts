@@ -295,6 +295,7 @@ async function preparePilotReviewTouchpoint(token: string): Promise<{
     "/v1/confenge/accounts?limit=100",
   );
   let lastBlock = "no account returned by the current feed";
+  const blocks: string[] = [];
   for (const account of (accounts.data || []).filter((item) => importedCNPJs.has(item.cnpj14 || ""))) {
     const res = await fetch(`${API}/v1/confenge/pilot/cohort/prepare`, {
       method: "POST",
@@ -308,6 +309,7 @@ async function preparePilotReviewTouchpoint(token: string): Promise<{
     const text = await res.text();
     if (!res.ok) {
       lastBlock = `account ${account.id}: HTTP ${res.status} ${text.slice(0, 200)}`;
+      blocks.push(lastBlock);
       continue;
     }
     const cohort = JSON.parse(text) as {
@@ -322,17 +324,21 @@ async function preparePilotReviewTouchpoint(token: string): Promise<{
     const result = cohort.data?.results?.[0];
     if ((result?.status || "").toUpperCase() !== "PREPARED" || !result?.touchpoint_id) {
       lastBlock = `account ${account.id}: ${result?.reason_code || "not_prepared"}`;
+      blocks.push(lastBlock);
       continue;
     }
     const touchpoint = await getTouchpoint(token, result.touchpoint_id);
     if ((touchpoint.state || "").toUpperCase() !== "NEEDS_REVIEW") {
       lastBlock = `account ${account.id}: prepared touchpoint is ${touchpoint.state || "unknown"}`;
+      blocks.push(lastBlock);
       continue;
     }
     await isolateReviewTouchpoint(token, result.touchpoint_id);
     return { accountId: account.id, touchpointId: result.touchpoint_id };
   }
-  throw new Error(`pilot cohort could not prepare a review touchpoint: ${lastBlock}`);
+  throw new Error(
+    `pilot cohort could not prepare a review touchpoint: ${blocks.join("; ") || lastBlock}`,
+  );
 }
 
 /** Plan + generate until a NEEDS_REVIEW touch sits alone at the front of the review queue. */
