@@ -25,6 +25,9 @@ func (s *service) PlanAccountCadence(ctx context.Context, orgID, userID, account
 	if acc.DoNotContact || acc.Blocked {
 		return nil, errx.New(errx.BadRequest, "account is blocked or DO_NOT_CONTACT")
 	}
+	if err := RequireTargetFit(acc); err != nil {
+		return nil, errx.New(errx.BadRequest, err.Error())
+	}
 	existing, err := s.repo.ListTouchpoints(ctx, orgID, accountID, "", 50, 0)
 	if err != nil {
 		return nil, errx.New(errx.Internal, "list touchpoints failed")
@@ -56,6 +59,11 @@ func (s *service) PlanAccountCadence(ctx context.Context, orgID, userID, account
 	}
 	if ch != models.OutreachChannelEmail && ch != models.OutreachChannelWhatsApp {
 		return nil, errx.New(errx.BadRequest, "channel must be EMAIL or WHATSAPP")
+	}
+	if ch == models.OutreachChannelEmail {
+		if err := RequireEmailOutbound(acc, cand); err != nil {
+			return nil, errx.New(errx.BadRequest, err.Error())
+		}
 	}
 	recipient := ""
 	if cand != nil {
@@ -92,8 +100,14 @@ func (s *service) PlanAccountCadence(ctx context.Context, orgID, userID, account
 		if cand != nil {
 			tp.ContactCandidateID = &cand.ID
 		}
-		if err := s.repo.InsertTouchpoint(ctx, tp); err != nil {
-			return nil, errx.New(errx.Internal, "insert touchpoint: "+err.Error())
+		if persisted, getErr := s.repo.GetTouchpointByIdempotency(ctx, orgID, idem); getErr == nil && persisted != nil {
+			tp = persisted
+		} else if err := s.repo.InsertTouchpoint(ctx, tp); err != nil {
+			persisted, getErr := s.repo.GetTouchpointByIdempotency(ctx, orgID, idem)
+			if getErr != nil || persisted == nil {
+				return nil, errx.New(errx.Internal, "insert touchpoint: "+err.Error())
+			}
+			tp = persisted
 		}
 		id := tp.ID
 		prevID = &id
@@ -127,18 +141,17 @@ func (s *service) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, li
 			var cand *models.OutreachContactCandidate
 			if list[i].ContactCandidateID != nil {
 				cand, _ = s.repo.GetCandidate(ctx, orgID, *list[i].ContactCandidateID)
+				if cand != nil {
+					list[i].RecipientMailboxPurpose = cand.MailboxPurpose
+					list[i].RecipientGeneric = isGenericRecipient(cand)
+				}
 			}
 			st := PlanOutreachStrategy(pb, acc, cand, nil, pos)
 			if list[i].FactUsed != "" {
 				st.ObservedFact = list[i].FactUsed
 			}
 			ex := ExplainStrategy(st, list[i].Recipient)
-			list[i].StrategyExplain = map[string]any{
-				"why_now": ex.WhyNow, "fact_used": ex.FactUsed, "hypothesis": ex.Hypothesis,
-				"service": ex.Service, "offer": ex.Offer, "recipient": ex.Recipient,
-				"sources": ex.Sources, "touch": ex.Touch, "experiment": ex.Experiment,
-				"doctrine_version": ex.Doctrine,
-			}
+			list[i].StrategyExplain = strategyExplainProjection(ex, "")
 			if list[i].DraftID != nil {
 				if d, _ := s.repo.GetDraft(ctx, orgID, *list[i].DraftID); d != nil {
 					list[i].Draft = d
@@ -147,13 +160,7 @@ func (s *service) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, li
 						_ = json.Unmarshal(d.ValidationJSON, &val)
 						list[i].DoctrineAlerts = val.DoctrineAlerts
 						if val.StrategyExplain != nil {
-							list[i].StrategyExplain = map[string]any{
-								"why_now": val.StrategyExplain.WhyNow, "fact_used": val.StrategyExplain.FactUsed,
-								"hypothesis": val.StrategyExplain.Hypothesis, "service": val.StrategyExplain.Service,
-								"offer": val.StrategyExplain.Offer, "recipient": val.StrategyExplain.Recipient,
-								"sources": val.StrategyExplain.Sources, "touch": val.StrategyExplain.Touch,
-								"experiment": val.StrategyExplain.Experiment, "doctrine_version": val.StrategyExplain.Doctrine,
-							}
+							list[i].StrategyExplain = strategyExplainProjection(*val.StrategyExplain, ex.WhyThisAccount)
 						}
 					}
 				}
@@ -161,6 +168,16 @@ func (s *service) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, li
 		}
 	}
 	return list, nil
+}
+
+func strategyExplainProjection(ex StrategyExplain, fallbackWhyThisAccount string) map[string]any {
+	return map[string]any{
+		"why_this_account": firstNonEmpty(ex.WhyThisAccount, fallbackWhyThisAccount),
+		"why_now":          ex.WhyNow, "fact_used": ex.FactUsed, "hypothesis": ex.Hypothesis,
+		"service": ex.Service, "offer": ex.Offer, "recipient": ex.Recipient,
+		"sources": ex.Sources, "touch": ex.Touch, "experiment": ex.Experiment,
+		"doctrine_version": ex.Doctrine,
+	}
 }
 
 func (s *service) GetTouchpoint(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachTouchpoint, *errx.Error) {
@@ -214,9 +231,17 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	if acc.DoNotContact || acc.Blocked {
 		return nil, errx.New(errx.BadRequest, "account blocked or DNC")
 	}
+	if err := RequireTargetFit(acc); err != nil {
+		return nil, errx.New(errx.BadRequest, err.Error())
+	}
 	var cand *models.OutreachContactCandidate
 	if tp.ContactCandidateID != nil {
 		cand, _ = s.repo.GetCandidate(ctx, orgID, *tp.ContactCandidateID)
+	}
+	if tp.Channel != models.OutreachChannelWhatsApp {
+		if err := RequireEmailOutbound(acc, cand); err != nil {
+			return nil, errx.New(errx.BadRequest, err.Error())
+		}
 	}
 	evidence, _ := s.repo.ListEvidence(ctx, orgID, tp.AccountID)
 	priors, _ := s.repo.ListTouchpoints(ctx, orgID, tp.AccountID, models.TouchpointSent, 20, 0)
@@ -325,6 +350,9 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	if cand != nil {
 		draft.RecipientName, draft.RecipientRole, draft.RecipientEmail = cand.Name, cand.Role, cand.Email
 		draft.RecipientPhoneE164, draft.VerificationStatus = cand.PhoneE164, cand.VerificationStatus
+		if isGenericRecipient(cand) {
+			draft.RecipientName, draft.RecipientRole = "", ""
+		}
 	}
 	if err := s.repo.UpsertDraft(ctx, draft); err != nil {
 		return nil, errx.New(errx.Internal, "save draft: "+err.Error())
@@ -350,7 +378,7 @@ func jitCompose(tp *models.OutreachTouchpoint, acc *models.OutreachAccount, cand
 		fact = firstNonEmpty(evidence[0].Synthesis, evidence[0].Excerpt)
 	}
 	name := ""
-	if cand != nil {
+	if cand != nil && !isGenericRecipient(cand) {
 		name = strings.TrimSpace(strings.Split(cand.Name, " ")[0])
 	}
 	greeting := "Olá"
@@ -398,6 +426,22 @@ func (s *service) EditTouchpoint(ctx context.Context, orgID, userID, id uuid.UUI
 	if recipient != nil {
 		rec = strings.TrimSpace(*recipient)
 	}
+	var reboundCandidate *models.OutreachContactCandidate
+	if ch == models.OutreachChannelEmail && recipient != nil {
+		acc, loadErr := s.repo.GetAccount(ctx, orgID, tp.AccountID)
+		if loadErr != nil || acc == nil {
+			return nil, errx.New(errx.NotFound, "account not found")
+		}
+		candidates, loadErr := s.repo.ListCandidates(ctx, orgID, tp.AccountID)
+		if loadErr != nil {
+			return nil, errx.New(errx.Internal, "recipient validation failed")
+		}
+		resolved, block := resolvePilotRecipient(candidates, acc.LastImportRunID, time.Now().UTC())
+		if block != nil || !strings.EqualFold(strings.TrimSpace(resolved.Candidate.Email), rec) {
+			return nil, errx.New(errx.BadRequest, "recipient must match the single current authoritative contact")
+		}
+		reboundCandidate = resolved.Candidate
+	}
 	if subject != nil {
 		sub = *subject
 	}
@@ -405,11 +449,17 @@ func (s *service) EditTouchpoint(ctx context.Context, orgID, userID, id uuid.UUI
 		bod = *body
 	}
 	ApplyContentMutation(tp, ch, rec, sub, bod)
+	if reboundCandidate != nil {
+		id := reboundCandidate.ID
+		tp.ContactCandidateID = &id
+	}
 	if err := s.repo.UpdateTouchpoint(ctx, tp); err != nil {
 		return nil, errx.New(errx.Internal, "update failed")
 	}
 	if tp.DraftID != nil {
-		if d, _ := s.repo.GetDraft(ctx, orgID, *tp.DraftID); d != nil {
+		if d, loadErr := s.repo.GetDraft(ctx, orgID, *tp.DraftID); loadErr != nil {
+			return nil, errx.New(errx.Internal, "load draft failed")
+		} else if d != nil {
 			// Keep draft transport fields in lockstep with the touchpoint so
 			// requireTouchTransport ContentHash(draft) matches approved hash.
 			d.Subject, d.BodyText = tp.Subject, tp.BodyText
@@ -420,7 +470,13 @@ func (s *service) EditTouchpoint(ctx context.Context, orgID, userID, id uuid.UUI
 				d.RecipientEmail = tp.Recipient
 				// Rebind ContactCandidateID to an enrollable email match when the
 				// human edits the recipient (plan may have bound a phone-only cand).
-				if rec := strings.TrimSpace(tp.Recipient); rec != "" {
+				if reboundCandidate != nil {
+					id := reboundCandidate.ID
+					d.ContactCandidateID = &id
+					d.RecipientName = reboundCandidate.Name
+					d.RecipientRole = reboundCandidate.Role
+					d.VerificationStatus = reboundCandidate.VerificationStatus
+				} else if rec := strings.TrimSpace(tp.Recipient); rec != "" {
 					if list, err := s.repo.ListCandidates(ctx, orgID, tp.AccountID); err == nil {
 						for i := range list {
 							c := &list[i]
@@ -447,15 +503,19 @@ func (s *service) EditTouchpoint(ctx context.Context, orgID, userID, id uuid.UUI
 					d.ValidationJSON = b
 				}
 			}
-			_ = s.repo.UpsertDraft(ctx, d)
-			_ = s.repo.UpdateTouchpoint(ctx, tp)
+			if err := s.repo.UpsertDraft(ctx, d); err != nil {
+				return nil, errx.New(errx.Internal, "draft update failed")
+			}
+			if err := s.repo.UpdateTouchpoint(ctx, tp); err != nil {
+				return nil, errx.New(errx.Internal, "touchpoint rebind failed")
+			}
 		}
 	}
 	_ = userID
 	return tp, nil
 }
 
-func (s *service) ApproveTouchpoint(ctx context.Context, orgID, userID, id uuid.UUID) (*models.OutreachTouchpoint, *errx.Error) {
+func (s *service) ApproveTouchpoint(ctx context.Context, orgID, userID, id uuid.UUID, options ApprovalOptions) (*models.OutreachTouchpoint, *errx.Error) {
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, xerr
 	}
@@ -466,12 +526,74 @@ func (s *service) ApproveTouchpoint(ctx context.Context, orgID, userID, id uuid.
 	if err != nil || tp == nil {
 		return nil, errx.New(errx.NotFound, "touchpoint not found")
 	}
+	if s.cfg.OperatorMode {
+		if err := s.requirePilotMembershipForTouchpoint(ctx, orgID, tp); err != nil {
+			return nil, errx.New(errx.Conflict, "pilot approval blocked: "+err.Error())
+		}
+	}
 	if xerr := s.assertPriorReleased(ctx, orgID, tp); xerr != nil {
 		return nil, xerr
 	}
 	acc, _ := s.repo.GetAccount(ctx, orgID, tp.AccountID)
-	if acc != nil && (acc.DoNotContact || acc.Blocked) {
-		return nil, errx.New(errx.BadRequest, "account blocked or DNC")
+	if acc == nil {
+		return nil, errx.New(errx.NotFound, "account not found")
+	}
+	if err := AssertMessageContextFresh(acc, tp.GeneratedContextHash); err != nil {
+		ClearApproval(tp)
+		tp.ContextStale = true
+		tp.StopReason = "context_stale"
+		_ = s.repo.UpdateTouchpoint(ctx, tp)
+		return nil, errx.New(errx.Conflict, err.Error())
+	}
+	var cand *models.OutreachContactCandidate
+	if tp.ContactCandidateID != nil {
+		cand, _ = s.repo.GetCandidate(ctx, orgID, *tp.ContactCandidateID)
+	}
+	if tp.Channel == models.OutreachChannelWhatsApp {
+		if err := RequireTargetFit(acc); err != nil {
+			return nil, errx.New(errx.BadRequest, err.Error())
+		}
+	} else if err := RequireEmailOutbound(acc, cand); err != nil {
+		return nil, errx.New(errx.BadRequest, err.Error())
+	}
+	if cand == nil {
+		return nil, errx.New(errx.BadRequest, "approved contact candidate is missing")
+	}
+	if isGenericRecipient(cand) && !options.GenericRecipientAcknowledged {
+		return nil, errx.New(errx.BadRequest, "generic recipient requires explicit institutional-copy acknowledgement")
+	}
+	if tp.Channel == models.OutreachChannelWhatsApp {
+		phone := firstNonEmpty(cand.PhoneE164, cand.Phone)
+		if strings.TrimSpace(tp.Recipient) != strings.TrimSpace(phone) {
+			return nil, errx.New(errx.BadRequest, "recipient does not match the approved contact candidate")
+		}
+	} else if !strings.EqualFold(strings.TrimSpace(tp.Recipient), strings.TrimSpace(cand.Email)) {
+		return nil, errx.New(errx.BadRequest, "recipient does not match the approved contact candidate")
+	}
+	if (acc.LastImportRunID != nil || cand.LastImportRunID != nil) &&
+		(acc.LastImportRunID == nil || cand.LastImportRunID == nil || *acc.LastImportRunID != *cand.LastImportRunID) {
+		return nil, errx.New(errx.Conflict, "recipient is not present in the current account snapshot")
+	}
+	if tp.DraftID == nil {
+		return nil, errx.New(errx.BadRequest, "touchpoint has no review draft")
+	}
+	draft, draftErr := s.repo.GetDraft(ctx, orgID, *tp.DraftID)
+	if draftErr != nil || draft == nil {
+		return nil, errx.New(errx.BadRequest, "touchpoint review draft not found")
+	}
+	draftRecipient := draft.RecipientEmail
+	if tp.Channel == models.OutreachChannelWhatsApp {
+		draftRecipient = draft.RecipientPhoneE164
+	}
+	if draft.ContactCandidateID == nil || *draft.ContactCandidateID != cand.ID ||
+		!strings.EqualFold(strings.TrimSpace(draftRecipient), strings.TrimSpace(tp.Recipient)) ||
+		draft.Subject != tp.Subject || draft.BodyText != tp.BodyText {
+		return nil, errx.New(errx.Conflict, "touchpoint and draft content are inconsistent")
+	}
+	pb, _ := LoadPlaybook()
+	strategy := strategyFromDraft(draft)
+	if blockers := StructuralApproveBlockers(acc, cand, strategy, draft, pb); len(blockers) > 0 {
+		return nil, errx.New(errx.BadRequest, "approval blocked: "+strings.Join(blockers, "; "))
 	}
 	RecomputeContentHash(tp)
 	if err := ApplyHumanApproval(tp, userID, time.Now().UTC()); err != nil {
@@ -482,6 +604,16 @@ func (s *service) ApproveTouchpoint(ctx context.Context, orgID, userID, id uuid.
 	}
 	if acc != nil {
 		_ = s.repo.SetAccountHumanFlags(ctx, orgID, tp.AccountID, acc.Blocked, acc.DoNotContact, acc.BlockReason, models.OutreachQueueApproved)
+	}
+	if s.audit != nil {
+		draftID := ""
+		if tp.DraftID != nil {
+			draftID = tp.DraftID.String()
+		}
+		s.audit.LogAction(ctx, orgID, userID, models.AuditActionUpdate, models.AuditEntityOutreachAccount, &tp.AccountID, "", "",
+			map[string]string{"action": "touchpoint_approved", "touchpoint_id": tp.ID.String()},
+			map[string]string{"draft_id": draftID, "generic_recipient_acknowledged": fmt.Sprintf("%t", options.GenericRecipientAcknowledged)},
+		)
 	}
 	return tp, nil
 }
@@ -572,6 +704,9 @@ func (s *service) QueueTouchpoint(ctx context.Context, orgID, userID, id uuid.UU
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, xerr
 	}
+	if !s.cfg.SendingAllowed() {
+		return nil, errx.New(errx.Conflict, "sending paused; approval was preserved and nothing was queued")
+	}
 	tp, err := s.repo.GetTouchpoint(ctx, orgID, id)
 	if err != nil || tp == nil {
 		return nil, errx.New(errx.NotFound, "touchpoint not found")
@@ -659,16 +794,12 @@ func (s *service) dispatchEmailTouch(ctx context.Context, orgID, userID uuid.UUI
 		}
 		providerID = "smtp-approved:" + d.ID.String()
 	}
-	now := time.Now().UTC()
-	if err := TransitionToSent(tp, now, providerID); err != nil {
-		tp.State = models.TouchpointSent
-		tp.SentAt = &now
-		tp.ProviderMessageID = providerID
-	}
+	// Enrollment only queues campaign execution. The consumer marks SENT after
+	// the worker reports provider-confirmed transport success.
+	tp.ProviderMessageID = providerID
 	if err := s.repo.UpdateTouchpoint(ctx, tp); err != nil {
-		return errx.New(errx.Internal, "mark sent failed")
+		return errx.New(errx.Internal, "persist queued enrollment failed")
 	}
-	_ = s.releaseNextTouch(ctx, orgID, tp)
 	return nil
 }
 

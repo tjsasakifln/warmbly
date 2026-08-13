@@ -52,6 +52,14 @@ func TestPlanStrategyAnnualidadeNoUnpaidClaim(t *testing.T) {
 	if st.WhyNow == "" || st.WhyThisAccount == "" {
 		t.Fatal("why you/now required")
 	}
+	explain := ExplainStrategy(st, "contato@empresa.com.br")
+	if explain.WhyThisAccount != st.WhyThisAccount {
+		t.Fatalf("operator projection lost why_this_account: got %q want %q", explain.WhyThisAccount, st.WhyThisAccount)
+	}
+	legacyProjection := strategyExplainProjection(StrategyExplain{WhyNow: explain.WhyNow}, st.WhyThisAccount)
+	if legacyProjection["why_this_account"] != st.WhyThisAccount {
+		t.Fatalf("legacy validation projection lost why_this_account fallback: %#v", legacyProjection)
+	}
 	if !containsStr(st.RiskFlags, "annualidade_verify_only") {
 		t.Fatalf("flags %v", st.RiskFlags)
 	}
@@ -125,6 +133,28 @@ func TestPlanStrategyBuyerRoles(t *testing.T) {
 		if st.BuyerRole != tc.want {
 			t.Fatalf("role %q got %s want %s", tc.role, st.BuyerRole, tc.want)
 		}
+	}
+}
+
+func TestGenericRecipientNeverPersonalizesDraft(t *testing.T) {
+	pb := MustPlaybook()
+	acc := testAccount("MEDICOES", "MEDICAO", "medição do trecho norte publicada no PNCP")
+	cand := testCand("Diretora Financeira")
+	cand.Name = "Pessoa Histórica"
+	cand.Email = "contato@exemplo.com.br"
+	cand.MailboxPurpose = "GENERIC_CONTACT"
+
+	st := PlanOutreachStrategy(pb, acc, cand, nil, 1)
+	if st.BuyerRole != "UNKNOWN" || !containsStr(st.RiskFlags, "generic_recipient") {
+		t.Fatalf("generic mailbox must not inherit a personal role: %+v", st)
+	}
+	out := ComposeFromStrategy(st, acc, cand, ChannelEmailInitial)
+	if !strings.HasPrefix(out.BodyText, "Olá, equipe") || strings.Contains(out.BodyText, cand.Name) {
+		t.Fatalf("generic mailbox was personalized as a person: %q", out.BodyText)
+	}
+	prompt := draftUserPrompt(BuildGenerateInput(ChannelEmailInitial, acc, cand, nil, nil))
+	if strings.Contains(prompt, cand.Name) || strings.Contains(prompt, cand.Role) || !strings.Contains(prompt, `"generic_recipient": true`) {
+		t.Fatalf("generic mailbox leaked personal identity into generation prompt: %s", prompt)
 	}
 }
 

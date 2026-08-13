@@ -117,6 +117,8 @@ type Handler struct {
 	// CONFENGE outreach staging (extra-cli feed import). Nil or disabled when
 	// CONFENGE_OUTREACH_ENABLED is false.
 	ConfengeService confenge.Service
+	// ConfengeConfig carries the fail-closed dedicated operator identity.
+	ConfengeConfig confenge.Config
 
 	// WhatsApp channel (Evolution gateway; policy-gated)
 	WhatsAppService *whatsapp.Service

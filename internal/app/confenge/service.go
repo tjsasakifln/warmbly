@@ -37,6 +37,7 @@ type Service interface {
 
 	GetImportRun(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachImportRun, *errx.Error)
 	ListImportRuns(ctx context.Context, orgID uuid.UUID, limit int) ([]models.OutreachImportRun, *errx.Error)
+	ReconcileTargetFit(ctx context.Context, orgID uuid.UUID, dryRun bool) (*TargetFitReconciliationReport, *errx.Error)
 
 	Summary(ctx context.Context, orgID uuid.UUID) (*models.OutreachQueueSummary, *errx.Error)
 	ListAccounts(ctx context.Context, orgID uuid.UUID, filter repository.OutreachAccountFilter) ([]models.OutreachAccount, *errx.Error)
@@ -83,15 +84,17 @@ type Service interface {
 	DispatchStatus(ctx context.Context, orgID uuid.UUID) (dispatch.Status, *errx.Error)
 	PauseDispatch(ctx context.Context, orgID, userID uuid.UUID, reason string) *errx.Error
 	ResumeDispatch(ctx context.Context, orgID, userID uuid.UUID) *errx.Error
+	CompleteCampaignEmail(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, providerMessageID string) error
 
 	// Per-touchpoint human approval cadence.
+	PreparePilotCohort(ctx context.Context, orgID, userID uuid.UUID, accountIDs []uuid.UUID, operation PilotOperation) (*PilotCohortResult, *errx.Error)
 	PlanAccountCadence(ctx context.Context, orgID, userID, accountID uuid.UUID, contactID *uuid.UUID, channel string) ([]models.OutreachTouchpoint, *errx.Error)
 	ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, limit, offset int) ([]models.OutreachTouchpoint, *errx.Error)
 	GetTouchpoint(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachTouchpoint, *errx.Error)
 	ListAccountTouchpoints(ctx context.Context, orgID, accountID uuid.UUID) ([]models.OutreachTouchpoint, *errx.Error)
 	GenerateTouchpointDraft(ctx context.Context, orgID, userID, touchpointID uuid.UUID) (*models.OutreachTouchpoint, *errx.Error)
 	EditTouchpoint(ctx context.Context, orgID, userID, id uuid.UUID, subject, body, recipient, channel *string) (*models.OutreachTouchpoint, *errx.Error)
-	ApproveTouchpoint(ctx context.Context, orgID, userID, id uuid.UUID) (*models.OutreachTouchpoint, *errx.Error)
+	ApproveTouchpoint(ctx context.Context, orgID, userID, id uuid.UUID, options ApprovalOptions) (*models.OutreachTouchpoint, *errx.Error)
 	RejectOrSkipTouchpoint(ctx context.Context, orgID, userID, id uuid.UUID, action string) (*models.OutreachTouchpoint, *errx.Error)
 	RejectOrSkipTouchpointReason(ctx context.Context, orgID, userID, id uuid.UUID, action, reason string) (*models.OutreachTouchpoint, *errx.Error)
 	QueueTouchpoint(ctx context.Context, orgID, userID, id uuid.UUID) (*models.OutreachTouchpoint, *errx.Error)
@@ -112,6 +115,10 @@ type ImportOptions struct {
 	SourceURI      string
 }
 
+type ApprovalOptions struct {
+	GenericRecipientAcknowledged bool
+}
+
 type service struct {
 	cfg         Config
 	repo        repository.OutreachRepository
@@ -129,6 +136,7 @@ type service struct {
 
 // NewService wires confenge outreach. When cfg.Enabled is false, mutators return 404-style disabled errors.
 func NewService(cfg Config, repo repository.OutreachRepository, audit AuditLogger) Service {
+	prod := strings.EqualFold(cfg.AppEnv, "prod") || strings.EqualFold(cfg.AppEnv, "production")
 	return &service{
 		cfg:   cfg,
 		repo:  repo,
@@ -137,12 +145,15 @@ func NewService(cfg Config, repo repository.OutreachRepository, audit AuditLogge
 			AllowedHosts: cfg.AllowedHosts,
 			Token:        cfg.FeedToken,
 			MaxBytes:     cfg.MaxFeedPayloadBytes,
+			AllowFile:    !prod,
+			RequireHTTPS: prod,
 		},
 	}
 }
 
 // NewServiceWithAI wires confenge with an optional LLM provider for drafts.
 func NewServiceWithAI(cfg Config, repo repository.OutreachRepository, audit AuditLogger, ai generation.Provider) Service {
+	prod := strings.EqualFold(cfg.AppEnv, "prod") || strings.EqualFold(cfg.AppEnv, "production")
 	svc := &service{
 		cfg:   cfg,
 		repo:  repo,
@@ -151,6 +162,8 @@ func NewServiceWithAI(cfg Config, repo repository.OutreachRepository, audit Audi
 			AllowedHosts: cfg.AllowedHosts,
 			Token:        cfg.FeedToken,
 			MaxBytes:     cfg.MaxFeedPayloadBytes,
+			AllowFile:    !prod,
+			RequireHTTPS: prod,
 		},
 		ai: ai,
 	}
@@ -220,24 +233,29 @@ func (s *service) ImportFromBytes(ctx context.Context, orgID uuid.UUID, userID *
 	if err := ValidateFeed(feed); err != nil {
 		return nil, errx.New(errx.BadRequest, err.Error())
 	}
+	var sourceGeneratedAt *time.Time
+	if parsed, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(feed.GeneratedAt)); parseErr == nil {
+		sourceGeneratedAt = &parsed
+	}
 
 	run := &models.OutreachImportRun{
-		OrganizationID:  orgID,
-		SourceSystem:    feed.Source.System,
-		SourceRunID:     feed.Source.RunID,
-		SchemaVersion:   feed.SchemaVersion,
-		SnapshotHash:    feed.Source.SnapshotHash,
-		RepoSHA:         feed.Source.RepoSHA,
-		PayloadHash:     payloadHash,
-		ProfileID:       feed.Source.ProfileID,
-		ProfileVersion:  feed.Source.ProfileVersion,
-		Status:          models.OutreachImportRunning,
-		DryRun:          opts.DryRun,
-		CreatedByUserID: userID,
-		IdempotencyKey:  opts.IdempotencyKey,
-		SourceURI:       opts.SourceURI,
-		Warnings:        nil,
-		Errors:          nil,
+		OrganizationID:    orgID,
+		SourceSystem:      feed.Source.System,
+		SourceRunID:       feed.Source.RunID,
+		SchemaVersion:     feed.SchemaVersion,
+		SnapshotHash:      feed.Source.SnapshotHash,
+		RepoSHA:           feed.Source.RepoSHA,
+		PayloadHash:       payloadHash,
+		ProfileID:         feed.Source.ProfileID,
+		ProfileVersion:    feed.Source.ProfileVersion,
+		Status:            models.OutreachImportRunning,
+		DryRun:            opts.DryRun,
+		CreatedByUserID:   userID,
+		IdempotencyKey:    opts.IdempotencyKey,
+		SourceURI:         opts.SourceURI,
+		SourceGeneratedAt: sourceGeneratedAt,
+		Warnings:          nil,
+		Errors:            nil,
 	}
 	if feed.Pagination.Cursor != nil {
 		run.CursorIn = *feed.Pagination.Cursor
@@ -330,9 +348,6 @@ func (s *service) applyFeed(ctx context.Context, orgID uuid.UUID, run *models.Ou
 		// Preserve DNC: never re-open.
 		if existing != nil && existing.DoNotContact {
 			counts.Blocked++
-			counts.Unchanged++
-			counts.LeadsProcessed++
-			continue
 		}
 
 		contentHash := LeadContentHash(lead)
@@ -405,6 +420,18 @@ func (s *service) applyFeed(ctx context.Context, orgID uuid.UUID, run *models.Ou
 				counts.EvidenceAdded++
 			}
 		}
+		if existing != nil && strings.TrimSpace(existing.MessageContextHash) != "" && existing.MessageContextHash != acc.MessageContextHash {
+			if err := s.repo.InvalidateAccountApprovalsForContext(ctx, orgID, acc.ID, acc.MessageContextHash); err != nil {
+				leadErrs = append(leadErrs, models.OutreachImportError{SourceLeadID: lead.SourceLeadID, CNPJ14: cnpj, Message: "context approval invalidation: " + err.Error()})
+				counts.LeadsSkippedError++
+			}
+		}
+		if !acc.TargetFitEligible {
+			if _, err := s.repo.InvalidateAccountOutboundForTargetFit(ctx, orgID, acc.ID, acc.TargetFitSuppressionReason); err != nil {
+				leadErrs = append(leadErrs, models.OutreachImportError{SourceLeadID: lead.SourceLeadID, CNPJ14: cnpj, Message: "target-fit reconciliation: " + err.Error()})
+				counts.LeadsSkippedError++
+			}
+		}
 		counts.LeadsProcessed++
 	}
 	return counts, leadErrs, warns
@@ -460,6 +487,15 @@ func leadToAccount(orgID uuid.UUID, lead FeedLead, feed *Feed, runID uuid.UUID, 
 	// Imported send-fit only — never promote ACTIONABLE_NOW → A_AUTOMATIC.
 	acc.TargetFitSendTier = strings.ToUpper(SanitizeText(lead.TargetFitSendTier, 40))
 	acc.TargetFitReasons = lead.TargetFitReasons
+	acc.TargetFitClass = strings.ToUpper(SanitizeText(lead.TargetFitClass, 80))
+	acc.TargetFitConfidence = lead.TargetFitConfidence
+	acc.TargetFitVersion = SanitizeText(lead.TargetFitVersion, 200)
+	acc.TargetFitComputedAt = parseTimePtr(lead.TargetFitComputedAt)
+	acc.TargetFitSourceWatermark = SanitizeText(lead.TargetFitSourceWatermark, 200)
+	acc.TargetFitObservedAt = firstTargetFitTime(lead.TargetFitSourceWatermark, lead.TargetFitComputedAt)
+	acc.TargetFitFresh = lead.TargetFitFresh != nil && *lead.TargetFitFresh
+	acc.TargetFitEvidenceIDs = append([]string{}, lead.TargetFitEvidenceIDs...)
+	acc.TargetFitFreshnessReason = SanitizeText(lead.TargetFitFreshnessReason, 200)
 	if lead.EmailSendReady != nil {
 		acc.EmailSendReady = *lead.EmailSendReady
 	}
@@ -482,14 +518,19 @@ func leadToAccount(orgID uuid.UUID, lead FeedLead, feed *Feed, runID uuid.UUID, 
 			acc.ActivationSourceHash = existing.ActivationSourceHash
 			acc.ScoreComponentsJSON = existing.ScoreComponentsJSON
 		}
-		// Preserve send-fit when legacy feed omits tier (do not invent A_AUTOMATIC).
-		if acc.TargetFitSendTier == "" && existing.TargetFitSendTier != "" {
-			acc.TargetFitSendTier = existing.TargetFitSendTier
-			acc.TargetFitReasons = existing.TargetFitReasons
-		}
-		if lead.EmailSendReady == nil {
+		if !TargetFitMayReplace(existing, acc) {
+			copyTargetFit(acc, existing)
 			acc.EmailSendReady = existing.EmailSendReady
+			acc.QueueState = existing.QueueState
 		}
+	}
+	decision := EvaluateTargetFit(acc)
+	acc.TargetFitEligible = decision.Eligible
+	acc.TargetFitSuppressionReason = decision.Reason
+	now := time.Now().UTC()
+	acc.TargetFitReconciledAt = &now
+	if !decision.Eligible && !isHistoricalTerminalQueue(acc.QueueState) {
+		acc.QueueState = models.OutreachQueueTargetFitSuppressed
 	}
 	return acc
 }

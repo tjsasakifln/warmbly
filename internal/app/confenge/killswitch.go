@@ -25,7 +25,12 @@ func KillSwitchPath() string {
 // FileKillSwitchActive reports whether the operator kill-switch file exists.
 func FileKillSwitchActive() bool {
 	_, err := os.Stat(KillSwitchPath())
-	return err == nil
+	if err == nil {
+		return true
+	}
+	// Only a confirmed absence permits transport. Permission, path and
+	// filesystem failures must not turn a safety control into fail-open.
+	return !os.IsNotExist(err)
 }
 
 // EngageKillSwitch writes the kill-switch file (idempotent).
@@ -34,7 +39,7 @@ func EngageKillSwitch() error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte("paused\n"), 0o644)
+	return os.WriteFile(path, []byte("paused\n"), 0o600)
 }
 
 // ReleaseKillSwitch removes the kill-switch file (idempotent).

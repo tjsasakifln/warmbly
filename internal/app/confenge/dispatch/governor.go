@@ -144,6 +144,21 @@ func (g *Governor) Commit(ctx context.Context, reservationID uuid.UUID) error {
 	return g.store.CommitReservation(ctx, reservationID, g.clock.Now().UTC())
 }
 
+// CommitByMessageKey records provider-confirmed delivery for an async transport.
+func (g *Governor) CommitByMessageKey(ctx context.Context, messageKey string) error {
+	if g == nil || g.store == nil || messageKey == "" {
+		return fmt.Errorf("dispatch reservation key is unavailable")
+	}
+	reservation, err := g.store.GetReservationByKey(ctx, messageKey)
+	if err != nil {
+		return err
+	}
+	if reservation == nil {
+		return fmt.Errorf("dispatch reservation not found for provider-confirmed send")
+	}
+	return g.store.CommitReservation(ctx, reservation.ID, g.clock.Now().UTC())
+}
+
 func (g *Governor) Release(ctx context.Context, reservationID uuid.UUID, errText string) error {
 	state := StateReleased
 	if errText != "" {

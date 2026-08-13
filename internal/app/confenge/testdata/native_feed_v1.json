@@ -51,6 +51,13 @@
         "cta": "Posso enviar um checklist de 1 pagina?",
         "claims_to_avoid": ["garantia de economia", "erro na gestao"]
       },
+      "target_fit_class": "TARGET_CONFIRMED",
+      "target_fit_version": "confenge-target-fit-v1",
+      "target_fit_computed_at": "2026-08-06T12:00:00Z",
+      "target_fit_source_watermark": "2026-08-06T12:00:00Z",
+      "target_fit_fresh": true,
+      "target_fit_send_tier": "A_AUTOMATIC",
+      "email_send_ready": true,
       "contacts": [
         {
           "source_contact_id": "ct-acme-eng",
@@ -64,7 +71,8 @@
           "source_date": "2026-06-01",
           "verification_status": "OFFICIAL_SOURCE",
           "confidence": "HIGH",
-          "recommended": true
+          "recommended": true,
+          "email_send_ready": true
         }
       ],
       "contracts": [
@@ -124,6 +132,13 @@
         "cta": "Posso compartilhar um modelo de memoria de calculo?",
         "claims_to_avoid": []
       },
+      "target_fit_class": "TARGET_CONFIRMED",
+      "target_fit_version": "confenge-target-fit-v1",
+      "target_fit_computed_at": "2026-08-06T12:00:00Z",
+      "target_fit_source_watermark": "2026-08-06T12:00:00Z",
+      "target_fit_fresh": true,
+      "target_fit_send_tier": "A_AUTOMATIC",
+      "email_send_ready": true,
       "contacts": [
         {
           "source_contact_id": "ct-eni-generic",
@@ -132,7 +147,8 @@
           "email": "contato@eni.example.org",
           "verification_status": "INSTITUTIONAL_GENERIC",
           "confidence": "MEDIUM",
-          "recommended": true
+          "recommended": true,
+          "email_send_ready": true
         }
       ],
       "contracts": [],
@@ -188,6 +204,13 @@
         "cta": "Posso enviar um checklist curto?",
         "claims_to_avoid": []
       },
+      "target_fit_class": "TARGET_CONFIRMED",
+      "target_fit_version": "confenge-target-fit-v1",
+      "target_fit_computed_at": "2026-08-06T12:00:00Z",
+      "target_fit_source_watermark": "2026-08-06T12:00:00Z",
+      "target_fit_fresh": true,
+      "target_fit_send_tier": "A_AUTOMATIC",
+      "email_send_ready": false,
       "contacts": [],
       "contracts": [],
       "evidence": [],
@@ -229,6 +252,13 @@
         "cta": "Posso enviar uma pergunta objetiva por e-mail?",
         "claims_to_avoid": ["vinculo societario"]
       },
+      "target_fit_class": "TARGET_CONFIRMED",
+      "target_fit_version": "confenge-target-fit-v1",
+      "target_fit_computed_at": "2026-08-06T12:00:00Z",
+      "target_fit_source_watermark": "2026-08-06T12:00:00Z",
+      "target_fit_fresh": true,
+      "target_fit_send_tier": "A_AUTOMATIC",
+      "email_send_ready": false,
       "contacts": [
         {
           "source_contact_id": "ct-cn-cand",
@@ -293,6 +323,13 @@
         "cta": "Posso ligar 10 minutos esta semana?",
         "claims_to_avoid": []
       },
+      "target_fit_class": "TARGET_CONFIRMED",
+      "target_fit_version": "confenge-target-fit-v1",
+      "target_fit_computed_at": "2026-08-06T12:00:00Z",
+      "target_fit_source_watermark": "2026-08-06T12:00:00Z",
+      "target_fit_fresh": true,
+      "target_fit_send_tier": "A_AUTOMATIC",
+      "email_send_ready": false,
       "contacts": [
         {
           "source_contact_id": "ct-beta-dnc",

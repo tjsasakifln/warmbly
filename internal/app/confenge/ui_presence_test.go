@@ -20,7 +20,7 @@ func TestConfengeUIAcceptanceAffordancesPresent(t *testing.T) {
 	src := string(raw)
 	needles := []string{
 		`data-testid="confenge-review-queue"`,
-		`data-testid="confenge-approve-queue"`,
+		`data-testid="confenge-approve"`,
 		`data-testid="confenge-dispatch-quota"`,
 		`data-testid="confenge-needs-attention"`,
 		`data-testid="confenge-evidence"`,
@@ -28,9 +28,9 @@ func TestConfengeUIAcceptanceAffordancesPresent(t *testing.T) {
 		`data-testid="confenge-recipient"`,
 		`data-testid="confenge-recipient-input"`,
 		`confenge-stat-`, // template for Sent/Review/etc.
-		"Approve & Queue",
-		"Needs attention",
-		"Exact send preview",
+		"Aprovar mensagem",
+		"Precisa de atenção",
+		"Conteúdo exato que será enviado",
 	}
 	for _, n := range needles {
 		if !strings.Contains(src, n) {
@@ -52,7 +52,7 @@ func TestConfengeUIAcceptanceAffordancesPresent(t *testing.T) {
 	}
 	for _, n := range []string{
 		"confenge-review-queue",
-		"confenge-approve-queue",
+		"confenge-approve",
 		"confenge-dispatch-quota",
 		"confenge-needs-attention",
 		"confenge-body-input",

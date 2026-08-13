@@ -22,6 +22,7 @@ type Feed struct {
 	Source        FeedSource     `json:"source"`
 	Pagination    FeedPagination `json:"pagination"`
 	Leads         []FeedLead     `json:"leads"`
+	Legacy        bool           `json:"-"`
 }
 
 // FeedSource identifies the producing intelligence-plane run.
@@ -57,11 +58,19 @@ type FeedLead struct {
 	Activation *FeedActivation `json:"activation,omitempty"`
 	// Send-fit imported from extra-cli. Absent in legacy feeds → autorun forbidden.
 	// Never derive TargetFitSendTier from Activation.State.
-	TargetFitSendTier string   `json:"target_fit_send_tier,omitempty"`
-	TargetFitReasons  []string `json:"target_fit_reasons,omitempty"`
-	EmailSendReady    *bool    `json:"email_send_ready,omitempty"`
-	MailboxPurpose    string   `json:"mailbox_purpose,omitempty"`
-	OwnershipStatus   string   `json:"ownership_status,omitempty"`
+	TargetFitSendTier        string   `json:"target_fit_send_tier,omitempty"`
+	TargetFitReasons         []string `json:"target_fit_reasons,omitempty"`
+	TargetFitClass           string   `json:"target_fit_class,omitempty"`
+	TargetFitConfidence      *float64 `json:"target_fit_confidence,omitempty"`
+	TargetFitVersion         string   `json:"target_fit_version,omitempty"`
+	TargetFitComputedAt      string   `json:"target_fit_computed_at,omitempty"`
+	TargetFitSourceWatermark string   `json:"target_fit_source_watermark,omitempty"`
+	TargetFitFresh           *bool    `json:"target_fit_fresh,omitempty"`
+	TargetFitEvidenceIDs     []string `json:"target_fit_evidence_ids,omitempty"`
+	TargetFitFreshnessReason string   `json:"target_fit_freshness_reason,omitempty"`
+	EmailSendReady           *bool    `json:"email_send_ready,omitempty"`
+	MailboxPurpose           string   `json:"mailbox_purpose,omitempty"`
+	OwnershipStatus          string   `json:"ownership_status,omitempty"`
 }
 
 // FeedActivation is the extra-cli commercial activation planner projection.
@@ -231,6 +240,16 @@ func ValidateFeed(f *Feed) error {
 	if strings.TrimSpace(f.Source.System) == "" {
 		return fmt.Errorf("source.system is required")
 	}
+	if strings.TrimSpace(f.GeneratedAt) == "" && f.Legacy {
+		return nil
+	}
+	generatedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(f.GeneratedAt))
+	if err != nil {
+		return fmt.Errorf("generated_at must be an RFC3339 timestamp")
+	}
+	if generatedAt.After(time.Now().UTC().Add(5 * time.Minute)) {
+		return fmt.Errorf("generated_at cannot be in the future")
+	}
 	return nil
 }
 
@@ -326,28 +345,40 @@ func CanonicalPayloadHash(raw []byte) string {
 func LeadContentHash(lead FeedLead) string {
 	// Exclude human-only outcomes; include messaging, priority, moment, offer, contacts, evidence ids.
 	type slim struct {
-		SourceLeadID string          `json:"source_lead_id"`
-		Company      FeedCompany     `json:"company"`
-		Priority     FeedPriority    `json:"priority"`
-		Moment       FeedMoment      `json:"moment"`
-		Offer        FeedOffer       `json:"offer"`
-		Messaging    FeedMessaging   `json:"messaging_context"`
-		Contacts     []FeedContact   `json:"contacts"`
-		Evidence     []FeedEvidence  `json:"evidence"`
-		State        string          `json:"commercial_state"`
-		Activation   *FeedActivation `json:"activation,omitempty"`
+		SourceLeadID             string          `json:"source_lead_id"`
+		Company                  FeedCompany     `json:"company"`
+		Priority                 FeedPriority    `json:"priority"`
+		Moment                   FeedMoment      `json:"moment"`
+		Offer                    FeedOffer       `json:"offer"`
+		Messaging                FeedMessaging   `json:"messaging_context"`
+		Contacts                 []FeedContact   `json:"contacts"`
+		Evidence                 []FeedEvidence  `json:"evidence"`
+		State                    string          `json:"commercial_state"`
+		Activation               *FeedActivation `json:"activation,omitempty"`
+		TargetFitClass           string          `json:"target_fit_class,omitempty"`
+		TargetFitVersion         string          `json:"target_fit_version,omitempty"`
+		TargetFitComputedAt      string          `json:"target_fit_computed_at,omitempty"`
+		TargetFitSourceWatermark string          `json:"target_fit_source_watermark,omitempty"`
+		TargetFitFresh           *bool           `json:"target_fit_fresh,omitempty"`
+		TargetFitSendTier        string          `json:"target_fit_send_tier,omitempty"`
+		TargetFitEvidenceIDs     []string        `json:"target_fit_evidence_ids,omitempty"`
+		EmailSendReady           *bool           `json:"email_send_ready,omitempty"`
 	}
 	b, _ := json.Marshal(slim{
-		SourceLeadID: lead.SourceLeadID,
-		Company:      lead.Company,
-		Priority:     lead.Priority,
-		Moment:       lead.Moment,
-		Offer:        lead.Offer,
-		Messaging:    lead.MessagingContext,
-		Contacts:     lead.Contacts,
-		Evidence:     lead.Evidence,
-		State:        lead.CommercialState,
-		Activation:   lead.Activation,
+		SourceLeadID:   lead.SourceLeadID,
+		Company:        lead.Company,
+		Priority:       lead.Priority,
+		Moment:         lead.Moment,
+		Offer:          lead.Offer,
+		Messaging:      lead.MessagingContext,
+		Contacts:       lead.Contacts,
+		Evidence:       lead.Evidence,
+		State:          lead.CommercialState,
+		Activation:     lead.Activation,
+		TargetFitClass: lead.TargetFitClass, TargetFitVersion: lead.TargetFitVersion,
+		TargetFitComputedAt: lead.TargetFitComputedAt, TargetFitSourceWatermark: lead.TargetFitSourceWatermark,
+		TargetFitFresh: lead.TargetFitFresh, TargetFitSendTier: lead.TargetFitSendTier,
+		TargetFitEvidenceIDs: lead.TargetFitEvidenceIDs, EmailSendReady: lead.EmailSendReady,
 	})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
@@ -357,32 +388,59 @@ func LeadContentHash(lead FeedLead) string {
 // Rank / activation score alone must NOT change this hash (no false stale invalidation).
 func MessageContextHash(lead FeedLead) string {
 	type contactSlim struct {
-		Email  string `json:"email"`
-		Name   string `json:"name"`
-		Role   string `json:"role"`
-		Phone  string `json:"phone"`
-		Verify string `json:"verification_status"`
-		Rec    bool   `json:"recommended"`
+		Email           string `json:"email"`
+		Name            string `json:"name"`
+		Role            string `json:"role"`
+		Phone           string `json:"phone"`
+		Verify          string `json:"verification_status"`
+		Rec             bool   `json:"recommended"`
+		EmailReady      *bool  `json:"email_send_ready"`
+		MailboxPurpose  string `json:"mailbox_purpose"`
+		PurposeBlocked  *bool  `json:"mailbox_purpose_send_blocked"`
+		Ownership       string `json:"ownership_status"`
+		Suitability     string `json:"recipient_commercial_suitability"`
+		SourceURL       string `json:"source_url"`
+		SourceDocument  string `json:"source_document"`
+		SourceDate      string `json:"source_date"`
+		ProvenanceValid *bool  `json:"provenance_chain_valid"`
+		ProvenanceTrust string `json:"provenance_trust"`
+		RootSourceType  string `json:"root_source_type"`
+		FixtureDerived  *bool  `json:"derived_from_fixture"`
 	}
 	type evidSlim struct {
-		ID   string `json:"id"`
-		Type string `json:"type"`
-		Date string `json:"date"`
+		ID             string `json:"id"`
+		Type           string `json:"type"`
+		Title          string `json:"title"`
+		URL            string `json:"url"`
+		Document       string `json:"document"`
+		Date           string `json:"date"`
+		Location       string `json:"location"`
+		Excerpt        string `json:"excerpt"`
+		Synthesis      string `json:"synthesis"`
+		EpistemicClass string `json:"epistemic_class"`
+		Reliability    string `json:"reliability"`
+		ConsultedAt    string `json:"consulted_at"`
 	}
 	contacts := make([]contactSlim, 0, len(lead.Contacts))
 	for _, c := range lead.Contacts {
 		contacts = append(contacts, contactSlim{
-			Email:  strings.TrimSpace(strings.ToLower(c.Email)),
-			Name:   strings.TrimSpace(c.Name),
-			Role:   strings.TrimSpace(c.Role),
-			Phone:  strings.TrimSpace(c.Phone),
-			Verify: strings.TrimSpace(c.VerificationStatus),
-			Rec:    c.Recommended,
+			Email: strings.TrimSpace(strings.ToLower(c.Email)), Name: strings.TrimSpace(c.Name),
+			Role: strings.TrimSpace(c.Role), Phone: strings.TrimSpace(c.Phone), Verify: strings.TrimSpace(c.VerificationStatus),
+			Rec: c.Recommended, EmailReady: c.EmailSendReady, MailboxPurpose: strings.TrimSpace(c.MailboxPurpose),
+			PurposeBlocked: c.MailboxPurposeSendBlocked, Ownership: strings.TrimSpace(c.OwnershipStatus),
+			Suitability: strings.TrimSpace(c.RecipientCommercialSuitability), SourceURL: strings.TrimSpace(c.SourceURL),
+			SourceDocument: strings.TrimSpace(c.SourceDocument), SourceDate: strings.TrimSpace(c.SourceDate),
+			ProvenanceValid: c.ProvenanceChainValid, ProvenanceTrust: strings.TrimSpace(c.ProvenanceTrust),
+			RootSourceType: strings.TrimSpace(c.RootSourceType), FixtureDerived: c.DerivedFromFixture,
 		})
 	}
 	evid := make([]evidSlim, 0, len(lead.Evidence))
 	for _, e := range lead.Evidence {
-		evid = append(evid, evidSlim{ID: e.ID, Type: e.Type, Date: e.Date})
+		evid = append(evid, evidSlim{
+			ID: e.ID, Type: e.Type, Title: e.Title, URL: e.URL, Document: e.Document,
+			Date: e.Date, Location: e.Location, Excerpt: e.Excerpt, Synthesis: e.Synthesis,
+			EpistemicClass: e.EpistemicClass, Reliability: e.Reliability, ConsultedAt: e.ConsultedAt,
+		})
 	}
 	// Material activation trigger identity only (not score/rank).
 	var actSrc, actReasons string
@@ -391,22 +449,45 @@ func MessageContextHash(lead FeedLead) string {
 		actReasons = strings.Join(lead.Activation.ReasonCodes, ",")
 	}
 	type slim struct {
-		Moment    FeedMoment    `json:"moment"`
-		Offer     FeedOffer     `json:"offer"`
-		Messaging FeedMessaging `json:"messaging_context"`
-		Contacts  []contactSlim `json:"contacts"`
-		Evidence  []evidSlim    `json:"evidence"`
-		ActSrc    string        `json:"activation_source_hash"`
-		ActCodes  string        `json:"activation_reason_codes"`
+		Company                  FeedCompany       `json:"company"`
+		Moment                   FeedMoment        `json:"moment"`
+		Offer                    FeedOffer         `json:"offer"`
+		Messaging                FeedMessaging     `json:"messaging_context"`
+		Contacts                 []contactSlim     `json:"contacts"`
+		Contracts                []json.RawMessage `json:"contracts"`
+		Evidence                 []evidSlim        `json:"evidence"`
+		ActSrc                   string            `json:"activation_source_hash"`
+		ActCodes                 string            `json:"activation_reason_codes"`
+		TargetFitClass           string            `json:"target_fit_class"`
+		TargetFitConfidence      *float64          `json:"target_fit_confidence"`
+		TargetFitVersion         string            `json:"target_fit_version"`
+		TargetFitComputedAt      string            `json:"target_fit_computed_at"`
+		TargetFitSourceWatermark string            `json:"target_fit_source_watermark"`
+		TargetFitFresh           *bool             `json:"target_fit_fresh"`
+		TargetFitFreshnessReason string            `json:"target_fit_freshness_reason"`
+		TargetFitEvidenceIDs     []string          `json:"target_fit_evidence_ids"`
+		TargetFitSendTier        string            `json:"target_fit_send_tier"`
+		TargetFitReasons         []string          `json:"target_fit_reasons"`
+		EmailSendReady           *bool             `json:"email_send_ready"`
+		MailboxPurpose           string            `json:"mailbox_purpose"`
+		OwnershipStatus          string            `json:"ownership_status"`
 	}
 	b, _ := json.Marshal(slim{
-		Moment:    lead.Moment,
-		Offer:     lead.Offer,
-		Messaging: lead.MessagingContext,
-		Contacts:  contacts,
-		Evidence:  evid,
-		ActSrc:    actSrc,
-		ActCodes:  actReasons,
+		Company:        lead.Company,
+		Moment:         lead.Moment,
+		Offer:          lead.Offer,
+		Messaging:      lead.MessagingContext,
+		Contacts:       contacts,
+		Contracts:      lead.Contracts,
+		Evidence:       evid,
+		ActSrc:         actSrc,
+		ActCodes:       actReasons,
+		TargetFitClass: lead.TargetFitClass, TargetFitConfidence: lead.TargetFitConfidence,
+		TargetFitVersion: lead.TargetFitVersion, TargetFitComputedAt: lead.TargetFitComputedAt,
+		TargetFitSourceWatermark: lead.TargetFitSourceWatermark, TargetFitFresh: lead.TargetFitFresh,
+		TargetFitFreshnessReason: lead.TargetFitFreshnessReason, TargetFitEvidenceIDs: lead.TargetFitEvidenceIDs,
+		TargetFitSendTier: lead.TargetFitSendTier, TargetFitReasons: lead.TargetFitReasons,
+		EmailSendReady: lead.EmailSendReady, MailboxPurpose: lead.MailboxPurpose, OwnershipStatus: lead.OwnershipStatus,
 	})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
@@ -502,6 +583,15 @@ func DefaultQueueState(lead FeedLead, existing *models.OutreachAccount) string {
 		if existing.Blocked || existing.QueueState == models.OutreachQueueBlocked {
 			return models.OutreachQueueBlocked
 		}
+		if existing.QueueState == models.OutreachQueueTargetFitSuppressed {
+			if LeadTargetFitDecision(lead).Eligible {
+				if hasEnrollableContact(lead) {
+					return models.OutreachQueueReadyToGenerate
+				}
+				return models.OutreachQueueNeedsContact
+			}
+			return models.OutreachQueueTargetFitSuppressed
+		}
 		// Do not silently restart post-send states.
 		switch existing.QueueState {
 		case models.OutreachQueueEnrolled, models.OutreachQueueSent, models.OutreachQueueReplied,
@@ -510,6 +600,9 @@ func DefaultQueueState(lead FeedLead, existing *models.OutreachAccount) string {
 			models.OutreachQueueApproved, models.OutreachQueueNeedsReview:
 			return existing.QueueState
 		}
+	}
+	if !LeadTargetFitDecision(lead).Eligible {
+		return models.OutreachQueueTargetFitSuppressed
 	}
 	if hasEnrollableContact(lead) {
 		return models.OutreachQueueReadyToGenerate

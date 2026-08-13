@@ -23,9 +23,24 @@ Optional feed source:
 CONFENGE_EXTRA_CLI_FEED_URL=https://feed.example.com/confenge/outreach.json
 CONFENGE_EXTRA_CLI_FEED_TOKEN=
 CONFENGE_EXTRA_CLI_ALLOWED_HOSTS=feed.example.com
+CONFENGE_FEED_MAX_AGE=24h
 ```
 
 In production the feed URL must be HTTPS and the host must be on the allowlist. Local development may use a `file://` path.
+
+## Dedicated operator dashboard
+
+The isolated CONFENGE deployment can expose a focused PT-BR dashboard without an interactive sign-in:
+
+```env
+CONFENGE_OPERATOR_MODE=true
+CONFENGE_OPERATOR_USER_ID=11111111-0000-0000-0000-000000000001
+CONFENGE_OPERATOR_ORG_ID=22222222-0000-0000-0000-000000000001
+```
+
+This mode is disabled by default in Warmbly. It must only be enabled when both the dashboard and API bind to loopback and operators connect through an SSH tunnel. The configured user must be active, accepted into the organization, and have view and manage contacts permissions. Invalid configuration fails startup.
+
+The browser skips login, registration, workspace selection, and onboarding. Internally it receives a normal organization-scoped JWT session, so the existing permission gates, human approval controls, idempotency, and audit attribution remain active. All browser actions are attributed to the configured technical operator.
 
 ## Per-touch human approval (product invariant)
 
@@ -37,7 +52,7 @@ Flow:
 2. When a touch is due, generate the message text just-in-time (prior touches, outcomes, latest imported context).
 3. Human reviews the exact recipient, channel, subject/body, fact and evidence.
 4. Human edits if needed (any edit clears prior approval).
-5. Human chooses **Approve & Queue**, Skip, or DNC.
+5. Human chooses **Approve**, Skip, or DNC. Approval does not enqueue or send.
 
 Approval is **per touch**, never for a whole sequence or account. There is no “approve whole sequence” action.
 
@@ -51,12 +66,31 @@ Dominant stops: `DO_NOT_CONTACT`, opt-out, bounce, and human reply cancel open f
 
 `POST /api/v1/confenge/import` accepts:
 
-- the full feed JSON body (`schema_version: confenge.outreach.v1` or legacy shapes)
+- the full feed JSON body (`schema_version: confenge.outreach.v1`; legacy shapes remain auditable but are not outreach-eligible)
 - or `{"uri":"https://...","dry_run":true}` to fetch then import
 
 Use `?dry_run=true` for counts only (`creates`, `updates`, `unchanged`, `missing_contact`, and related fields). Send `Idempotency-Key` for safe retries.
 
-Companies without an enrollable contact enter as `NEEDS_CONTACT`. They are not discarded and are not forced into the contacts table.
+Companies with eligible current target-fit but no enrollable contact enter as `NEEDS_CONTACT`. They are not discarded and are not forced into the contacts table.
+
+## Target-fit authorization
+
+`extra-cli` is the sole authority for CONFENGE target-fit. Warmbly does not infer ICP membership from company names, industry text, public contracts, email availability, old scores, or prior `enrollable` values.
+
+Outbound requires all of the following at the same time:
+
+- `target_fit_class` is `TARGET_CONFIRMED`
+- `target_fit_fresh` is explicitly `true`
+- `target_fit_version`, `target_fit_source_watermark`, and a comparable observed timestamp are present
+- any supplied `target_fit_send_tier` is eligible under the imported contract
+- the company and selected contact both have imported `email_send_ready=true`
+- DNC, reply, bounce, suppression, provenance, approval, and dispatch gates still pass
+
+Missing, stale, contradictory, out-of-scope, or downgraded target-fit fails closed. A valid company email does not compensate for missing commercial authorization.
+
+An ineligible import keeps the account and its history, assigns a `TARGET_FIT_*` suppression reason, cancels open touchpoints and dispatch items, blocks unsent drafts, and detaches queued campaign enrollment. A later older watermark cannot restore eligibility. The same authorization is reloaded immediately before campaign transport, so an already approved or queued item cannot send after a downgrade.
+
+The **Agora** lane applies the complete target-fit and contact gates in its server-side query. It means the company can legitimately receive an outbound action now, not merely that a contact exists.
 
 ## Reimport rules
 
@@ -65,6 +99,8 @@ Reimport updates machine-owned fields (priority, moment, offer, messaging, evide
 - human `DO_NOT_CONTACT` and block flags
 - post-send queue states (enrolled, sent, replied, and later CRM states)
 - terminal touchpoint states (`SENT`, `DNC`, and other closed states)
+
+Target-fit is updated only by a current authoritative decision. A downgrade takes effect immediately across planning, generation, approval, enrollment, and the final send gate. Imports with an older decision watermark cannot overwrite a newer restriction.
 
 ## API surface
 
@@ -79,6 +115,7 @@ Reimport updates machine-owned fields (priority, moment, offer, messaging, evide
 | `GET /confenge/touchpoints/review` | Human review queue (due / needs review / approved) |
 | `GET /confenge/accounts/:id/touchpoints` | Account touch timeline |
 | `POST /confenge/accounts/:id/plan` | Plan cadence chain |
+| `POST /confenge/pilot/cohort/prepare` | Prepare up to 30 selected accounts with one explicit result per account |
 | `POST /confenge/touchpoints/:id/generate` | JIT draft for a due touch |
 | `POST /confenge/touchpoints/:id/edit` | Edit (clears approval) |
 | `POST /confenge/touchpoints/:id/approve` | Human approve this touch only |
@@ -90,7 +127,11 @@ Permissions follow contacts: view for reads, manage for import, plan, review, an
 
 ## Dashboard
 
-The CONFENGE page is a single per-message review queue. It shows company, exact recipient (email or phone), channel, service, fact/evidence, touch ordinal, short history, and the exact send preview, with Approve & Queue, Skip, and DNC.
+The CONFENGE page is a PT-BR commercial operations center. It uses the CONFENGE brand and a side menu with shortcuts to critical pilot blockers, the overview, immediate actions, contact gaps, pending decisions, planning, and review. The first panel fails closed and highlights every unresolved controlled-pilot gate, including feed and channel readiness, stale context, the 30-message cohort, individual human approvals, and the dispatch safety pause. It shows prepared and approved progress against the 30-message target. Those counts come only from durable pilot memberships and their exact touchpoints, never from global organization queue totals. An unavailable membership read is a blocker. In dedicated operator mode, approval and transport also require that exact membership, so a touchpoint created outside the batch cannot enter the controlled pilot. The operator forms the pilot cohort manually by selecting up to 30 target-fit-eligible accounts. One batch request resolves exactly one eligible recipient and prepares exactly one initial draft per account. The request requires an `Idempotency-Key`; reusing that key with another account set returns a conflict. The response reports `PREPARED` or `BLOCKED` with a stable reason code, a human-readable explanation, and remediation for every selected account. A blocked account does not roll back successful accounts. Retries and duplicate clicks reuse the existing first touchpoint and draft instead of creating duplicates. Each generated message remains in `NEEDS_REVIEW` and requires individual review and approval. Approval does not enqueue or send. Generic institutional mailboxes remain review-eligible, but both the UI and API require an explicit institutional-copy acknowledgement, which is recorded in the audit event. If no account is eligible, the cohort area shows monitored and target-fit-suppressed counts and offers a check for a newer feed version. A synchronized snapshot with zero eligible accounts is reported as blocked, not operationally ready. Monitored accounts cannot bypass target-fit or sending-readiness gates. Each blocker action moves focus to and highlights the work area that resolves it. The dispatch blocker points to the first earlier gate until those gates are complete, then points to the resume control. The resume action stays disabled while any gate other than the final dispatch pause remains unresolved.
+
+Feed freshness uses the upstream manifest's durable `source_generated_at`, not the time at which Warmbly downloaded it. The API retains `feed_last_success_at` as a backward-compatible alias for that authoritative source time and exposes `feed_synced_at` separately for operational diagnostics. The dashboard, API and VPS status script use the same `CONFENGE_FEED_MAX_AGE` threshold, which defaults to 24 hours. Missing, stale, corrupt, or rolled-back feed state blocks cohort preparation.
+
+The page also opens with the recommended next action, a three-step usage guide, operational readiness, and short descriptions for each work area. The per-message review queue shows company, exact recipient, channel, service, fact and evidence, stage number, short history, and the exact send preview. The operator can approve without dispatch, skip the stage, reject with a reason, or mark the account as do not contact.
 
 ## Global dispatch governor
 

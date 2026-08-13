@@ -70,10 +70,18 @@ pass_fail() {
   fi
 }
 
-# Login helper: prints access token only (no password echo).
+# Session helper: uses the dedicated loopback operator bootstrap first.
 ops_access_token() {
-  local base email pass login session otp token confirm
+  local base email pass login session otp token confirm operator
   base="$(api_base)"
+  operator="$(curl -sS -X POST "$base/v1/auth/confenge-operator/session" -H 'Content-Type: application/json' || true)"
+  token="$(printf '%s' "$operator" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("access_token",""))' 2>/dev/null || true)"
+  if [[ -n "$token" ]]; then
+    printf '%s' "$token"
+    return 0
+  fi
+
+  # Compatibility fallback for installations that have not enabled operator mode.
   email="${CONFENGE_OPS_EMAIL:-dev@warmbly.com}"
   pass="${CONFENGE_OPS_PASSWORD:-}"
   if [[ -z "$pass" ]]; then

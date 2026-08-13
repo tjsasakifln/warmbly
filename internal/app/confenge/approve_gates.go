@@ -48,20 +48,8 @@ func StructuralApproveBlockers(
 		add("account_blocked", "account is blocked")
 	}
 
-	// Target confirmation: empty = legacy (import OK, autorun forbidden).
-	// Send-eligible imported tiers from extra-cli / feed schema:
-	// A_AUTOMATIC, B_EVIDENCE_SUPPORTED, or explicit TARGET_CONFIRMED.
-	tier := strings.ToUpper(strings.TrimSpace(acc.TargetFitSendTier))
-	if tier != "" {
-		switch tier {
-		case "TARGET_CONFIRMED", "CONFIRMED", "A_AUTOMATIC", "B_EVIDENCE_SUPPORTED":
-			// ok
-		case "RESEARCH_ONLY", "OUT_OF_SCOPE", "TARGET_PROBABLE_RESEARCH", "TARGET_OUT_OF_SCOPE":
-			add("target_not_confirmed", "target_fit_send_tier="+tier)
-		default:
-			// Unknown tier values fail closed.
-			add("target_not_confirmed", "target_fit_send_tier="+tier)
-		}
+	if err := RequireTargetFit(acc); err != nil {
+		add("target_not_current", err.Error())
 	}
 
 	// Contact send-ready / DNC / bounce / block.
@@ -79,6 +67,9 @@ func StructuralApproveBlockers(
 		}
 		if !cand.CanEnroll() {
 			add("contact_not_send_ready", "contact is not enrollable")
+		}
+		if err := RequireEmailOutbound(acc, cand); err != nil {
+			add("contact_not_send_ready", err.Error())
 		}
 	}
 

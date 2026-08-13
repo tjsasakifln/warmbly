@@ -16,7 +16,11 @@ cp .env.confenge.example .env.confenge
 make confenge-local
 ```
 
-Login: `dev@warmbly.com` / `password123` → open `/app/confenge`.
+Abra `http://localhost:5173`. O modo operador cria uma sessão técnica
+automaticamente e leva direto à Central comercial, sem tela de login ou onboarding.
+
+As ações continuam vinculadas a `CONFENGE_OPERATOR_USER_ID` dentro da organização
+`CONFENGE_OPERATOR_ORG_ID`. A configuração local usa os IDs das fixtures de seed.
 
 ```bash
 make confenge-preflight
@@ -35,6 +39,7 @@ at `http://localhost:18025`. Nothing real is sent.
 | `make confenge-preflight` | DB, Redis, NATS, flags, AI, mailbox, feed, outcome, governor, WA, kill switch |
 | `make confenge-bootstrap` | Workspace settings without raw SQL |
 | `make confenge-import FEED=... [DRY_RUN=true]` | Import feed; prints creates/updates/blocked |
+| `go run ./cmd/confenge reconcile-target-fit [--dry-run] --org-id UUID` | Reconcile historical target-fit and revoke ineligible unsent work |
 | `make confenge-stop-sending` | Operational kill switch (enroll/send refuse) |
 | `make confenge-resume-sending` | Clear kill-switch file |
 | `make confenge-db-backup` | `pg_dump` into `data/backups/` |
@@ -47,6 +52,8 @@ at `http://localhost:18025`. Nothing real is sent.
 - AI never approves or sends
 - `DO_NOT_CONTACT` / opt-out / bounce / reply block cadences
 - Reimport does not re-activate DNC accounts
+- Current extra-cli target-fit is mandatory through the final send gate
+- Missing, stale, downgraded, or out-of-scope target-fit fails closed even with a valid email
 - Public phones without opt-in stay blocked for WhatsApp API outbound
 - No Baileys / WhatsApp Web in production (`WHATSAPP_EVOLUTION_ALLOW_BAILEYS=false`)
 - Missing WhatsApp credentials do not break email
@@ -76,6 +83,8 @@ at `http://localhost:18025`. Nothing real is sent.
 go run ./cmd/confenge preflight
 go run ./cmd/confenge bootstrap
 go run ./cmd/confenge import --feed internal/app/confenge/testdata/demo_3_companies.json --dry-run
+go run ./cmd/confenge reconcile-target-fit --dry-run --org-id <uuid>
+go run ./cmd/confenge reconcile-target-fit --org-id <uuid>
 go run ./cmd/confenge stop-sending
 go run ./cmd/confenge resume-sending
 ```

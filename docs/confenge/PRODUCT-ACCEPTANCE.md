@@ -79,7 +79,7 @@ Use only self-owned destinations. Do not message real leads.
 # make infra  # includes Mailpit (UI often http://localhost:18025, SMTP :11025)
 export CONFENGE_ENABLED=true
 export CONFENGE_REQUIRE_HUMAN_APPROVAL=true
-# Import fixture, plan/generate, Approve & Queue in /app/confenge
+# Import fixture, plan/generate, then approve in /app/confenge
 # Confirm the exact approved body in Mailpit matches the review pane
 ```
 
@@ -121,7 +121,7 @@ Scoped exception for this acceptance front only.
 1. Open `/app/confenge` (after login)  
 2. Review evidence (`confenge-evidence`)  
 3. Edit body (`confenge-body-input`)  
-4. Approve & Queue (`confenge-approve-queue`)  
+4. Approve without dispatch (`confenge-approve`)
 5. See quota (`confenge-dispatch-quota`)  
 6. See sent counter (`confenge-stat-sent`)  
 7. Optional inject reply via generate-reply API when `CONFENGE_E2E_TOKEN` + account set  

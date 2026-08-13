@@ -27,6 +27,9 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 	if acc.DoNotContact || acc.Blocked {
 		return nil, errx.New(errx.BadRequest, "account is blocked or DO_NOT_CONTACT")
 	}
+	if err := RequireTargetFit(acc); err != nil {
+		return nil, errx.New(errx.BadRequest, err.Error())
+	}
 
 	var cand *models.OutreachContactCandidate
 	if contactID != nil {
@@ -43,6 +46,9 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 	}
 	if cand == nil {
 		return nil, errx.New(errx.BadRequest, "no contact candidate; resolve NEEDS_CONTACT first")
+	}
+	if err := RequireEmailOutbound(acc, cand); err != nil {
+		return nil, errx.New(errx.BadRequest, err.Error())
 	}
 
 	evidence, err := s.repo.ListEvidence(ctx, orgID, accountID)
@@ -62,6 +68,10 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 		VerificationStatus: cand.VerificationStatus,
 		Status:             models.OutreachDraftGenerating,
 		PromptVersion:      PromptVersion,
+	}
+	if isGenericRecipient(cand) {
+		draft.RecipientName = ""
+		draft.RecipientRole = ""
 	}
 	if existing != nil {
 		draft.ID = existing.ID
@@ -128,7 +138,7 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 	val.Rationale = out.Rationale
 	val.Channel = out.Channel
 	recipient := cand.Email
-	if cand.Name != "" {
+	if cand.Name != "" && !isGenericRecipient(cand) {
 		recipient = cand.Name + " <" + cand.Email + ">"
 	}
 	valJSON := PackValidationWithStrategy(val, st, recipient)
@@ -177,6 +187,18 @@ func (s *service) generator() DraftGenerator {
 }
 
 func pickRecommended(list []models.OutreachContactCandidate) *models.OutreachContactCandidate {
+	for i := range list {
+		c := &list[i]
+		if c.Recommended && c.CanEnroll() && c.EmailSendReady && !c.MailboxPurposeSendBlocked {
+			return c
+		}
+	}
+	for i := range list {
+		c := &list[i]
+		if c.CanEnroll() && c.EmailSendReady && !c.MailboxPurposeSendBlocked {
+			return c
+		}
+	}
 	var fallback *models.OutreachContactCandidate
 	for i := range list {
 		c := &list[i]

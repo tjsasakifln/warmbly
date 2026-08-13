@@ -60,16 +60,17 @@ type OutreachStrategy struct {
 
 // StrategyExplain is the compact operator cockpit projection.
 type StrategyExplain struct {
-	WhyNow     string   `json:"why_now"`
-	FactUsed   string   `json:"fact_used"`
-	Hypothesis string   `json:"hypothesis"`
-	Service    string   `json:"service"`
-	Offer      string   `json:"offer"`
-	Recipient  string   `json:"recipient"`
-	Sources    []string `json:"sources,omitempty"`
-	Touch      string   `json:"touch"`
-	Experiment string   `json:"experiment,omitempty"`
-	Doctrine   string   `json:"doctrine_version"`
+	WhyThisAccount string   `json:"why_this_account"`
+	WhyNow         string   `json:"why_now"`
+	FactUsed       string   `json:"fact_used"`
+	Hypothesis     string   `json:"hypothesis"`
+	Service        string   `json:"service"`
+	Offer          string   `json:"offer"`
+	Recipient      string   `json:"recipient"`
+	Sources        []string `json:"sources,omitempty"`
+	Touch          string   `json:"touch"`
+	Experiment     string   `json:"experiment,omitempty"`
+	Doctrine       string   `json:"doctrine_version"`
 }
 
 // PlanOutreachStrategy builds strategy from dossier only (no re-scoring).
@@ -118,7 +119,9 @@ func PlanOutreachStrategy(
 	}
 	if cand != nil {
 		st.ContactID = cand.ID.String()
-		if pb != nil {
+		if isGenericRecipient(cand) {
+			st.RiskFlags = appendUnique(st.RiskFlags, "generic_recipient")
+		} else if pb != nil {
 			st.BuyerRole = pb.MapBuyerRole(cand.Role)
 		}
 	}
@@ -325,16 +328,17 @@ func ExplainStrategy(st OutreachStrategy, recipient string) StrategyExplain {
 		}
 	}
 	return StrategyExplain{
-		WhyNow:     st.WhyNow,
-		FactUsed:   st.ObservedFact,
-		Hypothesis: firstNonEmpty(st.ProblemHypothesis, st.ImplicationHypothesis),
-		Service:    firstNonEmpty(st.ServiceName, st.ServiceCode),
-		Offer:      firstNonEmpty(st.MicroOfferDescription, st.MicroOfferCode),
-		Recipient:  recipient,
-		Sources:    st.EvidenceIDs,
-		Touch:      touch,
-		Experiment: exp,
-		Doctrine:   st.DoctrineVersion,
+		WhyThisAccount: st.WhyThisAccount,
+		WhyNow:         st.WhyNow,
+		FactUsed:       st.ObservedFact,
+		Hypothesis:     firstNonEmpty(st.ProblemHypothesis, st.ImplicationHypothesis),
+		Service:        firstNonEmpty(st.ServiceName, st.ServiceCode),
+		Offer:          firstNonEmpty(st.MicroOfferDescription, st.MicroOfferCode),
+		Recipient:      recipient,
+		Sources:        st.EvidenceIDs,
+		Touch:          touch,
+		Experiment:     exp,
+		Doctrine:       st.DoctrineVersion,
 	}
 }
 

@@ -54,11 +54,15 @@ func deliverApprovedSMTP(from, to, subject, body string) error {
 	return smtp.SendMail(addr, nil, from, []string{to}, []byte(msg.String()))
 }
 
-// localSMTPDeliveryEnabled is true when SMTP_HOST is set and not explicitly disabled.
+// localSMTPDeliveryEnabled is an explicit test-only Mailpit path.
 func localSMTPDeliveryEnabled() bool {
 	if strings.TrimSpace(os.Getenv("SMTP_HOST")) == "" {
 		return false
 	}
+	appEnv := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+	if appEnv == "prod" || appEnv == "production" {
+		return false
+	}
 	v := strings.ToLower(strings.TrimSpace(os.Getenv("CONFENGE_LOCAL_SMTP_DELIVERY")))
-	return v != "0" && v != "false" && v != "off"
+	return v == "1" || v == "true" || v == "on"
 }

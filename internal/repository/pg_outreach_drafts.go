@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/warmbly/warmbly/internal/models"
 )
@@ -116,6 +117,15 @@ func (r *outreachRepository) UpsertDraft(ctx context.Context, d *models.Outreach
 		d.CampaignID, d.EnrollmentContactID, d.EnrolledAt,
 		d.CreatedAt, d.UpdatedAt,
 	)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.ConstraintName == "outreach_drafts_org_account_active_uidx" {
+		existing, getErr := r.GetActiveDraftForAccount(ctx, d.OrganizationID, d.AccountID)
+		if getErr == nil && existing != nil && existing.ID != d.ID {
+			d.ID = existing.ID
+			d.CreatedAt = existing.CreatedAt
+			return r.UpsertDraft(ctx, d)
+		}
+	}
 	return err
 }
 

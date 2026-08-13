@@ -628,7 +628,7 @@ docs:
 #   make confenge-local
 #   make confenge-preflight
 #   make confenge-import FEED=internal/app/confenge/testdata/demo_3_companies.json
-#   login dev@warmbly.com / password123 → /app/confenge
+#   open http://localhost:5173 (dedicated operator session, no login)
 #
 # Infra: postgres redis nats mailpit. App: backend consumer worker web.
 # Kill switch: make confenge-stop-sending / confenge-resume-sending
@@ -647,6 +647,9 @@ CONFENGE_BACKUP_DIR ?= data/backups
 CONFENGE_API_HOST ?= 127.0.0.1:8080
 CONFENGE_DEV_ENV = \
 	CONFENGE_OUTREACH_ENABLED=$${CONFENGE_OUTREACH_ENABLED:-true} \
+	CONFENGE_OPERATOR_MODE=$${CONFENGE_OPERATOR_MODE:-true} \
+	CONFENGE_OPERATOR_USER_ID=$${CONFENGE_OPERATOR_USER_ID:-11111111-0000-0000-0000-000000000001} \
+	CONFENGE_OPERATOR_ORG_ID=$${CONFENGE_OPERATOR_ORG_ID:-22222222-0000-0000-0000-000000000001} \
 	CONFENGE_REQUIRE_HUMAN_APPROVAL=$${CONFENGE_REQUIRE_HUMAN_APPROVAL:-true} \
 	CONFENGE_AUTO_SEND_ENABLED=$${CONFENGE_AUTO_SEND_ENABLED:-false} \
 	CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=$${CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT:-200} \
@@ -682,7 +685,7 @@ confenge-local:
 	$(GO_DEV_ENV) $(CONFENGE_DEV_ENV) go run ./cmd/confenge bootstrap || true
 	@echo ""
 	@echo "CONFENGE local stack starting (no Kafka/AWS/Stripe)."
-	@echo "Dashboard: http://localhost:5173  Login: dev@warmbly.com / password123"
+	@echo "Painel CONFENGE: http://localhost:5173 (acesso direto, sem login)"
 	@echo "Mailpit:   http://localhost:18025  API: http://$(CONFENGE_API_HOST)"
 	@echo "Ctrl-C stops app processes; infra stays up (make infra-down to stop)."
 	@echo ""
@@ -691,7 +694,7 @@ confenge-local:
 	$(MAKE) --no-print-directory confenge-backend & \
 	$(MAKE) --no-print-directory consumer & \
 	$(MAKE) --no-print-directory confenge-worker & \
-	$(MAKE) --no-print-directory web & \
+	VITE_CONFENGE_OPERATOR_MODE=true $(MAKE) --no-print-directory web & \
 	wait
 
 # Backend with CONFENGE flags and local-safe bind.

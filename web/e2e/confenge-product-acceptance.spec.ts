@@ -24,8 +24,8 @@ function resolveFeedPath(): string {
   const candidates = [
     process.env.CONFENGE_E2E_FEED,
     process.env.CONFENGE_E2E_FEED_FALLBACK,
-    // Prefer deterministic slice of the real extra-cli national pipeline feed.
-    path.join(REPO_ROOT, "data/confenge-feeds/acceptance_real_slice/slice.json"),
+    // CI uses the current contract fixture. Historical real slices intentionally
+    // fail closed when they predate authoritative target-fit fields.
     path.join(REPO_ROOT, "internal/app/confenge/testdata/demo_3_companies.json"),
   ].filter((p): p is string => !!p);
   for (const p of candidates) {
@@ -37,6 +37,51 @@ const FEED_PATH = resolveFeedPath();
 const PROOF_DIR =
   process.env.CONFENGE_E2E_PROOF_DIR ||
   path.join(REPO_ROOT, "data/confenge-evidence");
+
+function feedPayloadForImport(): string {
+  const raw = fs.readFileSync(FEED_PATH, "utf8");
+  if (path.basename(FEED_PATH) !== "demo_3_companies.json") return raw;
+
+  const now = new Date().toISOString();
+  const nonce = Date.now().toString(36);
+  const feed = JSON.parse(raw) as {
+    generated_at: string;
+    source: { run_id: string; snapshot_hash: string };
+    leads: Array<{
+      target_fit_computed_at?: string;
+      target_fit_source_watermark?: string;
+      contacts?: Array<{
+        email?: string;
+        source_url?: string;
+        source_date?: string;
+        mailbox_purpose?: string;
+        ownership_status?: string;
+        recipient_commercial_suitability?: string;
+        provenance_chain_valid?: boolean;
+        derived_from_fixture?: boolean;
+      }>;
+    }>;
+  };
+  feed.generated_at = now;
+  feed.source.run_id = `confenge-e2e-${nonce}`;
+  feed.source.snapshot_hash = `confenge-e2e-snapshot-${nonce}`;
+  for (const [leadIndex, lead] of feed.leads.entries()) {
+    lead.target_fit_computed_at = now;
+    lead.target_fit_source_watermark = now;
+    for (const [contactIndex, contact] of (lead.contacts || []).entries()) {
+      const local = contactIndex === 0 ? `confenge-ci-${leadIndex + 1}` : `confenge-ci-${leadIndex + 1}-${contactIndex + 1}`;
+      contact.email = `${local}@pilot.warmbly.com`;
+      contact.source_url = `https://pilot.warmbly.com/contacts/${local}`;
+      contact.source_date = now.slice(0, 10);
+      contact.mailbox_purpose = contact.name ? "PERSONAL_WORK" : "GENERIC_CONTACT";
+      contact.ownership_status = "COMPANY_OWNED";
+      contact.recipient_commercial_suitability = contact.name ? "SUITABLE" : "SUITABLE_GENERIC";
+      contact.provenance_chain_valid = true;
+      contact.derived_from_fixture = false;
+    }
+  }
+  return JSON.stringify(feed);
+}
 
 type Touchpoint = {
   id: string;
@@ -234,11 +279,83 @@ async function ensureDraftLinked(token: string, tp: Touchpoint): Promise<Touchpo
   return getTouchpoint(token, tp.id);
 }
 
+async function preparePilotReviewTouchpoint(token: string): Promise<{
+  accountId: string;
+  touchpointId: string;
+}> {
+  const feed = JSON.parse(fs.readFileSync(FEED_PATH, "utf8")) as {
+    leads?: Array<{ company?: { cnpj14?: string } }>;
+  };
+  const importedCNPJs = new Set(
+    (feed.leads || []).map((lead) => lead.company?.cnpj14 || "").filter(Boolean),
+  );
+  const accounts = await apiJSON<{ data?: Array<{ id: string; cnpj14?: string }> }>(
+    token,
+    "GET",
+    "/v1/confenge/accounts?limit=100",
+  );
+  let lastBlock = "no account returned by the current feed";
+  const blocks: string[] = [];
+  for (const account of (accounts.data || []).filter((item) => importedCNPJs.has(item.cnpj14 || ""))) {
+    const res = await fetch(`${API}/v1/confenge/pilot/cohort/prepare`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": `confenge-e2e-${account.id}`,
+      },
+      body: JSON.stringify({ account_ids: [account.id] }),
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      lastBlock = `account ${account.id}: HTTP ${res.status} ${text.slice(0, 200)}`;
+      blocks.push(lastBlock);
+      continue;
+    }
+    const cohort = JSON.parse(text) as {
+      data?: {
+        results?: Array<{
+          status?: string;
+          reason_code?: string;
+          touchpoint_id?: string;
+        }>;
+      };
+    };
+    const result = cohort.data?.results?.[0];
+    if ((result?.status || "").toUpperCase() !== "PREPARED" || !result?.touchpoint_id) {
+      lastBlock = `account ${account.id}: ${result?.reason_code || "not_prepared"}`;
+      blocks.push(lastBlock);
+      continue;
+    }
+    const touchpoint = await getTouchpoint(token, result.touchpoint_id);
+    if ((touchpoint.state || "").toUpperCase() !== "NEEDS_REVIEW") {
+      lastBlock = `account ${account.id}: prepared touchpoint is ${touchpoint.state || "unknown"}`;
+      blocks.push(lastBlock);
+      continue;
+    }
+    await isolateReviewTouchpoint(token, result.touchpoint_id);
+    return { accountId: account.id, touchpointId: result.touchpoint_id };
+  }
+  throw new Error(
+    `pilot cohort could not prepare a review touchpoint: ${blocks.join("; ") || lastBlock}`,
+  );
+}
+
 /** Plan + generate until a NEEDS_REVIEW touch sits alone at the front of the review queue. */
 async function ensureReviewTouchpoint(token: string): Promise<{
   accountId: string;
   touchpointId: string;
 }> {
+  // Approval and dispatch are pilot-only. Always enter through the durable
+  // cohort transaction so stale pre-import touchpoints cannot seed acceptance.
+  try {
+    return await preparePilotReviewTouchpoint(token);
+  } catch (error) {
+    if (process.env.CONFENGE_E2E_LEGACY_FALLBACK !== "1") throw error;
+  }
+
+  // This opt-in fallback is diagnostic only. CI and product acceptance never
+  // approve touchpoints that were not claimed by the pilot cohort transaction.
   // Reuse an already-reviewable touch if present (with body).
   const existing = await apiJSON<{ data?: Touchpoint[] }>(
     token,
@@ -576,7 +693,7 @@ test.describe("CONFENGE product acceptance UI", () => {
         "Content-Type": "application/json",
         "Idempotency-Key": `e2e-import-hard-${Date.now()}`,
       },
-      body: fs.readFileSync(FEED_PATH),
+      body: feedPayloadForImport(),
     });
     const importText = await importRes.text();
     expect(importRes.ok, `import failed: ${importRes.status} ${importText.slice(0, 400)}`).toBeTruthy();
@@ -657,6 +774,7 @@ test.describe("CONFENGE product acceptance UI", () => {
     await expect(page.getByTestId("confenge-evidence")).toBeVisible();
     await expect(page.getByTestId("confenge-recipient")).toBeVisible();
     await expect(page.getByTestId("confenge-company")).toBeVisible();
+    await expect(page.getByText("Por que esta conta", { exact: true })).toBeVisible();
 
     const beforeEdit = await body.inputValue();
     expect(beforeEdit.trim().length).toBeGreaterThan(10);
@@ -692,7 +810,7 @@ test.describe("CONFENGE product acceptance UI", () => {
         tokens.access_token,
         "POST",
         `/v1/confenge/touchpoints/${seeded.touchpointId}/approve`,
-        {},
+        { generic_recipient_acknowledged: true },
       )
     ).data;
     const st1 = (tp.state || "").toUpperCase();
@@ -723,7 +841,7 @@ test.describe("CONFENGE product acceptance UI", () => {
         tokens.access_token,
         "POST",
         `/v1/confenge/touchpoints/${seeded.touchpointId}/approve`,
-        {},
+        { generic_recipient_acknowledged: true },
       )
     ).data;
     expect((tp.state || "").toUpperCase()).toBe("APPROVED");
@@ -811,7 +929,13 @@ test.describe("CONFENGE product acceptance UI", () => {
     const uiBody = page.getByTestId("confenge-body-input");
     const uiText = (await uiBody.inputValue()).replace(/\s+$/, "") + " [ui]";
     await uiBody.fill(uiText);
-    const approve = page.getByTestId("confenge-approve-queue");
+    const genericAcknowledgement = page.getByText(
+      /Confirmei que a mensagem trata esta caixa como canal institucional/i,
+    );
+    if (await genericAcknowledgement.isVisible().catch(() => false)) {
+      await genericAcknowledgement.click();
+    }
+    const approve = page.getByTestId("confenge-approve");
     await expect(approve).toBeEnabled({ timeout: 10_000 });
     await approve.click();
     await expect
@@ -829,7 +953,7 @@ test.describe("CONFENGE product acceptance UI", () => {
 
     // Needs attention surface
     await expect(page.getByTestId("confenge-needs-attention")).toBeVisible();
-    const needsBtn = page.getByRole("button", { name: /Needs attention/i });
+    const needsBtn = page.getByRole("button", { name: /Precisa de atenção/i });
     if ((await needsBtn.count()) > 0) {
       await needsBtn.click();
     }

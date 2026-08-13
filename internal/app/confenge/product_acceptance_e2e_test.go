@@ -1,6 +1,7 @@
 package confenge
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -78,6 +79,7 @@ func TestProductAcceptanceMultichannelSum(t *testing.T) {
 	org := uuid.New()
 	user := uuid.New()
 	raw := mustReadFixture(t, "native_feed_v1.json")
+	raw = bytes.ReplaceAll(raw, []byte("acme.example.com"), []byte("pilot.warmbly.com"))
 	marker := fmt.Sprintf("CONFENGE-PA-%s", uuid.NewString()[:8])
 
 	// 1. import of multiple companies
@@ -278,7 +280,7 @@ func TestProductAcceptanceMultichannelSum(t *testing.T) {
 	pubCandID := uuid.New()
 	_, _ = rf.UpsertCandidate(context.Background(), &models.OutreachContactCandidate{
 		ID: pubCandID, OrganizationID: org, AccountID: acme.ID,
-		Name: "Public Phone", Email: "public@acme.example.com",
+		Name: "Public Phone", Email: "public@pilot.warmbly.com",
 		Phone: "+5548999999999", PhoneE164: "+5548999999999",
 		PhoneSource:           "official_company_site",
 		WhatsAppConsentStatus: whatsapp.ConsentUnknown, WhatsAppConsentProvenanceOK: false,
@@ -316,6 +318,7 @@ func TestProductAcceptanceMultichannelSum(t *testing.T) {
 		WhatsAppConsentStatus: whatsapp.ConsentOptedIn, WhatsAppConsentProvenanceOK: true,
 		WhatsAppConsentSource: "website_form", WhatsAppConsentAt: &nowWA,
 		VerificationStatus: models.OutreachVerifyOfficialSource, Recommended: true,
+		LastImportRunID: waAcc.LastImportRunID,
 	})
 	_ = svc.waStore.UpsertContactState(context.Background(), &models.WhatsAppContactState{
 		OrganizationID: org, PhoneE164: "+5548888888888",
@@ -341,6 +344,7 @@ func TestProductAcceptanceMultichannelSum(t *testing.T) {
 		Channel: models.OutreachChannelWhatsApp, Purpose: models.TouchpointPurposeInitial,
 		State: models.TouchpointNeedsReview, Recipient: waDraft.RecipientPhoneE164,
 		BodyText: waBody, DraftID: &waDraft.ID, IdempotencyKey: "pa-wa-tp",
+		GeneratedContextHash: waAcc.MessageContextHash,
 	}
 	RecomputeContentHash(waTP)
 	if err := rf.InsertTouchpoint(context.Background(), waTP); err != nil {

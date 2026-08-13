@@ -141,6 +141,44 @@ func (r *outreachRepository) FindCandidateByEmail(ctx context.Context, orgID uui
 	return c, acc, nil
 }
 
+// FindCandidateByEnrollment resolves the exact candidate that created a campaign membership.
+func (r *outreachRepository) FindCandidateByEnrollment(ctx context.Context, orgID, campaignID, contactID uuid.UUID) (*models.OutreachContactCandidate, *models.OutreachAccount, error) {
+	var candidateID uuid.UUID
+	err := r.db.QueryRow(ctx, `
+		SELECT contact_candidate_id
+		FROM outreach_drafts
+		WHERE organization_id=$1 AND campaign_id=$2 AND enrollment_contact_id=$3
+		  AND contact_candidate_id IS NOT NULL
+		ORDER BY updated_at DESC
+		LIMIT 1`, orgID, campaignID, contactID).Scan(&candidateID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	cand, err := r.GetCandidate(ctx, orgID, candidateID)
+	if err != nil || cand == nil {
+		return cand, nil, err
+	}
+	acc, err := r.GetAccount(ctx, orgID, cand.AccountID)
+	return cand, acc, err
+}
+
+func (r *outreachRepository) GetTouchpointByEnrollment(ctx context.Context, orgID, campaignID, contactID uuid.UUID) (*models.OutreachTouchpoint, error) {
+	row := r.db.QueryRow(ctx, outreachTouchpointSelect+`
+		FROM outreach_touchpoints t
+		JOIN outreach_drafts d ON d.id=t.draft_id AND d.organization_id=t.organization_id
+		WHERE t.organization_id=$1 AND d.campaign_id=$2 AND d.enrollment_contact_id=$3
+		ORDER BY t.updated_at DESC
+		LIMIT 1`, orgID, campaignID, contactID)
+	touchpoint, err := scanTouchpoint(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return touchpoint, err
+}
+
 // FindCandidateByPhone matches phone_e164 or raw phone (digits-insensitive).
 func (r *outreachRepository) FindCandidateByPhone(ctx context.Context, orgID uuid.UUID, phone string) (*models.OutreachContactCandidate, *models.OutreachAccount, error) {
 	phone = strings.TrimSpace(phone)

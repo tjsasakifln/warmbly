@@ -22,7 +22,8 @@ func TestEmailSyntaxAloneNeverGrantsAutorun(t *testing.T) {
 
 	acc := &models.OutreachAccount{
 		ID: accID, OrganizationID: org, CNPJ14: "12345678000199",
-		RazaoSocial: "Empresa X", ServiceCode: "REAJUSTE", FactToMention: "fato público",
+		SourceSystem: "extra-cli",
+		RazaoSocial:  "Empresa X", ServiceCode: "REAJUSTE", FactToMention: "fato público",
 		ActivationState:    "ACTIONABLE_NOW", // must NOT imply A_AUTOMATIC
 		MessageContextHash: "ctx1", QueueState: models.OutreachQueueNeedsReview,
 		// No TargetFitSendTier, no EmailSendReady — legacy shape.
@@ -102,6 +103,7 @@ func TestActionableNowDoesNotImplyAAutomatic(t *testing.T) {
 	org := uuid.New()
 	acc.ID = uuid.New()
 	acc.OrganizationID = org
+	acc.SourceSystem = "extra-cli"
 	acc.CNPJ14 = "99887766000155"
 	acc.ServiceCode = "REAJUSTE"
 	acc.FactToMention = "x"

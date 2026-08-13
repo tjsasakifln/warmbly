@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/warmbly/warmbly/internal/models"
 )
 
@@ -205,6 +206,9 @@ func TestLegacyDoesNotInventMissingFields(t *testing.T) {
 	if len(l.Contacts) != 0 {
 		t.Fatalf("must not invent contacts: %+v", l.Contacts)
 	}
+	if feed.GeneratedAt != "" || !feed.Legacy {
+		t.Fatalf("legacy feed must not invent authoritative freshness: %+v", feed)
+	}
 }
 
 func TestHostAllowlist(t *testing.T) {
@@ -244,6 +248,39 @@ func TestConfigValidateProdHTTPS(t *testing.T) {
 	cfg.AllowedHosts = nil
 	if err := cfg.ValidateStartup("prod"); err == nil {
 		t.Fatal("prod must require allowlist when feed set")
+	}
+	cfg.FeedURL = ""
+	cfg.ManifestURL = "http://manifest.example.com/manifest.json"
+	cfg.AllowedHosts = []string{"manifest.example.com"}
+	if err := cfg.ValidateStartup("prod"); err == nil {
+		t.Fatal("prod must require https manifest")
+	}
+	cfg.ManifestURL = "https://other.example.com/manifest.json"
+	if err := cfg.ValidateStartup("prod"); err == nil {
+		t.Fatal("prod must require manifest host allowlist")
+	}
+}
+
+func TestConfigValidateStartupRejectsUnsafeOperatorAutomation(t *testing.T) {
+	base := Config{
+		Enabled: true, OperatorMode: true, OperatorUserID: uuid.New(), OperatorOrgID: uuid.New(),
+		RequireHumanApproval: true, DefaultDailyLimit: 200, MaxInitialEmailWords: 120,
+	}
+	t.Setenv("APP_URL", "http://127.0.0.1:5173")
+	auto := base
+	auto.AutoSendEnabled = true
+	if err := auto.ValidateStartup("production"); err == nil {
+		t.Fatal("operator startup must reject auto-send")
+	}
+	noHuman := base
+	noHuman.RequireHumanApproval = false
+	if err := noHuman.ValidateStartup("production"); err == nil {
+		t.Fatal("operator startup must require human approval")
+	}
+	green := base
+	green.GreenAutorunEnabled = true
+	if err := green.ValidateStartup("production"); err == nil {
+		t.Fatal("operator startup must reject green autorun")
 	}
 }
 

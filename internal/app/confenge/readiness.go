@@ -24,13 +24,19 @@ const (
 
 // Readiness is the discrete operator status panel payload.
 type Readiness struct {
-	Email          string `json:"email"`
-	WhatsApp       string `json:"whatsapp"`
-	FeedConfigured bool   `json:"feed_configured"`
-	FeedAgeSeconds *int64 `json:"feed_age_seconds,omitempty"`
-	FeedAgeLabel   string `json:"feed_age"`
-	OutcomeLoop    string `json:"outcome_loop"`
-	AI             string `json:"ai"`
+	Email             string     `json:"email"`
+	WhatsApp          string     `json:"whatsapp"`
+	FeedConfigured    bool       `json:"feed_configured"`
+	FeedAgeSeconds    *int64     `json:"feed_age_seconds,omitempty"`
+	FeedAgeLabel      string     `json:"feed_age"`
+	FeedState         string     `json:"feed_state"`
+	FeedSnapshot      string     `json:"feed_snapshot_hash,omitempty"`
+	FeedLastSyncAt    *time.Time `json:"feed_last_success_at,omitempty"`
+	FeedSourceAt      *time.Time `json:"feed_source_generated_at,omitempty"`
+	FeedSyncedAt      *time.Time `json:"feed_synced_at,omitempty"`
+	FeedMaxAgeSeconds int64      `json:"feed_max_age_seconds"`
+	OutcomeLoop       string     `json:"outcome_loop"`
+	AI                string     `json:"ai"`
 	// GovernorCap is the global rolling-hour outbound cap (email+WhatsApp).
 	// Primary CONFENGE pacing control (~10/h). Not the campaign daily limit.
 	GovernorCap int `json:"governor_cap"`
@@ -46,6 +52,11 @@ type Readiness struct {
 	AutoSendEnabled   bool   `json:"auto_send_enabled"`
 	WhatsAppEnabled   bool   `json:"whatsapp_enabled"`
 	WhatsAppProvider  string `json:"whatsapp_provider,omitempty"`
+	PilotCohortState  string `json:"pilot_cohort_state"`
+	PilotPrepared     int    `json:"pilot_cohort_prepared"`
+	PilotNeedsReview  int    `json:"pilot_cohort_needs_review"`
+	PilotApproved     int    `json:"pilot_cohort_approved"`
+	PilotSent         int    `json:"pilot_cohort_sent"`
 }
 
 // ReadinessInputs are optional live signals for BuildReadiness.
@@ -54,6 +65,8 @@ type ReadinessInputs struct {
 	WhatsAppReady         bool
 	WhatsAppPolicyBlocked bool
 	LastImportAt          *time.Time
+	LastSyncAt            *time.Time
+	FeedSnapshot          string
 	Queue                 *models.OutreachQueueSummary
 	AIConfigured          bool
 	WA                    *whatsapp.Config
@@ -97,12 +110,17 @@ func BuildReadiness(cfg Config, in ReadinessInputs) Readiness {
 		GovernorCap:        hourly,
 		CampaignDailyLimit: daily,
 		EffectiveDailyCap:  effective,
-		FeedConfigured:     strings.TrimSpace(cfg.FeedURL) != "",
+		FeedConfigured:     strings.TrimSpace(cfg.FeedURL) != "" || strings.TrimSpace(cfg.ManifestURL) != "",
 		KillSwitch:         !cfg.SendingAllowed(),
 		SendingAllowed:     cfg.SendingAllowed(),
 		WhatsAppEnabled:    cfg.WhatsAppEnabled || waCfg.Enabled,
 		WhatsAppProvider:   waCfg.Provider,
 	}
+	maxAge := cfg.FeedMaxAge
+	if maxAge <= 0 {
+		maxAge = 24 * time.Hour
+	}
+	r.FeedMaxAgeSeconds = int64(maxAge.Seconds())
 
 	if in.EmailReady {
 		r.Email = ReadyOK
@@ -140,8 +158,18 @@ func BuildReadiness(cfg Config, in ReadinessInputs) Readiness {
 		}
 		r.FeedAgeSeconds = &age
 		r.FeedAgeLabel = formatAge(age)
+		r.FeedLastSyncAt = in.LastImportAt
+		r.FeedSourceAt = in.LastImportAt
+		r.FeedSyncedAt = in.LastSyncAt
+		r.FeedSnapshot = in.FeedSnapshot
+		if time.Duration(age)*time.Second > maxAge {
+			r.FeedState = "stale"
+		} else {
+			r.FeedState = "fresh"
+		}
 	} else {
 		r.FeedAgeLabel = "unknown"
+		r.FeedState = "missing"
 	}
 
 	if in.Queue != nil {
@@ -194,18 +222,52 @@ func (s *service) CollectReadiness(ctx context.Context, orgID uuid.UUID, emailRe
 	if s.cfg.WhatsAppEnabled && s.wa != nil {
 		in.WhatsAppReady = true
 	}
-	if runs, err := s.repo.ListImportRuns(ctx, orgID, 1); err == nil && len(runs) > 0 {
-		if runs[0].FinishedAt != nil {
-			in.LastImportAt = runs[0].FinishedAt
-		} else {
-			t := runs[0].StartedAt
-			in.LastImportAt = &t
+	state, stateErr := s.repo.GetFeedSyncState(ctx, orgID)
+	if stateErr == nil && state != nil {
+		if state.LastStatus == "completed" && state.SourceGeneratedAt != nil && state.LastSnapshotHash != "" && state.LastRunID != "" {
+			in.LastImportAt = state.SourceGeneratedAt
+			in.LastSyncAt = state.LastSuccessAt
+			in.FeedSnapshot = state.LastSnapshotHash
+		}
+	} else if stateErr == nil && state == nil {
+		runs, err := s.repo.ListImportRuns(ctx, orgID, 1)
+		if err == nil && len(runs) > 0 && runs[0].Status == models.OutreachImportCompleted {
+			in.LastImportAt = runs[0].SourceGeneratedAt
+			in.LastSyncAt = runs[0].FinishedAt
+			in.FeedSnapshot = runs[0].SnapshotHash
 		}
 	}
 	if sum, err := s.repo.CountByQueueState(ctx, orgID); err == nil {
 		in.Queue = sum
 	}
-	return BuildReadiness(s.cfg, in)
+	readiness := BuildReadiness(s.cfg, in)
+	readiness.PilotCohortState = "unavailable"
+	cohortID := uuid.NewSHA1(orgID, []byte("confenge-pilot-v1")).String()
+	memberships, err := s.repo.ListPilotMemberships(ctx, orgID, cohortID)
+	if err != nil {
+		return readiness
+	}
+	readiness.PilotCohortState = "ready"
+	readiness.PilotPrepared = len(memberships)
+	for i := range memberships {
+		touchpoint, touchpointErr := s.repo.GetTouchpoint(ctx, orgID, memberships[i].TouchpointID)
+		if touchpointErr != nil || touchpoint == nil {
+			readiness.PilotCohortState = "unavailable"
+			readiness.PilotNeedsReview = 0
+			readiness.PilotApproved = 0
+			readiness.PilotSent = 0
+			return readiness
+		}
+		switch touchpoint.State {
+		case models.TouchpointNeedsReview:
+			readiness.PilotNeedsReview++
+		case models.TouchpointApproved, models.TouchpointQueued:
+			readiness.PilotApproved++
+		case models.TouchpointSent, models.TouchpointReplied:
+			readiness.PilotSent++
+		}
+	}
+	return readiness
 }
 
 // RedactSecret returns a non-empty secret marker without leaking the value.

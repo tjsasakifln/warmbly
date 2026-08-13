@@ -1,6 +1,7 @@
 package confenge
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -36,6 +37,7 @@ func TestSyntheticOperationalFlow(t *testing.T) {
 	org := uuid.New()
 	user := uuid.New()
 	raw := mustReadFixture(t, "native_feed_v1.json")
+	raw = bytes.ReplaceAll(raw, []byte("acme.example.com"), []byte("pilot.warmbly.com"))
 
 	run, xerr := svc.ImportFromBytes(context.Background(), org, &user, raw, ImportOptions{})
 	if xerr != nil {
@@ -102,7 +104,8 @@ func TestSyntheticOperationalFlow(t *testing.T) {
 		Channel: models.OutreachChannelEmail, Purpose: models.TouchpointPurposeInitial,
 		State: models.TouchpointNeedsReview, Recipient: approved.RecipientEmail,
 		Subject: approved.Subject, BodyText: approved.BodyText, DraftID: &approved.ID,
-		IdempotencyKey: "e2e-tp",
+		ContactCandidateID:   approved.ContactCandidateID,
+		GeneratedContextHash: acme.MessageContextHash, IdempotencyKey: "e2e-tp",
 	}
 	RecomputeContentHash(tp)
 	if err := ApplyHumanApproval(tp, user, now); err != nil {

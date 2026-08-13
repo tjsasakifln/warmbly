@@ -212,6 +212,9 @@ func Run(
 		auth.GET("/providers", h.AuthProviders)
 		auth.POST("/apple", h.AppleTokenLogin)
 		auth.POST("/google", h.GoogleTokenLogin)
+		// Dedicated loopback deployment only. The handler returns 404 unless
+		// CONFENGE_OPERATOR_MODE is explicitly enabled and validated on boot.
+		auth.POST("/confenge-operator/session", h.ConfengeOperatorSession)
 
 		// 2FA login challenge (PUBLIC): exchanges a single-use pending token +
 		// TOTP/recovery code for a real session. Rate-limited in the service
@@ -480,6 +483,7 @@ func Run(
 					confengeWrite.POST("/accounts/:id/block", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.BlockConfengeAccount)
 					confengeWrite.POST("/accounts/:id/dnc", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.DNCConfengeAccount)
 					confengeWrite.POST("/accounts/:id/plan", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.PlanConfengeCadence)
+					confengeWrite.POST("/pilot/cohort/prepare", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.PrepareConfengePilotCohort)
 					confengeWrite.POST("/accounts/:id/cancel-touchpoints", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.CancelConfengeAccountTouchpoints)
 					confengeWrite.POST("/accounts/:id/generate", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.GenerateConfengeDraft)
 					confengeWrite.POST("/accounts/:id/generate-reply", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.GenerateConfengeReplyDraft)

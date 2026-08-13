@@ -4,6 +4,8 @@ import type {
     ConfengeAttentionItem,
     ConfengeDispatchStatus,
     ConfengeDraft,
+    ConfengeFeedSyncResult,
+    ConfengePilotCohortResult,
     ConfengeStatus,
     ConfengeSummary,
     ConfengeTouchpoint,
@@ -54,13 +56,14 @@ export async function listConfengeWorkingQueue(params?: {
     return res.data ?? [];
 }
 
-export async function syncConfengeFeed(manifestUri?: string): Promise<unknown> {
-    return await Request({
+export async function syncConfengeFeed(manifestUri?: string): Promise<ConfengeFeedSyncResult> {
+    const res = await Request<{ data: ConfengeFeedSyncResult }>({
         method: "POST",
         url: "/confenge/sync",
         authorization: true,
         data: manifestUri ? { manifest_uri: manifestUri } : {},
     });
+    return res.data;
 }
 
 export async function listConfengeAccounts(params?: {
@@ -159,6 +162,21 @@ export async function planConfengeCadence(accountId: string, channel?: string): 
   return res.data ?? [];
 }
 
+export async function prepareConfengePilotCohort(accountIds: string[]): Promise<ConfengePilotCohortResult> {
+  const stableIds = [...new Set(accountIds)].sort();
+	const encoded = new TextEncoder().encode(stableIds.join(","));
+	const digest = await crypto.subtle.digest("SHA-256", encoded);
+	const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const res = await Request<{ data: ConfengePilotCohortResult }>({
+    method: "POST",
+    url: "/confenge/pilot/cohort/prepare",
+    authorization: true,
+		headers: { "Idempotency-Key": `confenge-pilot-${hash}` },
+    data: { account_ids: stableIds },
+  });
+  return res.data;
+}
+
 export async function generateConfengeTouchpoint(id: string): Promise<ConfengeTouchpoint> {
   const res = await Request<{ data: ConfengeTouchpoint }>({ method: "POST", url: `/confenge/touchpoints/${id}/generate`, authorization: true, data: {} });
   return res.data;
@@ -169,8 +187,8 @@ export async function editConfengeTouchpoint(id: string, body: { subject?: strin
   return res.data;
 }
 
-export async function approveConfengeTouchpoint(id: string): Promise<ConfengeTouchpoint> {
-  const res = await Request<{ data: ConfengeTouchpoint }>({ method: "POST", url: `/confenge/touchpoints/${id}/approve`, authorization: true, data: {} });
+export async function approveConfengeTouchpoint(id: string, genericRecipientAcknowledged = false): Promise<ConfengeTouchpoint> {
+  const res = await Request<{ data: ConfengeTouchpoint }>({ method: "POST", url: `/confenge/touchpoints/${id}/approve`, authorization: true, data: { generic_recipient_acknowledged: genericRecipientAcknowledged } });
   return res.data;
 }
 
