@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
 )
 
@@ -19,6 +20,19 @@ type pilotFixture struct {
 	now     time.Time
 }
 
+type feedStateFailureRepo struct {
+	*memRepo
+	run models.OutreachImportRun
+}
+
+func (repo *feedStateFailureRepo) GetFeedSyncState(context.Context, uuid.UUID) (*models.OutreachFeedSyncState, error) {
+	return nil, fmt.Errorf("feed state database unavailable")
+}
+
+func (repo *feedStateFailureRepo) ListImportRuns(context.Context, uuid.UUID, int) ([]models.OutreachImportRun, error) {
+	return []models.OutreachImportRun{repo.run}, nil
+}
+
 func newPilotFixture(t *testing.T) *pilotFixture {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Second)
@@ -26,7 +40,8 @@ func newPilotFixture(t *testing.T) *pilotFixture {
 	repo.feedSync = map[uuid.UUID]*models.OutreachFeedSyncState{}
 	orgID := uuid.New()
 	repo.feedSync[orgID] = &models.OutreachFeedSyncState{
-		OrganizationID: orgID, LastSnapshotHash: "snapshot-real-20260812", LastSuccessAt: &now, LastStatus: "completed",
+		OrganizationID: orgID, LastSnapshotHash: "snapshot-real-20260812", LastRunID: "run-current",
+		LastSuccessAt: &now, SourceGeneratedAt: &now, LastStatus: "completed",
 	}
 	service := NewService(Config{
 		Enabled: true, RequireHumanApproval: true, AutoSendEnabled: false,
@@ -56,7 +71,10 @@ func (fixture *pilotFixture) addReadyAccount(t *testing.T, index int) uuid.UUID 
 		TargetFitSourceWatermark: observedAt.Format(time.RFC3339), TargetFitObservedAt: &observedAt,
 		TargetFitComputedAt: &observedAt, TargetFitFresh: true, TargetFitEligible: true,
 		TargetFitSendTier: "A_AUTOMATIC", EmailSendReady: true,
+		SourceRunID: "run-current",
 	}
+	currentImportID := uuid.New()
+	account.LastImportRunID = &currentImportID
 	if _, err := fixture.repo.UpsertAccount(context.Background(), account); err != nil {
 		t.Fatal(err)
 	}
@@ -70,6 +88,8 @@ func (fixture *pilotFixture) addReadyAccount(t *testing.T, index int) uuid.UUID 
 		VerificationStatus: models.OutreachVerifyOfficialSource, Recommended: true,
 		EmailSendReady: false, OwnershipStatus: "COMPANY_OWNED", CreatedAt: fixture.now.Add(-72 * time.Hour),
 	}
+	legacyImportID := uuid.New()
+	legacy.LastImportRunID = &legacyImportID
 	validDate := fixture.now.Add(-2 * time.Hour)
 	valid := legacy
 	valid.ID = uuid.New()
@@ -78,6 +98,7 @@ func (fixture *pilotFixture) addReadyAccount(t *testing.T, index int) uuid.UUID 
 	valid.EmailSendReady = true
 	valid.RecipientCommercialSuitability = "SUITABLE"
 	valid.CreatedAt = fixture.now.Add(-time.Hour)
+	valid.LastImportRunID = &currentImportID
 	fixture.repo.cands[account.ID] = []models.OutreachContactCandidate{legacy, valid}
 	fixture.repo.evidence[account.ID] = []models.OutreachEvidence{{
 		ID: uuid.New(), OrganizationID: fixture.orgID, AccountID: account.ID,
@@ -103,6 +124,18 @@ func TestPilotCohortPreparesValidAccountAndUsesSendReadyRecipient(t *testing.T) 
 		t.Fatalf("wrong recipient selected: %+v", result.Results[0])
 	}
 	assertPilotAccountNeedsReview(t, fixture, accountID)
+	readiness := fixture.service.CollectReadiness(context.Background(), fixture.orgID, true)
+	if readiness.PilotCohortState != "ready" || readiness.PilotPrepared != 1 || readiness.PilotNeedsReview != 1 || readiness.PilotApproved != 0 || readiness.PilotSent != 0 {
+		t.Fatalf("readiness must report exact durable cohort state: %+v", readiness)
+	}
+	outside := &models.OutreachAccount{OrganizationID: fixture.orgID, CNPJ14: "10000000000991", QueueState: models.OutreachQueueApproved}
+	if _, err := fixture.repo.UpsertAccount(context.Background(), outside); err != nil {
+		t.Fatal(err)
+	}
+	readiness = fixture.service.CollectReadiness(context.Background(), fixture.orgID, true)
+	if readiness.PilotPrepared != 1 || readiness.PilotApproved != 0 {
+		t.Fatalf("global account states must not inflate cohort readiness: %+v", readiness)
+	}
 }
 
 func TestPilotCohortMixedBatchDoesNotRollbackValidAccounts(t *testing.T) {
@@ -132,6 +165,64 @@ func TestPilotCohortMixedBatchDoesNotRollbackValidAccounts(t *testing.T) {
 	assertPilotAccountNeedsReview(t, fixture, validID)
 }
 
+func TestPilotCohortFailsClosedWhenExistingCadenceCannotBeRead(t *testing.T) {
+	fixture := newPilotFixture(t)
+	accountID := fixture.addReadyAccount(t, 9)
+	fixture.repo.listTouchpointsErr = fmt.Errorf("database unavailable")
+
+	result, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID, []uuid.UUID{accountID}, PilotOperation{IdempotencyKey: "touchpoint-read-failure"})
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if result.Prepared != 0 || result.Blocked != 1 || result.Results[0].ReasonCode != "preparation_failed" {
+		t.Fatalf("touchpoint read failure must block explicitly: %+v", result)
+	}
+	if len(fixture.repo.pilotSlots) != 0 {
+		t.Fatalf("read failure must not reserve cohort capacity: %+v", fixture.repo.pilotSlots)
+	}
+}
+
+func TestPilotCohortReleasesCapacityAfterKnownGenerationFailure(t *testing.T) {
+	fixture := newPilotFixture(t)
+	accountID := fixture.addReadyAccount(t, 10)
+	fixture.repo.upsertDraftErr = fmt.Errorf("draft storage unavailable")
+
+	result, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID, []uuid.UUID{accountID}, PilotOperation{IdempotencyKey: "draft-write-failure"})
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if result.Prepared != 0 || result.Blocked != 1 {
+		t.Fatalf("draft failure must block the account: %+v", result)
+	}
+	if len(fixture.repo.pilotSlots) != 0 {
+		t.Fatalf("known generation failure must release capacity: %+v", fixture.repo.pilotSlots)
+	}
+}
+
+func TestOperatorApprovalRequiresExactPilotMembership(t *testing.T) {
+	fixture := newPilotFixture(t)
+	fixture.service.cfg.OperatorMode = true
+	accountID := fixture.addReadyAccount(t, 11)
+	candidateID := fixture.repo.cands[accountID][1].ID
+	touchpoints, xerr := fixture.service.PlanAccountCadence(context.Background(), fixture.orgID, fixture.userID, accountID, &candidateID, models.OutreachChannelEmail)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	generated, xerr := fixture.service.GenerateTouchpointDraft(context.Background(), fixture.orgID, fixture.userID, touchpoints[0].ID)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if _, xerr := fixture.service.ApproveTouchpoint(context.Background(), fixture.orgID, fixture.userID, generated.ID, ApprovalOptions{GenericRecipientAcknowledged: true}); xerr == nil || xerr.Code != errx.Conflict {
+		t.Fatalf("operator approval outside durable cohort must be blocked: %v", xerr)
+	}
+	if _, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID, []uuid.UUID{accountID}, PilotOperation{IdempotencyKey: "adopt-before-approval"}); xerr != nil {
+		t.Fatal(xerr)
+	}
+	if _, xerr := fixture.service.ApproveTouchpoint(context.Background(), fixture.orgID, fixture.userID, generated.ID, ApprovalOptions{GenericRecipientAcknowledged: true}); xerr != nil {
+		t.Fatalf("exact cohort member should remain eligible for human approval: %v", xerr)
+	}
+}
+
 func TestPilotRecipientBlockReasons(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -157,7 +248,7 @@ func TestPilotRecipientBlockReasons(t *testing.T) {
 			candidate := fixture.repo.cands[accountID][1]
 			test.mutate(&candidate)
 			fixture.repo.cands[accountID] = []models.OutreachContactCandidate{candidate}
-			result, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID, []uuid.UUID{accountID}, PilotOperation{})
+			result, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID, []uuid.UUID{accountID}, PilotOperation{IdempotencyKey: "recipient-" + test.name})
 			if xerr != nil {
 				t.Fatal(xerr)
 			}
@@ -177,14 +268,14 @@ func TestPilotCohortFeedMissingAndStale(t *testing.T) {
 		{name: "missing", configure: func(fixture *pilotFixture) { fixture.repo.feedSync = nil }, want: "feed_missing"},
 		{name: "stale", configure: func(fixture *pilotFixture) {
 			stale := fixture.now.Add(-25 * time.Hour)
-			fixture.repo.feedSync[fixture.orgID].LastSuccessAt = &stale
+			fixture.repo.feedSync[fixture.orgID].SourceGeneratedAt = &stale
 		}, want: "feed_stale"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newPilotFixture(t)
 			accountID := fixture.addReadyAccount(t, 20)
 			test.configure(fixture)
-			result, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID, []uuid.UUID{accountID}, PilotOperation{})
+			result, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID, []uuid.UUID{accountID}, PilotOperation{IdempotencyKey: "feed-" + test.name})
 			if xerr != nil {
 				t.Fatal(xerr)
 			}
@@ -212,6 +303,37 @@ func TestPilotReadinessUsesOneFreshnessThreshold(t *testing.T) {
 	missing := BuildReadiness(cfg, ReadinessInputs{Now: now})
 	if missing.FeedState != "missing" || missing.FeedAgeSeconds != nil {
 		t.Fatalf("unexpected missing readiness: %+v", missing)
+	}
+}
+
+func TestReadinessDoesNotFallbackWhenAuthoritativeStateReadFails(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &feedStateFailureRepo{memRepo: newMemRepo(), run: models.OutreachImportRun{
+		Status: models.OutreachImportCompleted, SnapshotHash: "would-be-false-green", SourceGeneratedAt: &now,
+	}}
+	service := NewService(Config{Enabled: true, FeedURL: "https://feed.internal/manifest.json"}, repo, nil).(*service)
+	readiness := service.CollectReadiness(context.Background(), uuid.New(), true)
+	if readiness.FeedState != "missing" || readiness.FeedSnapshot != "" {
+		t.Fatalf("authoritative state read failure must remain fail-closed: %+v", readiness)
+	}
+	if _, xerr := service.SyncFeedManifest(context.Background(), uuid.New(), nil, "https://feed.internal/manifest.json"); xerr == nil || xerr.Code != errx.ServiceUnavailable {
+		t.Fatalf("sync must not lose rollback protection after state read failure: %v", xerr)
+	}
+}
+
+func TestPartialFeedStateCannotFallBackToCompletedChunk(t *testing.T) {
+	fixture := newPilotFixture(t)
+	fixture.repo.feedSync[fixture.orgID].LastStatus = "partial"
+	completedAt := fixture.now
+	fixture.repo.runs[uuid.New()] = &models.OutreachImportRun{
+		OrganizationID: fixture.orgID, Status: models.OutreachImportCompleted,
+		SourceRunID: "partial-chunk-run", SnapshotHash: "partial-chunk-snapshot", SourceGeneratedAt: &completedAt,
+	}
+	if feed := fixture.service.pilotFeedEvidence(context.Background(), fixture.orgID, fixture.now); feed.State != "missing" {
+		t.Fatalf("partial manifest must block cohort preparation: %+v", feed)
+	}
+	if readiness := fixture.service.CollectReadiness(context.Background(), fixture.orgID, true); readiness.FeedState != "missing" {
+		t.Fatalf("partial manifest must not appear fresh in readiness: %+v", readiness)
 	}
 }
 
@@ -254,6 +376,39 @@ func TestPilotCohortThirtyAccountsGenerationAndIdempotentRetry(t *testing.T) {
 			t.Fatalf("initial draft bypassed human review: %+v", touchpoint)
 		}
 	}
+	extraID := fixture.addReadyAccount(t, 999)
+	extra, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID, []uuid.UUID{extraID}, PilotOperation{IdempotencyKey: "thirty-first"})
+	if xerr != nil || extra.Blocked != 1 || extra.Results[0].ReasonCode != "cohort_capacity_reached" {
+		t.Fatalf("31st account must be blocked before mutation: result=%+v err=%v", extra, xerr)
+	}
+	if len(fixture.repo.drafts) != 30 || len(fixture.repo.touchpoints) != 30*len(CadencePolicyV1()) {
+		t.Fatal("capacity rejection created orphan draft or touchpoint")
+	}
+}
+
+func TestPilotCohortIdempotencyKeyRejectsDifferentAccountSet(t *testing.T) {
+	fixture := newPilotFixture(t)
+	firstID := fixture.addReadyAccount(t, 31)
+	secondID := fixture.addReadyAccount(t, 32)
+	if _, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID, []uuid.UUID{firstID}, PilotOperation{IdempotencyKey: "same-key"}); xerr != nil {
+		t.Fatal(xerr)
+	}
+	if _, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID, []uuid.UUID{secondID}, PilotOperation{IdempotencyKey: "same-key"}); xerr == nil || xerr.Code != errx.Conflict {
+		t.Fatalf("different request with reused key must conflict: %+v", xerr)
+	}
+}
+
+func TestPilotCohortRejectsDuplicateAndNilAccountsAtServiceBoundary(t *testing.T) {
+	fixture := newPilotFixture(t)
+	accountID := fixture.addReadyAccount(t, 33)
+	if _, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID,
+		[]uuid.UUID{accountID, accountID}, PilotOperation{IdempotencyKey: "duplicate"}); xerr == nil || xerr.Code != errx.BadRequest {
+		t.Fatalf("duplicate account ids must be rejected: %v", xerr)
+	}
+	if _, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID,
+		[]uuid.UUID{uuid.Nil}, PilotOperation{IdempotencyKey: "nil"}); xerr == nil || xerr.Code != errx.BadRequest {
+		t.Fatalf("nil account id must be rejected: %v", xerr)
+	}
 }
 
 func TestPilotCohortIncompleteCopyContextBlocksWithoutDraft(t *testing.T) {
@@ -262,7 +417,7 @@ func TestPilotCohortIncompleteCopyContextBlocksWithoutDraft(t *testing.T) {
 	fixture.repo.byID[accountID].ServiceCode = ""
 	fixture.repo.byID[accountID].FactToMention = ""
 	fixture.repo.evidence[accountID] = nil
-	result, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID, []uuid.UUID{accountID}, PilotOperation{})
+	result, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID, []uuid.UUID{accountID}, PilotOperation{IdempotencyKey: "incomplete-copy"})
 	if xerr != nil {
 		t.Fatal(xerr)
 	}
@@ -274,12 +429,12 @@ func TestPilotCohortIncompleteCopyContextBlocksWithoutDraft(t *testing.T) {
 func TestPilotEditInvalidatesApproval(t *testing.T) {
 	fixture := newPilotFixture(t)
 	accountID := fixture.addReadyAccount(t, 50)
-	result, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID, []uuid.UUID{accountID}, PilotOperation{})
+	result, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID, []uuid.UUID{accountID}, PilotOperation{IdempotencyKey: "edit-invalidates"})
 	if xerr != nil || result.Results[0].TouchpointID == nil {
 		t.Fatalf("prepare failed: %+v %v", result, xerr)
 	}
 	touchpointID := *result.Results[0].TouchpointID
-	approved, xerr := fixture.service.ApproveTouchpoint(context.Background(), fixture.orgID, fixture.userID, touchpointID)
+	approved, xerr := fixture.service.ApproveTouchpoint(context.Background(), fixture.orgID, fixture.userID, touchpointID, ApprovalOptions{})
 	if xerr != nil || approved.ApprovedBy == nil {
 		t.Fatalf("approve failed: %+v %v", approved, xerr)
 	}
@@ -290,6 +445,26 @@ func TestPilotEditInvalidatesApproval(t *testing.T) {
 	}
 	if edited.ApprovedBy != nil || edited.ApprovedAt != nil || edited.ApprovedContentHash != "" || edited.State != models.TouchpointNeedsReview {
 		t.Fatalf("edit did not invalidate approval: %+v", edited)
+	}
+}
+
+func TestGenericRecipientApprovalRequiresAuditableAcknowledgement(t *testing.T) {
+	fixture := newPilotFixture(t)
+	accountID := fixture.addReadyAccount(t, 51)
+	valid := fixture.repo.cands[accountID][1]
+	valid.MailboxPurpose = "GENERIC_CONTACT"
+	valid.RecipientCommercialSuitability = "SUITABLE_GENERIC"
+	fixture.repo.cands[accountID] = []models.OutreachContactCandidate{fixture.repo.cands[accountID][0], valid}
+	result, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID, []uuid.UUID{accountID}, PilotOperation{IdempotencyKey: "generic-ack"})
+	if xerr != nil || result.Results[0].TouchpointID == nil {
+		t.Fatalf("prepare generic recipient: %+v %v", result, xerr)
+	}
+	touchpointID := *result.Results[0].TouchpointID
+	if _, xerr := fixture.service.ApproveTouchpoint(context.Background(), fixture.orgID, fixture.userID, touchpointID, ApprovalOptions{}); xerr == nil {
+		t.Fatal("generic mailbox approval must require explicit acknowledgement")
+	}
+	if _, xerr := fixture.service.ApproveTouchpoint(context.Background(), fixture.orgID, fixture.userID, touchpointID, ApprovalOptions{GenericRecipientAcknowledged: true}); xerr != nil {
+		t.Fatalf("acknowledged generic mailbox should remain review-eligible: %v", xerr)
 	}
 }
 

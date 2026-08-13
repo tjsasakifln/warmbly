@@ -69,6 +69,10 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 		Status:             models.OutreachDraftGenerating,
 		PromptVersion:      PromptVersion,
 	}
+	if isGenericRecipient(cand) {
+		draft.RecipientName = ""
+		draft.RecipientRole = ""
+	}
 	if existing != nil {
 		draft.ID = existing.ID
 		draft.Generation = existing.Generation + 1
@@ -134,7 +138,7 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 	val.Rationale = out.Rationale
 	val.Channel = out.Channel
 	recipient := cand.Email
-	if cand.Name != "" {
+	if cand.Name != "" && !isGenericRecipient(cand) {
 		recipient = cand.Name + " <" + cand.Email + ">"
 	}
 	valJSON := PackValidationWithStrategy(val, st, recipient)

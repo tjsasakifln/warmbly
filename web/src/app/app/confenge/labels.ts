@@ -82,6 +82,14 @@ const REASON_LABELS: Record<string, string> = {
   WINDOW_OPEN: "Janela de ação aberta",
   NEW_AMENDMENT_OR_TERM: "Novo aditivo ou encerramento",
   NEW_RELEVANT_CONTRACT: "Novo contrato relevante",
+  generic_mailbox_allowed_by_policy: "Caixa genérica: confirme destinatário e saudação antes de aprovar",
+  recipient_conflict: "Mais de um destinatário válido no snapshot atual",
+  recipient_removed_current_snapshot: "Contato removido do snapshot atual",
+  recipient_changed_requires_review: "A cadência existente aponta para outro destinatário",
+  recipient_snapshot_missing: "Snapshot autoritativo do contato ausente",
+  account_not_in_current_snapshot: "Conta ausente do snapshot atual",
+  cohort_membership_conflict: "Conta já preparada com outra mensagem ou destinatário",
+  cohort_membership_failed: "Dependências da preparação ficaram incoerentes",
 };
 
 export function stateLabel(value?: string | null): string {

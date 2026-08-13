@@ -165,6 +165,20 @@ func (r *outreachRepository) FindCandidateByEnrollment(ctx context.Context, orgI
 	return cand, acc, err
 }
 
+func (r *outreachRepository) GetTouchpointByEnrollment(ctx context.Context, orgID, campaignID, contactID uuid.UUID) (*models.OutreachTouchpoint, error) {
+	row := r.db.QueryRow(ctx, outreachTouchpointSelect+`
+		FROM outreach_touchpoints t
+		JOIN outreach_drafts d ON d.id=t.draft_id AND d.organization_id=t.organization_id
+		WHERE t.organization_id=$1 AND d.campaign_id=$2 AND d.enrollment_contact_id=$3
+		ORDER BY t.updated_at DESC
+		LIMIT 1`, orgID, campaignID, contactID)
+	touchpoint, err := scanTouchpoint(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return touchpoint, err
+}
+
 // FindCandidateByPhone matches phone_e164 or raw phone (digits-insensitive).
 func (r *outreachRepository) FindCandidateByPhone(ctx context.Context, orgID uuid.UUID, phone string) (*models.OutreachContactCandidate, *models.OutreachAccount, error) {
 	phone = strings.TrimSpace(phone)

@@ -408,10 +408,10 @@ func (s *service) WorkingQueueOverview(ctx context.Context, orgID uuid.UUID) (*W
 	if slots > 0 {
 		out.CapacityLoad = float64(out.DueNext24h) / float64(slots)
 	}
-	if st, err := s.repo.GetFeedSyncState(ctx, orgID); err == nil && st != nil {
-		out.LastFeedSyncAt = st.LastSuccessAt
-		if st.LastSuccessAt != nil {
-			age := int64(time.Since(*st.LastSuccessAt).Seconds())
+	if st, err := s.repo.GetFeedSyncState(ctx, orgID); err == nil && st != nil && st.LastStatus == "completed" {
+		out.LastFeedSyncAt = st.SourceGeneratedAt
+		if st.SourceGeneratedAt != nil {
+			age := int64(time.Since(*st.SourceGeneratedAt).Seconds())
 			out.FeedAgeSeconds = &age
 		}
 	}
@@ -437,20 +437,20 @@ func AssertMessageContextFresh(acc *models.OutreachAccount, generatedHash string
 	return nil
 }
 
-// ApplyDeactivations marks accounts leaving ACTIONABLE_NOW as WATCH without clearing human state.
+// ApplyDeactivations revokes unsent work for accounts removed from the current actionable set.
 func (s *service) ApplyDeactivations(ctx context.Context, orgID uuid.UUID, deacts []map[string]any) (int, error) {
 	n := 0
 	for _, d := range deacts {
 		cnpj, _ := d["cnpj14"].(string)
 		cnpj = NormalizeCNPJ14(cnpj)
 		if cnpj == "" {
-			continue
+			return n, fmt.Errorf("deactivation has invalid cnpj14")
 		}
 		acc, err := s.repo.GetAccountByCNPJ(ctx, orgID, cnpj)
-		if err != nil || acc == nil {
-			continue
+		if err != nil {
+			return n, fmt.Errorf("load deactivation account %s: %w", cnpj, err)
 		}
-		if acc.DoNotContact {
+		if acc == nil {
 			continue
 		}
 		toState, _ := d["to_state"].(string)
@@ -459,7 +459,7 @@ func (s *service) ApplyDeactivations(ctx context.Context, orgID uuid.UUID, deact
 		}
 		acc.ActivationState = strings.ToUpper(toState)
 		if acc.ActivationState == ActivationActionableNow {
-			continue
+			return n, fmt.Errorf("deactivation %s cannot target ACTIONABLE_NOW", cnpj)
 		}
 		// Do not alter queue_state for terminal/human states
 		switch acc.QueueState {
@@ -470,9 +470,20 @@ func (s *service) ApplyDeactivations(ctx context.Context, orgID uuid.UUID, deact
 		}
 		// Soft-update: re-upsert with existing queue_state
 		acc.NextBestActionAt = nil
-		if _, err := s.repo.UpsertAccount(ctx, acc); err == nil {
-			n++
+		acc.TargetFitFresh = false
+		acc.TargetFitEligible = false
+		acc.TargetFitFreshnessReason = TargetFitReasonDeactivated
+		acc.TargetFitSuppressionReason = TargetFitReasonDeactivated
+		if !isHistoricalTerminalQueue(acc.QueueState) {
+			acc.QueueState = models.OutreachQueueTargetFitSuppressed
 		}
+		if _, err := s.repo.UpsertAccount(ctx, acc); err != nil {
+			return n, fmt.Errorf("persist deactivation %s: %w", cnpj, err)
+		}
+		if _, err := s.repo.InvalidateAccountOutboundForTargetFit(ctx, orgID, acc.ID, TargetFitReasonDeactivated); err != nil {
+			return n, fmt.Errorf("revoke deactivated outbound %s: %w", cnpj, err)
+		}
+		n++
 	}
 	return n, nil
 }

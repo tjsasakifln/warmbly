@@ -2,6 +2,7 @@ package confenge
 
 import (
 	"context"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -44,6 +45,65 @@ func TestEditAfterApproveInvalidates(t *testing.T) {
 	ApplyContentMutation(tp, tp.Channel, tp.Recipient, "Hi", "Edited")
 	if tp.ApprovedBy != nil || CanTransport(tp) == nil {
 		t.Fatal("edit must invalidate")
+	}
+}
+
+func TestEveryMaterialContentMutationInvalidatesApproval(t *testing.T) {
+	tests := []struct {
+		name      string
+		channel   string
+		recipient string
+		subject   string
+		body      string
+	}{
+		{name: "subject", channel: models.OutreachChannelEmail, recipient: "lead@empresa.com.br", subject: "Novo assunto", body: "Corpo original"},
+		{name: "body", channel: models.OutreachChannelEmail, recipient: "lead@empresa.com.br", subject: "Assunto original", body: "Novo corpo"},
+		{name: "recipient", channel: models.OutreachChannelEmail, recipient: "outro@empresa.com.br", subject: "Assunto original", body: "Corpo original"},
+		{name: "channel", channel: models.OutreachChannelWhatsApp, recipient: "+5511999999999", subject: "Assunto original", body: "Corpo original"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			touchpoint := sampleTouch(models.OutreachChannelEmail, "lead@empresa.com.br", "Assunto original", "Corpo original")
+			if err := ApplyHumanApproval(touchpoint, uuid.New(), time.Now().UTC()); err != nil {
+				t.Fatal(err)
+			}
+			ApplyContentMutation(touchpoint, test.channel, test.recipient, test.subject, test.body)
+			if touchpoint.ApprovedBy != nil || touchpoint.ApprovedAt != nil || touchpoint.ApprovedContentHash != "" || touchpoint.State != models.TouchpointNeedsReview {
+				t.Fatalf("approval survived %s mutation: %+v", test.name, touchpoint)
+			}
+		})
+	}
+}
+
+func TestUpstreamContextInvalidationRevokesApprovalAndEnrollment(t *testing.T) {
+	ctx := context.Background()
+	repo := newMemRepo()
+	orgID, accountID, candidateID := uuid.New(), uuid.New(), uuid.New()
+	draft := &models.OutreachDraft{
+		ID: uuid.New(), OrganizationID: orgID, AccountID: accountID,
+		ContactCandidateID: &candidateID, Status: models.OutreachDraftEnrolled,
+	}
+	campaignID, contactID := uuid.New(), uuid.New()
+	draft.CampaignID, draft.EnrollmentContactID = &campaignID, &contactID
+	_ = repo.UpsertDraft(ctx, draft)
+	approver := uuid.New()
+	touchpoint := &models.OutreachTouchpoint{
+		OrganizationID: orgID, AccountID: accountID, ContactCandidateID: &candidateID,
+		DraftID: &draft.ID, State: models.TouchpointQueued, Channel: models.OutreachChannelEmail,
+		ContentHash: "content", ApprovedContentHash: "content", ApprovedBy: &approver,
+		GeneratedContextHash: "old-context",
+	}
+	_ = repo.InsertTouchpoint(ctx, touchpoint)
+	if err := repo.InvalidateAccountApprovalsForContext(ctx, orgID, accountID, "new-context"); err != nil {
+		t.Fatal(err)
+	}
+	gotTouchpoint, _ := repo.GetTouchpoint(ctx, orgID, touchpoint.ID)
+	gotDraft, _ := repo.GetDraft(ctx, orgID, draft.ID)
+	if gotTouchpoint.State != models.TouchpointNeedsReview || gotTouchpoint.ApprovedBy != nil || gotTouchpoint.ApprovedContentHash != "" {
+		t.Fatalf("touchpoint approval not invalidated: %+v", gotTouchpoint)
+	}
+	if gotDraft.Status != models.OutreachDraftNeedsReview || gotDraft.CampaignID != nil || gotDraft.EnrollmentContactID != nil {
+		t.Fatalf("draft enrollment not invalidated: %+v", gotDraft)
 	}
 }
 
@@ -199,6 +259,38 @@ func TestQueueWithoutApprovalServiceBlocked(t *testing.T) {
 	}
 }
 
+func TestQueueKillSwitchPreservesApprovedState(t *testing.T) {
+	killPath := filepath.Join(t.TempDir(), "kill")
+	t.Setenv(EnvKillSwitchPath, killPath)
+	if err := EngageKillSwitch(); err != nil {
+		t.Fatal(err)
+	}
+	repo := newMemRepo()
+	svc := testSvc(repo).(*service)
+	org, user := uuid.New(), uuid.New()
+	tp := &models.OutreachTouchpoint{
+		OrganizationID: org, AccountID: uuid.New(), Ordinal: 1,
+		Channel: models.OutreachChannelEmail, State: models.TouchpointApproved,
+		Recipient: "approved@company.test", Subject: "Approved", BodyText: "Approved body",
+		IdempotencyKey: "kill-preserves-approval",
+	}
+	RecomputeContentHash(tp)
+	tp.ApprovedContentHash = tp.ContentHash
+	if err := repo.InsertTouchpoint(context.Background(), tp); err != nil {
+		t.Fatal(err)
+	}
+	if _, xerr := svc.QueueTouchpoint(context.Background(), org, user, tp.ID); xerr == nil {
+		t.Fatal("kill switch must block queue")
+	}
+	stored, err := repo.GetTouchpoint(context.Background(), org, tp.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != models.TouchpointApproved || stored.ApprovedContentHash != tp.ContentHash {
+		t.Fatalf("paused queue mutated approval: state=%s approved_hash=%q", stored.State, stored.ApprovedContentHash)
+	}
+}
+
 func TestEnrollDraftBlockedWithoutTouchApproval(t *testing.T) {
 	repo := newMemRepo()
 	svc := testSvc(repo).(*service)
@@ -333,7 +425,7 @@ func TestPromoteDueDoesNotReleaseWhilePriorOpen(t *testing.T) {
 		t.Fatalf("must stay PLANNED while prior open, got %s", re.State)
 	}
 	// Approve/queue next must also refuse
-	if _, xerr := svc.ApproveTouchpoint(context.Background(), org, user, second.ID); xerr == nil {
+	if _, xerr := svc.ApproveTouchpoint(context.Background(), org, user, second.ID, ApprovalOptions{}); xerr == nil {
 		t.Fatal("approve next while prior open must fail")
 	}
 }

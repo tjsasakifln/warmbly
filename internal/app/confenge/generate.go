@@ -225,7 +225,15 @@ func draftUserPrompt(in GenerateInput) string {
 	}
 	contact := map[string]any{}
 	if cand != nil {
-		contact = map[string]any{"name": cand.Name, "role": cand.Role, "email": cand.Email, "verification_status": cand.VerificationStatus}
+		contact = map[string]any{
+			"name": cand.Name, "role": cand.Role, "email": cand.Email,
+			"verification_status": cand.VerificationStatus, "generic_recipient": false,
+		}
+		if isGenericRecipient(cand) {
+			contact["name"] = ""
+			contact["role"] = ""
+			contact["generic_recipient"] = true
+		}
 	}
 	ev := make([]map[string]any, 0, len(evidence))
 	for _, e := range evidence {

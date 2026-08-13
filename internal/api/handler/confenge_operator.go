@@ -2,7 +2,10 @@ package handler
 
 import (
 	"context"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,7 +33,12 @@ func (h *Handler) ConfengeOperatorSession(c *gin.Context) {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
-	if !allowConfengeOperatorSession(c.ClientIP(), time.Now()) {
+	peerIP, local := confengeOperatorPeerIP(c.Request)
+	if !local {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	if !allowConfengeOperatorSession(peerIP, time.Now()) {
 		c.Header("Cache-Control", "no-store")
 		c.JSON(http.StatusTooManyRequests, gin.H{
 			"error":      "Too Many Requests",
@@ -59,7 +67,7 @@ func (h *Handler) ConfengeOperatorSession(c *gin.Context) {
 		ctx,
 		user.ID,
 		user.Email,
-		c.ClientIP(),
+		peerIP,
 		c.Request.UserAgent(),
 		token.AuthProviderConfenge,
 		&h.ConfengeConfig.OperatorOrgID,
@@ -71,6 +79,44 @@ func (h *Handler) ConfengeOperatorSession(c *gin.Context) {
 
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, session)
+}
+
+func confengeOperatorRequestIsLocal(request *http.Request) bool {
+	_, ok := confengeOperatorPeerIP(request)
+	return ok
+}
+
+func confengeOperatorPeerIP(request *http.Request) (string, bool) {
+	if request == nil {
+		return "", false
+	}
+	peer, _, err := net.SplitHostPort(request.RemoteAddr)
+	if err != nil {
+		peer = request.RemoteAddr
+	}
+	peerIP := net.ParseIP(peer)
+	if peerIP == nil || (!peerIP.IsLoopback() && !peerIP.IsPrivate()) {
+		return "", false
+	}
+	host := request.Host
+	if parsedHost, _, splitErr := net.SplitHostPort(host); splitErr == nil {
+		host = parsedHost
+	}
+	hostIP := net.ParseIP(host)
+	if host != "localhost" && (hostIP == nil || !hostIP.IsLoopback()) {
+		return "", false
+	}
+	if origin := strings.TrimSpace(request.Header.Get("Origin")); origin != "" {
+		parsed, parseErr := url.Parse(origin)
+		if parseErr != nil {
+			return "", false
+		}
+		originIP := net.ParseIP(parsed.Hostname())
+		if parsed.Hostname() != "localhost" && (originIP == nil || !originIP.IsLoopback()) {
+			return "", false
+		}
+	}
+	return peerIP.String(), true
 }
 
 func allowConfengeOperatorSession(ip string, now time.Time) bool {

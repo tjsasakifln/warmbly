@@ -67,9 +67,9 @@ func importAdversarialLead(t *testing.T, svc *service, org uuid.UUID, lead FeedL
 
 func TestTargetFitOutCompaniesNeverEnterOperationalSurface(t *testing.T) {
 	cases := []struct{ cnpj, name string }{
-		{"14893700000105", "PREVENCAO LABORATORIO DE ANALISES CLINICAS LTDA"},
-		{"01607033000167", "BEBA MAIS PIRACICABA DISTRIBUIDORA DE BEBIDAS LTDA"},
-		{"01942594000112", "SULPEL INDUSTRIA E COMERCIO DE PAPEIS LTDA"},
+		{"10000000000011", "EMPRESA SINTETICA ALFA LTDA"},
+		{"10000000000012", "EMPRESA SINTETICA BETA LTDA"},
+		{"10000000000013", "EMPRESA SINTETICA GAMA LTDA"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.cnpj, func(t *testing.T) {
@@ -101,7 +101,7 @@ func TestTargetFitOutCompaniesNeverEnterOperationalSurface(t *testing.T) {
 			if err := repo.InsertTouchpoint(context.Background(), tp); err != nil {
 				t.Fatal(err)
 			}
-			if _, xerr := svc.ApproveTouchpoint(context.Background(), org, uuid.New(), tp.ID); xerr == nil {
+			if _, xerr := svc.ApproveTouchpoint(context.Background(), org, uuid.New(), tp.ID, ApprovalOptions{}); xerr == nil {
 				t.Fatal("Approve must fail closed")
 			}
 			if err := ApplyHumanApproval(tp, uuid.New(), time.Now().UTC()); err != nil {

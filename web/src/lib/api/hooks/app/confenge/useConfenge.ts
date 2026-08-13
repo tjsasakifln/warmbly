@@ -26,7 +26,6 @@ import {
     pauseConfengeDispatch,
     planConfengeCadence,
     prepareConfengePilotCohort,
-    queueConfengeTouchpoint,
     resumeConfengeAccount,
     resumeConfengeDispatch,
     reviewConfengeDraft,
@@ -39,7 +38,8 @@ const KEY = ["confenge"] as const;
 
 function confengeError(error: unknown, fallback: string): string {
     const appError = error as AppError;
-    return appError?.request_id ? `${fallback} Código de atendimento: ${appError.request_id}` : fallback;
+    const detail = appError?.message && appError.message !== "Unexpected error occurred." ? appError.message : fallback;
+    return appError?.request_id ? `${detail} Código de atendimento: ${appError.request_id}` : detail;
 }
 
 export function useConfengeStatus() {
@@ -187,7 +187,7 @@ export function useConfengeDispatchStatus(enabled = true) {
         queryKey: [...KEY, "dispatch-status"],
         queryFn: getConfengeDispatchStatus,
         enabled,
-        refetchInterval: 30_000,
+		staleTime: 10_000,
     });
 }
 
@@ -273,7 +273,7 @@ export function useGenerateConfengeTouchpoint() {
     });
 }
 
-export function useApproveAndQueueTouchpoint() {
+export function useApproveConfengeTouchpoint() {
     const qc = useQueryClient();
     return useMutation({
         mutationFn: async (args: {
@@ -281,20 +281,20 @@ export function useApproveAndQueueTouchpoint() {
             subject?: string;
             body_text?: string;
             recipient?: string;
+            generic_recipient_acknowledged?: boolean;
         }) => {
             await editConfengeTouchpoint(args.id, {
                 subject: args.subject,
                 body_text: args.body_text,
                 recipient: args.recipient,
             });
-            await approveConfengeTouchpoint(args.id);
-            return queueConfengeTouchpoint(args.id);
+			return approveConfengeTouchpoint(args.id, args.generic_recipient_acknowledged ?? false);
         },
         onSuccess: () => {
             void qc.invalidateQueries({ queryKey: KEY });
-            toast.success("Mensagem aprovada e colocada na fila");
+            toast.success("Mensagem aprovada. O envio continua pausado até a etapa de dispatch.");
         },
-        onError: (e) => toast.error(confengeError(e, "Não foi possível aprovar e colocar a mensagem na fila.")),
+        onError: (e) => toast.error(confengeError(e, "Não foi possível aprovar a mensagem.")),
     });
 }
 

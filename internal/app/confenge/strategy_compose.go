@@ -18,9 +18,9 @@ func ComposeFromStrategy(st OutreachStrategy, acc *models.OutreachAccount, cand 
 		name = strings.TrimSpace(cand.Name)
 	}
 	greeting := "Olá"
-	if name != "" && cand != nil && cand.VerificationStatus != models.OutreachVerifyInstitutionalGeneric {
+	if name != "" && cand != nil && !isGenericRecipient(cand) {
 		greeting = "Olá, " + firstName(name)
-	} else if cand != nil && cand.VerificationStatus == models.OutreachVerifyInstitutionalGeneric {
+	} else if isGenericRecipient(cand) {
 		greeting = "Olá, equipe"
 	}
 
@@ -181,6 +181,9 @@ func draftSystemPromptDoctrine(channel string, st OutreachStrategy) string {
 	base += "- claims_to_avoid são proibições absolutas.\n"
 	if containsStr(st.RiskFlags, "annualidade_verify_only") {
 		base += "- ANUALIDADE: nunca diga que há reajuste a receber; só verificação/checklist.\n"
+	}
+	if containsStr(st.RiskFlags, "generic_recipient") {
+		base += "- DESTINATÁRIO GENÉRICO: trate como equipe; nunca use nome, cargo ou saudação pessoal.\n"
 	}
 	return base
 }

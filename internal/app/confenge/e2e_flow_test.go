@@ -102,7 +102,8 @@ func TestSyntheticOperationalFlow(t *testing.T) {
 		Channel: models.OutreachChannelEmail, Purpose: models.TouchpointPurposeInitial,
 		State: models.TouchpointNeedsReview, Recipient: approved.RecipientEmail,
 		Subject: approved.Subject, BodyText: approved.BodyText, DraftID: &approved.ID,
-		IdempotencyKey: "e2e-tp",
+		ContactCandidateID:   approved.ContactCandidateID,
+		GeneratedContextHash: acme.MessageContextHash, IdempotencyKey: "e2e-tp",
 	}
 	RecomputeContentHash(tp)
 	if err := ApplyHumanApproval(tp, user, now); err != nil {

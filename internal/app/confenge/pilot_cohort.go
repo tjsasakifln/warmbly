@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/repository"
 )
 
 const PilotCohortTarget = 30
@@ -69,6 +72,7 @@ type PilotCohortResult struct {
 type pilotFeedEvidence struct {
 	State        string
 	SnapshotHash string
+	RunID        string
 	Timestamp    *time.Time
 }
 
@@ -76,12 +80,33 @@ func (s *service) PreparePilotCohort(ctx context.Context, orgID, userID uuid.UUI
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, xerr
 	}
-	if !s.cfg.RequireHumanApproval || s.cfg.AutoSendEnabled {
+	if !s.cfg.RequireHumanApproval || s.cfg.AutoSendEnabled || s.cfg.GreenAutorunEnabled {
 		return nil, errx.New(errx.Conflict, "pilot safety configuration requires human approval and auto_send=false")
 	}
 	unique := uniqueAccountIDs(accountIDs)
 	if len(unique) == 0 || len(unique) > PilotCohortTarget {
 		return nil, errx.New(errx.BadRequest, "account_ids must contain between 1 and 30 unique accounts")
+	}
+	if len(unique) != len(accountIDs) {
+		return nil, errx.New(errx.BadRequest, "account_ids must contain valid, unique accounts")
+	}
+	operation.IdempotencyKey = strings.TrimSpace(operation.IdempotencyKey)
+	if operation.IdempotencyKey == "" {
+		return nil, errx.New(errx.BadRequest, "Idempotency-Key is required")
+	}
+	if len(operation.IdempotencyKey) > 200 {
+		return nil, errx.New(errx.BadRequest, "Idempotency-Key must be at most 200 characters")
+	}
+	existingMembers, err := s.pilotPreparedAccounts(ctx, orgID)
+	if err != nil {
+		return nil, errx.New(errx.ServiceUnavailable, "pilot membership state is unavailable")
+	}
+	requestHash := pilotOperationHash(unique)
+	if err := s.repo.ClaimPilotOperation(ctx, orgID, operation.IdempotencyKey, requestHash); err != nil {
+		if errors.Is(err, repository.ErrPilotIdempotencyConflict) {
+			return nil, errx.New(errx.Conflict, "Idempotency-Key was already used with a different account set")
+		}
+		return nil, errx.New(errx.ServiceUnavailable, "pilot operation idempotency is unavailable")
 	}
 	feed := s.pilotFeedEvidence(ctx, orgID, time.Now().UTC())
 	cohortID := uuid.NewSHA1(orgID, []byte("confenge-pilot-v1")).String()
@@ -90,10 +115,8 @@ func (s *service) PreparePilotCohort(ctx context.Context, orgID, userID uuid.UUI
 		SnapshotHash: feed.SnapshotHash, FeedTimestamp: feed.Timestamp,
 		Results: make([]PilotAccountResult, 0, len(unique)),
 	}
-	existingMembers := s.pilotPreparedAccounts(ctx, orgID)
-
 	for _, accountID := range unique {
-		accountResult := s.preparePilotAccount(ctx, orgID, userID, accountID, operation, feed, cohortID, existingMembers)
+		accountResult := s.preparePilotAccount(ctx, orgID, userID, accountID, operation, requestHash, feed, cohortID)
 		result.Results = append(result.Results, accountResult)
 		if accountResult.Status == PilotPrepared {
 			result.Prepared++
@@ -106,6 +129,11 @@ func (s *service) PreparePilotCohort(ctx context.Context, orgID, userID uuid.UUI
 		}
 	}
 	result.CohortPrepared = len(existingMembers)
+	current, err := s.repo.ListPilotMemberships(ctx, orgID, cohortID)
+	if err != nil {
+		return nil, errx.New(errx.ServiceUnavailable, "pilot membership state is unavailable after preparation")
+	}
+	result.CohortPrepared = len(current)
 	if result.CohortPrepared > PilotCohortTarget {
 		result.CohortPrepared = PilotCohortTarget
 	}
@@ -117,9 +145,9 @@ func (s *service) preparePilotAccount(
 	ctx context.Context,
 	orgID, userID, accountID uuid.UUID,
 	operation PilotOperation,
+	requestHash string,
 	feed pilotFeedEvidence,
 	cohortID string,
-	existingMembers map[uuid.UUID]bool,
 ) PilotAccountResult {
 	now := time.Now().UTC()
 	result := PilotAccountResult{
@@ -141,6 +169,9 @@ func (s *service) preparePilotAccount(
 	case "stale":
 		return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, pilotBlock{Code: "feed_stale", Reason: "O snapshot autoritativo está obsoleto.", Remediation: "Sincronize um snapshot atual e tente novamente."})
 	}
+	if strings.TrimSpace(feed.RunID) == "" || strings.TrimSpace(acc.SourceRunID) != strings.TrimSpace(feed.RunID) {
+		return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, pilotBlock{Code: "account_not_in_current_snapshot", Reason: "A conta não pertence ao snapshot autoritativo atual.", Remediation: "Atualize a seleção após a sincronização; contas removidas não podem ser preparadas."})
+	}
 	if acc.DoNotContact {
 		return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, pilotBlock{Code: "account_do_not_contact", Reason: "A conta está marcada como não contatar.", Remediation: "Mantenha a supressão e escolha outra conta."})
 	}
@@ -161,7 +192,7 @@ func (s *service) preparePilotAccount(
 	if err != nil {
 		return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, pilotBlock{Code: "recipient_lookup_failed", Reason: "Não foi possível validar os destinatários desta conta.", Remediation: "Tente novamente usando o mesmo Idempotency-Key."})
 	}
-	recipient, recipientBlock := resolvePilotRecipient(candidates, now)
+	recipient, recipientBlock := resolvePilotRecipient(candidates, acc.LastImportRunID, now)
 	if recipientBlock != nil {
 		result.ContactState = models.OutreachQueueNeedsContact
 		return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, *recipientBlock)
@@ -170,6 +201,10 @@ func (s *service) preparePilotAccount(
 	result.Recipient = recipient.Candidate.Email
 	result.RecipientName = recipient.Candidate.Name
 	result.RecipientRole = recipient.Candidate.Role
+	if isGenericRecipient(recipient.Candidate) {
+		result.RecipientName = ""
+		result.RecipientRole = ""
+	}
 	result.ContactID = &recipient.Candidate.ID
 	result.Warnings = recipient.Warnings
 
@@ -180,9 +215,41 @@ func (s *service) preparePilotAccount(
 	if block := pilotCopyContextBlock(acc, recipient.Candidate, evidence); block != nil {
 		return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, *block)
 	}
+	existing, hasExisting, existingErr := s.existingPilotTouchpoint(ctx, orgID, accountID)
+	if existingErr != nil {
+		return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, pilotBlock{Code: "preparation_failed", Reason: "Não foi possível validar a cadência existente.", Remediation: "Use o request_id nos logs e tente novamente com o mesmo Idempotency-Key."})
+	}
+	if hasExisting && existing.DraftID != nil &&
+		(existing.GeneratedContextHash != acc.MessageContextHash || existing.ContactCandidateID == nil || *existing.ContactCandidateID != recipient.Candidate.ID) {
+		return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, pilotBlock{
+			Code: "recipient_changed_requires_review", Reason: "A cadência existente aponta para outro destinatário ou contexto.",
+			Remediation: "Revise a mensagem existente; a aprovação anterior deve permanecer inválida.",
+		})
+	}
+	if _, reserveErr := s.repo.ReservePilotSlot(ctx, orgID, cohortID, acc.ID, acc.CNPJ14, PilotCohortTarget); reserveErr != nil {
+		if errors.Is(reserveErr, repository.ErrPilotCapacityReached) {
+			return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, pilotBlock{Code: "cohort_capacity_reached", Reason: "A coorte piloto já possui 30 contas.", Remediation: "Revise a coorte existente em vez de adicionar outra conta."})
+		}
+		return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, pilotBlock{Code: "cohort_reservation_failed", Reason: "A capacidade da coorte não pôde ser reservada com segurança.", Remediation: "Tente novamente usando o mesmo Idempotency-Key; nenhuma mensagem foi criada."})
+	}
+	membershipClaimed := false
+	defer func() {
+		if membershipClaimed {
+			return
+		}
+		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := s.repo.ReleasePilotSlot(releaseCtx, orgID, cohortID, acc.ID); err != nil {
+			slog.ErrorContext(ctx, "confenge pilot slot release failed", "organization_id", orgID, "cohort_id", cohortID, "account_id", acc.ID, "error", err)
+		}
+	}()
 
-	if existing, ok := s.existingPilotTouchpoint(ctx, orgID, accountID); ok && existing.DraftID != nil {
+	if hasExisting && existing.DraftID != nil {
 		if existing.GeneratedContextHash == acc.MessageContextHash && existing.ContactCandidateID != nil && *existing.ContactCandidateID == recipient.Candidate.ID {
+			if block := s.claimPilotPrepared(ctx, orgID, cohortID, operation, requestHash, feed, acc, recipient.Candidate, existing); block != nil {
+				return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, *block)
+			}
+			membershipClaimed = true
 			result.Status = PilotPrepared
 			result.TouchpointID = &existing.ID
 			result.DraftID = existing.DraftID
@@ -192,10 +259,6 @@ func (s *service) preparePilotAccount(
 			return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, pilotBlock{})
 		}
 	}
-	if len(existingMembers) >= PilotCohortTarget && !existingMembers[accountID] {
-		return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, pilotBlock{Code: "cohort_capacity_reached", Reason: "A coorte piloto já possui 30 contas.", Remediation: "Revise a coorte existente em vez de adicionar outra conta."})
-	}
-
 	touchpoints, xerr := s.PlanAccountCadence(ctx, orgID, userID, accountID, &recipient.Candidate.ID, models.OutreachChannelEmail)
 	if xerr != nil {
 		return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, pilotBlockFromError(xerr.Message))
@@ -205,10 +268,10 @@ func (s *service) preparePilotAccount(
 		return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, pilotBlock{Code: "cohort_membership_failed", Reason: "A primeira etapa da conta não foi persistida.", Remediation: "Tente novamente usando o mesmo Idempotency-Key."})
 	}
 	if first.ContactCandidateID == nil || *first.ContactCandidateID != recipient.Candidate.ID {
-		if xerr := s.rebindPilotCadence(ctx, touchpoints, recipient.Candidate); xerr != nil {
-			return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, *xerr)
-		}
-		first = firstPilotTouchpoint(touchpoints)
+		return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, pilotBlock{
+			Code: "recipient_changed_requires_review", Reason: "A cadência existente aponta para outro destinatário.",
+			Remediation: "Revise e altere o destinatário na mensagem; a aprovação anterior deve permanecer inválida.",
+		})
 	}
 	generated, xerr := s.GenerateTouchpointDraft(ctx, orgID, userID, first.ID)
 	if xerr != nil {
@@ -217,12 +280,41 @@ func (s *service) preparePilotAccount(
 	if generated.State != models.TouchpointNeedsReview || generated.DraftID == nil {
 		return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, pilotBlock{Code: "invalid_review_state", Reason: "A mensagem não terminou na fila de revisão.", Remediation: "Não prossiga com envio; revise a inconsistência operacional."})
 	}
+	if block := s.claimPilotPrepared(ctx, orgID, cohortID, operation, requestHash, feed, acc, recipient.Candidate, generated); block != nil {
+		return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, *block)
+	}
+	membershipClaimed = true
 	result.Status = PilotPrepared
 	result.TouchpointID = &generated.ID
 	result.DraftID = generated.DraftID
 	result.DraftState = generated.State
 	result.PreparedAt = &generated.UpdatedAt
 	return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, pilotBlock{})
+}
+
+func (s *service) claimPilotPrepared(ctx context.Context, orgID uuid.UUID, cohortID string, operation PilotOperation, requestHash string, feed pilotFeedEvidence, acc *models.OutreachAccount, candidate *models.OutreachContactCandidate, touchpoint *models.OutreachTouchpoint) *pilotBlock {
+	if acc == nil || candidate == nil || touchpoint == nil || touchpoint.DraftID == nil || feed.Timestamp == nil {
+		return &pilotBlock{Code: "cohort_membership_failed", Reason: "A coorte não possui dependências completas.", Remediation: "Tente novamente com o mesmo Idempotency-Key; nenhum envio foi autorizado."}
+	}
+	membership, _, claimErr := s.repo.ClaimPilotMembership(ctx, &models.OutreachPilotMembership{
+		OrganizationID: orgID, CohortID: cohortID, AccountID: acc.ID, CNPJ14: acc.CNPJ14,
+		ContactCandidateID: candidate.ID, TouchpointID: touchpoint.ID, DraftID: *touchpoint.DraftID,
+		SnapshotHash: feed.SnapshotHash, SourceRunID: feed.RunID, ContextHash: acc.MessageContextHash,
+		OperationKey: operation.IdempotencyKey, RequestHash: requestHash,
+		FeedGeneratedAt: *feed.Timestamp, CandidateUpdatedAt: candidate.UpdatedAt,
+	}, PilotCohortTarget)
+	if claimErr != nil {
+		if errors.Is(claimErr, repository.ErrPilotCapacityReached) {
+			return &pilotBlock{Code: "cohort_capacity_reached", Reason: "A coorte piloto já possui 30 contas.", Remediation: "Revise a coorte existente em vez de adicionar outra conta."}
+		}
+		return &pilotBlock{Code: "cohort_membership_failed", Reason: "A coorte não pôde validar atomicamente o touchpoint e o draft.", Remediation: "Tente novamente com o mesmo Idempotency-Key; nenhum envio foi autorizado."}
+	}
+	if membership.TouchpointID != touchpoint.ID || membership.DraftID != *touchpoint.DraftID ||
+		membership.ContactCandidateID != candidate.ID || membership.ContextHash != acc.MessageContextHash ||
+		membership.SnapshotHash != feed.SnapshotHash || membership.SourceRunID != feed.RunID {
+		return &pilotBlock{Code: "cohort_membership_conflict", Reason: "A conta já pertence à coorte com outra mensagem, destinatário ou contexto.", Remediation: "Revise a membership existente; não crie uma autorização paralela."}
+	}
+	return nil
 }
 
 func (s *service) finishPilotResult(ctx context.Context, orgID, userID uuid.UUID, cohortID string, operation PilotOperation, result PilotAccountResult, block pilotBlock) PilotAccountResult {
@@ -257,19 +349,23 @@ func (s *service) pilotFeedEvidence(ctx context.Context, orgID uuid.UUID, now ti
 	if maxAge <= 0 {
 		maxAge = 24 * time.Hour
 	}
-	if state, err := s.repo.GetFeedSyncState(ctx, orgID); err == nil && state != nil && state.LastSuccessAt != nil {
-		value := pilotFeedEvidence{State: "fresh", SnapshotHash: state.LastSnapshotHash, Timestamp: state.LastSuccessAt}
-		if now.Sub(state.LastSuccessAt.UTC()) > maxAge {
+	state, stateErr := s.repo.GetFeedSyncState(ctx, orgID)
+	if stateErr != nil {
+		return pilotFeedEvidence{State: "missing"}
+	}
+	if state != nil {
+		if state.LastStatus != "completed" || state.SourceGeneratedAt == nil || state.LastSnapshotHash == "" || state.LastRunID == "" {
+			return pilotFeedEvidence{State: "missing"}
+		}
+		value := pilotFeedEvidence{State: "fresh", SnapshotHash: state.LastSnapshotHash, RunID: state.LastRunID, Timestamp: state.SourceGeneratedAt}
+		if state.SourceGeneratedAt.After(now.Add(5*time.Minute)) || now.Sub(state.SourceGeneratedAt.UTC()) > maxAge {
 			value.State = "stale"
 		}
 		return value
 	}
-	if runs, err := s.repo.ListImportRuns(ctx, orgID, 1); err == nil && len(runs) > 0 {
-		timestamp := runs[0].FinishedAt
-		if timestamp == nil {
-			timestamp = &runs[0].StartedAt
-		}
-		value := pilotFeedEvidence{State: "fresh", SnapshotHash: runs[0].SnapshotHash, Timestamp: timestamp}
+	if runs, err := s.repo.ListImportRuns(ctx, orgID, 1); err == nil && len(runs) > 0 && runs[0].Status == models.OutreachImportCompleted {
+		timestamp := runs[0].SourceGeneratedAt
+		value := pilotFeedEvidence{State: "fresh", SnapshotHash: runs[0].SnapshotHash, RunID: runs[0].SourceRunID, Timestamp: timestamp}
 		if timestamp == nil || now.Sub(timestamp.UTC()) > maxAge {
 			value.State = "stale"
 		}
@@ -278,43 +374,50 @@ func (s *service) pilotFeedEvidence(ctx context.Context, orgID uuid.UUID, now ti
 	return pilotFeedEvidence{State: "missing"}
 }
 
-func (s *service) pilotPreparedAccounts(ctx context.Context, orgID uuid.UUID) map[uuid.UUID]bool {
+func (s *service) pilotPreparedAccounts(ctx context.Context, orgID uuid.UUID) (map[uuid.UUID]bool, error) {
 	result := map[uuid.UUID]bool{}
-	touchpoints, err := s.repo.ListReviewTouchpoints(ctx, orgID, 200, 0)
+	cohortID := uuid.NewSHA1(orgID, []byte("confenge-pilot-v1")).String()
+	memberships, err := s.repo.ListPilotMemberships(ctx, orgID, cohortID)
 	if err != nil {
-		return result
+		return nil, err
 	}
-	for i := range touchpoints {
-		touchpoint := &touchpoints[i]
-		if touchpoint.Ordinal == 1 && touchpoint.DraftID != nil && (touchpoint.State == models.TouchpointNeedsReview || touchpoint.State == models.TouchpointApproved) {
-			result[touchpoint.AccountID] = true
-		}
+	for i := range memberships {
+		result[memberships[i].AccountID] = true
 	}
-	return result
+	return result, nil
 }
 
-func (s *service) existingPilotTouchpoint(ctx context.Context, orgID, accountID uuid.UUID) (*models.OutreachTouchpoint, bool) {
+func (s *service) existingPilotTouchpoint(ctx context.Context, orgID, accountID uuid.UUID) (*models.OutreachTouchpoint, bool, error) {
 	touchpoints, err := s.repo.ListTouchpoints(ctx, orgID, accountID, "", 50, 0)
 	if err != nil {
-		return nil, false
+		return nil, false, err
 	}
 	first := firstPilotTouchpoint(touchpoints)
-	return first, first != nil
+	return first, first != nil, nil
 }
 
-func (s *service) rebindPilotCadence(ctx context.Context, touchpoints []models.OutreachTouchpoint, candidate *models.OutreachContactCandidate) *pilotBlock {
-	for i := range touchpoints {
-		touchpoint := &touchpoints[i]
-		if models.TouchpointTerminalStates[touchpoint.State] || touchpoint.State == models.TouchpointSent {
-			return &pilotBlock{Code: "cohort_state_conflict", Reason: "A conta já possui uma etapa terminal com outro destinatário.", Remediation: "Revise a linha do tempo antes de alterar o destinatário."}
-		}
-		touchpoint.ContactCandidateID = &candidate.ID
-		ApplyContentMutation(touchpoint, models.OutreachChannelEmail, candidate.Email, touchpoint.Subject, touchpoint.BodyText)
-		if err := s.repo.UpdateTouchpoint(ctx, touchpoint); err != nil {
-			return &pilotBlock{Code: "cohort_membership_failed", Reason: "Não foi possível atualizar o destinatário da coorte.", Remediation: "Tente novamente usando o mesmo Idempotency-Key."}
-		}
+func (s *service) requirePilotMembershipForTouchpoint(ctx context.Context, orgID uuid.UUID, touchpoint *models.OutreachTouchpoint) error {
+	if touchpoint == nil || touchpoint.DraftID == nil || touchpoint.ContactCandidateID == nil {
+		return errors.New("pilot touchpoint dependencies are incomplete")
 	}
-	return nil
+	cohortID := uuid.NewSHA1(orgID, []byte("confenge-pilot-v1")).String()
+	memberships, err := s.repo.ListPilotMemberships(ctx, orgID, cohortID)
+	if err != nil {
+		return fmt.Errorf("pilot membership state is unavailable: %w", err)
+	}
+	for i := range memberships {
+		membership := &memberships[i]
+		if membership.TouchpointID != touchpoint.ID {
+			continue
+		}
+		if membership.AccountID != touchpoint.AccountID || membership.DraftID != *touchpoint.DraftID ||
+			membership.ContactCandidateID != *touchpoint.ContactCandidateID ||
+			membership.ContextHash != touchpoint.GeneratedContextHash {
+			return errors.New("pilot membership does not match the exact message authorization context")
+		}
+		return nil
+	}
+	return errors.New("touchpoint is not a member of the controlled pilot cohort")
 }
 
 func pilotCopyContextBlock(acc *models.OutreachAccount, candidate *models.OutreachContactCandidate, evidence []models.OutreachEvidence) *pilotBlock {

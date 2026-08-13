@@ -136,6 +136,16 @@ func TestRankOnlyChangeDoesNotChangeMessageContextHash(t *testing.T) {
 	if h1 == h3 {
 		t.Fatal("material moment change must alter message_context_hash")
 	}
+	b = a
+	b.Evidence[0].Synthesis = "Evidência material corrigida pela fonte"
+	if MessageContextHash(b) == h1 {
+		t.Fatal("material evidence change must invalidate message context")
+	}
+	b = a
+	b.Contacts[0].Email = "novo-destinatario@acme.com.br"
+	if MessageContextHash(b) == h1 {
+		t.Fatal("recipient change must invalidate message context")
+	}
 }
 
 func TestStaleContextBlocksQueue(t *testing.T) {
@@ -177,7 +187,7 @@ func TestStaleContextBlocksQueue(t *testing.T) {
 		}
 	}
 	// Approve
-	tp, xerr = svc.ApproveTouchpoint(ctx, org, user, tp.ID)
+	tp, xerr = svc.ApproveTouchpoint(ctx, org, user, tp.ID, ApprovalOptions{})
 	if xerr != nil {
 		t.Fatal(xerr)
 	}
@@ -202,7 +212,9 @@ func TestStaleContextBlocksQueue(t *testing.T) {
 	if xerr == nil {
 		t.Fatal("expected stale context block on queue")
 	}
-	if !strings.Contains(strings.ToLower(xerr.Message), "stale") && !strings.Contains(strings.ToLower(xerr.Message), "context") {
+	if !strings.Contains(strings.ToLower(xerr.Message), "stale") &&
+		!strings.Contains(strings.ToLower(xerr.Message), "context") &&
+		!strings.Contains(strings.ToLower(xerr.Message), "needs_review") {
 		t.Fatalf("unexpected error: %s", xerr.Message)
 	}
 	// Regen + reapprove must succeed after material change (release-blocking E2E).
@@ -221,7 +233,7 @@ func TestStaleContextBlocksQueue(t *testing.T) {
 	if tp2.GeneratedContextHash != acc3.MessageContextHash {
 		t.Fatalf("regen hash mismatch %q vs %q", tp2.GeneratedContextHash, acc3.MessageContextHash)
 	}
-	tp2, xerr = svc.ApproveTouchpoint(ctx, org, user, tp2.ID)
+	tp2, xerr = svc.ApproveTouchpoint(ctx, org, user, tp2.ID, ApprovalOptions{})
 	if xerr != nil {
 		t.Fatalf("re-approve: %v", xerr)
 	}
@@ -266,6 +278,35 @@ func TestApplyDeactivationsRemovesFromDueQueue(t *testing.T) {
 	}
 	if IsOutboundDue(acc, time.Now().UTC()) {
 		t.Fatal("deactivated account must not be outbound due")
+	}
+	draft := &models.OutreachDraft{
+		OrganizationID: org, AccountID: acc.ID, RecipientEmail: "buyer@company.test",
+		Subject: "Approved subject", BodyText: "Approved body", Status: models.OutreachDraftApproved,
+	}
+	if err := r.UpsertDraft(ctx, draft); err != nil {
+		t.Fatal(err)
+	}
+	tp := &models.OutreachTouchpoint{
+		OrganizationID: org, AccountID: acc.ID, DraftID: &draft.ID, Ordinal: 1,
+		Channel: models.OutreachChannelEmail, State: models.TouchpointApproved,
+		Recipient: draft.RecipientEmail, Subject: draft.Subject, BodyText: draft.BodyText,
+		IdempotencyKey: "deactivation-approved",
+	}
+	if err := r.InsertTouchpoint(ctx, tp); err != nil {
+		t.Fatal(err)
+	}
+	// Re-applying the tombstone must also revoke work that appeared between sync
+	// and dispatch, and transport validation must remain fail-closed.
+	if _, err := svc.ApplyDeactivations(ctx, org, []map[string]any{{"cnpj14": "11222333000181", "to_state": "WATCH"}}); err != nil {
+		t.Fatal(err)
+	}
+	gotTP, _ := r.GetTouchpoint(ctx, org, tp.ID)
+	gotDraft, _ := r.GetDraft(ctx, org, draft.ID)
+	if gotTP.State != models.TouchpointCancelled || gotDraft.Status != models.OutreachDraftBlocked {
+		t.Fatalf("deactivation did not revoke outbound: touchpoint=%s draft=%s", gotTP.State, gotDraft.Status)
+	}
+	if err := svc.AssertTransportable(ctx, org, gotTP); err == nil {
+		t.Fatal("deactivated touchpoint must not be transportable")
 	}
 	items, xerr := svc.ListWorkingQueue(ctx, org, LaneNow, 50)
 	if xerr != nil {

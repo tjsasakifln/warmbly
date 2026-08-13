@@ -2,6 +2,7 @@ package confenge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -11,6 +12,10 @@ import (
 	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
 	"github.com/warmbly/warmbly/internal/models"
 )
+
+// ErrCampaignTouchpointNotFound distinguishes ordinary campaign EMAIL_SENT
+// events from an invalid CONFENGE enrollment projection.
+var ErrCampaignTouchpointNotFound = errors.New("confenge touchpoint enrollment not found")
 
 // GateKind is a closed set of campaign-email gate outcomes.
 // Permanent suppress/bounce is only valid for GateHardBlock.
@@ -42,6 +47,7 @@ const (
 	ReasonNoGovernor  = "no_governor"
 	ReasonGovernor    = "governor_error"
 	ReasonTargetFit   = "target_fit_not_operational"
+	ReasonSendingOff  = "sending_paused"
 )
 
 // CampaignGateResult is the discriminant result of GateCampaignEmail.
@@ -78,8 +84,32 @@ func MessageKeyCampaignEmail(campaignID, contactID, sequenceID uuid.UUID) string
 // CAMPAIGN_POLICY revalidation always runs for open transportable touchpoints on
 // the resolved account, independent of MessageContextHash presence.
 func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campaignName, recipientEmail string, campaignID, contactID, sequenceID uuid.UUID) CampaignGateResult {
-	if !IsConfengeCampaign(campaignName) {
+	isConfenge := IsConfengeCampaign(campaignName)
+	var enrolledTouchpoint *models.OutreachTouchpoint
+	if s != nil && s.repo != nil && campaignID != uuid.Nil {
+		settings, err := s.repo.GetOrgSettings(ctx, orgID)
+		if err != nil {
+			return CampaignGateResult{Kind: GateTransient, Reason: ReasonGovernor, Err: fmt.Errorf("CONFENGE campaign attribution lookup: %w", err)}
+		}
+		if settings != nil && settings.CampaignID != nil && *settings.CampaignID == campaignID {
+			isConfenge = true
+		}
+	}
+	if s != nil && s.repo != nil && campaignID != uuid.Nil && contactID != uuid.Nil {
+		var err error
+		enrolledTouchpoint, err = s.repo.GetTouchpointByEnrollment(ctx, orgID, campaignID, contactID)
+		if err != nil {
+			return CampaignGateResult{Kind: GateTransient, Reason: ReasonGovernor, Err: fmt.Errorf("touchpoint enrollment lookup: %w", err)}
+		}
+		isConfenge = isConfenge || enrolledTouchpoint != nil
+	}
+	if !isConfenge {
 		return CampaignGateResult{Kind: GateBypass, Reason: ReasonNotConfenge}
+	}
+	// Re-check the process/file kill switch for every campaign task. This blocks
+	// stale campaign leads that were enrolled before an operator paused sending.
+	if s == nil || !s.cfg.SendingAllowed() {
+		return CampaignGateResult{Kind: GateDeferred, Reason: ReasonSendingOff, NextSlot: time.Now().UTC().Add(time.Minute)}
 	}
 	// CONFENGE path: fail-closed without a healthy governor. Never GateBypass.
 	if s == nil || !s.cfg.Enabled || s.governor == nil {
@@ -137,6 +167,9 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 	if acc == nil {
 		return CampaignGateResult{Kind: GateCommercialBlock, Reason: TargetFitReasonMissing}
 	}
+	if err := s.assertAuthoritativeFeedForTransport(ctx, orgID, acc); err != nil {
+		return CampaignGateResult{Kind: GateCommercialBlock, Reason: "authoritative_feed_invalid", Err: err}
+	}
 	if cand == nil || !strings.EqualFold(strings.TrimSpace(cand.Email), strings.TrimSpace(recipientEmail)) {
 		return CampaignGateResult{Kind: GateCommercialBlock, Reason: "recipient_candidate_mismatch"}
 	}
@@ -146,6 +179,12 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 			reason = ReasonTargetFit
 		}
 		return CampaignGateResult{Kind: GateCommercialBlock, Reason: reason, Err: err}
+	}
+	if enrolledTouchpoint == nil {
+		return CampaignGateResult{Kind: GateCommercialBlock, Reason: "approved_touchpoint_missing"}
+	}
+	if err := s.AssertTransportable(ctx, orgID, enrolledTouchpoint); err != nil {
+		return CampaignGateResult{Kind: GateCommercialBlock, Reason: "touchpoint_authorization_invalid", Err: err}
 	}
 
 	// ALWAYS revalidate CAMPAIGN_POLICY on open touchpoints before SMTP.
@@ -326,9 +365,17 @@ func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *
 	if err := CanTransport(tp); err != nil {
 		return err
 	}
+	if s.cfg.OperatorMode {
+		if err := s.requirePilotMembershipForTouchpoint(ctx, orgID, tp); err != nil {
+			return fmt.Errorf("controlled pilot membership: %w", err)
+		}
+	}
 	acc, err := s.repo.GetAccount(ctx, orgID, tp.AccountID)
 	if err != nil || acc == nil {
 		return fmt.Errorf("target-fit account lookup failed")
+	}
+	if err := s.assertAuthoritativeFeedForTransport(ctx, orgID, acc); err != nil {
+		return err
 	}
 	var cand *models.OutreachContactCandidate
 	if tp.ContactCandidateID != nil {
@@ -345,6 +392,24 @@ func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *
 	} else if err := RequireEmailOutbound(acc, cand); err != nil {
 		return err
 	}
+	if cand == nil {
+		return fmt.Errorf("recipient contact candidate is missing")
+	}
+	if (acc.LastImportRunID != nil || cand.LastImportRunID != nil) &&
+		(acc.LastImportRunID == nil || cand.LastImportRunID == nil || *acc.LastImportRunID != *cand.LastImportRunID) {
+		return fmt.Errorf("recipient is not present in the current account snapshot")
+	}
+	if strings.TrimSpace(acc.MessageContextHash) != "" && strings.TrimSpace(tp.GeneratedContextHash) == "" {
+		return fmt.Errorf("generated context hash missing")
+	}
+	if err := AssertMessageContextFresh(acc, tp.GeneratedContextHash); err != nil {
+		return err
+	}
+	if tp.Channel != models.OutreachChannelWhatsApp {
+		if cand == nil || !strings.EqualFold(strings.TrimSpace(tp.Recipient), strings.TrimSpace(cand.Email)) {
+			return fmt.Errorf("touchpoint recipient does not match approved contact candidate")
+		}
+	}
 	if strings.TrimSpace(tp.AuthorizationMode) != AuthorizationModeCampaignPolicy {
 		return nil
 	}
@@ -354,12 +419,69 @@ func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *
 	return nil
 }
 
-// CommitCampaignEmail records a successful CONFENGE campaign outbound.
-func (s *service) CommitCampaignEmail(ctx context.Context, reservationID uuid.UUID) error {
-	if s == nil || s.governor == nil || reservationID == uuid.Nil {
+func (s *service) assertAuthoritativeFeedForTransport(ctx context.Context, orgID uuid.UUID, acc *models.OutreachAccount) error {
+	if s == nil || (!s.cfg.FeedSyncEnabled && !s.cfg.OperatorMode) {
 		return nil
 	}
-	return s.governor.Commit(ctx, reservationID)
+	state, err := s.repo.GetFeedSyncState(ctx, orgID)
+	if err != nil || state == nil {
+		return fmt.Errorf("authoritative feed state unavailable")
+	}
+	if state.LastStatus != "completed" || state.SourceGeneratedAt == nil || state.LastSnapshotHash == "" || state.LastRunID == "" {
+		return fmt.Errorf("authoritative feed is not completely applied")
+	}
+	maxAge := s.cfg.FeedMaxAge
+	if maxAge <= 0 {
+		maxAge = 24 * time.Hour
+	}
+	now := time.Now().UTC()
+	if state.SourceGeneratedAt.After(now.Add(5*time.Minute)) || now.Sub(state.SourceGeneratedAt.UTC()) > maxAge {
+		return fmt.Errorf("authoritative feed is stale")
+	}
+	if acc == nil || strings.TrimSpace(acc.SourceRunID) != strings.TrimSpace(state.LastRunID) {
+		return fmt.Errorf("account is not from the completely applied authoritative snapshot")
+	}
+	return nil
+}
+
+func (s *service) CompleteCampaignEmail(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, providerMessageID string) error {
+	touchpoint, err := s.repo.GetTouchpointByEnrollment(ctx, orgID, campaignID, contactID)
+	if err != nil {
+		return err
+	}
+	if touchpoint == nil {
+		return ErrCampaignTouchpointNotFound
+	}
+	commitProviderSend := func() error {
+		if sequenceID == uuid.Nil || s.governor == nil {
+			return fmt.Errorf("provider-confirmed CONFENGE send cannot commit its dispatch reservation")
+		}
+		return s.governor.CommitByMessageKey(ctx, MessageKeyCampaignEmail(campaignID, contactID, sequenceID))
+	}
+	if touchpoint.State == models.TouchpointSent {
+		if existing := strings.TrimSpace(touchpoint.ProviderMessageID); existing != "" &&
+			strings.TrimSpace(providerMessageID) != "" && existing != strings.TrimSpace(providerMessageID) {
+			return fmt.Errorf("provider message id conflicts with completed touchpoint")
+		}
+		if err := commitProviderSend(); err != nil {
+			return err
+		}
+		return s.releaseNextTouch(ctx, orgID, touchpoint)
+	}
+	// Preserve the provider-confirmed send fact even if live eligibility changed after SMTP accepted it.
+	if err := CanTransport(touchpoint); err != nil {
+		return err
+	}
+	if err := TransitionToSent(touchpoint, time.Now().UTC(), providerMessageID); err != nil {
+		return err
+	}
+	if err := s.repo.UpdateTouchpoint(ctx, touchpoint); err != nil {
+		return err
+	}
+	if err := commitProviderSend(); err != nil {
+		return err
+	}
+	return s.releaseNextTouch(ctx, orgID, touchpoint)
 }
 
 // ReleaseCampaignEmail frees a lease after provider/worker publish failure.

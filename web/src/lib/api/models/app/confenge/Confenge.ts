@@ -7,6 +7,8 @@ export type ConfengeReadiness = {
     feed_state?: "fresh" | "stale" | "missing";
     feed_snapshot_hash?: string;
     feed_last_success_at?: string | Date | null;
+    feed_source_generated_at?: string | Date | null;
+    feed_synced_at?: string | Date | null;
     feed_max_age_seconds?: number;
     outcome_loop: string;
     ai: string;
@@ -21,6 +23,11 @@ export type ConfengeReadiness = {
     auto_send_enabled: boolean;
     whatsapp_enabled: boolean;
     whatsapp_provider?: string;
+    pilot_cohort_state?: "ready" | "unavailable";
+    pilot_cohort_prepared?: number;
+    pilot_cohort_needs_review?: number;
+    pilot_cohort_approved?: number;
+    pilot_cohort_sent?: number;
 };
 
 export type ConfengeStatus = {
@@ -300,6 +307,8 @@ export type ConfengeTouchpoint = {
   account?: ConfengeAccount;
   strategy_explain?: ConfengeStrategyExplain;
   doctrine_alerts?: string[];
+  recipient_mailbox_purpose?: string;
+  recipient_generic?: boolean;
   draft?: ConfengeDraft;
   approved_by?: string;
   approved_at?: string | Date;

@@ -763,12 +763,18 @@ func (h *Handler) PrepareConfengePilotCohort(c *gin.Context) {
 		return
 	}
 	accountIDs := make([]uuid.UUID, 0, len(body.AccountIDs))
+	seenAccountIDs := make(map[uuid.UUID]struct{}, len(body.AccountIDs))
 	for _, raw := range body.AccountIDs {
 		accountID, parseErr := uuid.Parse(strings.TrimSpace(raw))
-		if parseErr != nil {
+		if parseErr != nil || accountID == uuid.Nil {
 			errx.JSON(c, errx.New(errx.BadRequest, "account_ids contains an invalid UUID"))
 			return
 		}
+		if _, duplicate := seenAccountIDs[accountID]; duplicate {
+			errx.JSON(c, errx.New(errx.BadRequest, "account_ids must contain unique accounts"))
+			return
+		}
+		seenAccountIDs[accountID] = struct{}{}
 		accountIDs = append(accountIDs, accountID)
 	}
 	result, xerr := h.ConfengeService.PreparePilotCohort(c.Request.Context(), orgID, userID, accountIDs, confenge.PilotOperation{
@@ -850,7 +856,16 @@ func (h *Handler) ApproveConfengeTouchpoint(c *gin.Context) {
 		errx.JSON(c, errx.ErrUuid)
 		return
 	}
-	tp, xerr := h.ConfengeService.ApproveTouchpoint(c.Request.Context(), orgID, userID, id)
+	var body struct {
+		GenericRecipientAcknowledged bool `json:"generic_recipient_acknowledged"`
+	}
+	if c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&body); err != nil {
+			errx.JSON(c, errx.New(errx.BadRequest, "invalid approval body"))
+			return
+		}
+	}
+	tp, xerr := h.ConfengeService.ApproveTouchpoint(c.Request.Context(), orgID, userID, id, confenge.ApprovalOptions{GenericRecipientAcknowledged: body.GenericRecipientAcknowledged})
 	if xerr != nil {
 		errx.JSON(c, xerr)
 		return

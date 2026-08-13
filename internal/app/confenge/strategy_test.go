@@ -136,6 +136,28 @@ func TestPlanStrategyBuyerRoles(t *testing.T) {
 	}
 }
 
+func TestGenericRecipientNeverPersonalizesDraft(t *testing.T) {
+	pb := MustPlaybook()
+	acc := testAccount("MEDICOES", "MEDICAO", "medição do trecho norte publicada no PNCP")
+	cand := testCand("Diretora Financeira")
+	cand.Name = "Pessoa Histórica"
+	cand.Email = "contato@exemplo.com.br"
+	cand.MailboxPurpose = "GENERIC_CONTACT"
+
+	st := PlanOutreachStrategy(pb, acc, cand, nil, 1)
+	if st.BuyerRole != "UNKNOWN" || !containsStr(st.RiskFlags, "generic_recipient") {
+		t.Fatalf("generic mailbox must not inherit a personal role: %+v", st)
+	}
+	out := ComposeFromStrategy(st, acc, cand, ChannelEmailInitial)
+	if !strings.HasPrefix(out.BodyText, "Olá, equipe") || strings.Contains(out.BodyText, cand.Name) {
+		t.Fatalf("generic mailbox was personalized as a person: %q", out.BodyText)
+	}
+	prompt := draftUserPrompt(BuildGenerateInput(ChannelEmailInitial, acc, cand, nil, nil))
+	if strings.Contains(prompt, cand.Name) || strings.Contains(prompt, cand.Role) || !strings.Contains(prompt, `"generic_recipient": true`) {
+		t.Fatalf("generic mailbox leaked personal identity into generation prompt: %s", prompt)
+	}
+}
+
 func TestPlanStrategyNoScoreFields(t *testing.T) {
 	st := PlanOutreachStrategy(MustPlaybook(), testAccount("ADITIVOS", "ADITIVO_RECENTE", "termo aditivo nº 3"), testCand("Diretor"), nil, 1)
 	if st.Experiment == nil {

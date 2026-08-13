@@ -34,4 +34,24 @@ describe("sessão silenciosa do operador CONFENGE", () => {
     expect(second.access_token).toBe("access");
     expect(localStorage.setItem).toHaveBeenCalledWith("auth_token", expect.stringContaining("access"));
   });
+
+  it("substitui uma sessão válida quando o layout força a identidade técnica", async () => {
+    localStorage.setItem("auth_token", JSON.stringify({
+      access_token: "wrong-org",
+      access_token_expires_at: "2099-01-01T00:00:00Z",
+    }));
+    mocks.post.mockResolvedValue({
+      data: {
+        access_token: "operator",
+        access_token_expires_at: "2099-01-01T00:00:00Z",
+        refresh_token: "operator-refresh",
+        refresh_token_expires_at: "2099-02-01T00:00:00Z",
+      },
+    });
+
+    const session = await ensureConfengeOperatorSession(true);
+
+    expect(mocks.post).toHaveBeenCalledTimes(1);
+    expect(session.access_token).toBe("operator");
+  });
 });

@@ -12,7 +12,6 @@ import (
 // Implemented by confenge.Service; nil means no global CONFENGE pacing.
 type ConfengeOutboundGate interface {
 	GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campaignName, recipientEmail string, campaignID, contactID, sequenceID uuid.UUID) confenge.CampaignGateResult
-	CommitCampaignEmail(ctx context.Context, reservationID uuid.UUID) error
 	ReleaseCampaignEmail(ctx context.Context, reservationID uuid.UUID, errText string)
 }
 

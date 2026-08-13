@@ -50,6 +50,25 @@ func reserveAndCommit(t *testing.T, g *Governor, org uuid.UUID, channel, key str
 	}
 }
 
+func TestCommitByMessageKeyWaitsForProviderConfirmation(t *testing.T) {
+	clock := &FixedClock{T: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)}
+	governor, store := newTestGov(t, clock)
+	key := "email:campaign:provider-confirmed"
+	result, err := governor.TryReserve(context.Background(), ReserveRequest{OrganizationID: uuid.New(), Channel: ChannelEmail, MessageKey: key})
+	if err != nil || !result.Allowed {
+		t.Fatalf("reserve: allowed=%v err=%v", result.Allowed, err)
+	}
+	if _, sent, err := store.GetSendByKey(context.Background(), key); err != nil || sent {
+		t.Fatalf("reservation must not count as provider-confirmed: sent=%v err=%v", sent, err)
+	}
+	if err := governor.CommitByMessageKey(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	if _, sent, err := store.GetSendByKey(context.Background(), key); err != nil || !sent {
+		t.Fatalf("provider confirmation must commit send: sent=%v err=%v", sent, err)
+	}
+}
+
 func TestCap10Blocks11th(t *testing.T) {
 	clock := &FixedClock{T: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)}
 	g, _ := newTestGov(t, clock)

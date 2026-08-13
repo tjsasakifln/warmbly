@@ -119,7 +119,9 @@ func PlanOutreachStrategy(
 	}
 	if cand != nil {
 		st.ContactID = cand.ID.String()
-		if pb != nil {
+		if isGenericRecipient(cand) {
+			st.RiskFlags = appendUnique(st.RiskFlags, "generic_recipient")
+		} else if pb != nil {
 			st.BuyerRole = pb.MapBuyerRole(cand.Role)
 		}
 	}

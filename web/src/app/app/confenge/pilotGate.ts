@@ -34,15 +34,12 @@ export function buildPilotGate(input: {
     return { evaluating: true, ready: false, prepared: 0, released: 0, target: PILOT_TARGET, blockers: [] };
   }
 
-  const released =
-    summary.approved +
-    summary.enrolled +
-    summary.sent +
-    summary.replied +
-    summary.meeting +
-    summary.proposal +
-    summary.won;
-  const prepared = released + reviewCount;
+  const cohortAvailable = readiness.pilot_cohort_state === "ready";
+  const released = cohortAvailable
+    ? (readiness.pilot_cohort_approved ?? 0) + (readiness.pilot_cohort_sent ?? 0)
+    : 0;
+  const needsReview = cohortAvailable ? (readiness.pilot_cohort_needs_review ?? 0) : 0;
+  const prepared = cohortAvailable ? (readiness.pilot_cohort_prepared ?? 0) : 0;
   const blockers: PilotBlocker[] = [];
 
   if (readiness.email !== "ready") {
@@ -89,12 +86,16 @@ export function buildPilotGate(input: {
     });
   }
 
-  if (prepared < PILOT_TARGET) {
+  if (!cohortAvailable || prepared < PILOT_TARGET) {
     const available = overview.actionable_now + summary.ready_to_generate;
     blockers.push({
       id: "cohort",
-      title: `Cohort manual incompleto: ${prepared} de ${PILOT_TARGET} mensagens preparadas`,
-      detail: available > 0
+      title: cohortAvailable
+        ? `Cohort manual incompleto: ${prepared} de ${PILOT_TARGET} mensagens preparadas`
+        : "Estado persistente do cohort indisponível",
+      detail: !cohortAvailable
+        ? "Não prossiga com aprovação ou envio até o backend validar as memberships e mensagens exatas do piloto."
+        : available > 0
         ? `Escolha manualmente entre ${available} ${available === 1 ? "conta elegível" : "contas elegíveis"} para completar o cohort.`
         : `${overview.reservoir_monitored} contas estão monitoradas, mas nenhuma passou pelos gates de target-fit, contato e prontidão de envio.`,
       href: "#planejamento",
@@ -106,11 +107,11 @@ export function buildPilotGate(input: {
     blockers.push({
       id: "approval",
       title: `Aprovação manual incompleta: ${released} de ${PILOT_TARGET} mensagens liberadas`,
-      detail: reviewCount > 0
-        ? `${reviewCount} ${reviewCount === 1 ? "mensagem aguarda" : "mensagens aguardam"} sua decisão individual.`
+      detail: needsReview > 0
+        ? `${needsReview} ${needsReview === 1 ? "mensagem aguarda" : "mensagens aguardam"} sua decisão individual.`
         : "Ainda não há mensagens na fila de revisão. Monte o cohort antes de aprovar.",
-      href: reviewCount > 0 ? "#revisao" : "#planejamento",
-      action: reviewCount > 0 ? "Revisar agora" : "Ir ao planejamento",
+      href: needsReview > 0 ? "#revisao" : "#planejamento",
+      action: needsReview > 0 ? "Revisar agora" : "Ir ao planejamento",
     });
   }
 

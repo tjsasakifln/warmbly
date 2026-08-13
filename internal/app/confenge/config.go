@@ -235,18 +235,29 @@ func (c Config) ValidateStartup(appEnv string) error {
 		}
 	}
 	prod := strings.EqualFold(appEnv, "prod") || strings.EqualFold(appEnv, "production")
-	if c.AutoSendEnabled && c.RequireHumanApproval {
-		// Explicit: auto-send may be on only when human approval is also required
-		// is contradictory; refuse auto-send when we cannot verify intent.
-		// Keep RequireHumanApproval as the safety net — auto-send alone is never default.
+	if c.AutoSendEnabled {
+		return fmt.Errorf("%s=true is not supported; CONFENGE requires an explicit dispatch action", EnvAutoSend)
+	}
+	if c.OperatorMode && !c.RequireHumanApproval {
+		return fmt.Errorf("%s=true requires %s=true", EnvOperatorMode, EnvRequireHuman)
+	}
+	if c.OperatorMode && c.GreenAutorunEnabled {
+		return fmt.Errorf("%s=true is not supported in operator mode", EnvGreenAutorun)
 	}
 	if prod {
-		if c.FeedURL != "" {
-			if !strings.HasPrefix(strings.ToLower(c.FeedURL), "https://") {
-				return fmt.Errorf("%s must be https in production", EnvFeedURL)
+		if (c.FeedURL != "" || c.ManifestURL != "") && len(c.AllowedHosts) == 0 {
+			return fmt.Errorf("%s is required when a feed URL is set in production", EnvAllowedHosts)
+		}
+		for key, rawURL := range map[string]string{EnvFeedURL: c.FeedURL, EnvManifestURL: c.ManifestURL} {
+			if rawURL == "" {
+				continue
 			}
-			if len(c.AllowedHosts) == 0 {
-				return fmt.Errorf("%s is required when feed URL is set in production", EnvAllowedHosts)
+			if !strings.HasPrefix(strings.ToLower(rawURL), "https://") {
+				return fmt.Errorf("%s must be https in production", key)
+			}
+			parsed, err := url.Parse(rawURL)
+			if err != nil || parsed.Hostname() == "" || !hostAllowed(parsed.Hostname(), c.AllowedHosts) {
+				return fmt.Errorf("%s host must be in %s", key, EnvAllowedHosts)
 			}
 		}
 		if c.OutcomeWebhookURL != "" {

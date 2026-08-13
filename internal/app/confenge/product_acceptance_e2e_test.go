@@ -316,6 +316,7 @@ func TestProductAcceptanceMultichannelSum(t *testing.T) {
 		WhatsAppConsentStatus: whatsapp.ConsentOptedIn, WhatsAppConsentProvenanceOK: true,
 		WhatsAppConsentSource: "website_form", WhatsAppConsentAt: &nowWA,
 		VerificationStatus: models.OutreachVerifyOfficialSource, Recommended: true,
+		LastImportRunID: waAcc.LastImportRunID,
 	})
 	_ = svc.waStore.UpsertContactState(context.Background(), &models.WhatsAppContactState{
 		OrganizationID: org, PhoneE164: "+5548888888888",
@@ -341,6 +342,7 @@ func TestProductAcceptanceMultichannelSum(t *testing.T) {
 		Channel: models.OutreachChannelWhatsApp, Purpose: models.TouchpointPurposeInitial,
 		State: models.TouchpointNeedsReview, Recipient: waDraft.RecipientPhoneE164,
 		BodyText: waBody, DraftID: &waDraft.ID, IdempotencyKey: "pa-wa-tp",
+		GeneratedContextHash: waAcc.MessageContextHash,
 	}
 	RecomputeContentHash(waTP)
 	if err := rf.InsertTouchpoint(context.Background(), waTP); err != nil {

@@ -6,7 +6,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
+	"github.com/google/uuid"
 	"github.com/warmbly/warmbly/internal/models"
 )
 
@@ -29,45 +31,90 @@ type scoredRecipient struct {
 }
 
 // resolvePilotRecipient selects one persisted recipient only after all pilot gates pass.
-func resolvePilotRecipient(candidates []models.OutreachContactCandidate, now time.Time) (primaryRecipient, *pilotBlock) {
+func resolvePilotRecipient(candidates []models.OutreachContactCandidate, authoritativeRunID *uuid.UUID, now time.Time) (primaryRecipient, *pilotBlock) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	valid := make([]scoredRecipient, 0, len(candidates))
-	blocks := make([]pilotBlock, 0, len(candidates))
+	if authoritativeRunID == nil || *authoritativeRunID == uuid.Nil {
+		return primaryRecipient{}, &pilotBlock{Code: "recipient_snapshot_missing", Reason: "A conta não possui um snapshot de contatos autoritativo.", Remediation: "Sincronize novamente o feed antes de preparar a mensagem."}
+	}
+	if len(candidates) == 0 {
+		return primaryRecipient{}, &pilotBlock{Code: "recipient_missing", Reason: "Nenhum destinatário foi encontrado para esta conta.", Remediation: "Adicione ao feed um contato corporativo com fonte e data verificáveis."}
+	}
+	current := make([]models.OutreachContactCandidate, 0, len(candidates))
 	for i := range candidates {
-		candidate := &candidates[i]
-		block := validatePilotRecipient(candidate, now)
-		if block != nil {
-			blocks = append(blocks, *block)
+		if candidates[i].LastImportRunID != nil && *candidates[i].LastImportRunID == *authoritativeRunID {
+			current = append(current, candidates[i])
+		}
+	}
+	if len(current) == 0 {
+		return primaryRecipient{}, &pilotBlock{Code: "recipient_removed_current_snapshot", Reason: "Nenhum destinatário permanece no snapshot autoritativo atual.", Remediation: "Resolva um contato no feed atual; não reutilize contatos históricos."}
+	}
+	groups := make(map[string][]models.OutreachContactCandidate)
+	for i := range current {
+		key := canonicalPilotEmail(current[i].Email)
+		if key == "" {
+			key = "invalid:" + current[i].ID.String()
+		}
+		groups[key] = append(groups[key], current[i])
+	}
+	valid := make([]scoredRecipient, 0, len(groups))
+	blocks := make([]pilotBlock, 0, len(candidates))
+	for _, group := range groups {
+		groupBlocked := false
+		groupValid := make([]scoredRecipient, 0, len(group))
+		for i := range group {
+			candidate := &group[i]
+			block := validatePilotRecipient(candidate, now)
+			if block != nil {
+				blocks = append(blocks, *block)
+				groupBlocked = true
+				continue
+			}
+			candidate.Email = canonicalPilotEmail(candidate.Email)
+			groupValid = append(groupValid, scoredRecipient{candidate: candidate, score: pilotRecipientScore(candidate)})
+		}
+		// Suppression, DNC, bounce, invalid provenance, and tombstones dominate
+		// duplicate active rows for the same canonical address.
+		if groupBlocked || len(groupValid) == 0 {
 			continue
 		}
-		valid = append(valid, scoredRecipient{candidate: candidate, score: pilotRecipientScore(candidate)})
+		sortScoredRecipients(groupValid)
+		valid = append(valid, groupValid[0])
 	}
 	if len(valid) == 0 {
-		if len(candidates) == 0 {
-			return primaryRecipient{}, &pilotBlock{
-				Code: "recipient_missing", Reason: "Nenhum destinatário foi encontrado para esta conta.",
-				Remediation: "Adicione ao feed um contato corporativo com fonte e data verificáveis.",
-			}
-		}
 		sort.SliceStable(blocks, func(i, j int) bool {
 			return pilotBlockPriority(blocks[i].Code) < pilotBlockPriority(blocks[j].Code)
 		})
 		return primaryRecipient{}, &blocks[0]
 	}
-	sort.SliceStable(valid, func(i, j int) bool {
-		if valid[i].score == valid[j].score {
-			return valid[i].candidate.CreatedAt.After(valid[j].candidate.CreatedAt)
-		}
-		return valid[i].score > valid[j].score
-	})
+	if len(valid) > 1 {
+		sortScoredRecipients(valid)
+		return primaryRecipient{}, &pilotBlock{Code: "recipient_conflict", Reason: "O snapshot atual contém mais de um endereço comercial válido para a conta.", Remediation: "Marque um único destinatário autoritativo e suprima ou desative os demais."}
+	}
+	sortScoredRecipients(valid)
 	selected := valid[0].candidate
 	warnings := make([]string, 0, 1)
-	if isGenericMailboxPurpose(selected.MailboxPurpose) {
+	if isGenericRecipient(selected) {
 		warnings = append(warnings, "generic_mailbox_allowed_by_policy")
 	}
 	return primaryRecipient{Candidate: selected, Warnings: warnings}, nil
+}
+
+func sortScoredRecipients(values []scoredRecipient) {
+	sort.Slice(values, func(i, j int) bool {
+		if values[i].score != values[j].score {
+			return values[i].score > values[j].score
+		}
+		if !values[i].candidate.UpdatedAt.Equal(values[j].candidate.UpdatedAt) {
+			return values[i].candidate.UpdatedAt.After(values[j].candidate.UpdatedAt)
+		}
+		return values[i].candidate.ID.String() < values[j].candidate.ID.String()
+	})
+}
+
+func canonicalPilotEmail(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 func validatePilotRecipient(candidate *models.OutreachContactCandidate, now time.Time) *pilotBlock {
@@ -156,7 +203,12 @@ func pilotRecipientScore(candidate *models.OutreachContactCandidate) int {
 }
 
 func validExactEmail(value string) bool {
-	email := strings.ToLower(strings.TrimSpace(value))
+	email := canonicalPilotEmail(value)
+	for _, r := range email {
+		if r > unicode.MaxASCII || unicode.IsSpace(r) {
+			return false
+		}
+	}
 	parsed, err := mail.ParseAddress(email)
 	if err != nil || strings.ToLower(parsed.Address) != email {
 		return false
@@ -192,6 +244,25 @@ func sourceMatchesEmailDomain(source, email string) bool {
 func isGenericMailboxPurpose(value string) bool {
 	v := strings.ToUpper(strings.TrimSpace(value))
 	return v == "GENERIC" || v == "GENERIC_CONTACT" || v == "UNKNOWN"
+}
+
+func isGenericRecipient(candidate *models.OutreachContactCandidate) bool {
+	if candidate == nil {
+		return false
+	}
+	if isGenericMailboxPurpose(candidate.MailboxPurpose) {
+		return true
+	}
+	parts := strings.Split(canonicalPilotEmail(candidate.Email), "@")
+	if len(parts) != 2 {
+		return false
+	}
+	local := strings.Trim(parts[0], "._-+")
+	switch local {
+	case "contato", "contact", "info", "comercial", "sales", "vendas", "atendimento", "sac", "financeiro", "administrativo", "licitacao", "licitacoes":
+		return true
+	}
+	return false
 }
 
 func pilotBlockPriority(code string) int {

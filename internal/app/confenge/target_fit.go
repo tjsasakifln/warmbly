@@ -15,10 +15,11 @@ const (
 	TargetFitRefreshFailed     = "REFRESH_FAILED"
 	TargetFitRecomputeRequired = "RECOMPUTE_REQUIRED"
 
-	TargetFitReasonOut        = "TARGET_FIT_OUT"
-	TargetFitReasonMissing    = "TARGET_FIT_MISSING"
-	TargetFitReasonStale      = "TARGET_FIT_STALE"
-	TargetFitReasonDowngraded = "TARGET_FIT_DOWNGRADED"
+	TargetFitReasonOut         = "TARGET_FIT_OUT"
+	TargetFitReasonMissing     = "TARGET_FIT_MISSING"
+	TargetFitReasonStale       = "TARGET_FIT_STALE"
+	TargetFitReasonDowngraded  = "TARGET_FIT_DOWNGRADED"
+	TargetFitReasonDeactivated = "UPSTREAM_DEACTIVATED"
 )
 
 type TargetFitAuthorization struct {

@@ -8,7 +8,7 @@ fail=0
 
 echo "== required files =="
 for f in \
-  docker-compose.override.yml env.example lib.sh \
+  docker-compose.override.yml env.example lib.sh compose.sh tunnel.sh \
   gen-secrets.sh connect-hostinger.sh status.sh pause.sh resume.sh \
   backup.sh restore.sh up.sh down.sh install.sh \
   prove-hostinger-net.sh prove-restart.sh self-smoke.sh post-smtp-unlock.sh validate.sh
@@ -20,6 +20,14 @@ do
     fail=1
   fi
 done
+
+if grep -qF 'reason=deploy_preflight' "$PACK/up.sh" &&
+   grep -qF 'chmod 600 /data/kill-switch' "$PACK/up.sh"; then
+  echo "OK deploy engages private kill switch before startup"
+else
+  echo "FAIL deploy does not engage kill switch before startup"
+  fail=1
+fi
 
 echo "== bash -n =="
 for s in "$PACK"/*.sh; do

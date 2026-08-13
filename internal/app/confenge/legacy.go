@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/warmbly/warmbly/internal/models"
 )
@@ -80,10 +79,10 @@ func legacyMapToFeed(arr []map[string]any, src FeedSource) *Feed {
 	}
 	return &Feed{
 		SchemaVersion: models.OutreachSchemaV1,
-		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
 		Source:        src,
 		Pagination:    FeedPagination{HasMore: false},
 		Leads:         leads,
+		Legacy:        true,
 	}
 }
 

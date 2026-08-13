@@ -16,8 +16,8 @@ func TestTargetFitReconciliationIsRetroactiveAndIdempotent(t *testing.T) {
 	svc := NewService(Config{Enabled: true}, repo, nil).(*service)
 	org := uuid.New()
 	acc := &models.OutreachAccount{
-		ID: uuid.New(), OrganizationID: org, CNPJ14: "14893700000105",
-		RazaoSocial:  "PREVENCAO LABORATORIO DE ANALISES CLINICAS LTDA",
+		ID: uuid.New(), OrganizationID: org, CNPJ14: "10000000000011",
+		RazaoSocial:  "EMPRESA SINTETICA ALFA LTDA",
 		SourceSystem: "extra-cli", QueueState: models.OutreachQueueApproved,
 		TargetFitEligible: true, EmailSendReady: true,
 	}

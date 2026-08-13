@@ -16,21 +16,26 @@ import (
 
 // memRepo is an in-memory OutreachRepository for unit tests of ImportFromBytes.
 type memRepo struct {
-	mu          sync.Mutex
-	runs        map[uuid.UUID]*models.OutreachImportRun
-	byIdem      map[string]*models.OutreachImportRun
-	accounts    map[string]*models.OutreachAccount
-	byID        map[uuid.UUID]*models.OutreachAccount
-	cands       map[uuid.UUID][]models.OutreachContactCandidate
-	evidence    map[uuid.UUID][]models.OutreachEvidence
-	drafts      map[uuid.UUID]*models.OutreachDraft
-	outcomes    []models.OutreachOutcome
-	touchpoints map[uuid.UUID]*models.OutreachTouchpoint
-	outcomeBy   map[string]*models.OutreachOutcome
-	orgOwner    map[uuid.UUID]uuid.UUID
-	feedSync    map[uuid.UUID]*models.OutreachFeedSyncState
-	advLocks    map[int64]bool
-	settings    map[uuid.UUID]*models.OutreachOrgSettings
+	mu                 sync.Mutex
+	runs               map[uuid.UUID]*models.OutreachImportRun
+	byIdem             map[string]*models.OutreachImportRun
+	accounts           map[string]*models.OutreachAccount
+	byID               map[uuid.UUID]*models.OutreachAccount
+	cands              map[uuid.UUID][]models.OutreachContactCandidate
+	evidence           map[uuid.UUID][]models.OutreachEvidence
+	drafts             map[uuid.UUID]*models.OutreachDraft
+	outcomes           []models.OutreachOutcome
+	touchpoints        map[uuid.UUID]*models.OutreachTouchpoint
+	outcomeBy          map[string]*models.OutreachOutcome
+	orgOwner           map[uuid.UUID]uuid.UUID
+	feedSync           map[uuid.UUID]*models.OutreachFeedSyncState
+	advLocks           map[int64]bool
+	settings           map[uuid.UUID]*models.OutreachOrgSettings
+	pilotMemberships   map[uuid.UUID]*models.OutreachPilotMembership
+	pilotOperations    map[string]string
+	pilotSlots         map[string]string
+	listTouchpointsErr error
+	upsertDraftErr     error
 }
 
 func newMemRepo() *memRepo {
@@ -40,7 +45,10 @@ func newMemRepo() *memRepo {
 		cands: map[uuid.UUID][]models.OutreachContactCandidate{}, evidence: map[uuid.UUID][]models.OutreachEvidence{},
 		drafts: map[uuid.UUID]*models.OutreachDraft{}, touchpoints: map[uuid.UUID]*models.OutreachTouchpoint{},
 		outcomeBy: map[string]*models.OutreachOutcome{}, orgOwner: map[uuid.UUID]uuid.UUID{},
-		settings: map[uuid.UUID]*models.OutreachOrgSettings{},
+		settings:         map[uuid.UUID]*models.OutreachOrgSettings{},
+		pilotMemberships: map[uuid.UUID]*models.OutreachPilotMembership{},
+		pilotOperations:  map[string]string{},
+		pilotSlots:       map[string]string{},
 	}
 }
 
@@ -328,6 +336,29 @@ func (m *memRepo) InvalidateAccountOutboundForTargetFit(ctx context.Context, org
 	return out, nil
 }
 
+func (m *memRepo) InvalidateAccountApprovalsForContext(ctx context.Context, orgID, accountID uuid.UUID, currentContextHash string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, touchpoint := range m.touchpoints {
+		if touchpoint.OrganizationID != orgID || touchpoint.AccountID != accountID || touchpoint.GeneratedContextHash == currentContextHash {
+			continue
+		}
+		if touchpoint.State == models.TouchpointApproved || touchpoint.State == models.TouchpointQueued {
+			ClearApproval(touchpoint)
+			touchpoint.State = models.TouchpointNeedsReview
+			touchpoint.StopReason = "context_stale"
+			if touchpoint.DraftID != nil {
+				if draft := m.drafts[*touchpoint.DraftID]; draft != nil {
+					draft.Status = models.OutreachDraftNeedsReview
+					draft.ApprovedBy, draft.ApprovedAt = nil, nil
+					draft.CampaignID, draft.EnrollmentContactID, draft.EnrolledAt = nil, nil, nil
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func (m *memRepo) ListCandidates(ctx context.Context, orgID, accountID uuid.UUID) ([]models.OutreachContactCandidate, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -402,6 +433,9 @@ func (m *memRepo) UpsertEvidence(ctx context.Context, e *models.OutreachEvidence
 func (m *memRepo) UpsertDraft(ctx context.Context, d *models.OutreachDraft) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.upsertDraftErr != nil {
+		return m.upsertDraftErr
+	}
 	if d.ID == uuid.Nil {
 		d.ID = uuid.New()
 	}
@@ -523,6 +557,22 @@ func (m *memRepo) FindCandidateByEnrollment(ctx context.Context, orgID, campaign
 	}
 	return nil, nil, nil
 }
+
+func (m *memRepo) GetTouchpointByEnrollment(ctx context.Context, orgID, campaignID, contactID uuid.UUID) (*models.OutreachTouchpoint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, touchpoint := range m.touchpoints {
+		if touchpoint.OrganizationID != orgID || touchpoint.DraftID == nil {
+			continue
+		}
+		draft := m.drafts[*touchpoint.DraftID]
+		if draft != nil && draft.CampaignID != nil && *draft.CampaignID == campaignID && draft.EnrollmentContactID != nil && *draft.EnrollmentContactID == contactID {
+			copy := *touchpoint
+			return &copy, nil
+		}
+	}
+	return nil, nil
+}
 func (m *memRepo) FindCandidateByPhone(ctx context.Context, orgID uuid.UUID, phone string) (*models.OutreachContactCandidate, *models.OutreachAccount, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -601,6 +651,9 @@ func (m *memRepo) GetTouchpointByDraft(ctx context.Context, orgID, draftID uuid.
 func (m *memRepo) ListTouchpoints(ctx context.Context, orgID, accountID uuid.UUID, state string, limit, offset int) ([]models.OutreachTouchpoint, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.listTouchpointsErr != nil {
+		return nil, m.listTouchpointsErr
+	}
 	var out []models.OutreachTouchpoint
 	for _, t := range m.touchpoints {
 		if t.OrganizationID != orgID || t.AccountID != accountID {
@@ -948,6 +1001,9 @@ func TestLegacyImportWorks(t *testing.T) {
 	if run.Counts.Creates < 2 {
 		t.Fatalf("legacy creates: %+v errs=%+v", run.Counts, run.Errors)
 	}
+	if run.SourceGeneratedAt != nil {
+		t.Fatalf("legacy import must not manufacture source freshness: %v", run.SourceGeneratedAt)
+	}
 	noContact, _ := repo.GetAccountByCNPJ(context.Background(), org, "55444333000122")
 	if noContact == nil || noContact.QueueState != models.OutreachQueueTargetFitSuppressed ||
 		noContact.TargetFitSuppressionReason != TargetFitReasonMissing {
@@ -1051,6 +1107,91 @@ func (m *memRepo) UpsertFeedSyncState(ctx context.Context, st *models.OutreachFe
 	cp := *st
 	m.feedSync[st.OrganizationID] = &cp
 	return nil
+}
+
+func (m *memRepo) ListPilotMemberships(ctx context.Context, orgID uuid.UUID, cohortID string) ([]models.OutreachPilotMembership, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([]models.OutreachPilotMembership, 0)
+	for _, membership := range m.pilotMemberships {
+		if membership.OrganizationID == orgID && membership.CohortID == cohortID {
+			result = append(result, *membership)
+		}
+	}
+	return result, nil
+}
+
+func (m *memRepo) ClaimPilotOperation(ctx context.Context, orgID uuid.UUID, operationKey, requestHash string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := orgID.String() + "|" + operationKey
+	if existing, ok := m.pilotOperations[key]; ok && existing != requestHash {
+		return repository.ErrPilotIdempotencyConflict
+	}
+	m.pilotOperations[key] = requestHash
+	return nil
+}
+
+func (m *memRepo) ReservePilotSlot(_ context.Context, orgID uuid.UUID, cohortID string, accountID uuid.UUID, cnpj14 string, capacity int) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	prefix := orgID.String() + "|" + cohortID + "|"
+	key := prefix + accountID.String()
+	count := 0
+	for existingKey := range m.pilotSlots {
+		if strings.HasPrefix(existingKey, prefix) {
+			count++
+		}
+	}
+	if existingCNPJ, ok := m.pilotSlots[key]; ok {
+		if existingCNPJ != cnpj14 {
+			return count, fmt.Errorf("pilot slot CNPJ conflict")
+		}
+		return count, nil
+	}
+	if count >= capacity {
+		return count, repository.ErrPilotCapacityReached
+	}
+	m.pilotSlots[key] = cnpj14
+	return count + 1, nil
+}
+
+func (m *memRepo) ReleasePilotSlot(_ context.Context, orgID uuid.UUID, cohortID string, accountID uuid.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, membership := range m.pilotMemberships {
+		if membership.OrganizationID == orgID && membership.CohortID == cohortID && membership.AccountID == accountID {
+			return nil
+		}
+	}
+	delete(m.pilotSlots, orgID.String()+"|"+cohortID+"|"+accountID.String())
+	return nil
+}
+
+func (m *memRepo) ClaimPilotMembership(ctx context.Context, membership *models.OutreachPilotMembership, capacity int) (*models.OutreachPilotMembership, int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	count := 0
+	for _, existing := range m.pilotMemberships {
+		if existing.OrganizationID != membership.OrganizationID || existing.CohortID != membership.CohortID {
+			continue
+		}
+		count++
+		if existing.AccountID == membership.AccountID {
+			copy := *existing
+			return &copy, count, nil
+		}
+	}
+	if count >= capacity {
+		return nil, count, repository.ErrPilotCapacityReached
+	}
+	copy := *membership
+	if copy.ID == uuid.Nil {
+		copy.ID = uuid.New()
+	}
+	copy.CreatedAt, copy.UpdatedAt = time.Now().UTC(), time.Now().UTC()
+	m.pilotMemberships[copy.ID] = &copy
+	return &copy, count + 1, nil
 }
 
 func (m *memRepo) TryAdvisoryLock(ctx context.Context, key int64) (bool, error) {

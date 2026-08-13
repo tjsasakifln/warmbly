@@ -2,9 +2,12 @@ package repository
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,11 +36,17 @@ type OutreachRepository interface {
 	CountByActivationState(ctx context.Context, orgID uuid.UUID, now time.Time) (*OutreachActivationCounts, error)
 	SetAccountHumanFlags(ctx context.Context, orgID, id uuid.UUID, blocked, dnc bool, reason, queueState string) error
 	InvalidateAccountOutboundForTargetFit(ctx context.Context, orgID, accountID uuid.UUID, reason string) (TargetFitInvalidationCounts, error)
+	InvalidateAccountApprovalsForContext(ctx context.Context, orgID, accountID uuid.UUID, currentContextHash string) error
 	// Feed sync durable state (single-flight across replicas via advisory lock + table).
 	GetFeedSyncState(ctx context.Context, orgID uuid.UUID) (*models.OutreachFeedSyncState, error)
 	UpsertFeedSyncState(ctx context.Context, st *models.OutreachFeedSyncState) error
 	TryAdvisoryLock(ctx context.Context, key int64) (bool, error)
 	AdvisoryUnlock(ctx context.Context, key int64) error
+	ListPilotMemberships(ctx context.Context, orgID uuid.UUID, cohortID string) ([]models.OutreachPilotMembership, error)
+	ClaimPilotOperation(ctx context.Context, orgID uuid.UUID, operationKey, requestHash string) error
+	ReservePilotSlot(ctx context.Context, orgID uuid.UUID, cohortID string, accountID uuid.UUID, cnpj14 string, capacity int) (int, error)
+	ReleasePilotSlot(ctx context.Context, orgID uuid.UUID, cohortID string, accountID uuid.UUID) error
+	ClaimPilotMembership(ctx context.Context, membership *models.OutreachPilotMembership, capacity int) (*models.OutreachPilotMembership, int, error)
 
 	// Contacts
 	ListCandidates(ctx context.Context, orgID, accountID uuid.UUID) ([]models.OutreachContactCandidate, error)
@@ -65,6 +74,7 @@ type OutreachRepository interface {
 	GetOutcomeByIdempotency(ctx context.Context, orgID uuid.UUID, key string) (*models.OutreachOutcome, error)
 	FindCandidateByEmail(ctx context.Context, orgID uuid.UUID, email string) (*models.OutreachContactCandidate, *models.OutreachAccount, error)
 	FindCandidateByEnrollment(ctx context.Context, orgID, campaignID, contactID uuid.UUID) (*models.OutreachContactCandidate, *models.OutreachAccount, error)
+	GetTouchpointByEnrollment(ctx context.Context, orgID, campaignID, contactID uuid.UUID) (*models.OutreachTouchpoint, error)
 	FindCandidateByPhone(ctx context.Context, orgID uuid.UUID, phone string) (*models.OutreachContactCandidate, *models.OutreachAccount, error)
 
 	InsertTouchpoint(ctx context.Context, t *models.OutreachTouchpoint) error
@@ -124,13 +134,63 @@ type TargetFitInvalidationCounts struct {
 	DispatchItems int `json:"cancelled_dispatch_items"`
 }
 
+func (r *outreachRepository) InvalidateAccountApprovalsForContext(ctx context.Context, orgID, accountID uuid.UUID, currentContextHash string) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
+		UPDATE confenge_dispatch_queue
+		SET status='cancelled', cancel_reason='context_stale', last_error='context_stale', updated_at=now()
+		WHERE organization_id=$1 AND draft_id IN (
+			SELECT draft_id FROM outreach_touchpoints
+			WHERE organization_id=$1 AND account_id=$2 AND draft_id IS NOT NULL
+			  AND generated_context_hash IS DISTINCT FROM $3 AND state IN ('APPROVED','QUEUED')
+		) AND status IN ('queued','reserved')`, orgID, accountID, currentContextHash); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM campaign_leads cl
+		USING outreach_drafts d, outreach_touchpoints t
+		WHERE d.organization_id=$1 AND d.account_id=$2
+		  AND t.organization_id=d.organization_id AND t.account_id=d.account_id AND t.draft_id=d.id
+		  AND t.generated_context_hash IS DISTINCT FROM $3 AND t.state IN ('APPROVED','QUEUED')
+		  AND d.campaign_id=cl.campaign_id AND d.enrollment_contact_id=cl.contact_id`, orgID, accountID, currentContextHash); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE outreach_drafts d
+		SET status='NEEDS_REVIEW', approved_by=NULL, approved_at=NULL,
+			campaign_id=NULL, enrollment_contact_id=NULL, enrolled_at=NULL, updated_at=now()
+		FROM outreach_touchpoints t
+		WHERE d.organization_id=$1 AND d.account_id=$2
+		  AND t.organization_id=d.organization_id AND t.account_id=d.account_id AND t.draft_id=d.id
+		  AND t.generated_context_hash IS DISTINCT FROM $3 AND t.state IN ('APPROVED','QUEUED')`, orgID, accountID, currentContextHash); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE outreach_touchpoints
+		SET state='NEEDS_REVIEW', approved_content_hash='', approved_by=NULL, approved_at=NULL,
+			authorization_mode='', campaign_policy_authorization_id=NULL,
+			authorization_policy_hash='', authorization_at=NULL, signature_version='',
+			queued_at=NULL, stop_reason='context_stale', updated_at=now()
+		WHERE organization_id=$1 AND account_id=$2 AND generated_context_hash IS DISTINCT FROM $3
+		  AND state IN ('APPROVED','QUEUED')`, orgID, accountID, currentContextHash); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 type outreachRepository struct {
-	db *pgxpool.Pool
+	db            *pgxpool.Pool
+	advisoryMu    sync.Mutex
+	advisoryConns map[int64]*pgxpool.Conn
 }
 
 // NewOutreachRepository constructs the Postgres-backed outreach staging repo.
 func NewOutreachRepository(db *pgxpool.Pool) OutreachRepository {
-	return &outreachRepository{db: db}
+	return &outreachRepository{db: db, advisoryConns: make(map[int64]*pgxpool.Conn)}
 }
 
 func (r *outreachRepository) CreateImportRun(ctx context.Context, run *models.OutreachImportRun) error {
@@ -158,19 +218,19 @@ func (r *outreachRepository) CreateImportRun(ctx context.Context, run *models.Ou
 			snapshot_hash, repo_sha, payload_hash, profile_id, profile_version,
 			status, dry_run, started_at, finished_at, cursor_in, cursor_out,
 			counts, errors, warnings, created_by_user_id, idempotency_key, source_uri,
-			created_at, updated_at
+			created_at, updated_at, source_generated_at
 		) VALUES (
 			$1,$2,$3,$4,$5,
 			$6,$7,$8,$9,$10,
 			$11,$12,$13,$14,$15,$16,
 			$17,$18,$19,$20,$21,$22,
-			$23,$23
+			$23,$23,$24
 		)`,
 		run.ID, run.OrganizationID, run.SourceSystem, run.SourceRunID, run.SchemaVersion,
 		run.SnapshotHash, run.RepoSHA, run.PayloadHash, run.ProfileID, run.ProfileVersion,
 		run.Status, run.DryRun, run.StartedAt, run.FinishedAt, run.CursorIn, run.CursorOut,
 		counts, errs, warns, run.CreatedByUserID, run.IdempotencyKey, run.SourceURI,
-		now,
+		now, run.SourceGeneratedAt,
 	)
 	return err
 }
@@ -249,7 +309,7 @@ const outreachImportRunSelect = `
 		snapshot_hash, repo_sha, payload_hash, profile_id, profile_version,
 		status, dry_run, started_at, finished_at, COALESCE(cursor_in,''), COALESCE(cursor_out,''),
 		counts, errors, warnings, created_by_user_id, COALESCE(idempotency_key,''), COALESCE(source_uri,''),
-		created_at, updated_at `
+		created_at, updated_at, source_generated_at `
 
 type scannable interface {
 	Scan(dest ...any) error
@@ -263,7 +323,7 @@ func scanImportRun(row scannable) (*models.OutreachImportRun, error) {
 		&run.SnapshotHash, &run.RepoSHA, &run.PayloadHash, &run.ProfileID, &run.ProfileVersion,
 		&run.Status, &run.DryRun, &run.StartedAt, &run.FinishedAt, &run.CursorIn, &run.CursorOut,
 		&counts, &errs, &warns, &run.CreatedByUserID, &run.IdempotencyKey, &run.SourceURI,
-		&run.CreatedAt, &run.UpdatedAt,
+		&run.CreatedAt, &run.UpdatedAt, &run.SourceGeneratedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -749,14 +809,15 @@ func (r *outreachRepository) GetFeedSyncState(ctx context.Context, orgID uuid.UU
 	row := r.db.QueryRow(ctx, `
 		SELECT organization_id, COALESCE(last_snapshot_hash,''), COALESCE(last_run_id,''),
 			COALESCE(last_manifest_uri,''), last_success_at, last_attempt_at,
-			COALESCE(last_error,''), COALESCE(last_status,'idle'), counts, updated_at
+			COALESCE(last_error,''), COALESCE(last_status,'idle'), counts, updated_at,
+			source_generated_at
 		FROM outreach_feed_sync_state WHERE organization_id=$1`, orgID)
 	var st models.OutreachFeedSyncState
 	var counts []byte
 	err := row.Scan(
 		&st.OrganizationID, &st.LastSnapshotHash, &st.LastRunID,
 		&st.LastManifestURI, &st.LastSuccessAt, &st.LastAttemptAt,
-		&st.LastError, &st.LastStatus, &counts, &st.UpdatedAt,
+		&st.LastError, &st.LastStatus, &counts, &st.UpdatedAt, &st.SourceGeneratedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -781,8 +842,9 @@ func (r *outreachRepository) UpsertFeedSyncState(ctx context.Context, st *models
 	_, err := r.db.Exec(ctx, `
 		INSERT INTO outreach_feed_sync_state (
 			organization_id, last_snapshot_hash, last_run_id, last_manifest_uri,
-			last_success_at, last_attempt_at, last_error, last_status, counts, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+			last_success_at, last_attempt_at, last_error, last_status, counts, updated_at,
+			source_generated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		ON CONFLICT (organization_id) DO UPDATE SET
 			last_snapshot_hash = EXCLUDED.last_snapshot_hash,
 			last_run_id = EXCLUDED.last_run_id,
@@ -792,22 +854,365 @@ func (r *outreachRepository) UpsertFeedSyncState(ctx context.Context, st *models
 			last_error = EXCLUDED.last_error,
 			last_status = EXCLUDED.last_status,
 			counts = EXCLUDED.counts,
+			source_generated_at = COALESCE(EXCLUDED.source_generated_at, outreach_feed_sync_state.source_generated_at),
 			updated_at = EXCLUDED.updated_at`,
 		st.OrganizationID, st.LastSnapshotHash, st.LastRunID, st.LastManifestURI,
 		st.LastSuccessAt, st.LastAttemptAt, st.LastError, st.LastStatus, counts, st.UpdatedAt,
+		st.SourceGeneratedAt,
 	)
 	return err
 }
 
+func (r *outreachRepository) ListPilotMemberships(ctx context.Context, orgID uuid.UUID, cohortID string) ([]models.OutreachPilotMembership, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, organization_id, cohort_id, account_id, cnpj14,
+			contact_candidate_id, touchpoint_id, draft_id, snapshot_hash,
+			source_run_id, context_hash, operation_key, request_hash, created_at, updated_at
+		FROM outreach_pilot_memberships
+		WHERE organization_id=$1 AND cohort_id=$2
+		ORDER BY created_at, account_id`, orgID, cohortID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]models.OutreachPilotMembership, 0)
+	for rows.Next() {
+		var membership models.OutreachPilotMembership
+		if err := rows.Scan(
+			&membership.ID, &membership.OrganizationID, &membership.CohortID,
+			&membership.AccountID, &membership.CNPJ14, &membership.ContactCandidateID,
+			&membership.TouchpointID, &membership.DraftID, &membership.SnapshotHash,
+			&membership.SourceRunID, &membership.ContextHash, &membership.OperationKey,
+			&membership.RequestHash, &membership.CreatedAt, &membership.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		result = append(result, membership)
+	}
+	return result, rows.Err()
+}
+
+var ErrPilotCapacityReached = errors.New("pilot cohort capacity reached")
+var ErrPilotIdempotencyConflict = errors.New("pilot idempotency key reused with another request")
+
+func (r *outreachRepository) ClaimPilotOperation(ctx context.Context, orgID uuid.UUID, operationKey, requestHash string) error {
+	if orgID == uuid.Nil || operationKey == "" || requestHash == "" {
+		return errors.New("invalid pilot operation")
+	}
+	ct, err := r.db.Exec(ctx, `
+		INSERT INTO outreach_pilot_operations (organization_id, operation_key, request_hash)
+		VALUES ($1,$2,$3)
+		ON CONFLICT (organization_id, operation_key) DO NOTHING`, orgID, operationKey, requestHash)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 1 {
+		return nil
+	}
+	var existingHash string
+	if err := r.db.QueryRow(ctx, `
+		SELECT request_hash FROM outreach_pilot_operations
+		WHERE organization_id=$1 AND operation_key=$2`, orgID, operationKey).Scan(&existingHash); err != nil {
+		return err
+	}
+	if existingHash != requestHash {
+		return ErrPilotIdempotencyConflict
+	}
+	return nil
+}
+
+func (r *outreachRepository) ReservePilotSlot(ctx context.Context, orgID uuid.UUID, cohortID string, accountID uuid.UUID, cnpj14 string, capacity int) (int, error) {
+	if orgID == uuid.Nil || accountID == uuid.Nil || cohortID == "" || cnpj14 == "" || capacity <= 0 {
+		return 0, errors.New("invalid pilot slot reservation")
+	}
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, feedSyncAdvisoryKeyForRepository(orgID, cohortID)); err != nil {
+		return 0, err
+	}
+	// A process crash can strand a pre-generation reservation. It is safe to
+	// reclaim only old slots that never reached durable membership.
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM outreach_pilot_slots s
+		WHERE s.organization_id=$1 AND s.cohort_id=$2
+		  AND s.created_at < now() - interval '30 minutes'
+		  AND NOT EXISTS (
+			SELECT 1 FROM outreach_pilot_memberships m
+			WHERE m.organization_id=s.organization_id AND m.cohort_id=s.cohort_id
+			  AND m.account_id=s.account_id
+		  )`, orgID, cohortID); err != nil {
+		return 0, err
+	}
+	var existing bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM outreach_pilot_slots
+			WHERE organization_id=$1 AND cohort_id=$2 AND account_id=$3 AND cnpj14=$4
+		)`, orgID, cohortID, accountID, cnpj14).Scan(&existing); err != nil {
+		return 0, err
+	}
+	var count int
+	if err := tx.QueryRow(ctx, `
+		SELECT COUNT(*)::int FROM outreach_pilot_slots
+		WHERE organization_id=$1 AND cohort_id=$2`, orgID, cohortID).Scan(&count); err != nil {
+		return 0, err
+	}
+	if existing {
+		if err := tx.Commit(ctx); err != nil {
+			return 0, err
+		}
+		return count, nil
+	}
+	if count >= capacity {
+		return count, ErrPilotCapacityReached
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO outreach_pilot_slots (organization_id, cohort_id, account_id, cnpj14)
+		VALUES ($1,$2,$3,$4)`, orgID, cohortID, accountID, cnpj14); err != nil {
+		return count, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return count + 1, nil
+}
+
+func (r *outreachRepository) ReleasePilotSlot(ctx context.Context, orgID uuid.UUID, cohortID string, accountID uuid.UUID) error {
+	if orgID == uuid.Nil || accountID == uuid.Nil || cohortID == "" {
+		return errors.New("invalid pilot slot release")
+	}
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, feedSyncAdvisoryKeyForRepository(orgID, cohortID)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM outreach_pilot_slots s
+		WHERE s.organization_id=$1 AND s.cohort_id=$2 AND s.account_id=$3
+		  AND NOT EXISTS (
+			SELECT 1 FROM outreach_pilot_memberships m
+			WHERE m.organization_id=s.organization_id AND m.cohort_id=s.cohort_id
+			  AND m.account_id=s.account_id
+		  )`, orgID, cohortID, accountID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (r *outreachRepository) ClaimPilotMembership(ctx context.Context, membership *models.OutreachPilotMembership, capacity int) (*models.OutreachPilotMembership, int, error) {
+	if membership == nil || capacity <= 0 {
+		return nil, 0, errors.New("invalid pilot membership claim")
+	}
+	// The cohort-scoped advisory lock serializes every capacity check and insert.
+	// READ COMMITTED refreshes the snapshot after a waiter acquires that lock;
+	// SERIALIZABLE here would turn safe contention into avoidable 40001 failures.
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	lockKey := feedSyncAdvisoryKeyForRepository(membership.OrganizationID, membership.CohortID)
+	// Serialize against manifest application, then lock the cohort capacity.
+	// Row locks below also cover direct imports that do not use the manifest lock.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, feedSyncAdvisoryKeyForOrganization(membership.OrganizationID)); err != nil {
+		return nil, 0, err
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, lockKey); err != nil {
+		return nil, 0, err
+	}
+	var slotExists bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM outreach_pilot_slots
+			WHERE organization_id=$1 AND cohort_id=$2 AND account_id=$3 AND cnpj14=$4
+		)`, membership.OrganizationID, membership.CohortID, membership.AccountID, membership.CNPJ14).Scan(&slotExists); err != nil {
+		return nil, 0, err
+	}
+	if !slotExists {
+		return nil, 0, errors.New("pilot slot was not reserved")
+	}
+
+	var existing models.OutreachPilotMembership
+	err = tx.QueryRow(ctx, `
+		SELECT id, organization_id, cohort_id, account_id, cnpj14,
+			contact_candidate_id, touchpoint_id, draft_id, snapshot_hash,
+			source_run_id, context_hash, operation_key, request_hash, created_at, updated_at
+		FROM outreach_pilot_memberships
+		WHERE organization_id=$1 AND cohort_id=$2 AND account_id=$3`,
+		membership.OrganizationID, membership.CohortID, membership.AccountID,
+	).Scan(
+		&existing.ID, &existing.OrganizationID, &existing.CohortID, &existing.AccountID,
+		&existing.CNPJ14, &existing.ContactCandidateID, &existing.TouchpointID,
+		&existing.DraftID, &existing.SnapshotHash, &existing.SourceRunID,
+		&existing.ContextHash, &existing.OperationKey, &existing.RequestHash,
+		&existing.CreatedAt, &existing.UpdatedAt,
+	)
+	existingFound := err == nil
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, 0, err
+	}
+
+	var valid bool
+	err = tx.QueryRow(ctx, `
+		SELECT true
+		FROM outreach_accounts a
+		JOIN outreach_feed_sync_state fs ON fs.organization_id=a.organization_id
+		JOIN outreach_contact_candidates c ON c.id=$3 AND c.organization_id=a.organization_id AND c.account_id=a.id
+		JOIN outreach_touchpoints t ON t.id=$4 AND t.organization_id=a.organization_id AND t.account_id=a.id
+		JOIN outreach_drafts d ON d.id=$5 AND d.organization_id=a.organization_id AND d.account_id=a.id
+		WHERE a.id=$2 AND a.organization_id=$1 AND a.cnpj14=$6
+		  AND fs.last_status='completed' AND fs.last_snapshot_hash=$8 AND fs.last_run_id=$9
+		  AND fs.source_generated_at=$10 AND a.source_run_id=$9
+		  AND a.last_import_run_id IS NOT NULL AND c.last_import_run_id=a.last_import_run_id
+		  AND c.updated_at=$11
+		  AND a.target_fit_eligible=true AND a.target_fit_fresh=true
+		  AND a.target_fit_class='TARGET_CONFIRMED' AND a.target_fit_version<>''
+		  AND a.target_fit_source_watermark<>'' AND a.target_fit_observed_at IS NOT NULL
+		  AND (a.activation_expires_at IS NULL OR a.activation_expires_at > now())
+		  AND a.email_send_ready=true AND a.do_not_contact=false AND a.blocked=false
+		  AND c.email_send_ready=true AND c.do_not_contact=false AND c.blocked=false AND c.bounced=false
+		  AND c.mailbox_purpose_send_blocked=false AND c.ownership_status='COMPANY_OWNED'
+		  AND c.verification_status NOT IN ('CANDIDATE_UNVERIFIED','NOT_FOUND','INVALID','BOUNCED','DO_NOT_CONTACT')
+		  AND c.email<>'' AND c.email !~ '[[:space:]]'
+		  AND lower(c.block_reason) NOT LIKE '%provenance%'
+		  AND upper(c.recipient_commercial_suitability) NOT LIKE 'UNSUITABLE%'
+		  AND (c.source_url<>'' OR c.source_document<>'')
+		  AND c.source_date IS NOT NULL
+		  AND c.source_date BETWEEN CURRENT_DATE - 365 AND CURRENT_DATE + 1
+		  AND t.contact_candidate_id=c.id AND t.draft_id=d.id AND d.contact_candidate_id=c.id
+		  AND t.ordinal=1 AND t.state IN ('NEEDS_REVIEW','APPROVED')
+		  AND t.generated_context_hash=$7 AND a.message_context_hash=$7
+		  AND d.status IN ('NEEDS_REVIEW','APPROVED')
+		  AND d.subject=t.subject AND d.body_text=t.body_text
+		  AND lower(btrim(t.recipient))=lower(btrim(c.email))
+		  AND lower(btrim(d.recipient_email))=lower(btrim(c.email))
+		FOR UPDATE OF a, fs, c, t, d`, membership.OrganizationID, membership.AccountID,
+		membership.ContactCandidateID, membership.TouchpointID, membership.DraftID,
+		membership.CNPJ14, membership.ContextHash, membership.SnapshotHash,
+		membership.SourceRunID, membership.FeedGeneratedAt, membership.CandidateUpdatedAt).Scan(&valid)
+	if errors.Is(err, pgx.ErrNoRows) || !valid {
+		return nil, 0, errors.New("pilot membership dependencies are incoherent")
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	var count int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM outreach_pilot_memberships WHERE organization_id=$1 AND cohort_id=$2`, membership.OrganizationID, membership.CohortID).Scan(&count); err != nil {
+		return nil, 0, err
+	}
+	if existingFound {
+		if existing.CNPJ14 != membership.CNPJ14 || existing.ContactCandidateID != membership.ContactCandidateID ||
+			existing.TouchpointID != membership.TouchpointID || existing.DraftID != membership.DraftID ||
+			existing.ContextHash != membership.ContextHash {
+			if err := tx.Commit(ctx); err != nil {
+				return nil, 0, err
+			}
+			return &existing, count, nil
+		}
+		now := time.Now().UTC()
+		if _, err := tx.Exec(ctx, `
+			UPDATE outreach_pilot_memberships
+			SET snapshot_hash=$2, source_run_id=$3, operation_key=$4,
+				request_hash=$5, updated_at=$6
+			WHERE id=$1`, existing.ID, membership.SnapshotHash, membership.SourceRunID,
+			membership.OperationKey, membership.RequestHash, now); err != nil {
+			return nil, 0, err
+		}
+		existing.SnapshotHash, existing.SourceRunID = membership.SnapshotHash, membership.SourceRunID
+		existing.OperationKey, existing.RequestHash, existing.UpdatedAt = membership.OperationKey, membership.RequestHash, now
+		if err := tx.Commit(ctx); err != nil {
+			return nil, 0, err
+		}
+		return &existing, count, nil
+	}
+	if count >= capacity {
+		return nil, count, ErrPilotCapacityReached
+	}
+	if membership.ID == uuid.Nil {
+		membership.ID = uuid.New()
+	}
+	now := time.Now().UTC()
+	_, err = tx.Exec(ctx, `
+		INSERT INTO outreach_pilot_memberships (
+			id, organization_id, cohort_id, account_id, cnpj14, contact_candidate_id,
+			touchpoint_id, draft_id, snapshot_hash, source_run_id, context_hash,
+			operation_key, request_hash, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)`,
+		membership.ID, membership.OrganizationID, membership.CohortID, membership.AccountID,
+		membership.CNPJ14, membership.ContactCandidateID, membership.TouchpointID,
+		membership.DraftID, membership.SnapshotHash, membership.SourceRunID,
+		membership.ContextHash, membership.OperationKey, membership.RequestHash, now)
+	if err != nil {
+		return nil, count, err
+	}
+	membership.CreatedAt, membership.UpdatedAt = now, now
+	if err := tx.Commit(ctx); err != nil {
+		return nil, count, err
+	}
+	return membership, count + 1, nil
+}
+
+func feedSyncAdvisoryKeyForRepository(orgID uuid.UUID, cohortID string) int64 {
+	h := sha256.Sum256([]byte("confenge-pilot:" + orgID.String() + ":" + cohortID))
+	return int64(binary.BigEndian.Uint64(h[:8]) & 0x7fffffffffffffff)
+}
+
+func feedSyncAdvisoryKeyForOrganization(orgID uuid.UUID) int64 {
+	h := sha256.Sum256([]byte("confenge-feed-sync:" + orgID.String()))
+	return int64(binary.BigEndian.Uint64(h[:8]) & 0x7fffffffffffffff)
+}
+
 func (r *outreachRepository) TryAdvisoryLock(ctx context.Context, key int64) (bool, error) {
+	r.advisoryMu.Lock()
+	if _, held := r.advisoryConns[key]; held {
+		r.advisoryMu.Unlock()
+		return false, nil
+	}
+	r.advisoryMu.Unlock()
+	conn, err := r.db.Acquire(ctx)
+	if err != nil {
+		return false, err
+	}
 	var ok bool
-	err := r.db.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&ok)
-	return ok, err
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&ok); err != nil {
+		conn.Release()
+		return false, err
+	}
+	if !ok {
+		conn.Release()
+		return false, nil
+	}
+	r.advisoryMu.Lock()
+	r.advisoryConns[key] = conn
+	r.advisoryMu.Unlock()
+	return true, nil
 }
 
 func (r *outreachRepository) AdvisoryUnlock(ctx context.Context, key int64) error {
-	_, err := r.db.Exec(ctx, `SELECT pg_advisory_unlock($1)`, key)
-	return err
+	r.advisoryMu.Lock()
+	conn := r.advisoryConns[key]
+	delete(r.advisoryConns, key)
+	r.advisoryMu.Unlock()
+	if conn == nil {
+		return errors.New("advisory lock is not held by this repository")
+	}
+	var unlocked bool
+	if err := conn.QueryRow(ctx, `SELECT pg_advisory_unlock($1)`, key).Scan(&unlocked); err != nil {
+		_ = conn.Hijack().Close(context.Background())
+		return err
+	}
+	if !unlocked {
+		_ = conn.Hijack().Close(context.Background())
+		return errors.New("PostgreSQL advisory lock was not released")
+	}
+	conn.Release()
+	return nil
 }
 
 func (r *outreachRepository) CountByQueueState(ctx context.Context, orgID uuid.UUID) (*models.OutreachQueueSummary, error) {

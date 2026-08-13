@@ -812,7 +812,7 @@ test.describe("CONFENGE product acceptance UI", () => {
     const uiBody = page.getByTestId("confenge-body-input");
     const uiText = (await uiBody.inputValue()).replace(/\s+$/, "") + " [ui]";
     await uiBody.fill(uiText);
-    const approve = page.getByTestId("confenge-approve-queue");
+    const approve = page.getByTestId("confenge-approve");
     await expect(approve).toBeEnabled({ timeout: 10_000 });
     await approve.click();
     await expect

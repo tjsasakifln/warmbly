@@ -44,9 +44,7 @@ func (s *service) Governor() *dispatch.Governor {
 // On AlreadyCommitted, returns (nil, nil) and sets already=true.
 func (s *service) reserveOutbound(ctx context.Context, orgID uuid.UUID, channel string, draftID uuid.UUID, recipientRef string) (res *dispatch.Reservation, already bool, xerr *errx.Error) {
 	if s.governor == nil {
-		// Fail-open only when governor not wired (unit tests of unrelated paths).
-		// Production always wires via WireDispatch.
-		return nil, false, nil
+		return nil, false, errx.New(errx.ServiceUnavailable, "dispatch governor not wired; outbound blocked")
 	}
 	var key string
 	switch channel {
@@ -126,6 +124,11 @@ func (s *service) PauseDispatch(ctx context.Context, orgID, userID uuid.UUID, re
 	if s.governor == nil {
 		return errx.New(errx.ServiceUnavailable, "dispatch governor not wired")
 	}
+	// The worker cannot read the governor's Postgres row. Engage the shared file
+	// switch first so direct or stale queue items are blocked at SMTP boundary.
+	if err := EngageKillSwitch(); err != nil {
+		return errx.New(errx.Internal, "failed to engage transport kill switch: "+err.Error())
+	}
 	by := userID
 	if err := s.governor.Pause(ctx, reason, &by); err != nil {
 		return errx.New(errx.Internal, err.Error())
@@ -148,6 +151,12 @@ func (s *service) ResumeDispatch(ctx context.Context, orgID, userID uuid.UUID) *
 	by := userID
 	if err := s.governor.Resume(ctx, &by); err != nil {
 		return errx.New(errx.Internal, err.Error())
+	}
+	// Clear the transport switch only after the durable governor resumes. If the
+	// filesystem operation fails, restore the durable pause immediately.
+	if err := ReleaseKillSwitch(); err != nil {
+		_ = s.governor.Pause(ctx, "transport_kill_switch_release_failed", &by)
+		return errx.New(errx.Internal, "failed to release transport kill switch; dispatch remains paused: "+err.Error())
 	}
 	if s.audit != nil {
 		s.audit.LogAction(ctx, orgID, userID, models.AuditActionResume, models.AuditEntityOutreachAccount, nil, "", "",

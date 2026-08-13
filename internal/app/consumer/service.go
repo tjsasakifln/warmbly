@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 	"github.com/warmbly/warmbly/internal/app/advanced"
 	"github.com/warmbly/warmbly/internal/app/confenge"
@@ -35,6 +36,8 @@ type JobsService struct {
 	WarmupEngagementRepo        repository.WarmupEngagementRepository
 	WarmupService               warmupapp.Service
 	WorkerRepo                  repository.WorkerRepository
+	TaskRepo                    repository.TaskRepository
+	CampaignRepo                repository.CampaignRepository
 
 	// Publisher for sending events to workers
 	Publisher events.Publisher
@@ -45,6 +48,9 @@ type JobsService struct {
 
 	// ConfengeOutcomes attributes reply/bounce/DNC back to staged leads (optional).
 	ConfengeOutcomes confenge.OutcomeSink
+	ConfengeSends    interface {
+		CompleteCampaignEmail(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, providerMessageID string) error
+	}
 
 	// Cache for dead worker detection
 	Cache *cache.Cache

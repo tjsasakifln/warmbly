@@ -730,13 +730,8 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 		return nil
 	}
 
-	// Successful outbound publish: consume CONFENGE success slot (idempotent message_key).
-	if confengeLease != uuid.Nil && s.confengeGate != nil {
-		if cerr := s.confengeGate.CommitCampaignEmail(ctx, confengeLease); cerr != nil {
-			log.Warn().Err(cerr).Str("campaign_id", campaign.ID.String()).Msg("confenge gate commit failed")
-		}
-	}
-
+	// The CONFENGE lease is committed only by the provider-confirmed EMAIL_SENT
+	// result. Kafka publication alone is not proof that SMTP accepted the mail.
 	// STEP 16: Store sent email metadata (encrypted) in database
 	// Note: Full email stored in Cassandra by email sync service
 	taskRecord.MessageID = messageID

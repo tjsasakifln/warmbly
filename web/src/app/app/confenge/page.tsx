@@ -13,8 +13,9 @@ import {
 import { Page, PageTopbar } from "@/components/layout/Page";
 import { Checkbox } from "@/components/ui/checkbox";
 import { TextInput } from "@/components/ui/field";
+import { useConfirm } from "@/hooks/context/confirm";
 import {
-  useApproveAndQueueTouchpoint,
+	useApproveConfengeTouchpoint,
   useConfengeAccount,
   useConfengeAccountTimeline,
   useConfengeAccounts,
@@ -52,6 +53,7 @@ const ATTENTION_FILTERS: { id: ConfengeAttentionFilter; label: string }[] = [
 ];
 
 export default function ConfengePage() {
+	const confirm = useConfirm();
   const status = useConfengeStatus();
   const enabled = !!status.data?.enabled;
   const summary = useConfengeSummary(enabled);
@@ -64,7 +66,7 @@ export default function ConfengePage() {
   const prepareCohort = usePrepareConfengePilotCohort();
   const syncFeed = useSyncConfengeFeed();
   const genTouch = useGenerateConfengeTouchpoint();
-  const approveQueue = useApproveAndQueueTouchpoint();
+  const approve = useApproveConfengeTouchpoint();
   const skip = useSkipConfengeTouchpoint();
   const reject = useRejectConfengeTouchpoint();
   const dnc = useDncConfengeAccount();
@@ -84,6 +86,7 @@ export default function ConfengePage() {
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [recipient, setRecipient] = useState("");
+	const [genericRecipientConfirmed, setGenericRecipientConfirmed] = useState(false);
   const [pilotSelection, setPilotSelection] = useState<string[]>([]);
 
   useEffect(() => {
@@ -102,6 +105,7 @@ export default function ConfengePage() {
       setSubject(current.subject ?? "");
       setBody(current.body_text ?? "");
       setRecipient(current.recipient ?? "");
+		setGenericRecipientConfirmed(false);
     }
   }, [current]);
 
@@ -276,7 +280,12 @@ export default function ConfengePage() {
                     ? "Todos os gates anteriores estão concluídos. Confirme a retomada controlada."
                     : "Conclua todas as pendências críticas antes de retomar os envios."
                 }
-                onClick={() => resumeDispatch.mutate()}
+                onClick={() =>
+				  confirm.show(
+					"Retomar o dispatch CONFENGE agora? Mensagens já enfileiradas poderão chegar ao transporte.",
+					async () => { await resumeDispatch.mutateAsync(); },
+				  )
+				}
               >
                 Retomar envios
               </button>
@@ -312,7 +321,7 @@ export default function ConfengePage() {
           <div className="mt-2 grid gap-2 sm:grid-cols-3 text-[11.5px] text-slate-600">
             <span><strong className="text-slate-800">1. Selecione</strong> a conta prioritária.</span>
             <span><strong className="text-slate-800">2. Revise</strong> destinatário, contexto e mensagem.</span>
-            <span><strong className="text-slate-800">3. Aprove</strong> o conteúdo exato para colocá-lo na fila.</span>
+            <span><strong className="text-slate-800">3. Aprove</strong> o conteúdo exato e mantenha o dispatch pausado até o GO/NO-GO.</span>
           </div>
         </section>
 
@@ -596,24 +605,6 @@ export default function ConfengePage() {
                     {a.cnpj14} · {a.service_code}
                   </div>
                 </div>
-                <button
-                  type="button"
-                  className="shrink-0 h-7 px-2 rounded-md bg-sky-50 text-sky-700 border border-sky-200"
-                  disabled={plan.isPending}
-                  onClick={() =>
-                    plan.mutate(
-                      { accountId: a.id, channel: "EMAIL" },
-                      {
-                        onSuccess: (list) => {
-                          const due = list.find((t) => t.state === "DUE" || t.ordinal === 1);
-                          if (due) genTouch.mutate(due.id);
-                        },
-                      },
-                    )
-                  }
-                >
-                  Planejar e gerar
-                </button>
               </li>
             ))}
             {!ready.data?.length && (
@@ -656,7 +647,7 @@ export default function ConfengePage() {
               </span>
             )}
           </div>
-          <p className="px-3 pt-2 text-[11.5px] text-slate-500">Confira destinatário, contexto e conteúdo exato. Somente mensagens aprovadas entram na fila de envio.</p>
+          <p className="px-3 pt-2 text-[11.5px] text-slate-500">Confira destinatário, contexto e conteúdo exato. Aprovar não coloca a mensagem na fila nem libera o envio.</p>
           {!current ? (
             <div className="px-3 py-10 text-center text-slate-400 text-[12.5px]">
               Nenhuma mensagem aguarda revisão. Planeje uma conta e gere a mensagem quando ela estiver pronta.
@@ -683,6 +674,11 @@ export default function ConfengePage() {
                       {[current.draft?.recipient_name, current.draft?.recipient_role].filter(Boolean).join(" · ")}
                     </div>
                   )}
+				  {current.recipient_generic && (
+					<div className="mt-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900">
+						Caixa genérica ({current.recipient_mailbox_purpose || "finalidade desconhecida"}). Não presuma nome, cargo ou uma pessoa específica.
+					</div>
+				  )}
                 </div>
                 <div>
                   <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">
@@ -794,6 +790,12 @@ export default function ConfengePage() {
                   />
                 </label>
                 <div className="flex flex-wrap gap-1.5 pt-1">
+				  {current.recipient_generic && (
+					<label className="w-full mb-1 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900">
+						<Checkbox checked={genericRecipientConfirmed} onCheckedChange={(checked) => setGenericRecipientConfirmed(checked === true)} />
+						<span>Confirmei que a mensagem trata esta caixa como canal institucional, sem inventar uma pessoa.</span>
+					</label>
+				  )}
                   {(current.state === "DUE" || !current.body_text) && (
                     <button
                       type="button"
@@ -807,20 +809,21 @@ export default function ConfengePage() {
                   )}
                   <button
                     type="button"
-                    data-testid="confenge-approve-queue"
+                    data-testid="confenge-approve"
                     className="h-7 px-2.5 rounded-md bg-sky-600 text-white text-[12.5px] disabled:opacity-50"
-                    disabled={approveQueue.isPending || !body.trim() || !recipient.trim()}
+                    disabled={approve.isPending || !body.trim() || !recipient.trim() || (current.recipient_generic && !genericRecipientConfirmed)}
                     onClick={() =>
-                      approveQueue.mutate({
+                      approve.mutate({
                         id: current.id,
                         subject,
                         body_text: body,
                         recipient,
+                        generic_recipient_acknowledged: genericRecipientConfirmed,
                       })
                     }
                   >
                     <Check className="inline h-3.5 w-3.5 mr-1" />
-                    Aprovar e colocar na fila
+                    Aprovar mensagem
                   </button>
                   <button
                     type="button"
@@ -839,7 +842,12 @@ export default function ConfengePage() {
                     type="button"
                     className="h-7 px-2.5 rounded-md border border-rose-200 text-rose-700 text-[12.5px]"
                     disabled={dnc.isPending}
-                    onClick={() => dnc.mutate(current.account_id)}
+					onClick={() =>
+					  confirm.show(
+						"Marcar esta conta como não contatar? Isso cancela todo trabalho de outreach ainda aberto.",
+						async () => { await dnc.mutateAsync(current.account_id); },
+					  )
+					}
                   >
                     <Ban className="inline h-3.5 w-3.5 mr-1" />
                     Não contatar

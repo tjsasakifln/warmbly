@@ -164,16 +164,14 @@ export async function planConfengeCadence(accountId: string, channel?: string): 
 
 export async function prepareConfengePilotCohort(accountIds: string[]): Promise<ConfengePilotCohortResult> {
   const stableIds = [...new Set(accountIds)].sort();
-  let hash = 2166136261;
-  for (const char of stableIds.join(",")) {
-    hash ^= char.charCodeAt(0);
-    hash = Math.imul(hash, 16777619);
-  }
+	const encoded = new TextEncoder().encode(stableIds.join(","));
+	const digest = await crypto.subtle.digest("SHA-256", encoded);
+	const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
   const res = await Request<{ data: ConfengePilotCohortResult }>({
     method: "POST",
     url: "/confenge/pilot/cohort/prepare",
     authorization: true,
-    headers: { "Idempotency-Key": `confenge-pilot-${(hash >>> 0).toString(16)}` },
+		headers: { "Idempotency-Key": `confenge-pilot-${hash}` },
     data: { account_ids: stableIds },
   });
   return res.data;
@@ -189,8 +187,8 @@ export async function editConfengeTouchpoint(id: string, body: { subject?: strin
   return res.data;
 }
 
-export async function approveConfengeTouchpoint(id: string): Promise<ConfengeTouchpoint> {
-  const res = await Request<{ data: ConfengeTouchpoint }>({ method: "POST", url: `/confenge/touchpoints/${id}/approve`, authorization: true, data: {} });
+export async function approveConfengeTouchpoint(id: string, genericRecipientAcknowledged = false): Promise<ConfengeTouchpoint> {
+  const res = await Request<{ data: ConfengeTouchpoint }>({ method: "POST", url: `/confenge/touchpoints/${id}/approve`, authorization: true, data: { generic_recipient_acknowledged: genericRecipientAcknowledged } });
   return res.data;
 }
 

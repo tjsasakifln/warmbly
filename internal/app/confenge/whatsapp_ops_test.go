@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
 	"github.com/warmbly/warmbly/internal/app/whatsapp"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
@@ -116,6 +117,10 @@ func TestDecideChannelGenerateAndSend(t *testing.T) {
 	cfg := Config{Enabled: true, WhatsAppEnabled: true, RequireHumanApproval: true, CrossChannelHours: 0, MaxInitialEmailWords: 120}
 	svc := NewService(cfg, repo, nil).(*service)
 	svc.WireWhatsApp(waSvc, store)
+	dispatchConfig := dispatch.DefaultConfig()
+	dispatchConfig.WindowStart, dispatchConfig.WindowEnd, dispatchConfig.Timezone = "00:00", "23:59", "UTC"
+	dispatchConfig.BusinessDaysOnly = false
+	svc.WireDispatchGovernor(dispatch.NewGovernor(dispatchConfig, dispatch.NewMemoryStore(), &dispatch.FixedClock{T: now}))
 
 	// Case A: public phone
 	pubID := uuid.New()

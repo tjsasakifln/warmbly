@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
 	"github.com/warmbly/warmbly/internal/app/whatsapp"
 	"github.com/warmbly/warmbly/internal/models"
 )
@@ -78,6 +79,64 @@ func TestKillSwitchBlocksSendingAllowed(t *testing.T) {
 	cfg.SendingPaused = true
 	if cfg.SendingAllowed() {
 		t.Fatal("env pause should block")
+	}
+}
+
+func TestKillSwitchFilesystemErrorFailsClosed(t *testing.T) {
+	t.Setenv(EnvKillSwitchPath, strings.Repeat("x", 5000))
+	if !FileKillSwitchActive() {
+		t.Fatal("an indeterminate kill-switch path must fail closed")
+	}
+	if (Config{}).SendingAllowed() {
+		t.Fatal("filesystem errors must block sending")
+	}
+}
+
+func TestPauseAndResumeSynchronizeGovernorWithWorkerKillSwitch(t *testing.T) {
+	killPath := filepath.Join(t.TempDir(), "kill")
+	t.Setenv(EnvKillSwitchPath, killPath)
+	store := dispatch.NewMemoryStore()
+	svc := &service{
+		cfg:      Config{Enabled: true, RequireHumanApproval: true},
+		governor: dispatch.NewGovernor(dispatch.DefaultConfig(), store, nil),
+	}
+	orgID, userID := uuid.New(), uuid.New()
+	if xerr := svc.PauseDispatch(context.Background(), orgID, userID, "test_pause"); xerr != nil {
+		t.Fatal(xerr)
+	}
+	if !FileKillSwitchActive() {
+		t.Fatal("pause must engage the worker-visible kill switch")
+	}
+	status, xerr := svc.DispatchStatus(context.Background(), orgID)
+	if xerr != nil || !status.Paused {
+		t.Fatalf("governor was not paused: status=%+v err=%v", status, xerr)
+	}
+	if xerr := svc.ResumeDispatch(context.Background(), orgID, userID); xerr != nil {
+		t.Fatal(xerr)
+	}
+	if FileKillSwitchActive() {
+		t.Fatal("authenticated resume must release the worker-visible kill switch")
+	}
+	status, xerr = svc.DispatchStatus(context.Background(), orgID)
+	if xerr != nil || status.Paused {
+		t.Fatalf("governor remained paused: status=%+v err=%v", status, xerr)
+	}
+}
+
+func TestLocalSMTPDeliveryIsExplicitAndNeverProduction(t *testing.T) {
+	t.Setenv("SMTP_HOST", "127.0.0.1")
+	t.Setenv("CONFENGE_LOCAL_SMTP_DELIVERY", "")
+	t.Setenv("APP_ENV", "test")
+	if localSMTPDeliveryEnabled() {
+		t.Fatal("local SMTP must default off")
+	}
+	t.Setenv("CONFENGE_LOCAL_SMTP_DELIVERY", "true")
+	if !localSMTPDeliveryEnabled() {
+		t.Fatal("explicit non-production local SMTP should be enabled")
+	}
+	t.Setenv("APP_ENV", "production")
+	if localSMTPDeliveryEnabled() {
+		t.Fatal("direct local SMTP must never run in production")
 	}
 }
 

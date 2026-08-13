@@ -3,7 +3,12 @@ DROP INDEX IF EXISTS outreach_accounts_org_target_fit_operational_idx;
 
 ALTER TABLE outreach_accounts DROP CONSTRAINT IF EXISTS outreach_accounts_queue_state_check;
 UPDATE outreach_accounts
-SET queue_state = CASE WHEN email_send_ready THEN 'READY_TO_GENERATE' ELSE 'NEEDS_CONTACT' END
+SET queue_state = CASE
+    WHEN do_not_contact THEN 'DO_NOT_CONTACT'
+    WHEN blocked THEN 'BLOCKED'
+    WHEN email_send_ready THEN 'READY_TO_GENERATE'
+    ELSE 'NEEDS_CONTACT'
+END
 WHERE queue_state = 'TARGET_FIT_SUPPRESSED';
 ALTER TABLE outreach_accounts ADD CONSTRAINT outreach_accounts_queue_state_check
     CHECK (queue_state IN (

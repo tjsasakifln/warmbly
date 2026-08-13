@@ -108,30 +108,31 @@ type OutreachImportError struct {
 
 // OutreachImportRun is one feed import attempt (dry-run or apply).
 type OutreachImportRun struct {
-	ID              uuid.UUID             `json:"id"`
-	OrganizationID  uuid.UUID             `json:"organization_id"`
-	SourceSystem    string                `json:"source_system"`
-	SourceRunID     string                `json:"source_run_id"`
-	SchemaVersion   string                `json:"schema_version"`
-	SnapshotHash    string                `json:"snapshot_hash"`
-	RepoSHA         string                `json:"repo_sha"`
-	PayloadHash     string                `json:"payload_hash"`
-	ProfileID       string                `json:"profile_id"`
-	ProfileVersion  string                `json:"profile_version"`
-	Status          string                `json:"status"`
-	DryRun          bool                  `json:"dry_run"`
-	StartedAt       time.Time             `json:"started_at"`
-	FinishedAt      *time.Time            `json:"finished_at,omitempty"`
-	CursorIn        string                `json:"cursor_in,omitempty"`
-	CursorOut       string                `json:"cursor_out,omitempty"`
-	Counts          OutreachImportCounts  `json:"counts"`
-	Errors          []OutreachImportError `json:"errors,omitempty"`
-	Warnings        []string              `json:"warnings,omitempty"`
-	CreatedByUserID *uuid.UUID            `json:"created_by_user_id,omitempty"`
-	IdempotencyKey  string                `json:"idempotency_key,omitempty"`
-	SourceURI       string                `json:"source_uri,omitempty"`
-	CreatedAt       time.Time             `json:"created_at"`
-	UpdatedAt       time.Time             `json:"updated_at"`
+	ID                uuid.UUID             `json:"id"`
+	OrganizationID    uuid.UUID             `json:"organization_id"`
+	SourceSystem      string                `json:"source_system"`
+	SourceRunID       string                `json:"source_run_id"`
+	SchemaVersion     string                `json:"schema_version"`
+	SnapshotHash      string                `json:"snapshot_hash"`
+	RepoSHA           string                `json:"repo_sha"`
+	PayloadHash       string                `json:"payload_hash"`
+	ProfileID         string                `json:"profile_id"`
+	ProfileVersion    string                `json:"profile_version"`
+	Status            string                `json:"status"`
+	DryRun            bool                  `json:"dry_run"`
+	StartedAt         time.Time             `json:"started_at"`
+	FinishedAt        *time.Time            `json:"finished_at,omitempty"`
+	CursorIn          string                `json:"cursor_in,omitempty"`
+	CursorOut         string                `json:"cursor_out,omitempty"`
+	Counts            OutreachImportCounts  `json:"counts"`
+	Errors            []OutreachImportError `json:"errors,omitempty"`
+	Warnings          []string              `json:"warnings,omitempty"`
+	CreatedByUserID   *uuid.UUID            `json:"created_by_user_id,omitempty"`
+	IdempotencyKey    string                `json:"idempotency_key,omitempty"`
+	SourceURI         string                `json:"source_uri,omitempty"`
+	SourceGeneratedAt *time.Time            `json:"source_generated_at,omitempty"`
+	CreatedAt         time.Time             `json:"created_at"`
+	UpdatedAt         time.Time             `json:"updated_at"`
 }
 
 // OutreachAccount is a staged company from the intelligence feed.
@@ -453,16 +454,39 @@ type OutreachOutcome struct {
 
 // OutreachFeedSyncState is durable manifest sync progress per org.
 type OutreachFeedSyncState struct {
-	OrganizationID   uuid.UUID  `json:"organization_id"`
-	LastSnapshotHash string     `json:"last_snapshot_hash"`
-	LastRunID        string     `json:"last_run_id"`
-	LastManifestURI  string     `json:"last_manifest_uri"`
-	LastSuccessAt    *time.Time `json:"last_success_at,omitempty"`
-	LastAttemptAt    *time.Time `json:"last_attempt_at,omitempty"`
-	LastError        string     `json:"last_error,omitempty"`
-	LastStatus       string     `json:"last_status"`
-	CountsJSON       []byte     `json:"counts,omitempty"`
-	UpdatedAt        time.Time  `json:"updated_at"`
+	OrganizationID    uuid.UUID  `json:"organization_id"`
+	LastSnapshotHash  string     `json:"last_snapshot_hash"`
+	LastRunID         string     `json:"last_run_id"`
+	LastManifestURI   string     `json:"last_manifest_uri"`
+	LastSuccessAt     *time.Time `json:"last_success_at,omitempty"`
+	SourceGeneratedAt *time.Time `json:"source_generated_at,omitempty"`
+	LastAttemptAt     *time.Time `json:"last_attempt_at,omitempty"`
+	LastError         string     `json:"last_error,omitempty"`
+	LastStatus        string     `json:"last_status"`
+	CountsJSON        []byte     `json:"counts,omitempty"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+}
+
+// OutreachPilotMembership is the durable definition of one prepared pilot account.
+// It is inserted only after the current touchpoint and draft have been validated.
+type OutreachPilotMembership struct {
+	ID                 uuid.UUID `json:"id"`
+	OrganizationID     uuid.UUID `json:"organization_id"`
+	CohortID           string    `json:"cohort_id"`
+	AccountID          uuid.UUID `json:"account_id"`
+	CNPJ14             string    `json:"cnpj14"`
+	ContactCandidateID uuid.UUID `json:"contact_candidate_id"`
+	TouchpointID       uuid.UUID `json:"touchpoint_id"`
+	DraftID            uuid.UUID `json:"draft_id"`
+	SnapshotHash       string    `json:"snapshot_hash"`
+	SourceRunID        string    `json:"source_run_id"`
+	ContextHash        string    `json:"context_hash"`
+	OperationKey       string    `json:"operation_key,omitempty"`
+	RequestHash        string    `json:"request_hash,omitempty"`
+	FeedGeneratedAt    time.Time `json:"-"`
+	CandidateUpdatedAt time.Time `json:"-"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 // Touchpoint states (per-message human approval authority).
@@ -582,6 +606,8 @@ type OutreachTouchpoint struct {
 	// ContextStale when GeneratedContextHash != account.MessageContextHash.
 	ContextStale bool `json:"context_stale,omitempty"`
 	// StrategyExplain is operator cockpit metadata (not prospect-facing; not a DB column).
-	StrategyExplain map[string]any `json:"strategy_explain,omitempty"`
-	DoctrineAlerts  []string       `json:"doctrine_alerts,omitempty"`
+	StrategyExplain         map[string]any `json:"strategy_explain,omitempty"`
+	DoctrineAlerts          []string       `json:"doctrine_alerts,omitempty"`
+	RecipientMailboxPurpose string         `json:"recipient_mailbox_purpose,omitempty"`
+	RecipientGeneric        bool           `json:"recipient_generic,omitempty"`
 }

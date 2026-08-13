@@ -24,6 +24,11 @@ const readiness: ConfengeReadiness = {
   require_human_approval: true,
   auto_send_enabled: false,
   whatsapp_enabled: false,
+  pilot_cohort_state: "ready",
+  pilot_cohort_prepared: 0,
+  pilot_cohort_needs_review: 0,
+  pilot_cohort_approved: 0,
+  pilot_cohort_sent: 0,
 };
 
 const summary: ConfengeSummary = {
@@ -89,8 +94,8 @@ describe("bloqueios do lote piloto", () => {
 
   it("leva ao controle de envios quando a pausa é a única pendência", () => {
     const gate = buildPilotGate({
-      readiness: { ...readiness, kill_switch: true, sending_allowed: false },
-      summary: { ...summary, approved: PILOT_TARGET },
+      readiness: { ...readiness, kill_switch: true, sending_allowed: false, pilot_cohort_prepared: PILOT_TARGET, pilot_cohort_approved: PILOT_TARGET },
+      summary,
       overview,
       reviewCount: 0,
     });
@@ -106,13 +111,37 @@ describe("bloqueios do lote piloto", () => {
 
   it("libera o piloto quando trinta mensagens estão aprovadas e os canais estão prontos", () => {
     const gate = buildPilotGate({
-      readiness,
-      summary: { ...summary, approved: PILOT_TARGET },
+      readiness: { ...readiness, pilot_cohort_prepared: PILOT_TARGET, pilot_cohort_approved: PILOT_TARGET },
+      summary,
       overview,
       reviewCount: 0,
     });
 
     expect(gate.ready).toBe(true);
     expect(gate.blockers).toHaveLength(0);
+  });
+
+  it("não conta linhas DUE ou APPROVED da lista de revisão duas vezes", () => {
+    const gate = buildPilotGate({
+      readiness: { ...readiness, pilot_cohort_prepared: 7, pilot_cohort_needs_review: 4, pilot_cohort_approved: 3 },
+      summary: { ...summary, needs_review: 4, approved: 3 },
+      overview,
+      reviewCount: 30,
+    });
+
+    expect(gate.prepared).toBe(7);
+    expect(gate.blockers.map((blocker) => blocker.id)).toContain("cohort");
+  });
+
+  it("não usa estados globais quando a leitura persistente do cohort falha", () => {
+    const gate = buildPilotGate({
+      readiness: { ...readiness, pilot_cohort_state: "unavailable" },
+      summary: { ...summary, approved: PILOT_TARGET, sent: PILOT_TARGET },
+      overview,
+      reviewCount: 0,
+    });
+
+    expect(gate.prepared).toBe(0);
+    expect(gate.blockers[0]).toMatchObject({ id: "cohort", title: "Estado persistente do cohort indisponível" });
   });
 });

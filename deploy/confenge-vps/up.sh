@@ -27,6 +27,10 @@ if [[ "${CONFENGE_AUTO_SEND_ENABLED:-false}" == "true" ]]; then
   echo "REFUSE: CONFENGE_AUTO_SEND_ENABLED=true is not allowed (human approval path only)" >&2
   exit 3
 fi
+if [[ "${CONFENGE_REQUIRE_HUMAN_APPROVAL:-true}" != "true" ]]; then
+  echo "REFUSE: CONFENGE_REQUIRE_HUMAN_APPROVAL must stay true on the VPS execution plane" >&2
+  exit 3
+fi
 if [[ "${CONFENGE_WHATSAPP_ENABLED:-false}" == "true" ]]; then
   echo "REFUSE: WhatsApp must stay OFF in this PR profile" >&2
   exit 3
@@ -45,6 +49,13 @@ if [[ "${CONFENGE_OPERATOR_MODE:-true}" == "true" ]]; then
     *) echo "REFUSE: operator mode requires a loopback APP_URL" >&2; exit 3 ;;
   esac
 fi
+
+# Every deploy and first boot starts paused. This is written before any app or
+# worker container starts, so a new/empty Docker volume cannot fail open.
+OPS_VOLUME="${COMPOSE_PROJECT_NAME:-warmbly-confenge}_confenge_ops"
+docker volume create "$OPS_VOLUME" >/dev/null
+docker run --rm -v "$OPS_VOLUME:/data" alpine \
+  sh -c 'printf "paused\nreason=deploy_preflight\n" > /data/kill-switch && chown 1000:1000 /data/kill-switch && chmod 600 /data/kill-switch' >/dev/null
 
 if [[ "${CONFENGE_VPS_SEED:-false}" == "true" ]]; then
   echo "Preparing first boot with operator mode temporarily disabled..."
@@ -66,9 +77,9 @@ echo "Bringing up project=$COMPOSE_PROJECT_NAME ..."
 compose_cmd up -d --remove-orphans
 
 
-# Ensure kill-switch volume writable by backend user (uid 1000).
+# Keep the kill-switch volume private and writable by the backend user (uid 1000).
 docker run --rm -v "${COMPOSE_PROJECT_NAME:-warmbly-confenge}_confenge_ops:/data" alpine \
-  sh -c "chmod 777 /data" >/dev/null 2>&1 || true
+  sh -c "chown 1000:1000 /data && chmod 700 /data" >/dev/null 2>&1 || true
 
 echo "Waiting for backend health..."
 for i in $(seq 1 60); do

@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import SocketProvider from "@/hooks/SocketProvider";
+import ConfirmProvider from "@/hooks/ConfirmProvider";
 import { useSocket } from "@/hooks/context/socket";
 import Request from "@/lib/api/client/Request";
 import { ensureConfengeOperatorSession } from "@/lib/api/client/auth/confengeOperatorSession";
@@ -60,7 +61,7 @@ export default function ConfengeOperatorLayout() {
   useEffect(() => {
     document.documentElement.lang = "pt-BR";
     document.title = "Central comercial | CONFENGE";
-    void ensureConfengeOperatorSession()
+    void ensureConfengeOperatorSession(true)
       .then(() => setReady(true))
       .catch((reason: AppError) => setError(reason));
   }, []);
@@ -79,11 +80,13 @@ export default function ConfengeOperatorLayout() {
     return <OperatorState title="Abrindo a Central comercial" message="Preparando seu ambiente de trabalho…" loading />;
   }
 
-  return (
-    <SocketProvider>
-      <OperatorShell />
-    </SocketProvider>
-  );
+	return (
+		<ConfirmProvider>
+			<SocketProvider>
+				<OperatorShell />
+			</SocketProvider>
+		</ConfirmProvider>
+	);
 }
 
 function OperatorShell() {
