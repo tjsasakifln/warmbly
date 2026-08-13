@@ -24,8 +24,8 @@ function resolveFeedPath(): string {
   const candidates = [
     process.env.CONFENGE_E2E_FEED,
     process.env.CONFENGE_E2E_FEED_FALLBACK,
-    // Prefer deterministic slice of the real extra-cli national pipeline feed.
-    path.join(REPO_ROOT, "data/confenge-feeds/acceptance_real_slice/slice.json"),
+    // CI uses the current contract fixture. Historical real slices intentionally
+    // fail closed when they predate authoritative target-fit fields.
     path.join(REPO_ROOT, "internal/app/confenge/testdata/demo_3_companies.json"),
   ].filter((p): p is string => !!p);
   for (const p of candidates) {

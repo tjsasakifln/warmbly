@@ -239,9 +239,8 @@ jobs:
       CONFENGE_GATE_CODE_SHA: ${{ github.sha }}
       CONFENGE_E2E_PROOF_DIR: ${{ github.workspace }}/data/confenge-evidence
       # Absolute path: Playwright runs with cwd=web/, so repo-relative paths break.
-      # Prefer real pipeline-derived acceptance slice when present; fall back to demo fixture.
-      CONFENGE_E2E_FEED: ${{ github.workspace }}/data/confenge-feeds/acceptance_real_slice/slice.json
-      CONFENGE_E2E_FEED_FALLBACK: ${{ github.workspace }}/internal/app/confenge/testdata/demo_3_companies.json
+      # The historical real slice predates authoritative target-fit fields and must fail closed.
+      CONFENGE_E2E_FEED: ${{ github.workspace }}/internal/app/confenge/testdata/demo_3_companies.json
     steps:
       - uses: actions/checkout@v4
 
