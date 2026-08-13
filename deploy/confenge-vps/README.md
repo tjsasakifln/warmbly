@@ -24,9 +24,16 @@ deploy/confenge-vps/status.sh
 Operator browser (from laptop):
 
 ```bash
-ssh -L 5173:127.0.0.1:5173 -L 8080:127.0.0.1:8080 -p 2222 root@<vps>
+deploy/confenge-vps/tunnel.sh
 # http://127.0.0.1:5173
 ```
+
+The page opens directly in PT-BR without interactive authentication. The backend
+still issues an organization-scoped session to the configured technical operator.
+Keep the UI and API on loopback and access them only through the SSH tunnel.
+The helper keeps local port `8080` available for Evolution API and forwards the
+CONFENGE backend to `18080`. Use `deploy/confenge-vps/compose.sh` for maintenance;
+raw `docker compose` commands do not load this deployment's override and `.env`.
 
 Safety: GREEN autorun OFF, auto-send OFF, WhatsApp OFF, human approval ON.
 Operational pace 10→20/h, daily shell 200. Hostinger plan is **Business Email

@@ -43,6 +43,8 @@ All errors follow this structure:
 | 501 | Not Implemented | Feature not available |
 | 503 | Service Unavailable | Service temporarily down |
 
+The dedicated CONFENGE operator bootstrap uses `CONFENGE_OPERATOR_SESSION_UNAVAILABLE` with status `503` when its technical identity can no longer issue a session. Check the configured user, organization membership, ban state, and contact permissions. Include the returned `request_id` when investigating the failure.
+
 ## Error details
 
 ### 400 Bad Request
@@ -244,6 +246,14 @@ Returned when the service is temporarily unavailable.
 **How to fix:**
 - Wait and retry with exponential backoff
 - Check status page for incidents
+
+## CONFENGE pilot account results
+
+`POST /confenge/pilot/cohort/prepare` returns HTTP `200` when the batch was evaluated, even when individual accounts are blocked. Every item has `status=PREPARED` or `status=BLOCKED`. Blocked items include `reason_code`, `human_readable_reason`, and `remediation`.
+
+Common reason codes include `feed_missing`, `feed_stale`, `account_ineligible`, `target_fit_stale`, `account_do_not_contact`, `account_blocked`, `commercial_context_expired`, `recipient_missing`, `recipient_invalid`, `recipient_demo_or_fixture`, `recipient_opt_out`, `recipient_hard_bounce`, `recipient_suppressed`, `provenance_tainted`, `recipient_not_send_ready`, `recipient_domain_mismatch`, `recipient_evidence_date_missing`, `recipient_evidence_stale`, `generic_mailbox_not_allowed`, `incomplete_copy_context`, and `cohort_capacity_reached`.
+
+These are per-account workflow results, not transport errors. Fix the indicated data or policy gate and retry with the same `Idempotency-Key`.
 
 ## Error handling best practices
 

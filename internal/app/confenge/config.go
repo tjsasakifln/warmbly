@@ -6,10 +6,14 @@ package confenge
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Env keys for CONFENGE outreach. Documented in deploy/config/env.example
@@ -39,6 +43,7 @@ const (
 	EnvDynamicPriority  = "CONFENGE_DYNAMIC_PRIORITY_ENABLED"
 	EnvFeedSyncEnabled  = "CONFENGE_FEED_SYNC_ENABLED"
 	EnvFeedSyncInterval = "CONFENGE_FEED_SYNC_INTERVAL"
+	EnvFeedMaxAge       = "CONFENGE_FEED_MAX_AGE"
 	EnvManifestURL      = "CONFENGE_EXTRA_CLI_MANIFEST_URL"
 	// GREEN autorun under campaign policy authorization (fail-closed default).
 	EnvGreenAutorun = "CONFENGE_GREEN_AUTORUN_ENABLED"
@@ -47,6 +52,9 @@ const (
 	EnvRateStartPerHour = "CONFENGE_RATE_START_PER_HOUR"
 	EnvRateMaxPerHour   = "CONFENGE_RATE_MAX_PER_HOUR"
 	EnvAllowEnrollMint  = "CONFENGE_ALLOW_ENROLL_MINT" // dev/Mailpit only; ignored in production
+	EnvOperatorMode     = "CONFENGE_OPERATOR_MODE"
+	EnvOperatorUserID   = "CONFENGE_OPERATOR_USER_ID"
+	EnvOperatorOrgID    = "CONFENGE_OPERATOR_ORG_ID"
 )
 
 // Defaults for conservative cold outreach.
@@ -88,6 +96,7 @@ type Config struct {
 	// FeedSync continuous pull of extra-cli manifest (fail-closed default off).
 	FeedSyncEnabled  bool
 	FeedSyncInterval time.Duration
+	FeedMaxAge       time.Duration
 	ManifestURL      string
 	// GreenAutorunEnabled auto-queues GREEN messages under CAMPAIGN_POLICY_AUTHORIZATION.
 	// Default false (fail-closed). Distinct from AutoSendEnabled (legacy ambiguous).
@@ -100,6 +109,11 @@ type Config struct {
 	AllowEnrollMint bool
 	// AppEnv mirrors APP_ENV for production guards.
 	AppEnv string
+	// OperatorMode removes interactive sign-in only for the loopback-only
+	// CONFENGE deployment. API calls still use a normal org-scoped JWT session.
+	OperatorMode   bool
+	OperatorUserID uuid.UUID
+	OperatorOrgID  uuid.UUID
 }
 
 // SendWindowHours returns whole hours in [start, end) for HH:MM window strings.
@@ -159,6 +173,7 @@ func LoadConfig() Config {
 		DynamicPriorityEnabled: envBool(EnvDynamicPriority, false),
 		FeedSyncEnabled:        envBool(EnvFeedSyncEnabled, false),
 		FeedSyncInterval:       envDuration(EnvFeedSyncInterval, 15*time.Minute),
+		FeedMaxAge:             envDuration(EnvFeedMaxAge, 24*time.Hour),
 		ManifestURL:            strings.TrimSpace(os.Getenv(EnvManifestURL)),
 		GreenAutorunEnabled:    envBool(EnvGreenAutorun, false),
 		RateMode:               strings.ToLower(strings.TrimSpace(os.Getenv(EnvRateMode))),
@@ -166,6 +181,9 @@ func LoadConfig() Config {
 		RateMaxPerHour:         envInt(EnvRateMaxPerHour, 20),
 		AllowEnrollMint:        envBool(EnvAllowEnrollMint, false),
 		AppEnv:                 strings.TrimSpace(os.Getenv("APP_ENV")),
+		OperatorMode:           envBool(EnvOperatorMode, false),
+		OperatorUserID:         parseUUIDEnv(EnvOperatorUserID),
+		OperatorOrgID:          parseUUIDEnv(EnvOperatorOrgID),
 	}
 	if cfg.RateMode == "" {
 		cfg.RateMode = "adaptive"
@@ -200,7 +218,21 @@ func envDuration(key string, def time.Duration) time.Duration {
 // Called when the feature is enabled.
 func (c Config) ValidateStartup(appEnv string) error {
 	if !c.Enabled {
+		if c.OperatorMode {
+			return fmt.Errorf("%s requires %s=true", EnvOperatorMode, EnvEnabled)
+		}
 		return nil
+	}
+	if c.OperatorMode {
+		if c.OperatorUserID == uuid.Nil {
+			return fmt.Errorf("%s must be a valid non-zero UUID when %s=true", EnvOperatorUserID, EnvOperatorMode)
+		}
+		if c.OperatorOrgID == uuid.Nil {
+			return fmt.Errorf("%s must be a valid non-zero UUID when %s=true", EnvOperatorOrgID, EnvOperatorMode)
+		}
+		if !isLoopbackURL(os.Getenv("APP_URL")) {
+			return fmt.Errorf("APP_URL must use a loopback host when %s=true", EnvOperatorMode)
+		}
 	}
 	prod := strings.EqualFold(appEnv, "prod") || strings.EqualFold(appEnv, "production")
 	if c.AutoSendEnabled && c.RequireHumanApproval {
@@ -275,6 +307,27 @@ func envInt(key string, def int) int {
 		return def
 	}
 	return n
+}
+
+func parseUUIDEnv(key string) uuid.UUID {
+	id, err := uuid.Parse(strings.TrimSpace(os.Getenv(key)))
+	if err != nil {
+		return uuid.Nil
+	}
+	return id
+}
+
+func isLoopbackURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return false
+	}
+	host := strings.TrimSpace(strings.ToLower(u.Hostname()))
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func splitHosts(raw string) []string {

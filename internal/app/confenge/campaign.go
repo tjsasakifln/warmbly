@@ -209,6 +209,9 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 			}
 		}
 	}
+	if err := RequireEmailOutbound(acc, cand); err != nil {
+		return nil, errx.New(errx.BadRequest, err.Error())
+	}
 	if cand == nil || !cand.CanEnroll() {
 		return nil, errx.New(errx.BadRequest, "contact is not enrollable")
 	}

@@ -37,6 +37,7 @@ type Service interface {
 
 	GetImportRun(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachImportRun, *errx.Error)
 	ListImportRuns(ctx context.Context, orgID uuid.UUID, limit int) ([]models.OutreachImportRun, *errx.Error)
+	ReconcileTargetFit(ctx context.Context, orgID uuid.UUID, dryRun bool) (*TargetFitReconciliationReport, *errx.Error)
 
 	Summary(ctx context.Context, orgID uuid.UUID) (*models.OutreachQueueSummary, *errx.Error)
 	ListAccounts(ctx context.Context, orgID uuid.UUID, filter repository.OutreachAccountFilter) ([]models.OutreachAccount, *errx.Error)
@@ -85,6 +86,7 @@ type Service interface {
 	ResumeDispatch(ctx context.Context, orgID, userID uuid.UUID) *errx.Error
 
 	// Per-touchpoint human approval cadence.
+	PreparePilotCohort(ctx context.Context, orgID, userID uuid.UUID, accountIDs []uuid.UUID, operation PilotOperation) (*PilotCohortResult, *errx.Error)
 	PlanAccountCadence(ctx context.Context, orgID, userID, accountID uuid.UUID, contactID *uuid.UUID, channel string) ([]models.OutreachTouchpoint, *errx.Error)
 	ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, limit, offset int) ([]models.OutreachTouchpoint, *errx.Error)
 	GetTouchpoint(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachTouchpoint, *errx.Error)
@@ -330,9 +332,6 @@ func (s *service) applyFeed(ctx context.Context, orgID uuid.UUID, run *models.Ou
 		// Preserve DNC: never re-open.
 		if existing != nil && existing.DoNotContact {
 			counts.Blocked++
-			counts.Unchanged++
-			counts.LeadsProcessed++
-			continue
 		}
 
 		contentHash := LeadContentHash(lead)
@@ -405,6 +404,12 @@ func (s *service) applyFeed(ctx context.Context, orgID uuid.UUID, run *models.Ou
 				counts.EvidenceAdded++
 			}
 		}
+		if !acc.TargetFitEligible {
+			if _, err := s.repo.InvalidateAccountOutboundForTargetFit(ctx, orgID, acc.ID, acc.TargetFitSuppressionReason); err != nil {
+				warns = append(warns, fmt.Sprintf("%s target-fit reconciliation: %v", cnpj, err))
+				counts.Warnings++
+			}
+		}
 		counts.LeadsProcessed++
 	}
 	return counts, leadErrs, warns
@@ -460,6 +465,15 @@ func leadToAccount(orgID uuid.UUID, lead FeedLead, feed *Feed, runID uuid.UUID, 
 	// Imported send-fit only — never promote ACTIONABLE_NOW → A_AUTOMATIC.
 	acc.TargetFitSendTier = strings.ToUpper(SanitizeText(lead.TargetFitSendTier, 40))
 	acc.TargetFitReasons = lead.TargetFitReasons
+	acc.TargetFitClass = strings.ToUpper(SanitizeText(lead.TargetFitClass, 80))
+	acc.TargetFitConfidence = lead.TargetFitConfidence
+	acc.TargetFitVersion = SanitizeText(lead.TargetFitVersion, 200)
+	acc.TargetFitComputedAt = parseTimePtr(lead.TargetFitComputedAt)
+	acc.TargetFitSourceWatermark = SanitizeText(lead.TargetFitSourceWatermark, 200)
+	acc.TargetFitObservedAt = firstTargetFitTime(lead.TargetFitSourceWatermark, lead.TargetFitComputedAt)
+	acc.TargetFitFresh = lead.TargetFitFresh != nil && *lead.TargetFitFresh
+	acc.TargetFitEvidenceIDs = append([]string{}, lead.TargetFitEvidenceIDs...)
+	acc.TargetFitFreshnessReason = SanitizeText(lead.TargetFitFreshnessReason, 200)
 	if lead.EmailSendReady != nil {
 		acc.EmailSendReady = *lead.EmailSendReady
 	}
@@ -482,14 +496,19 @@ func leadToAccount(orgID uuid.UUID, lead FeedLead, feed *Feed, runID uuid.UUID, 
 			acc.ActivationSourceHash = existing.ActivationSourceHash
 			acc.ScoreComponentsJSON = existing.ScoreComponentsJSON
 		}
-		// Preserve send-fit when legacy feed omits tier (do not invent A_AUTOMATIC).
-		if acc.TargetFitSendTier == "" && existing.TargetFitSendTier != "" {
-			acc.TargetFitSendTier = existing.TargetFitSendTier
-			acc.TargetFitReasons = existing.TargetFitReasons
-		}
-		if lead.EmailSendReady == nil {
+		if !TargetFitMayReplace(existing, acc) {
+			copyTargetFit(acc, existing)
 			acc.EmailSendReady = existing.EmailSendReady
+			acc.QueueState = existing.QueueState
 		}
+	}
+	decision := EvaluateTargetFit(acc)
+	acc.TargetFitEligible = decision.Eligible
+	acc.TargetFitSuppressionReason = decision.Reason
+	now := time.Now().UTC()
+	acc.TargetFitReconciledAt = &now
+	if !decision.Eligible && !isHistoricalTerminalQueue(acc.QueueState) {
+		acc.QueueState = models.OutreachQueueTargetFitSuppressed
 	}
 	return acc
 }

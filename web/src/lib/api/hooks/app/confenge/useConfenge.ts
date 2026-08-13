@@ -25,14 +25,22 @@ import {
     listConfengeReviewTouchpoints,
     pauseConfengeDispatch,
     planConfengeCadence,
+    prepareConfengePilotCohort,
     queueConfengeTouchpoint,
     resumeConfengeAccount,
     resumeConfengeDispatch,
     reviewConfengeDraft,
+    syncConfengeFeed,
 } from "@/lib/api/client/app/confenge/confenge";
 import type { ConfengeAttentionFilter } from "@/lib/api/models/app/confenge/Confenge";
+import type { AppError } from "@/lib/api/client/normalizeError";
 
 const KEY = ["confenge"] as const;
+
+function confengeError(error: unknown, fallback: string): string {
+    const appError = error as AppError;
+    return appError?.request_id ? `${fallback} Código de atendimento: ${appError.request_id}` : fallback;
+}
 
 export function useConfengeStatus() {
     return useQuery({
@@ -69,6 +77,34 @@ export function useConfengeWorkingQueue(lane?: string, enabled = true) {
     });
 }
 
+export function useSyncConfengeFeed() {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: async () => {
+            const result = await syncConfengeFeed();
+            const [summary, overview] = await Promise.all([
+                getConfengeSummary(),
+                getConfengeWorkingOverview(),
+            ]);
+            return { result, summary, overview };
+        },
+        onSuccess: ({ result, summary, overview }) => {
+            void qc.invalidateQueries({ queryKey: KEY });
+            const eligible = summary.ready_to_generate + overview.actionable_now;
+            if (eligible === 0) {
+                toast.error("Base sincronizada, mas nenhuma conta está elegível para o cohort. O feed precisa incluir target-fit válido e prontidão de envio.", { duration: 8_000 });
+                return;
+            }
+            if (result.skipped_same_snapshot) {
+                toast.success(`Base atualizada: ${eligible} contas elegíveis para o cohort`);
+                return;
+            }
+            toast.success(`Base atualizada: ${eligible} contas elegíveis; ${result.chunks_imported}/${result.chunks_total} lotes importados`);
+        },
+        onError: (e) => toast.error(confengeError(e, "Não foi possível atualizar a base comercial.")),
+    });
+}
+
 export function useConfengeAccounts(queueState?: string, enabled = true) {
     return useQuery({
         queryKey: [...KEY, "accounts", queueState ?? ""],
@@ -100,9 +136,9 @@ export function useGenerateConfengeDraft() {
             generateConfengeDraft(accountId, contactId),
         onSuccess: () => {
             void qc.invalidateQueries({ queryKey: KEY });
-            toast.success("Draft generated");
+            toast.success("Rascunho gerado");
         },
-        onError: (e: Error) => toast.error(e.message || "Generate failed"),
+        onError: (e) => toast.error(confengeError(e, "Não foi possível gerar o rascunho.")),
     });
 }
 
@@ -119,9 +155,10 @@ export function useReviewConfengeDraft() {
         }) => reviewConfengeDraft(args.id, args),
         onSuccess: (_d, vars) => {
             void qc.invalidateQueries({ queryKey: KEY });
-            toast.success(`Draft ${vars.action}d`);
+            const actions = { approve: "aprovado", reject: "rejeitado", skip: "ignorado", edit: "editado", block: "bloqueado" };
+            toast.success(`Rascunho ${actions[vars.action]}`);
         },
-        onError: (e: Error) => toast.error(e.message || "Review failed"),
+        onError: (e) => toast.error(confengeError(e, "Não foi possível concluir a revisão.")),
     });
 }
 
@@ -131,17 +168,17 @@ export function useEnrollConfengeDraft() {
         mutationFn: (id: string) => enrollConfengeDraft(id),
         onSuccess: () => {
             void qc.invalidateQueries({ queryKey: KEY });
-            toast.success("Enrolled in CONFENGE campaign");
+            toast.success("Mensagem incluída na campanha CONFENGE");
         },
-        onError: (e: Error) => toast.error(e.message || "Enroll failed"),
+        onError: (e) => toast.error(confengeError(e, "Não foi possível incluir a mensagem na campanha.")),
     });
 }
 
 export function useBootstrapConfengeCampaign() {
     return useMutation({
         mutationFn: () => bootstrapConfengeCampaign(),
-        onSuccess: (c) => toast.success(`Campaign ready: ${c.name}`),
-        onError: (e: Error) => toast.error(e.message || "Bootstrap failed"),
+        onSuccess: (c) => toast.success(`Campanha pronta: ${c.name}`),
+        onError: (e) => toast.error(confengeError(e, "Não foi possível preparar a campanha.")),
     });
 }
 
@@ -160,9 +197,9 @@ export function usePauseConfengeDispatch() {
         mutationFn: (reason?: string) => pauseConfengeDispatch(reason),
         onSuccess: () => {
             void qc.invalidateQueries({ queryKey: KEY });
-            toast.success("Dispatch paused");
+            toast.success("Envios pausados");
         },
-        onError: (e: Error) => toast.error(e.message || "Pause failed"),
+        onError: (e) => toast.error(confengeError(e, "Não foi possível pausar os envios.")),
     });
 }
 
@@ -172,9 +209,9 @@ export function useResumeConfengeDispatch() {
         mutationFn: () => resumeConfengeDispatch(),
         onSuccess: () => {
             void qc.invalidateQueries({ queryKey: KEY });
-            toast.success("Dispatch resumed");
+            toast.success("Envios retomados");
         },
-        onError: (e: Error) => toast.error(e.message || "Resume failed"),
+        onError: (e) => toast.error(confengeError(e, "Não foi possível retomar os envios.")),
     });
 }
 
@@ -202,9 +239,25 @@ export function usePlanConfengeCadence() {
             planConfengeCadence(accountId, channel),
         onSuccess: () => {
             void qc.invalidateQueries({ queryKey: KEY });
-            toast.success("Cadence planned");
+            toast.success("Cadência planejada");
         },
-        onError: (e: Error) => toast.error(e.message || "Plan failed"),
+        onError: (e) => toast.error(confengeError(e, "Não foi possível planejar a cadência.")),
+    });
+}
+
+export function usePrepareConfengePilotCohort() {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: (accountIds: string[]) => prepareConfengePilotCohort(accountIds),
+        onSuccess: (result) => {
+            void qc.invalidateQueries({ queryKey: KEY });
+            if (result.blocked > 0) {
+                toast.error(`${result.selected} selecionadas: ${result.prepared} preparadas e ${result.blocked} bloqueadas`, { duration: 8_000 });
+                return;
+            }
+            toast.success(`${result.prepared} mensagens da coorte foram preparadas para revisão`);
+        },
+        onError: (e) => toast.error(confengeError(e, "Não foi possível iniciar a preparação da coorte.")),
     });
 }
 
@@ -214,9 +267,9 @@ export function useGenerateConfengeTouchpoint() {
         mutationFn: (id: string) => generateConfengeTouchpoint(id),
         onSuccess: () => {
             void qc.invalidateQueries({ queryKey: KEY });
-            toast.success("Generated");
+            toast.success("Mensagem gerada");
         },
-        onError: (e: Error) => toast.error(e.message || "Generate failed"),
+        onError: (e) => toast.error(confengeError(e, "Não foi possível gerar a mensagem.")),
     });
 }
 
@@ -239,9 +292,9 @@ export function useApproveAndQueueTouchpoint() {
         },
         onSuccess: () => {
             void qc.invalidateQueries({ queryKey: KEY });
-            toast.success("Approved and queued");
+            toast.success("Mensagem aprovada e colocada na fila");
         },
-        onError: (e: Error) => toast.error(e.message || "Approve & queue failed"),
+        onError: (e) => toast.error(confengeError(e, "Não foi possível aprovar e colocar a mensagem na fila.")),
     });
 }
 
@@ -251,9 +304,9 @@ export function useSkipConfengeTouchpoint() {
         mutationFn: (id: string) => decideConfengeTouchpoint(id, "skip"),
         onSuccess: () => {
             void qc.invalidateQueries({ queryKey: KEY });
-            toast.success("Skipped");
+            toast.success("Etapa ignorada");
         },
-        onError: (e: Error) => toast.error(e.message || "Skip failed"),
+        onError: (e) => toast.error(confengeError(e, "Não foi possível ignorar a etapa.")),
     });
 }
 
@@ -264,9 +317,9 @@ export function useRejectConfengeTouchpoint() {
             decideConfengeTouchpoint(id, "reject", reason),
         onSuccess: () => {
             void qc.invalidateQueries({ queryKey: KEY });
-            toast.success("Rejected");
+            toast.success("Mensagem rejeitada");
         },
-        onError: (e: Error) => toast.error(e.message || "Reject failed"),
+        onError: (e) => toast.error(confengeError(e, "Não foi possível rejeitar a mensagem.")),
     });
 }
 
@@ -276,9 +329,9 @@ export function useDncConfengeAccount() {
         mutationFn: (accountId: string) => dncConfengeAccount(accountId),
         onSuccess: () => {
             void qc.invalidateQueries({ queryKey: KEY });
-            toast.success("DNC");
+            toast.success("Conta marcada como não contatar");
         },
-        onError: (e: Error) => toast.error(e.message || "DNC failed"),
+        onError: (e) => toast.error(confengeError(e, "Não foi possível marcar a conta como não contatar.")),
     });
 }
 
@@ -305,9 +358,9 @@ export function useGenerateConfengeReplyDraft() {
             generateConfengeReplyDraft(accountId, contactId),
         onSuccess: () => {
             void qc.invalidateQueries({ queryKey: KEY });
-            toast.success("Reply draft ready for human review (never auto-send)");
+            toast.success("Rascunho de resposta pronto para revisão humana");
         },
-        onError: (e: Error) => toast.error(e.message || "Generate reply failed"),
+        onError: (e) => toast.error(confengeError(e, "Não foi possível gerar o rascunho de resposta.")),
     });
 }
 
@@ -318,9 +371,9 @@ export function useResumeConfengeAccount() {
             resumeConfengeAccount(accountId, resumeAt, note),
         onSuccess: () => {
             void qc.invalidateQueries({ queryKey: KEY });
-            toast.success("Resume date recorded (no auto-reopen)");
+            toast.success("Data de retomada registrada");
         },
-        onError: (e: Error) => toast.error(e.message || "Resume failed"),
+        onError: (e) => toast.error(confengeError(e, "Não foi possível registrar a retomada.")),
     });
 }
 
@@ -336,8 +389,8 @@ export function useChangeConfengeReferral() {
         }) => changeConfengeReferral(args.accountId, args),
         onSuccess: () => {
             void qc.invalidateQueries({ queryKey: KEY });
-            toast.success("Referral recipient updated");
+            toast.success("Destinatário indicado atualizado");
         },
-        onError: (e: Error) => toast.error(e.message || "Referral update failed"),
+        onError: (e) => toast.error(confengeError(e, "Não foi possível atualizar o destinatário indicado.")),
     });
 }

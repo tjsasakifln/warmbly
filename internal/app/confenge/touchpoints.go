@@ -25,6 +25,9 @@ func (s *service) PlanAccountCadence(ctx context.Context, orgID, userID, account
 	if acc.DoNotContact || acc.Blocked {
 		return nil, errx.New(errx.BadRequest, "account is blocked or DO_NOT_CONTACT")
 	}
+	if err := RequireTargetFit(acc); err != nil {
+		return nil, errx.New(errx.BadRequest, err.Error())
+	}
 	existing, err := s.repo.ListTouchpoints(ctx, orgID, accountID, "", 50, 0)
 	if err != nil {
 		return nil, errx.New(errx.Internal, "list touchpoints failed")
@@ -56,6 +59,11 @@ func (s *service) PlanAccountCadence(ctx context.Context, orgID, userID, account
 	}
 	if ch != models.OutreachChannelEmail && ch != models.OutreachChannelWhatsApp {
 		return nil, errx.New(errx.BadRequest, "channel must be EMAIL or WHATSAPP")
+	}
+	if ch == models.OutreachChannelEmail {
+		if err := RequireEmailOutbound(acc, cand); err != nil {
+			return nil, errx.New(errx.BadRequest, err.Error())
+		}
 	}
 	recipient := ""
 	if cand != nil {
@@ -92,8 +100,14 @@ func (s *service) PlanAccountCadence(ctx context.Context, orgID, userID, account
 		if cand != nil {
 			tp.ContactCandidateID = &cand.ID
 		}
-		if err := s.repo.InsertTouchpoint(ctx, tp); err != nil {
-			return nil, errx.New(errx.Internal, "insert touchpoint: "+err.Error())
+		if persisted, getErr := s.repo.GetTouchpointByIdempotency(ctx, orgID, idem); getErr == nil && persisted != nil {
+			tp = persisted
+		} else if err := s.repo.InsertTouchpoint(ctx, tp); err != nil {
+			persisted, getErr := s.repo.GetTouchpointByIdempotency(ctx, orgID, idem)
+			if getErr != nil || persisted == nil {
+				return nil, errx.New(errx.Internal, "insert touchpoint: "+err.Error())
+			}
+			tp = persisted
 		}
 		id := tp.ID
 		prevID = &id
@@ -214,9 +228,17 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	if acc.DoNotContact || acc.Blocked {
 		return nil, errx.New(errx.BadRequest, "account blocked or DNC")
 	}
+	if err := RequireTargetFit(acc); err != nil {
+		return nil, errx.New(errx.BadRequest, err.Error())
+	}
 	var cand *models.OutreachContactCandidate
 	if tp.ContactCandidateID != nil {
 		cand, _ = s.repo.GetCandidate(ctx, orgID, *tp.ContactCandidateID)
+	}
+	if tp.Channel != models.OutreachChannelWhatsApp {
+		if err := RequireEmailOutbound(acc, cand); err != nil {
+			return nil, errx.New(errx.BadRequest, err.Error())
+		}
 	}
 	evidence, _ := s.repo.ListEvidence(ctx, orgID, tp.AccountID)
 	priors, _ := s.repo.ListTouchpoints(ctx, orgID, tp.AccountID, models.TouchpointSent, 20, 0)
@@ -470,8 +492,19 @@ func (s *service) ApproveTouchpoint(ctx context.Context, orgID, userID, id uuid.
 		return nil, xerr
 	}
 	acc, _ := s.repo.GetAccount(ctx, orgID, tp.AccountID)
-	if acc != nil && (acc.DoNotContact || acc.Blocked) {
-		return nil, errx.New(errx.BadRequest, "account blocked or DNC")
+	if acc == nil {
+		return nil, errx.New(errx.NotFound, "account not found")
+	}
+	var cand *models.OutreachContactCandidate
+	if tp.ContactCandidateID != nil {
+		cand, _ = s.repo.GetCandidate(ctx, orgID, *tp.ContactCandidateID)
+	}
+	if tp.Channel == models.OutreachChannelWhatsApp {
+		if err := RequireTargetFit(acc); err != nil {
+			return nil, errx.New(errx.BadRequest, err.Error())
+		}
+	} else if err := RequireEmailOutbound(acc, cand); err != nil {
+		return nil, errx.New(errx.BadRequest, err.Error())
 	}
 	RecomputeContentHash(tp)
 	if err := ApplyHumanApproval(tp, userID, time.Now().UTC()); err != nil {

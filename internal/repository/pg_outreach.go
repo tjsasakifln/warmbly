@@ -32,6 +32,7 @@ type OutreachRepository interface {
 	CountByQueueState(ctx context.Context, orgID uuid.UUID) (*models.OutreachQueueSummary, error)
 	CountByActivationState(ctx context.Context, orgID uuid.UUID, now time.Time) (*OutreachActivationCounts, error)
 	SetAccountHumanFlags(ctx context.Context, orgID, id uuid.UUID, blocked, dnc bool, reason, queueState string) error
+	InvalidateAccountOutboundForTargetFit(ctx context.Context, orgID, accountID uuid.UUID, reason string) (TargetFitInvalidationCounts, error)
 	// Feed sync durable state (single-flight across replicas via advisory lock + table).
 	GetFeedSyncState(ctx context.Context, orgID uuid.UUID) (*models.OutreachFeedSyncState, error)
 	UpsertFeedSyncState(ctx context.Context, st *models.OutreachFeedSyncState) error
@@ -63,6 +64,7 @@ type OutreachRepository interface {
 	MarkOutcomeAttempt(ctx context.Context, orgID, id uuid.UUID, attempts int, next time.Time, lastErr string, dead bool) error
 	GetOutcomeByIdempotency(ctx context.Context, orgID uuid.UUID, key string) (*models.OutreachOutcome, error)
 	FindCandidateByEmail(ctx context.Context, orgID uuid.UUID, email string) (*models.OutreachContactCandidate, *models.OutreachAccount, error)
+	FindCandidateByEnrollment(ctx context.Context, orgID, campaignID, contactID uuid.UUID) (*models.OutreachContactCandidate, *models.OutreachAccount, error)
 	FindCandidateByPhone(ctx context.Context, orgID uuid.UUID, phone string) (*models.OutreachContactCandidate, *models.OutreachAccount, error)
 
 	InsertTouchpoint(ctx context.Context, t *models.OutreachTouchpoint) error
@@ -97,7 +99,10 @@ type OutreachAccountFilter struct {
 	// ActivationNotExpired: activation_expires_at IS NULL OR activation_expires_at > now.
 	ActivationNotExpired bool
 	// Exclude dominant human queue states from outbound lanes.
-	ExcludeTerminal bool
+	ExcludeTerminal          bool
+	RequireTargetFitEligible bool
+	RequireOperational       bool
+	StableOrder              bool
 }
 
 // OutreachActivationCounts is aggregate activation_state distribution for an org.
@@ -110,6 +115,13 @@ type OutreachActivationCounts struct {
 	// ActionableDueNow is ACTIONABLE_NOW with NBA due and not expired.
 	ActionableDueNow int
 	NeedsContactDue  int
+}
+
+type TargetFitInvalidationCounts struct {
+	Touchpoints   int `json:"cancelled_touchpoints"`
+	Drafts        int `json:"blocked_drafts"`
+	Enrollments   int `json:"detached_enrollments"`
+	DispatchItems int `json:"cancelled_dispatch_items"`
 }
 
 type outreachRepository struct {
@@ -296,13 +308,17 @@ const outreachAccountSelect = `
 		COALESCE(activation_policy_version,''), activation_evaluated_at, next_best_action_at,
 		activation_expires_at, COALESCE(activation_source_hash,''), COALESCE(message_context_hash,''),
 		score_components,
-		COALESCE(target_fit_send_tier,''), target_fit_reasons, COALESCE(email_send_ready,false) `
+		COALESCE(target_fit_send_tier,''), target_fit_reasons, COALESCE(email_send_ready,false),
+		COALESCE(target_fit_class,''), target_fit_confidence, COALESCE(target_fit_version,''),
+		target_fit_computed_at, COALESCE(target_fit_source_watermark,''), target_fit_observed_at,
+		COALESCE(target_fit_fresh,false), target_fit_evidence_ids, COALESCE(target_fit_freshness_reason,''),
+		COALESCE(target_fit_eligible,false), COALESCE(target_fit_suppression_reason,''), target_fit_reconciled_at `
 
 func scanAccount(row scannable) (*models.OutreachAccount, error) {
 	var a models.OutreachAccount
 	var momentEvid, claims []byte
 	var contracts []byte
-	var reasonCodes, scoreComp, fitReasons []byte
+	var reasonCodes, scoreComp, fitReasons, fitEvidence []byte
 	err := row.Scan(
 		&a.ID, &a.OrganizationID, &a.SourceLeadID, &a.CNPJ14, &a.CNPJRoot,
 		&a.RazaoSocial, &a.NomeFantasia, &a.Municipio, &a.UF, &a.Website,
@@ -318,6 +334,10 @@ func scanAccount(row scannable) (*models.OutreachAccount, error) {
 		&a.ActivationExpiresAt, &a.ActivationSourceHash, &a.MessageContextHash,
 		&scoreComp,
 		&a.TargetFitSendTier, &fitReasons, &a.EmailSendReady,
+		&a.TargetFitClass, &a.TargetFitConfidence, &a.TargetFitVersion,
+		&a.TargetFitComputedAt, &a.TargetFitSourceWatermark, &a.TargetFitObservedAt,
+		&a.TargetFitFresh, &fitEvidence, &a.TargetFitFreshnessReason,
+		&a.TargetFitEligible, &a.TargetFitSuppressionReason, &a.TargetFitReconciledAt,
 	)
 	if err != nil {
 		return nil, err
@@ -326,6 +346,7 @@ func scanAccount(row scannable) (*models.OutreachAccount, error) {
 	_ = json.Unmarshal(claims, &a.ClaimsToAvoid)
 	_ = json.Unmarshal(reasonCodes, &a.ActivationReasonCodes)
 	_ = json.Unmarshal(fitReasons, &a.TargetFitReasons)
+	_ = json.Unmarshal(fitEvidence, &a.TargetFitEvidenceIDs)
 	a.ContractsJSON = contracts
 	a.ScoreComponentsJSON = scoreComp
 	return &a, nil
@@ -364,6 +385,10 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 	if fitReasons == nil {
 		fitReasons = []byte("[]")
 	}
+	fitEvidence, _ := json.Marshal(acc.TargetFitEvidenceIDs)
+	if fitEvidence == nil {
+		fitEvidence = []byte("[]")
+	}
 	// Machine fields update; human_override / blocked / dnc preserved when set on existing.
 	var created bool
 	err := r.db.QueryRow(ctx, `
@@ -380,7 +405,11 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 			activation_state, activation_score, activation_reason_codes,
 			activation_policy_version, activation_evaluated_at, next_best_action_at,
 			activation_expires_at, activation_source_hash, message_context_hash, score_components,
-			target_fit_send_tier, target_fit_reasons, email_send_ready
+			target_fit_send_tier, target_fit_reasons, email_send_ready,
+			target_fit_class, target_fit_confidence, target_fit_version,
+			target_fit_computed_at, target_fit_source_watermark, target_fit_observed_at,
+			target_fit_fresh, target_fit_evidence_ids, target_fit_freshness_reason,
+			target_fit_eligible, target_fit_suppression_reason, target_fit_reconciled_at
 		) VALUES (
 			$1,$2,$3,$4,$5,
 			$6,$7,$8,$9,$10,
@@ -394,7 +423,8 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 			$41,$42,$43,
 			$44,$45,$46,
 			$47,$48,$49,$50,
-			$51,$52,$53
+			$51,$52,$53,
+			$54,$55,$56,$57,$58,$59,$60,$61,$62,$63,$64,$65
 		)
 		ON CONFLICT (organization_id, cnpj14) DO UPDATE SET
 			source_lead_id = EXCLUDED.source_lead_id,
@@ -422,7 +452,14 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 			cta = EXCLUDED.cta,
 			claims_to_avoid = EXCLUDED.claims_to_avoid,
 			commercial_state = EXCLUDED.commercial_state,
-			queue_state = EXCLUDED.queue_state,
+			queue_state = CASE WHEN
+				EXCLUDED.target_fit_observed_at > outreach_accounts.target_fit_observed_at OR
+				(outreach_accounts.target_fit_observed_at IS NULL AND EXCLUDED.target_fit_observed_at IS NOT NULL) OR
+				(EXCLUDED.target_fit_observed_at = outreach_accounts.target_fit_observed_at AND
+				 (NOT EXCLUDED.target_fit_eligible OR outreach_accounts.target_fit_eligible)) OR
+				(EXCLUDED.target_fit_observed_at IS NULL AND outreach_accounts.target_fit_observed_at IS NULL AND
+				 NOT EXCLUDED.target_fit_eligible)
+				THEN EXCLUDED.queue_state ELSE outreach_accounts.queue_state END,
 			-- never clear human DNC / block via machine reimport
 			blocked = outreach_accounts.blocked OR EXCLUDED.blocked,
 			block_reason = CASE WHEN outreach_accounts.blocked THEN outreach_accounts.block_reason ELSE EXCLUDED.block_reason END,
@@ -442,9 +479,93 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 			activation_source_hash = EXCLUDED.activation_source_hash,
 			message_context_hash = EXCLUDED.message_context_hash,
 			score_components = EXCLUDED.score_components,
-			target_fit_send_tier = EXCLUDED.target_fit_send_tier,
-			target_fit_reasons = EXCLUDED.target_fit_reasons,
-			email_send_ready = EXCLUDED.email_send_ready,
+			target_fit_send_tier = CASE WHEN
+				EXCLUDED.target_fit_observed_at > outreach_accounts.target_fit_observed_at OR
+				(outreach_accounts.target_fit_observed_at IS NULL AND EXCLUDED.target_fit_observed_at IS NOT NULL) OR
+				(EXCLUDED.target_fit_observed_at = outreach_accounts.target_fit_observed_at AND
+				 (NOT EXCLUDED.target_fit_eligible OR outreach_accounts.target_fit_eligible)) OR
+				(EXCLUDED.target_fit_observed_at IS NULL AND outreach_accounts.target_fit_observed_at IS NULL AND
+				 NOT EXCLUDED.target_fit_eligible)
+				THEN EXCLUDED.target_fit_send_tier ELSE outreach_accounts.target_fit_send_tier END,
+			target_fit_reasons = CASE WHEN
+				EXCLUDED.target_fit_observed_at > outreach_accounts.target_fit_observed_at OR
+				(outreach_accounts.target_fit_observed_at IS NULL AND EXCLUDED.target_fit_observed_at IS NOT NULL) OR
+				(EXCLUDED.target_fit_observed_at = outreach_accounts.target_fit_observed_at AND (NOT EXCLUDED.target_fit_eligible OR outreach_accounts.target_fit_eligible)) OR
+				(EXCLUDED.target_fit_observed_at IS NULL AND outreach_accounts.target_fit_observed_at IS NULL AND NOT EXCLUDED.target_fit_eligible)
+				THEN EXCLUDED.target_fit_reasons ELSE outreach_accounts.target_fit_reasons END,
+			email_send_ready = CASE WHEN
+				EXCLUDED.target_fit_observed_at > outreach_accounts.target_fit_observed_at OR
+				(outreach_accounts.target_fit_observed_at IS NULL AND EXCLUDED.target_fit_observed_at IS NOT NULL) OR
+				(EXCLUDED.target_fit_observed_at = outreach_accounts.target_fit_observed_at AND (NOT EXCLUDED.target_fit_eligible OR outreach_accounts.target_fit_eligible)) OR
+				(EXCLUDED.target_fit_observed_at IS NULL AND outreach_accounts.target_fit_observed_at IS NULL AND NOT EXCLUDED.target_fit_eligible)
+				THEN EXCLUDED.email_send_ready ELSE outreach_accounts.email_send_ready END,
+			target_fit_class = CASE WHEN
+				EXCLUDED.target_fit_observed_at > outreach_accounts.target_fit_observed_at OR
+				(outreach_accounts.target_fit_observed_at IS NULL AND EXCLUDED.target_fit_observed_at IS NOT NULL) OR
+				(EXCLUDED.target_fit_observed_at = outreach_accounts.target_fit_observed_at AND (NOT EXCLUDED.target_fit_eligible OR outreach_accounts.target_fit_eligible)) OR
+				(EXCLUDED.target_fit_observed_at IS NULL AND outreach_accounts.target_fit_observed_at IS NULL AND NOT EXCLUDED.target_fit_eligible)
+				THEN EXCLUDED.target_fit_class ELSE outreach_accounts.target_fit_class END,
+			target_fit_confidence = CASE WHEN
+				EXCLUDED.target_fit_observed_at > outreach_accounts.target_fit_observed_at OR
+				(outreach_accounts.target_fit_observed_at IS NULL AND EXCLUDED.target_fit_observed_at IS NOT NULL) OR
+				(EXCLUDED.target_fit_observed_at = outreach_accounts.target_fit_observed_at AND (NOT EXCLUDED.target_fit_eligible OR outreach_accounts.target_fit_eligible)) OR
+				(EXCLUDED.target_fit_observed_at IS NULL AND outreach_accounts.target_fit_observed_at IS NULL AND NOT EXCLUDED.target_fit_eligible)
+				THEN EXCLUDED.target_fit_confidence ELSE outreach_accounts.target_fit_confidence END,
+			target_fit_version = CASE WHEN
+				EXCLUDED.target_fit_observed_at > outreach_accounts.target_fit_observed_at OR
+				(outreach_accounts.target_fit_observed_at IS NULL AND EXCLUDED.target_fit_observed_at IS NOT NULL) OR
+				(EXCLUDED.target_fit_observed_at = outreach_accounts.target_fit_observed_at AND (NOT EXCLUDED.target_fit_eligible OR outreach_accounts.target_fit_eligible)) OR
+				(EXCLUDED.target_fit_observed_at IS NULL AND outreach_accounts.target_fit_observed_at IS NULL AND NOT EXCLUDED.target_fit_eligible)
+				THEN EXCLUDED.target_fit_version ELSE outreach_accounts.target_fit_version END,
+			target_fit_computed_at = CASE WHEN
+				EXCLUDED.target_fit_observed_at > outreach_accounts.target_fit_observed_at OR
+				(outreach_accounts.target_fit_observed_at IS NULL AND EXCLUDED.target_fit_observed_at IS NOT NULL) OR
+				(EXCLUDED.target_fit_observed_at = outreach_accounts.target_fit_observed_at AND (NOT EXCLUDED.target_fit_eligible OR outreach_accounts.target_fit_eligible)) OR
+				(EXCLUDED.target_fit_observed_at IS NULL AND outreach_accounts.target_fit_observed_at IS NULL AND NOT EXCLUDED.target_fit_eligible)
+				THEN EXCLUDED.target_fit_computed_at ELSE outreach_accounts.target_fit_computed_at END,
+			target_fit_source_watermark = CASE WHEN
+				EXCLUDED.target_fit_observed_at > outreach_accounts.target_fit_observed_at OR
+				(outreach_accounts.target_fit_observed_at IS NULL AND EXCLUDED.target_fit_observed_at IS NOT NULL) OR
+				(EXCLUDED.target_fit_observed_at = outreach_accounts.target_fit_observed_at AND (NOT EXCLUDED.target_fit_eligible OR outreach_accounts.target_fit_eligible)) OR
+				(EXCLUDED.target_fit_observed_at IS NULL AND outreach_accounts.target_fit_observed_at IS NULL AND NOT EXCLUDED.target_fit_eligible)
+				THEN EXCLUDED.target_fit_source_watermark ELSE outreach_accounts.target_fit_source_watermark END,
+			target_fit_observed_at = CASE WHEN
+				EXCLUDED.target_fit_observed_at > outreach_accounts.target_fit_observed_at OR
+				(outreach_accounts.target_fit_observed_at IS NULL AND EXCLUDED.target_fit_observed_at IS NOT NULL) OR
+				(EXCLUDED.target_fit_observed_at = outreach_accounts.target_fit_observed_at AND (NOT EXCLUDED.target_fit_eligible OR outreach_accounts.target_fit_eligible)) OR
+				(EXCLUDED.target_fit_observed_at IS NULL AND outreach_accounts.target_fit_observed_at IS NULL AND NOT EXCLUDED.target_fit_eligible)
+				THEN EXCLUDED.target_fit_observed_at ELSE outreach_accounts.target_fit_observed_at END,
+			target_fit_fresh = CASE WHEN
+				EXCLUDED.target_fit_observed_at > outreach_accounts.target_fit_observed_at OR
+				(outreach_accounts.target_fit_observed_at IS NULL AND EXCLUDED.target_fit_observed_at IS NOT NULL) OR
+				(EXCLUDED.target_fit_observed_at = outreach_accounts.target_fit_observed_at AND (NOT EXCLUDED.target_fit_eligible OR outreach_accounts.target_fit_eligible)) OR
+				(EXCLUDED.target_fit_observed_at IS NULL AND outreach_accounts.target_fit_observed_at IS NULL AND NOT EXCLUDED.target_fit_eligible)
+				THEN EXCLUDED.target_fit_fresh ELSE outreach_accounts.target_fit_fresh END,
+			target_fit_evidence_ids = CASE WHEN
+				EXCLUDED.target_fit_observed_at > outreach_accounts.target_fit_observed_at OR
+				(outreach_accounts.target_fit_observed_at IS NULL AND EXCLUDED.target_fit_observed_at IS NOT NULL) OR
+				(EXCLUDED.target_fit_observed_at = outreach_accounts.target_fit_observed_at AND (NOT EXCLUDED.target_fit_eligible OR outreach_accounts.target_fit_eligible)) OR
+				(EXCLUDED.target_fit_observed_at IS NULL AND outreach_accounts.target_fit_observed_at IS NULL AND NOT EXCLUDED.target_fit_eligible)
+				THEN EXCLUDED.target_fit_evidence_ids ELSE outreach_accounts.target_fit_evidence_ids END,
+			target_fit_freshness_reason = CASE WHEN
+				EXCLUDED.target_fit_observed_at > outreach_accounts.target_fit_observed_at OR
+				(outreach_accounts.target_fit_observed_at IS NULL AND EXCLUDED.target_fit_observed_at IS NOT NULL) OR
+				(EXCLUDED.target_fit_observed_at = outreach_accounts.target_fit_observed_at AND (NOT EXCLUDED.target_fit_eligible OR outreach_accounts.target_fit_eligible)) OR
+				(EXCLUDED.target_fit_observed_at IS NULL AND outreach_accounts.target_fit_observed_at IS NULL AND NOT EXCLUDED.target_fit_eligible)
+				THEN EXCLUDED.target_fit_freshness_reason ELSE outreach_accounts.target_fit_freshness_reason END,
+			target_fit_eligible = CASE WHEN
+				EXCLUDED.target_fit_observed_at > outreach_accounts.target_fit_observed_at OR
+				(outreach_accounts.target_fit_observed_at IS NULL AND EXCLUDED.target_fit_observed_at IS NOT NULL) OR
+				(EXCLUDED.target_fit_observed_at = outreach_accounts.target_fit_observed_at AND (NOT EXCLUDED.target_fit_eligible OR outreach_accounts.target_fit_eligible)) OR
+				(EXCLUDED.target_fit_observed_at IS NULL AND outreach_accounts.target_fit_observed_at IS NULL AND NOT EXCLUDED.target_fit_eligible)
+				THEN EXCLUDED.target_fit_eligible ELSE outreach_accounts.target_fit_eligible END,
+			target_fit_suppression_reason = CASE WHEN
+				EXCLUDED.target_fit_observed_at > outreach_accounts.target_fit_observed_at OR
+				(outreach_accounts.target_fit_observed_at IS NULL AND EXCLUDED.target_fit_observed_at IS NOT NULL) OR
+				(EXCLUDED.target_fit_observed_at = outreach_accounts.target_fit_observed_at AND (NOT EXCLUDED.target_fit_eligible OR outreach_accounts.target_fit_eligible)) OR
+				(EXCLUDED.target_fit_observed_at IS NULL AND outreach_accounts.target_fit_observed_at IS NULL AND NOT EXCLUDED.target_fit_eligible)
+				THEN EXCLUDED.target_fit_suppression_reason ELSE outreach_accounts.target_fit_suppression_reason END,
+			target_fit_reconciled_at = EXCLUDED.target_fit_reconciled_at,
 			updated_at = EXCLUDED.updated_at,
 			id = outreach_accounts.id
 		RETURNING (xmax = 0) AS inserted, id`,
@@ -461,6 +582,10 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 		acc.ActivationPolicyVersion, acc.ActivationEvaluatedAt, acc.NextBestActionAt,
 		acc.ActivationExpiresAt, acc.ActivationSourceHash, acc.MessageContextHash, scoreComp,
 		acc.TargetFitSendTier, fitReasons, acc.EmailSendReady,
+		acc.TargetFitClass, acc.TargetFitConfidence, acc.TargetFitVersion,
+		acc.TargetFitComputedAt, acc.TargetFitSourceWatermark, acc.TargetFitObservedAt,
+		acc.TargetFitFresh, fitEvidence, acc.TargetFitFreshnessReason,
+		acc.TargetFitEligible, acc.TargetFitSuppressionReason, acc.TargetFitReconciledAt,
 	).Scan(&created, &acc.ID)
 	return created, err
 }
@@ -510,7 +635,17 @@ func (r *outreachRepository) ListAccounts(ctx context.Context, orgID uuid.UUID, 
 		q += ` AND queue_state NOT IN ('DO_NOT_CONTACT','BLOCKED','BOUNCED','REPLIED','MEETING','PROPOSAL','WON','LOST','SENT','ENROLLED')`
 		q += ` AND do_not_contact = false AND blocked = false`
 	}
-	if filter.DynamicPriority {
+	if filter.RequireTargetFitEligible || filter.RequireOperational {
+		q += ` AND target_fit_eligible = true AND target_fit_class = 'TARGET_CONFIRMED'`
+		q += ` AND target_fit_fresh = true AND target_fit_version <> '' AND target_fit_source_watermark <> '' AND target_fit_observed_at IS NOT NULL`
+	}
+	if filter.RequireOperational {
+		q += ` AND email_send_ready = true`
+		q += ` AND EXISTS (SELECT 1 FROM outreach_contact_candidates occ WHERE occ.organization_id=outreach_accounts.organization_id AND occ.account_id=outreach_accounts.id AND occ.email_send_ready=true AND occ.email<>'' AND occ.blocked=false AND occ.do_not_contact=false AND occ.bounced=false AND occ.mailbox_purpose_send_blocked=false AND occ.verification_status NOT IN ('CANDIDATE_UNVERIFIED','NOT_FOUND','INVALID','BOUNCED','DO_NOT_CONTACT'))`
+	}
+	if filter.StableOrder {
+		q += fmt.Sprintf(` ORDER BY cnpj14 ASC LIMIT $%d OFFSET $%d`, n, n+1)
+	} else if filter.DynamicPriority {
 		q += fmt.Sprintf(` ORDER BY next_best_action_at ASC NULLS LAST, activation_score DESC, priority_rank ASC NULLS LAST, moment_observed_at DESC NULLS LAST, cnpj14 ASC LIMIT $%d OFFSET $%d`, n, n+1)
 	} else {
 		q += fmt.Sprintf(` ORDER BY priority_rank ASC NULLS LAST, updated_at DESC LIMIT $%d OFFSET $%d`, n, n+1)
@@ -572,10 +707,22 @@ func (r *outreachRepository) CountByActivationState(ctx context.Context, orgID u
 		SELECT COUNT(*)::int FROM outreach_accounts
 		WHERE organization_id=$1
 		  AND activation_state='ACTIONABLE_NOW'
+		  AND target_fit_eligible=true AND target_fit_class='TARGET_CONFIRMED'
+		  AND target_fit_fresh=true AND target_fit_version<>''
+		  AND target_fit_source_watermark<>'' AND target_fit_observed_at IS NOT NULL
+		  AND email_send_ready=true
 		  AND do_not_contact=false AND blocked=false
 		  AND queue_state NOT IN ('DO_NOT_CONTACT','BLOCKED','BOUNCED','REPLIED','MEETING','PROPOSAL','WON','LOST','SENT','ENROLLED')
 		  AND (next_best_action_at IS NULL OR next_best_action_at <= now())
-		  AND (activation_expires_at IS NULL OR activation_expires_at > now())`,
+		  AND (activation_expires_at IS NULL OR activation_expires_at > now())
+		  AND EXISTS (
+			SELECT 1 FROM outreach_contact_candidates occ
+			WHERE occ.organization_id=outreach_accounts.organization_id
+			  AND occ.account_id=outreach_accounts.id AND occ.email_send_ready=true AND occ.email<>''
+			  AND occ.blocked=false AND occ.do_not_contact=false AND occ.bounced=false
+			  AND occ.mailbox_purpose_send_blocked=false
+			  AND occ.verification_status NOT IN ('CANDIDATE_UNVERIFIED','NOT_FOUND','INVALID','BOUNCED','DO_NOT_CONTACT')
+		  )`,
 		orgID).Scan(&out.ActionableDueNow)
 	if err != nil {
 		return nil, err
@@ -585,6 +732,9 @@ func (r *outreachRepository) CountByActivationState(ctx context.Context, orgID u
 		WHERE organization_id=$1
 		  AND activation_state='ACTIONABLE_NOW'
 		  AND queue_state='NEEDS_CONTACT'
+		  AND target_fit_eligible=true AND target_fit_class='TARGET_CONFIRMED'
+		  AND target_fit_fresh=true AND target_fit_version<>''
+		  AND target_fit_source_watermark<>'' AND target_fit_observed_at IS NOT NULL
 		  AND do_not_contact=false AND blocked=false
 		  AND (next_best_action_at IS NULL OR next_best_action_at <= now())
 		  AND (activation_expires_at IS NULL OR activation_expires_at > now())`,
@@ -724,6 +874,69 @@ func (r *outreachRepository) SetAccountHumanFlags(ctx context.Context, orgID, id
 		return pgx.ErrNoRows
 	}
 	return nil
+}
+
+func (r *outreachRepository) InvalidateAccountOutboundForTargetFit(ctx context.Context, orgID, accountID uuid.UUID, reason string) (TargetFitInvalidationCounts, error) {
+	var out TargetFitInvalidationCounts
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return out, err
+	}
+	defer tx.Rollback(ctx)
+	ct, err := tx.Exec(ctx, `
+		UPDATE outreach_touchpoints SET state='CANCELLED', stop_reason=$3,
+			approved_by=NULL, approved_at=NULL, approved_content_hash='', authorization_mode='',
+			campaign_policy_authorization_id=NULL, authorization_policy_hash='', authorization_at=NULL, updated_at=now()
+		WHERE organization_id=$1 AND account_id=$2
+		  AND state IN ('PLANNED','DUE','DRAFTED','NEEDS_REVIEW','APPROVED','QUEUED')`, orgID, accountID, reason)
+	if err != nil {
+		return out, err
+	}
+	out.Touchpoints = int(ct.RowsAffected())
+	ct, err = tx.Exec(ctx, `
+		UPDATE confenge_dispatch_queue q SET status='cancelled', cancel_reason=$3, updated_at=now()
+		FROM outreach_drafts d
+		WHERE q.draft_id=d.id AND d.organization_id=$1 AND d.account_id=$2
+		  AND q.status IN ('queued','reserved')`, orgID, accountID, reason)
+	if err != nil {
+		return out, err
+	}
+	out.DispatchItems = int(ct.RowsAffected())
+	ct, err = tx.Exec(ctx, `
+		DELETE FROM campaign_leads cl USING outreach_drafts d
+		WHERE d.organization_id=$1 AND d.account_id=$2
+		  AND cl.campaign_id=d.campaign_id AND cl.contact_id=d.enrollment_contact_id
+		  AND d.status IN ('NOT_GENERATED','GENERATING','NEEDS_REVIEW','APPROVED','ENROLLED')`, orgID, accountID)
+	if err != nil {
+		return out, err
+	}
+	out.Enrollments = int(ct.RowsAffected())
+	ct, err = tx.Exec(ctx, `
+		UPDATE outreach_drafts SET status='BLOCKED', updated_at=now()
+		WHERE organization_id=$1 AND account_id=$2
+		  AND status IN ('NOT_GENERATED','GENERATING','NEEDS_REVIEW','APPROVED','ENROLLED')`, orgID, accountID)
+	if err != nil {
+		return out, err
+	}
+	out.Drafts = int(ct.RowsAffected())
+	if out.Touchpoints+out.Drafts+out.Enrollments+out.DispatchItems > 0 {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO outreach_target_fit_reconciliation_events (
+				organization_id, account_id, target_fit_class, target_fit_version,
+				target_fit_source_watermark, eligible, reason, cancelled_touchpoints,
+				blocked_drafts, detached_enrollments, cancelled_dispatch_items)
+			SELECT organization_id, id, target_fit_class, target_fit_version,
+				target_fit_source_watermark, false, $3, $4, $5, $6, $7
+			FROM outreach_accounts WHERE organization_id=$1 AND id=$2`,
+			orgID, accountID, reason, out.Touchpoints, out.Drafts, out.Enrollments, out.DispatchItems)
+		if err != nil {
+			return out, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return out, err
+	}
+	return out, nil
 }
 
 func (r *outreachRepository) ListCandidates(ctx context.Context, orgID, accountID uuid.UUID) ([]models.OutreachContactCandidate, error) {

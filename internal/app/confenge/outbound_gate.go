@@ -25,6 +25,8 @@ const (
 	GateAlready
 	// GateHardBlock: DNC/bounce/account block only — permanent progress skip + suppress.
 	GateHardBlock
+	// GateCommercialBlock: reversible target-fit/readiness block; skip without global suppression.
+	GateCommercialBlock
 	// GateTransient: governor/store/infra failure — retry/backoff; never suppress/bounce.
 	GateTransient
 	// GateBypass: not a CONFENGE campaign or governor not wired; send without global cap.
@@ -39,6 +41,7 @@ const (
 	ReasonNotConfenge = "not_confenge"
 	ReasonNoGovernor  = "no_governor"
 	ReasonGovernor    = "governor_error"
+	ReasonTargetFit   = "target_fit_not_operational"
 )
 
 // CampaignGateResult is the discriminant result of GateCampaignEmail.
@@ -90,7 +93,14 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 	// Dominant blocks: DNC/opt-out/bounce — hard block without consuming a slot.
 	var acc *models.OutreachAccount
 	var cand *models.OutreachContactCandidate
-	if recipientEmail != "" {
+	if campaignID != uuid.Nil && contactID != uuid.Nil {
+		c, found, err := s.repo.FindCandidateByEnrollment(ctx, orgID, campaignID, contactID)
+		if err != nil {
+			return CampaignGateResult{Kind: GateTransient, Reason: ReasonGovernor, Err: fmt.Errorf("enrollment lookup: %w", err)}
+		}
+		cand, acc = c, found
+	}
+	if acc == nil && recipientEmail != "" {
 		c, found, err := s.repo.FindCandidateByEmail(ctx, orgID, strings.TrimSpace(strings.ToLower(recipientEmail)))
 		if err != nil {
 			return CampaignGateResult{Kind: GateTransient, Reason: ReasonGovernor, Err: fmt.Errorf("contact lookup: %w", err)}
@@ -118,7 +128,25 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 			}
 		}
 	}
-	_ = cand
+	if cand != nil && (cand.DoNotContact || cand.Bounced) {
+		return CampaignGateResult{Kind: GateHardBlock, Reason: ReasonDNCOrBounce}
+	}
+	if acc != nil && (acc.DoNotContact || acc.Blocked) {
+		return CampaignGateResult{Kind: GateHardBlock, Reason: ReasonAccountDNC}
+	}
+	if acc == nil {
+		return CampaignGateResult{Kind: GateCommercialBlock, Reason: TargetFitReasonMissing}
+	}
+	if cand == nil || !strings.EqualFold(strings.TrimSpace(cand.Email), strings.TrimSpace(recipientEmail)) {
+		return CampaignGateResult{Kind: GateCommercialBlock, Reason: "recipient_candidate_mismatch"}
+	}
+	if err := RequireEmailOutbound(acc, cand); err != nil {
+		reason := acc.TargetFitSuppressionReason
+		if reason == "" {
+			reason = ReasonTargetFit
+		}
+		return CampaignGateResult{Kind: GateCommercialBlock, Reason: reason, Err: err}
+	}
 
 	// ALWAYS revalidate CAMPAIGN_POLICY on open touchpoints before SMTP.
 	// Independent of MessageContextHash / GeneratedContextHash (do not nest).
@@ -296,6 +324,25 @@ func (s *service) revalidateCampaignPolicyAtSend(ctx context.Context, orgID uuid
 // Used by QueueTouchpoint, dispatchEmailTouch, requireTouchTransport (EnrollDraft, WhatsApp).
 func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint) error {
 	if err := CanTransport(tp); err != nil {
+		return err
+	}
+	acc, err := s.repo.GetAccount(ctx, orgID, tp.AccountID)
+	if err != nil || acc == nil {
+		return fmt.Errorf("target-fit account lookup failed")
+	}
+	var cand *models.OutreachContactCandidate
+	if tp.ContactCandidateID != nil {
+		cand, _ = s.repo.GetCandidate(ctx, orgID, *tp.ContactCandidateID)
+	} else if tp.DraftID != nil {
+		if draft, _ := s.repo.GetDraft(ctx, orgID, *tp.DraftID); draft != nil && draft.ContactCandidateID != nil {
+			cand, _ = s.repo.GetCandidate(ctx, orgID, *draft.ContactCandidateID)
+		}
+	}
+	if tp.Channel == models.OutreachChannelWhatsApp {
+		if err := RequireTargetFit(acc); err != nil {
+			return err
+		}
+	} else if err := RequireEmailOutbound(acc, cand); err != nil {
 		return err
 	}
 	if strings.TrimSpace(tp.AuthorizationMode) != AuthorizationModeCampaignPolicy {

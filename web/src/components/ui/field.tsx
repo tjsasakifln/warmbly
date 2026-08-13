@@ -25,6 +25,9 @@ export function TextInput({
     autoFocus,
     className,
     onKeyDown,
+    testId,
+    ariaLabel,
+    "data-testid": dataTestId,
 }: {
     value: string;
     onChange: (v: string) => void;
@@ -34,6 +37,9 @@ export function TextInput({
     autoFocus?: boolean;
     className?: string;
     onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+    testId?: string;
+    "data-testid"?: string;
+    ariaLabel?: string;
 }) {
     return (
         <input
@@ -44,6 +50,8 @@ export function TextInput({
             autoFocus={autoFocus}
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={onKeyDown}
+            data-testid={dataTestId ?? testId}
+            aria-label={ariaLabel}
             className={cn(base, "min-w-0", className)}
         />
     );

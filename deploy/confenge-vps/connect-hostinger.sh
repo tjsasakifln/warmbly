@@ -40,19 +40,10 @@ fi
 echo "API=$BASE email=$EMAIL smtp=${SMTP_HOST}:${SMTP_PORT} imap=${IMAP_HOST}:${IMAP_PORT}"
 echo "(password not logged)"
 
-if [[ -z "${CONFENGE_OPS_PASSWORD:-}" ]]; then
-  if [[ -t 0 ]]; then
-    printf 'Warmbly ops password for %s (input hidden): ' "${CONFENGE_OPS_EMAIL:-dev@warmbly.com}" >&2
-    read -r -s CONFENGE_OPS_PASSWORD
-    echo >&2
-    export CONFENGE_OPS_PASSWORD
-  else
-    echo "BLOCKED: set CONFENGE_OPS_PASSWORD for non-interactive auth" >&2
-    exit 2
-  fi
+if ! TOKEN="$(ops_access_token)"; then
+  echo "BLOCKED: sessão técnica CONFENGE indisponível" >&2
+  exit 2
 fi
-
-TOKEN="$(ops_access_token)"
 ORG="${CONFENGE_FEED_SYNC_ORG_ID:-22222222-0000-0000-0000-000000000001}"
 curl -sS -X POST "$BASE/organization/switch/$ORG" -H "Authorization: Bearer $TOKEN" >/dev/null || true
 AUTH="Authorization: Bearer $TOKEN"

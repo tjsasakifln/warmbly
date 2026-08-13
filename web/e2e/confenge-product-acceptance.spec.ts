@@ -829,7 +829,7 @@ test.describe("CONFENGE product acceptance UI", () => {
 
     // Needs attention surface
     await expect(page.getByTestId("confenge-needs-attention")).toBeVisible();
-    const needsBtn = page.getByRole("button", { name: /Needs attention/i });
+    const needsBtn = page.getByRole("button", { name: /Precisa de atenção/i });
     if ((await needsBtn.count()) > 0) {
       await needsBtn.click();
     }

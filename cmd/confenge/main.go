@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -34,6 +35,8 @@ func main() {
 		os.Exit(cmdBootstrap(os.Args[2:]))
 	case "import":
 		os.Exit(cmdImport(os.Args[2:]))
+	case "reconcile-target-fit":
+		os.Exit(cmdReconcileTargetFit(os.Args[2:]))
 	case "stop-sending":
 		os.Exit(cmdStopSending())
 	case "resume-sending":
@@ -54,6 +57,7 @@ Usage:
   confenge preflight [--org-id UUID]
   confenge bootstrap [--org-id UUID]
   confenge import --feed PATH|file://... [--dry-run] [--org-id UUID]
+  confenge reconcile-target-fit [--dry-run] [--org-id UUID]
   confenge stop-sending
   confenge resume-sending
 
@@ -201,8 +205,8 @@ func cmdBootstrap(args []string) int {
 	fmt.Println("  active_mailboxes: ", mailboxCount)
 	fmt.Println("  kill_switch:      ", !cfg.SendingAllowed())
 	fmt.Println()
-	fmt.Println("Next: make confenge-import FEED=internal/app/confenge/testdata/demo_3_companies.json")
-	fmt.Println("Login: dev@warmbly.com / password123  then open /app/confenge")
+	fmt.Println("Próximo passo: make confenge-import FEED=internal/app/confenge/testdata/demo_3_companies.json")
+	fmt.Println("Abra o painel dedicado em http://localhost:5173 (sem login)")
 	return 0
 }
 
@@ -257,6 +261,33 @@ func cmdImport(args []string) int {
 		return 1
 	}
 	fmt.Print(confenge.FormatImportSummary(run))
+	return 0
+}
+
+func cmdReconcileTargetFit(args []string) int {
+	maybeLoadDotEnv()
+	fs := flag.NewFlagSet("reconcile-target-fit", flag.ExitOnError)
+	dry := fs.Bool("dry-run", false, "report changes without writing")
+	orgStr := fs.String("org-id", seed.DevOrgID.String(), "organization UUID")
+	_ = fs.Parse(args)
+	cfg := confenge.LoadConfig()
+	cfg.Enabled = true
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, primaryDSN())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "db: %v\n", err)
+		return 1
+	}
+	defer pool.Close()
+	svc := confenge.NewService(cfg, repository.NewOutreachRepository(pool), nil)
+	report, xerr := svc.ReconcileTargetFit(ctx, parseOrg(*orgStr), *dry)
+	if xerr != nil {
+		fmt.Fprintf(os.Stderr, "reconcile target-fit: %s\n", xerr.Error())
+		return 1
+	}
+	b, _ := json.MarshalIndent(report, "", "  ")
+	fmt.Println(string(b))
 	return 0
 }
 

@@ -119,6 +119,9 @@ func IsOutboundDue(acc *models.OutreachAccount, now time.Time) bool {
 	if acc.DoNotContact || acc.Blocked {
 		return false
 	}
+	if RequireTargetFit(acc) != nil {
+		return false
+	}
 	switch acc.QueueState {
 	case models.OutreachQueueDoNotContact, models.OutreachQueueBlocked, models.OutreachQueueBounced,
 		models.OutreachQueueReplied, models.OutreachQueueMeeting, models.OutreachQueueProposal,
@@ -160,17 +163,21 @@ func (s *service) ListWorkingQueue(ctx context.Context, orgID uuid.UUID, lane st
 		filter.ActivationState = ActivationActionableNow
 		filter.ActivationDueNow = true
 		filter.ActivationNotExpired = true
+		filter.RequireOperational = true
 		// Prefer contact-ready operational states; needs_contact is its own lane.
 		// Still list READY/REVIEW/APPROVED first via dynamic order.
 	case LaneNeedsContact:
+		filter.RequireTargetFitEligible = true
 		filter.ActivationState = ActivationActionableNow
 		filter.ActivationDueNow = true
 		filter.ActivationNotExpired = true
 		filter.QueueState = models.OutreachQueueNeedsContact
 	case LaneNeedsReview:
+		filter.RequireTargetFitEligible = true
 		filter.QueueState = models.OutreachQueueNeedsReview
 		filter.ExcludeTerminal = false
 	case LaneApproved:
+		filter.RequireTargetFitEligible = true
 		filter.QueueState = models.OutreachQueueApproved
 		filter.ExcludeTerminal = false
 	case LaneWatch:
@@ -302,14 +309,12 @@ func hasAccountContactReady(acc *models.OutreachAccount) bool {
 		return false
 	}
 	for _, c := range acc.Contacts {
-		if c.CanEnroll() {
+		if RequireEmailOutbound(acc, &c) == nil {
 			return true
 		}
 	}
 	// Contacts may not be joined; treat READY_TO_GENERATE as ready.
-	return acc.QueueState == models.OutreachQueueReadyToGenerate ||
-		acc.QueueState == models.OutreachQueueNeedsReview ||
-		acc.QueueState == models.OutreachQueueApproved
+	return false
 }
 
 func sortWorkingQueue(items []WorkingQueueItem) {
@@ -375,10 +380,7 @@ func (s *service) WorkingQueueOverview(ctx context.Context, orgID uuid.UUID) (*W
 		}
 		out.WatchAwaiting = act.Watch + act.ResearchRequired
 		out.Suppressed = act.Suppressed
-		out.DueNext24h = act.ActionableDueNow - act.NeedsContactDue
-		if out.DueNext24h < 0 {
-			out.DueNext24h = 0
-		}
+		out.DueNext24h = act.ActionableDueNow
 		out.DueNext24h += sum.Approved
 		if act.Total > out.ReservoirMonitored {
 			out.ReservoirMonitored = act.Total

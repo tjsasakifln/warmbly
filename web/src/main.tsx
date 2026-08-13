@@ -51,6 +51,7 @@ import LimitsSettingsPage from './app/app/settings/limits/page';
 import RolesSettingsPage from './app/app/settings/roles/page';
 import UniboxPage from './app/app/unibox/page';
 import ConfengePage from './app/app/confenge/page';
+import ConfengeOperatorLayout from './app/app/confenge/OperatorLayout';
 import DashboardNotFound from './app/app/not-found';
 import NotFound from './app/not-found';
 
@@ -86,6 +87,7 @@ import AdminAddWorkerPage from './app/app/admin/workers/new/page';
 import AdminWorkerDetailPage from './app/app/admin/workers/[id]/page';
 import AdminCredentialsPage from './app/app/admin/credentials/page';
 import AdminAuditPage from './app/app/admin/audit/page';
+import { CONFENGE_OPERATOR_MODE } from './lib/information';
 
 // React-Query defaults tuned for a dashboard. The library's
 // out-of-the-box behaviour treats every query as immediately stale
@@ -118,7 +120,7 @@ const queryClient = new QueryClient({
     },
 });
 
-const router = createBrowserRouter([
+const standardRoutes = [
   {
     path: "/",
     element: <RootLayout />,
@@ -382,7 +384,22 @@ const router = createBrowserRouter([
       }
     ],
   },
-]);
+];
+
+const operatorRoutes = [
+  {
+    path: "/",
+    element: <ConfengeOperatorLayout />,
+    children: [
+      { index: true, element: <ConfengePage /> },
+      { path: "app", element: <ConfengePage /> },
+      { path: "app/confenge", element: <ConfengePage /> },
+      { path: "*", element: <Navigate to="/" replace /> },
+    ],
+  },
+];
+
+const router = createBrowserRouter(CONFENGE_OPERATOR_MODE ? operatorRoutes : standardRoutes);
 
 // AdminLayout takes a children prop rather than rendering <Outlet/>; bridge it.
 function AdminLayoutWithOutlet() {

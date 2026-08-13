@@ -4,9 +4,15 @@ export type ConfengeReadiness = {
     feed_configured: boolean;
     feed_age_seconds?: number | null;
     feed_age: string;
+    feed_state?: "fresh" | "stale" | "missing";
+    feed_snapshot_hash?: string;
+    feed_last_success_at?: string | Date | null;
+    feed_max_age_seconds?: number;
     outcome_loop: string;
     ai: string;
     governor_cap: number;
+    campaign_daily_limit: number;
+    effective_daily_cap: number;
     queue_count: number;
     kill_switch: boolean;
     sending_allowed: boolean;
@@ -77,8 +83,8 @@ export type ConfengeAccount = {
     activation_score?: number;
     activation_reason_codes?: string[];
     activation_policy_version?: string;
-    next_best_action_at?: string | null;
-    activation_expires_at?: string | null;
+    next_best_action_at?: string | Date | null;
+    activation_expires_at?: string | Date | null;
     message_context_hash?: string;
     context_stale?: boolean;
     contacts?: ConfengeContact[];
@@ -108,11 +114,62 @@ export type ConfengeWorkingQueueItem = {
     why_now?: string;
     reason_codes?: string[];
     activation_score?: number;
-    next_best_action_at?: string | null;
-    activation_expires_at?: string | null;
+    next_best_action_at?: string | Date | null;
+    activation_expires_at?: string | Date | null;
     contact_ready: boolean;
     context_stale: boolean;
     channel_readiness?: string;
+};
+
+export type ConfengeFeedSyncResult = {
+    status: "completed" | "noop" | "failed" | "partial";
+    snapshot_hash?: string;
+    run_id?: string;
+    chunks_total: number;
+    chunks_imported: number;
+    deactivations_applied: number;
+    skipped_same_snapshot: boolean;
+    errors?: string[];
+    counts?: Record<string, number>;
+};
+
+export type ConfengePilotAccountResult = {
+    account_id: string;
+    cnpj14?: string;
+    company?: string;
+    status: "PREPARED" | "BLOCKED";
+    reason_code?: string;
+    human_readable_reason?: string;
+    remediation?: string;
+    previous_state?: string;
+    intended_state: string;
+    contact_state?: string;
+    recipient?: string;
+    recipient_name?: string;
+    recipient_role?: string;
+    contact_candidate_id?: string;
+    touchpoint_id?: string;
+    draft_id?: string;
+    draft_state?: string;
+    warnings?: string[];
+    upstream_snapshot_hash?: string;
+    message_context_hash?: string;
+    prepared_at?: string | Date;
+    idempotent: boolean;
+};
+
+export type ConfengePilotCohortResult = {
+    cohort_id: string;
+    target: number;
+    selected: number;
+    prepared: number;
+    blocked: number;
+    contact_needed: number;
+    cohort_prepared: number;
+    remaining: number;
+    upstream_snapshot_hash?: string;
+    feed_timestamp?: string | Date;
+    results: ConfengePilotAccountResult[];
 };
 
 export type ConfengeContact = {
@@ -134,6 +191,9 @@ export type ConfengeEvidence = {
     excerpt: string;
     synthesis: string;
     epistemic_class: string;
+    evidence_date?: string | Date | null;
+    consulted_at?: string | Date | null;
+    reliability?: string;
 };
 
 export type ConfengeDraft = {
@@ -227,6 +287,7 @@ export type ConfengeTouchpoint = {
   purpose: string;
   due_at: string;
   state: string;
+  draft_id?: string;
   recipient: string;
   subject: string;
   body_text: string;
@@ -239,6 +300,11 @@ export type ConfengeTouchpoint = {
   strategy_explain?: ConfengeStrategyExplain;
   doctrine_alerts?: string[];
   draft?: ConfengeDraft;
+  approved_by?: string;
+  approved_at?: string | Date;
+  generated_context_hash?: string;
+  created_at?: string | Date;
+  updated_at?: string | Date;
 };
 
 export type ConfengeDispatchFailure = {

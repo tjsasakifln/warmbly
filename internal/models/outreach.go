@@ -47,21 +47,22 @@ const (
 
 // Queue states for outreach accounts (dashboard pipeline).
 const (
-	OutreachQueueNeedsContact    = "NEEDS_CONTACT"
-	OutreachQueueReadyToGenerate = "READY_TO_GENERATE"
-	OutreachQueueNeedsReview     = "NEEDS_REVIEW"
-	OutreachQueueApproved        = "APPROVED"
-	OutreachQueueEnrolled        = "ENROLLED"
-	OutreachQueueSent            = "SENT"
-	OutreachQueueReplied         = "REPLIED"
-	OutreachQueueMeeting         = "MEETING"
-	OutreachQueueProposal        = "PROPOSAL"
-	OutreachQueueWon             = "WON"
-	OutreachQueueLost            = "LOST"
-	OutreachQueueBlocked         = "BLOCKED"
-	OutreachQueueBounced         = "BOUNCED"
-	OutreachQueueDoNotContact    = "DO_NOT_CONTACT"
-	OutreachQueueSkipped         = "SKIPPED"
+	OutreachQueueNeedsContact        = "NEEDS_CONTACT"
+	OutreachQueueReadyToGenerate     = "READY_TO_GENERATE"
+	OutreachQueueNeedsReview         = "NEEDS_REVIEW"
+	OutreachQueueApproved            = "APPROVED"
+	OutreachQueueEnrolled            = "ENROLLED"
+	OutreachQueueSent                = "SENT"
+	OutreachQueueReplied             = "REPLIED"
+	OutreachQueueMeeting             = "MEETING"
+	OutreachQueueProposal            = "PROPOSAL"
+	OutreachQueueWon                 = "WON"
+	OutreachQueueLost                = "LOST"
+	OutreachQueueBlocked             = "BLOCKED"
+	OutreachQueueBounced             = "BOUNCED"
+	OutreachQueueDoNotContact        = "DO_NOT_CONTACT"
+	OutreachQueueSkipped             = "SKIPPED"
+	OutreachQueueTargetFitSuppressed = "TARGET_FIT_SUPPRESSED"
 )
 
 // Import run statuses.
@@ -190,8 +191,20 @@ type OutreachAccount struct {
 
 	// Send-fit imported from extra-cli. Never derived from activation_state.
 	// Empty TargetFitSendTier = legacy feed: import OK, GREEN autorun forbidden.
-	TargetFitSendTier string   `json:"target_fit_send_tier,omitempty"`
-	TargetFitReasons  []string `json:"target_fit_reasons,omitempty"`
+	TargetFitSendTier          string     `json:"target_fit_send_tier,omitempty"`
+	TargetFitReasons           []string   `json:"target_fit_reasons,omitempty"`
+	TargetFitClass             string     `json:"target_fit_class,omitempty"`
+	TargetFitConfidence        *float64   `json:"target_fit_confidence,omitempty"`
+	TargetFitVersion           string     `json:"target_fit_version,omitempty"`
+	TargetFitComputedAt        *time.Time `json:"target_fit_computed_at,omitempty"`
+	TargetFitSourceWatermark   string     `json:"target_fit_source_watermark,omitempty"`
+	TargetFitObservedAt        *time.Time `json:"target_fit_observed_at,omitempty"`
+	TargetFitFresh             bool       `json:"target_fit_fresh"`
+	TargetFitEvidenceIDs       []string   `json:"target_fit_evidence_ids,omitempty"`
+	TargetFitFreshnessReason   string     `json:"target_fit_freshness_reason,omitempty"`
+	TargetFitEligible          bool       `json:"target_fit_eligible"`
+	TargetFitSuppressionReason string     `json:"target_fit_suppression_reason,omitempty"`
+	TargetFitReconciledAt      *time.Time `json:"target_fit_reconciled_at,omitempty"`
 	// Company-level rollup of best-contact email_send_ready from extra-cli.
 	EmailSendReady bool `json:"email_send_ready,omitempty"`
 

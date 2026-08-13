@@ -95,6 +95,7 @@ func TestDecideChannelGenerateAndSend(t *testing.T) {
 		FactToMention: "edital X", EntryOffer: "revisão", QuestionToAsk: "Posso explicar?",
 		QueueState: models.OutreachQueueReadyToGenerate,
 	}
+	markTestAccountTargetFitReady(repo.byID[accID])
 	repo.accounts[accKey(org, "12345678000199")] = repo.byID[accID]
 
 	now := time.Now().UTC()

@@ -123,6 +123,9 @@ func (m *memRepo) UpsertAccount(ctx context.Context, acc *models.OutreachAccount
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	k := accKey(acc.OrganizationID, acc.CNPJ14)
+	if acc.SourceSystem == "" && acc.TargetFitClass == "" {
+		markTestAccountTargetFitReady(acc)
+	}
 	existing := m.accounts[k]
 	created := existing == nil
 	if existing != nil {
@@ -138,6 +141,20 @@ func (m *memRepo) UpsertAccount(ctx context.Context, acc *models.OutreachAccount
 	m.accounts[k] = &cp
 	m.byID[cp.ID] = &cp
 	return created, nil
+}
+
+func markTestAccountTargetFitReady(acc *models.OutreachAccount) {
+	t := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	acc.TargetFitClass = TargetFitConfirmed
+	acc.TargetFitVersion = "confenge-target-fit-v1"
+	acc.TargetFitSourceWatermark = t.Format(time.RFC3339)
+	acc.TargetFitObservedAt = &t
+	acc.TargetFitComputedAt = &t
+	acc.TargetFitFresh = true
+	acc.TargetFitSendTier = "A_AUTOMATIC"
+	acc.TargetFitEligible = true
+	acc.TargetFitSuppressionReason = ""
+	acc.EmailSendReady = true
 }
 
 func (m *memRepo) ListAccounts(ctx context.Context, orgID uuid.UUID, filter repository.OutreachAccountFilter) ([]models.OutreachAccount, error) {
@@ -176,6 +193,28 @@ func (m *memRepo) ListAccounts(ctx context.Context, orgID uuid.UUID, filter repo
 				continue
 			}
 			if a.DoNotContact || a.Blocked {
+				continue
+			}
+		}
+		if filter.RequireTargetFitEligible || filter.RequireOperational {
+			if EvaluateTargetFit(a).Eligible == false || !a.TargetFitEligible {
+				continue
+			}
+		}
+		if filter.RequireOperational {
+			if !a.TargetFitEligible || !a.EmailSendReady {
+				continue
+			}
+			ready := false
+			candidates := m.cands[a.ID]
+			for i := range candidates {
+				c := &candidates[i]
+				if RequireEmailOutbound(a, c) == nil {
+					ready = true
+					break
+				}
+			}
+			if !ready {
 				continue
 			}
 		}
@@ -264,6 +303,31 @@ func (m *memRepo) SetAccountHumanFlags(ctx context.Context, orgID, id uuid.UUID,
 	return nil
 }
 
+func (m *memRepo) InvalidateAccountOutboundForTargetFit(ctx context.Context, orgID, accountID uuid.UUID, reason string) (repository.TargetFitInvalidationCounts, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out repository.TargetFitInvalidationCounts
+	for _, tp := range m.touchpoints {
+		if tp.OrganizationID == orgID && tp.AccountID == accountID && models.TouchpointOpenStates[tp.State] {
+			tp.State, tp.StopReason = models.TouchpointCancelled, reason
+			ClearApproval(tp)
+			out.Touchpoints++
+		}
+	}
+	for _, d := range m.drafts {
+		if d.OrganizationID != orgID || d.AccountID != accountID {
+			continue
+		}
+		switch d.Status {
+		case models.OutreachDraftNotGenerated, models.OutreachDraftGenerating, models.OutreachDraftNeedsReview,
+			models.OutreachDraftApproved, models.OutreachDraftEnrolled:
+			d.Status = models.OutreachDraftBlocked
+			out.Drafts++
+		}
+	}
+	return out, nil
+}
+
 func (m *memRepo) ListCandidates(ctx context.Context, orgID, accountID uuid.UUID) ([]models.OutreachContactCandidate, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -273,6 +337,10 @@ func (m *memRepo) ListCandidates(ctx context.Context, orgID, accountID uuid.UUID
 func (m *memRepo) UpsertCandidate(ctx context.Context, c *models.OutreachContactCandidate) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if c.LastImportRunID == nil && c.Email != "" && c.VerificationStatus != models.OutreachVerifyCandidateUnverified &&
+		!models.OutreachUnenrollableVerification[c.VerificationStatus] {
+		c.EmailSendReady = true
+	}
 	if c.ID == uuid.Nil {
 		c.ID = uuid.New()
 	}
@@ -434,6 +502,22 @@ func (m *memRepo) FindCandidateByEmail(ctx context.Context, orgID uuid.UUID, ema
 			if c.OrganizationID == orgID && c.Email == email {
 				acc := m.byID[c.AccountID]
 				return &c, acc, nil
+			}
+		}
+	}
+	return nil, nil, nil
+}
+func (m *memRepo) FindCandidateByEnrollment(ctx context.Context, orgID, campaignID, contactID uuid.UUID) (*models.OutreachContactCandidate, *models.OutreachAccount, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, d := range m.drafts {
+		if d.OrganizationID != orgID || d.CampaignID == nil || *d.CampaignID != campaignID || d.EnrollmentContactID == nil || *d.EnrollmentContactID != contactID || d.ContactCandidateID == nil {
+			continue
+		}
+		for i := range m.cands[d.AccountID] {
+			c := m.cands[d.AccountID][i]
+			if c.ID == *d.ContactCandidateID {
+				return &c, m.byID[d.AccountID], nil
 			}
 		}
 	}
@@ -865,7 +949,8 @@ func TestLegacyImportWorks(t *testing.T) {
 		t.Fatalf("legacy creates: %+v errs=%+v", run.Counts, run.Errors)
 	}
 	noContact, _ := repo.GetAccountByCNPJ(context.Background(), org, "55444333000122")
-	if noContact == nil || noContact.QueueState != models.OutreachQueueNeedsContact {
+	if noContact == nil || noContact.QueueState != models.OutreachQueueTargetFitSuppressed ||
+		noContact.TargetFitSuppressionReason != TargetFitReasonMissing {
 		t.Fatalf("legacy no-contact company: %+v", noContact)
 	}
 }
@@ -922,9 +1007,14 @@ func (m *memRepo) CountByActivationState(ctx context.Context, orgID uuid.UUID, n
 		case ActivationActionableNow:
 			out.ActionableNow++
 			if IsOutboundDue(a, now) {
-				out.ActionableDueNow++
 				if a.QueueState == models.OutreachQueueNeedsContact {
 					out.NeedsContactDue++
+				}
+				for _, c := range m.cands[a.ID] {
+					if RequireEmailOutbound(a, &c) == nil {
+						out.ActionableDueNow++
+						break
+					}
 				}
 			}
 		case ActivationSuppressed:

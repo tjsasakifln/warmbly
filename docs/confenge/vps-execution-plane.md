@@ -166,12 +166,27 @@ Outcome HMAC remains required even on loopback.
 Simplest secure path (no new VPN product):
 
 ```bash
-ssh -L 5173:127.0.0.1:5173 -L 8080:127.0.0.1:8080 -L 18025:127.0.0.1:18025 \
-  -p 2222 -i ~/.ssh/extra-consultoria-prod root@159.195.18.88
-# browser: http://127.0.0.1:5173  → /app/confenge
+deploy/confenge-vps/tunnel.sh
+# browser: http://127.0.0.1:5173
 ```
 
-UI/API bind **127.0.0.1 only**. Login remains Warmbly auth. Daily path: approve/edit/reject/DNC in browser; laptop can sleep after approval; queue/`due_at`/governor/SMTP run on VPS.
+UI/API bind **127.0.0.1 only**. The dedicated CONFENGE deployment opens the
+Portuguese operator dashboard directly. It silently mints a normal JWT session for
+the configured technical member, so organization permissions and audit attribution
+remain enforced without an interactive login. Daily path: review, approve, edit,
+reject, or mark DNC in the browser. The laptop can sleep after approval because the
+queue, scheduling, governor, and SMTP transport run on the VPS.
+
+Never expose ports 5173 or 8080 publicly while `CONFENGE_OPERATOR_MODE=true`.
+The laptop tunnel maps the backend to `127.0.0.1:18080`, leaving local port
+`8080` available for Evolution API. The web runtime's `API_PUBLIC_URL` must use
+the same port. Run compose maintenance through `deploy/confenge-vps/compose.sh`;
+it always loads the CONFENGE override and private environment file.
+Changing the operator IDs requires an existing active member with view and manage
+contacts permissions. Invalid identity or membership prevents backend startup.
+On a new empty database, set `CONFENGE_VPS_SEED=true` for the first `up.sh` run.
+The script starts the backend with operator mode temporarily disabled, loads the
+deterministic technical member, then restarts with the validated mode enabled.
 
 ## Credentials
 

@@ -57,11 +57,19 @@ type FeedLead struct {
 	Activation *FeedActivation `json:"activation,omitempty"`
 	// Send-fit imported from extra-cli. Absent in legacy feeds → autorun forbidden.
 	// Never derive TargetFitSendTier from Activation.State.
-	TargetFitSendTier string   `json:"target_fit_send_tier,omitempty"`
-	TargetFitReasons  []string `json:"target_fit_reasons,omitempty"`
-	EmailSendReady    *bool    `json:"email_send_ready,omitempty"`
-	MailboxPurpose    string   `json:"mailbox_purpose,omitempty"`
-	OwnershipStatus   string   `json:"ownership_status,omitempty"`
+	TargetFitSendTier        string   `json:"target_fit_send_tier,omitempty"`
+	TargetFitReasons         []string `json:"target_fit_reasons,omitempty"`
+	TargetFitClass           string   `json:"target_fit_class,omitempty"`
+	TargetFitConfidence      *float64 `json:"target_fit_confidence,omitempty"`
+	TargetFitVersion         string   `json:"target_fit_version,omitempty"`
+	TargetFitComputedAt      string   `json:"target_fit_computed_at,omitempty"`
+	TargetFitSourceWatermark string   `json:"target_fit_source_watermark,omitempty"`
+	TargetFitFresh           *bool    `json:"target_fit_fresh,omitempty"`
+	TargetFitEvidenceIDs     []string `json:"target_fit_evidence_ids,omitempty"`
+	TargetFitFreshnessReason string   `json:"target_fit_freshness_reason,omitempty"`
+	EmailSendReady           *bool    `json:"email_send_ready,omitempty"`
+	MailboxPurpose           string   `json:"mailbox_purpose,omitempty"`
+	OwnershipStatus          string   `json:"ownership_status,omitempty"`
 }
 
 // FeedActivation is the extra-cli commercial activation planner projection.
@@ -326,28 +334,40 @@ func CanonicalPayloadHash(raw []byte) string {
 func LeadContentHash(lead FeedLead) string {
 	// Exclude human-only outcomes; include messaging, priority, moment, offer, contacts, evidence ids.
 	type slim struct {
-		SourceLeadID string          `json:"source_lead_id"`
-		Company      FeedCompany     `json:"company"`
-		Priority     FeedPriority    `json:"priority"`
-		Moment       FeedMoment      `json:"moment"`
-		Offer        FeedOffer       `json:"offer"`
-		Messaging    FeedMessaging   `json:"messaging_context"`
-		Contacts     []FeedContact   `json:"contacts"`
-		Evidence     []FeedEvidence  `json:"evidence"`
-		State        string          `json:"commercial_state"`
-		Activation   *FeedActivation `json:"activation,omitempty"`
+		SourceLeadID             string          `json:"source_lead_id"`
+		Company                  FeedCompany     `json:"company"`
+		Priority                 FeedPriority    `json:"priority"`
+		Moment                   FeedMoment      `json:"moment"`
+		Offer                    FeedOffer       `json:"offer"`
+		Messaging                FeedMessaging   `json:"messaging_context"`
+		Contacts                 []FeedContact   `json:"contacts"`
+		Evidence                 []FeedEvidence  `json:"evidence"`
+		State                    string          `json:"commercial_state"`
+		Activation               *FeedActivation `json:"activation,omitempty"`
+		TargetFitClass           string          `json:"target_fit_class,omitempty"`
+		TargetFitVersion         string          `json:"target_fit_version,omitempty"`
+		TargetFitComputedAt      string          `json:"target_fit_computed_at,omitempty"`
+		TargetFitSourceWatermark string          `json:"target_fit_source_watermark,omitempty"`
+		TargetFitFresh           *bool           `json:"target_fit_fresh,omitempty"`
+		TargetFitSendTier        string          `json:"target_fit_send_tier,omitempty"`
+		TargetFitEvidenceIDs     []string        `json:"target_fit_evidence_ids,omitempty"`
+		EmailSendReady           *bool           `json:"email_send_ready,omitempty"`
 	}
 	b, _ := json.Marshal(slim{
-		SourceLeadID: lead.SourceLeadID,
-		Company:      lead.Company,
-		Priority:     lead.Priority,
-		Moment:       lead.Moment,
-		Offer:        lead.Offer,
-		Messaging:    lead.MessagingContext,
-		Contacts:     lead.Contacts,
-		Evidence:     lead.Evidence,
-		State:        lead.CommercialState,
-		Activation:   lead.Activation,
+		SourceLeadID:   lead.SourceLeadID,
+		Company:        lead.Company,
+		Priority:       lead.Priority,
+		Moment:         lead.Moment,
+		Offer:          lead.Offer,
+		Messaging:      lead.MessagingContext,
+		Contacts:       lead.Contacts,
+		Evidence:       lead.Evidence,
+		State:          lead.CommercialState,
+		Activation:     lead.Activation,
+		TargetFitClass: lead.TargetFitClass, TargetFitVersion: lead.TargetFitVersion,
+		TargetFitComputedAt: lead.TargetFitComputedAt, TargetFitSourceWatermark: lead.TargetFitSourceWatermark,
+		TargetFitFresh: lead.TargetFitFresh, TargetFitSendTier: lead.TargetFitSendTier,
+		TargetFitEvidenceIDs: lead.TargetFitEvidenceIDs, EmailSendReady: lead.EmailSendReady,
 	})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
@@ -502,6 +522,15 @@ func DefaultQueueState(lead FeedLead, existing *models.OutreachAccount) string {
 		if existing.Blocked || existing.QueueState == models.OutreachQueueBlocked {
 			return models.OutreachQueueBlocked
 		}
+		if existing.QueueState == models.OutreachQueueTargetFitSuppressed {
+			if LeadTargetFitDecision(lead).Eligible {
+				if hasEnrollableContact(lead) {
+					return models.OutreachQueueReadyToGenerate
+				}
+				return models.OutreachQueueNeedsContact
+			}
+			return models.OutreachQueueTargetFitSuppressed
+		}
 		// Do not silently restart post-send states.
 		switch existing.QueueState {
 		case models.OutreachQueueEnrolled, models.OutreachQueueSent, models.OutreachQueueReplied,
@@ -510,6 +539,9 @@ func DefaultQueueState(lead FeedLead, existing *models.OutreachAccount) string {
 			models.OutreachQueueApproved, models.OutreachQueueNeedsReview:
 			return existing.QueueState
 		}
+	}
+	if !LeadTargetFitDecision(lead).Eligible {
+		return models.OutreachQueueTargetFitSuppressed
 	}
 	if hasEnrollableContact(lead) {
 		return models.OutreachQueueReadyToGenerate

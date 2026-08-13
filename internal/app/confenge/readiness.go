@@ -24,13 +24,17 @@ const (
 
 // Readiness is the discrete operator status panel payload.
 type Readiness struct {
-	Email          string `json:"email"`
-	WhatsApp       string `json:"whatsapp"`
-	FeedConfigured bool   `json:"feed_configured"`
-	FeedAgeSeconds *int64 `json:"feed_age_seconds,omitempty"`
-	FeedAgeLabel   string `json:"feed_age"`
-	OutcomeLoop    string `json:"outcome_loop"`
-	AI             string `json:"ai"`
+	Email             string     `json:"email"`
+	WhatsApp          string     `json:"whatsapp"`
+	FeedConfigured    bool       `json:"feed_configured"`
+	FeedAgeSeconds    *int64     `json:"feed_age_seconds,omitempty"`
+	FeedAgeLabel      string     `json:"feed_age"`
+	FeedState         string     `json:"feed_state"`
+	FeedSnapshot      string     `json:"feed_snapshot_hash,omitempty"`
+	FeedLastSyncAt    *time.Time `json:"feed_last_success_at,omitempty"`
+	FeedMaxAgeSeconds int64      `json:"feed_max_age_seconds"`
+	OutcomeLoop       string     `json:"outcome_loop"`
+	AI                string     `json:"ai"`
 	// GovernorCap is the global rolling-hour outbound cap (email+WhatsApp).
 	// Primary CONFENGE pacing control (~10/h). Not the campaign daily limit.
 	GovernorCap int `json:"governor_cap"`
@@ -54,6 +58,7 @@ type ReadinessInputs struct {
 	WhatsAppReady         bool
 	WhatsAppPolicyBlocked bool
 	LastImportAt          *time.Time
+	FeedSnapshot          string
 	Queue                 *models.OutreachQueueSummary
 	AIConfigured          bool
 	WA                    *whatsapp.Config
@@ -103,6 +108,11 @@ func BuildReadiness(cfg Config, in ReadinessInputs) Readiness {
 		WhatsAppEnabled:    cfg.WhatsAppEnabled || waCfg.Enabled,
 		WhatsAppProvider:   waCfg.Provider,
 	}
+	maxAge := cfg.FeedMaxAge
+	if maxAge <= 0 {
+		maxAge = 24 * time.Hour
+	}
+	r.FeedMaxAgeSeconds = int64(maxAge.Seconds())
 
 	if in.EmailReady {
 		r.Email = ReadyOK
@@ -140,8 +150,16 @@ func BuildReadiness(cfg Config, in ReadinessInputs) Readiness {
 		}
 		r.FeedAgeSeconds = &age
 		r.FeedAgeLabel = formatAge(age)
+		r.FeedLastSyncAt = in.LastImportAt
+		r.FeedSnapshot = in.FeedSnapshot
+		if time.Duration(age)*time.Second > maxAge {
+			r.FeedState = "stale"
+		} else {
+			r.FeedState = "fresh"
+		}
 	} else {
 		r.FeedAgeLabel = "unknown"
+		r.FeedState = "missing"
 	}
 
 	if in.Queue != nil {
@@ -194,13 +212,17 @@ func (s *service) CollectReadiness(ctx context.Context, orgID uuid.UUID, emailRe
 	if s.cfg.WhatsAppEnabled && s.wa != nil {
 		in.WhatsAppReady = true
 	}
-	if runs, err := s.repo.ListImportRuns(ctx, orgID, 1); err == nil && len(runs) > 0 {
+	if st, err := s.repo.GetFeedSyncState(ctx, orgID); err == nil && st != nil && st.LastSuccessAt != nil {
+		in.LastImportAt = st.LastSuccessAt
+		in.FeedSnapshot = st.LastSnapshotHash
+	} else if runs, err := s.repo.ListImportRuns(ctx, orgID, 1); err == nil && len(runs) > 0 {
 		if runs[0].FinishedAt != nil {
 			in.LastImportAt = runs[0].FinishedAt
 		} else {
 			t := runs[0].StartedAt
 			in.LastImportAt = &t
 		}
+		in.FeedSnapshot = runs[0].SnapshotHash
 	}
 	if sum, err := s.repo.CountByQueueState(ctx, orgID); err == nil {
 		in.Queue = sum

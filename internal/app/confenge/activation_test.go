@@ -14,6 +14,7 @@ import (
 )
 
 func sampleLeadWithActivation(score float64, state string) FeedLead {
+	ready := true
 	return FeedLead{
 		SourceLeadID: "lead-1",
 		Company: FeedCompany{
@@ -33,8 +34,11 @@ func sampleLeadWithActivation(score float64, state string) FeedLead {
 		},
 		Contacts: []FeedContact{{
 			SourceContactID: "c1", Name: "Maria Silva", Email: "maria@acme.com.br",
-			VerificationStatus: models.OutreachVerifyOfficialSource, Recommended: true,
+			VerificationStatus: models.OutreachVerifyOfficialSource, Recommended: true, EmailSendReady: &ready,
 		}},
+		TargetFitClass: TargetFitConfirmed, TargetFitVersion: "confenge-target-fit-v1",
+		TargetFitComputedAt: "2026-08-08T10:00:00Z", TargetFitSourceWatermark: "2026-08-08T10:00:00Z",
+		TargetFitFresh: &ready, TargetFitSendTier: "A_AUTOMATIC", EmailSendReady: &ready,
 		Evidence: []FeedEvidence{{
 			ID: "ev-1", Type: "contract", Title: "Contrato", EpistemicClass: models.OutreachEpistemicConfirmedFact,
 		}},
@@ -493,6 +497,7 @@ func TestIsOutboundDueRespectsFutureNBAAndExpiry(t *testing.T) {
 		QueueState:       models.OutreachQueueReadyToGenerate,
 		NextBestActionAt: &future,
 	}
+	markTestAccountTargetFitReady(acc)
 	if IsOutboundDue(acc, now) {
 		t.Fatal("future NBA must not be due")
 	}

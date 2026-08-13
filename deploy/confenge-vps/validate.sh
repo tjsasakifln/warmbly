@@ -44,6 +44,9 @@ for pair in \
   "CONFENGE_AUTO_SEND_ENABLED=false" \
   "CONFENGE_REQUIRE_HUMAN_APPROVAL=true" \
   "CONFENGE_OUTREACH_ENABLED=true" \
+  "CONFENGE_OPERATOR_MODE=true" \
+  "CONFENGE_OPERATOR_USER_ID=11111111-0000-0000-0000-000000000001" \
+  "CONFENGE_OPERATOR_ORG_ID=22222222-0000-0000-0000-000000000001" \
   "CONFENGE_WHATSAPP_ENABLED=false" \
   "CONFENGE_RATE_MAX_PER_HOUR=20" \
   "HOSTINGER_PLAN_CLASS=BUSINESS_EMAIL_STARTER" \
@@ -112,6 +115,26 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
       fail=1
     else
       echo "OK postgres not on 0.0.0.0"
+    fi
+    for port in 8080 5173; do
+      if grep -B3 -A1 "published: \"${port}\"" "$COMPOSE_OUT" | grep -q 'host_ip: 127.0.0.1'; then
+        echo "OK operator surface port $port is loopback-only"
+      else
+        echo "FAIL operator surface port $port is not explicitly loopback-only"
+        fail=1
+      fi
+    done
+    if grep -q 'WARMBLY_CONFENGE_OPERATOR_MODE: "true"' "$COMPOSE_OUT"; then
+      echo "OK web operator mode survives compose rendering"
+    else
+      echo "FAIL web operator mode missing from compose rendering"
+      fail=1
+    fi
+    if grep -q 'WARMBLY_API_URL: http://127.0.0.1:18080' "$COMPOSE_OUT"; then
+      echo "OK web API uses the persistent laptop tunnel port 18080"
+    else
+      echo "FAIL web API is not configured for laptop tunnel port 18080"
+      fail=1
     fi
     if grep -q 'CONFENGE_GREEN_AUTORUN_ENABLED: "false"\|CONFENGE_GREEN_AUTORUN_ENABLED: false' "$COMPOSE_OUT" \
       || grep -q 'CONFENGE_GREEN_AUTORUN_ENABLED: \${CONFENGE_GREEN_AUTORUN_ENABLED:-false}' "$COMPOSE_OUT"; then

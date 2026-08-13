@@ -59,45 +59,26 @@ else
   pass_fail "HOSTINGER IMAP" FAIL
 fi
 
-# Feed (extra-cli plane)
-FEED_URL="${CONFENGE_EXTRA_CLI_FEED_URL:-}"
+# Feed freshness uses the same durable timestamp and max age as the dashboard.
 FEED_STATE=FAIL
-if [[ -n "$FEED_URL" ]]; then
-  # Prefer host-side probe of confenge-plane
-  if curl -sk --max-time 5 -o /dev/null -w '%{http_code}' "https://127.0.0.1:8443/manifest.json" 2>/dev/null | grep -qE '200'; then
-    FEED_STATE=PASS
-    # Stale if supply-report age > 24h when available
-    if curl -sk --max-time 5 -o /tmp/confenge-supply-check.json "https://127.0.0.1:8443/supply-report.json" 2>/dev/null; then
-      AGE="$(python3 - <<'PY'
-import json, time
-try:
-    r=json.load(open("/tmp/confenge-supply-check.json"))
-except Exception:
-    print(-1); raise SystemExit
-# try common timestamp fields
-for k in ("generated_at","updated_at","ts","timestamp"):
-    v=r.get(k)
-    if not v: continue
-    try:
-        # epoch or ISO
-        if isinstance(v,(int,float)):
-            print(int(time.time()-float(v))); raise SystemExit
-        import datetime
-        s=str(v).replace("Z","+00:00")
-        t=datetime.datetime.fromisoformat(s).timestamp()
-        print(int(time.time()-t)); raise SystemExit
-    except Exception:
-        pass
-print(-1)
-PY
-)"
-      if [[ "$AGE" =~ ^[0-9]+$ ]] && (( AGE > 86400 )); then
-        FEED_STATE=STALE
-      fi
-    fi
-  fi
+FEED_TIMESTAMP=""
+FEED_SNAPSHOT=""
+if TOKEN="$(ops_access_token 2>/dev/null)"; then
+  STATUS_JSON="$(curl -sS --max-time 5 "${API}/v1/confenge/status" -H "Authorization: Bearer $TOKEN" 2>/dev/null || true)"
+  FEED_API_STATE="$(printf '%s' "$STATUS_JSON" | grep -o '"feed_state":"[^"]*"' | head -1 | cut -d'"' -f4)"
+  FEED_TIMESTAMP="$(printf '%s' "$STATUS_JSON" | grep -o '"feed_last_success_at":"[^"]*"' | head -1 | cut -d'"' -f4)"
+  FEED_SNAPSHOT="$(printf '%s' "$STATUS_JSON" | grep -o '"feed_snapshot_hash":"[^"]*"' | head -1 | cut -d'"' -f4)"
+  case "$FEED_API_STATE" in
+    fresh) FEED_STATE=PASS ;;
+    stale) FEED_STATE=STALE ;;
+    missing) FEED_STATE=FAIL ;;
+  esac
+  TOKEN=""
+  unset TOKEN
 fi
 pass_fail "EXTRA FEED" "$FEED_STATE"
+echo "EXTRA_FEED_TIMESTAMP=${FEED_TIMESTAMP:-unknown}"
+echo "EXTRA_FEED_SNAPSHOT=${FEED_SNAPSHOT:-unknown}"
 
 # Outcome loop: receptor on host loopback 8790 via nginx 8443
 if curl -sk --max-time 5 -o /dev/null -w '%{http_code}' -X POST "https://127.0.0.1:8443/webhooks/warmbly/outcome" \

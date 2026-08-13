@@ -28,9 +28,9 @@ func TestConfengeUIAcceptanceAffordancesPresent(t *testing.T) {
 		`data-testid="confenge-recipient"`,
 		`data-testid="confenge-recipient-input"`,
 		`confenge-stat-`, // template for Sent/Review/etc.
-		"Approve & Queue",
-		"Needs attention",
-		"Exact send preview",
+		"Aprovar e colocar na fila",
+		"Precisa de atenção",
+		"Conteúdo exato que será enviado",
 	}
 	for _, n := range needles {
 		if !strings.Contains(src, n) {

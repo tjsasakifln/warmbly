@@ -4,6 +4,8 @@ import type {
     ConfengeAttentionItem,
     ConfengeDispatchStatus,
     ConfengeDraft,
+    ConfengeFeedSyncResult,
+    ConfengePilotCohortResult,
     ConfengeStatus,
     ConfengeSummary,
     ConfengeTouchpoint,
@@ -54,13 +56,14 @@ export async function listConfengeWorkingQueue(params?: {
     return res.data ?? [];
 }
 
-export async function syncConfengeFeed(manifestUri?: string): Promise<unknown> {
-    return await Request({
+export async function syncConfengeFeed(manifestUri?: string): Promise<ConfengeFeedSyncResult> {
+    const res = await Request<{ data: ConfengeFeedSyncResult }>({
         method: "POST",
         url: "/confenge/sync",
         authorization: true,
         data: manifestUri ? { manifest_uri: manifestUri } : {},
     });
+    return res.data;
 }
 
 export async function listConfengeAccounts(params?: {
@@ -157,6 +160,23 @@ export async function listConfengeReviewTouchpoints(): Promise<ConfengeTouchpoin
 export async function planConfengeCadence(accountId: string, channel?: string): Promise<ConfengeTouchpoint[]> {
   const res = await Request<{ data: ConfengeTouchpoint[] }>({ method: "POST", url: `/confenge/accounts/${accountId}/plan`, authorization: true, data: { channel } });
   return res.data ?? [];
+}
+
+export async function prepareConfengePilotCohort(accountIds: string[]): Promise<ConfengePilotCohortResult> {
+  const stableIds = [...new Set(accountIds)].sort();
+  let hash = 2166136261;
+  for (const char of stableIds.join(",")) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  const res = await Request<{ data: ConfengePilotCohortResult }>({
+    method: "POST",
+    url: "/confenge/pilot/cohort/prepare",
+    authorization: true,
+    headers: { "Idempotency-Key": `confenge-pilot-${(hash >>> 0).toString(16)}` },
+    data: { account_ids: stableIds },
+  });
+  return res.data;
 }
 
 export async function generateConfengeTouchpoint(id: string): Promise<ConfengeTouchpoint> {

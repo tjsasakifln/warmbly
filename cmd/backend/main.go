@@ -245,6 +245,7 @@ func main() {
 	var attachmentRepoForHandler repository.AttachmentRepository
 	var leadSyncServiceForHandler leadsync.Service
 	var confengeServiceForHandler confenge.Service
+	var confengeConfigForHandler confenge.Config
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -983,9 +984,16 @@ func main() {
 		// CONFENGE outreach staging: extra-cli feed import. Off by default
 		// (CONFENGE_OUTREACH_ENABLED=false). Fail closed on insecure prod config.
 		confengeCfg := confenge.LoadConfig()
+		confengeConfigForHandler = confengeCfg
 		if err := confengeCfg.ValidateStartup(os.Getenv("APP_ENV")); err != nil {
 			sentry.CaptureException(err)
 			log.Fatalf("confenge config: %v", err)
+		}
+		if confengeCfg.OperatorMode {
+			if _, err := confenge.ValidateOperatorIdentity(ctx, confengeCfg, userRepostory, organizationService); err != nil {
+				sentry.CaptureException(err)
+				log.Fatalf("confenge operator config: %v", err)
+			}
 		}
 		outreachRepo := repository.NewOutreachRepository(primaryDB.Pool)
 		confengeServiceForHandler = confenge.NewServiceWithAI(confengeCfg, outreachRepo, auditService, aiProvider)
@@ -1563,6 +1571,7 @@ func main() {
 
 		// CONFENGE outreach staging (feature-flagged)
 		ConfengeService: confengeServiceForHandler,
+		ConfengeConfig:  confengeConfigForHandler,
 
 		WebsocketURI: websocketURI,
 

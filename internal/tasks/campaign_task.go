@@ -599,6 +599,22 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 			executionStatus = "completed"
 			return nil
 
+		case confenge.GateCommercialBlock:
+			// Target-fit is reversible. Skip this detached/ineligible lead without
+			// bounce-marking or adding a sticky global recipient suppression.
+			log.Info().Str("campaign_id", campaign.ID.String()).Str("contact", contact.Email).Str("reason", gate.Reason).Msg("confenge commercial authorization blocked")
+			_ = s.taskRepo.UpdateTaskStatusWithLock(ctx, taskID, "skipped_suppressed")
+			if s.campaignLogRepo != nil {
+				_ = s.campaignLogRepo.CreateLog(ctx, &repository.CampaignLogEntry{
+					CampaignID: campaign.ID, EventType: "target_fit_blocked",
+					Message:  fmt.Sprintf("CONFENGE target-fit blocked %s: %s", contact.Email, gate.Reason),
+					Metadata: map[string]interface{}{"reason": gate.Reason},
+				})
+			}
+			_ = s.createCampaignTask(ctx, campaign.ID, accountID, nextTime)
+			executionStatus = "completed"
+			return nil
+
 		case confenge.GateAlready:
 			// Idempotent success: ensure progress advances even if a prior crash
 			// committed the governor slot without RecordEmailSent.

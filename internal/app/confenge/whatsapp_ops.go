@@ -46,6 +46,9 @@ func (s *service) DecideChannel(ctx context.Context, orgID, accountID uuid.UUID,
 	if err != nil || acc == nil {
 		return nil, errx.New(errx.NotFound, "account not found")
 	}
+	if err := RequireTargetFit(acc); err != nil {
+		return nil, errx.New(errx.BadRequest, err.Error())
+	}
 	var cand *models.OutreachContactCandidate
 	if contactID != nil {
 		cand, err = s.repo.GetCandidate(ctx, orgID, *contactID)
@@ -101,6 +104,9 @@ func (s *service) GenerateWhatsAppDraft(ctx context.Context, orgID, userID, acco
 	acc, err := s.repo.GetAccount(ctx, orgID, accountID)
 	if err != nil || acc == nil {
 		return nil, errx.New(errx.NotFound, "account not found")
+	}
+	if err := RequireTargetFit(acc); err != nil {
+		return nil, errx.New(errx.BadRequest, err.Error())
 	}
 	if acc.DoNotContact || acc.Blocked {
 		return nil, errx.New(errx.BadRequest, "account is blocked or DO_NOT_CONTACT")
