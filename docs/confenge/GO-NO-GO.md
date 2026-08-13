@@ -1,5 +1,12 @@
 # GO / NO-GO
 
+> Historical evidence from 2026-08-08. Superseded by the PR #45 operational
+> validation on 2026-08-13. This file is not authorization to send. The current
+> state is 8 generic recipients in `NEEDS_REVIEW`, 22 accounts blocked by
+> `recipient_evidence_date_missing`, 0 approved, 0 sent, and dispatch paused.
+> Human recipient validation, review, dispatch, and send GO/NO-GO remain tracked
+> in issues #39, #41, #42, and #43.
+
 ## Verdict
 
 ```text
