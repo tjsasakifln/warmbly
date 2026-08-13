@@ -368,6 +368,15 @@ func TestDraftUserPromptContainsNoResearchInstruction(t *testing.T) {
 	}
 	// Provider interface usage stays Complete-only: AIDraftGenerator uses Complete.
 	var _ generation.Provider
+	pb := MustPlaybook()
+	st, plan := BuildOutboundPlan(pb, in.Account, in.Contact, in.Evidence, 1)
+	_ = st
+	planUser := draftUserPromptWithPlan(in, plan)
+	for _, bad := range []string{"fact_to_mention", "internal_structure_hypothesis", "web_search"} {
+		if strings.Contains(planUser, bad) {
+			t.Fatalf("plan prompt leaked %q", bad)
+		}
+	}
 }
 
 func TestPromptVersionV4(t *testing.T) {

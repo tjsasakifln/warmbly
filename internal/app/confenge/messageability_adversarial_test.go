@@ -51,6 +51,7 @@ func TestAdversarialThirtyScenarios(t *testing.T) {
 		{"30_closeout_generic", "ENCERRAMENTO_CONTRATUAL", "ENCERRAMENTO", "vigência encerra em 60 dias no contrato 220/2023", "", true, MessageabilityReady},
 		{"31_extras_weak", "EXTRACONTRATUAIS", "PORTFOLIO", "há contratos públicos", "Engenheiro", false, MessageabilityNeedsEnrichment},
 		{"32_monitor_medicao", "MONITORAMENTO_CONTRATUAL", "MEDICAO", "medição do lote 2 do contrato de pavimentação publicada", "Diretor", false, MessageabilityReady},
+		{"33_reajuste_edital_mismatch", "REAJUSTE", "EDITAL", "edital 45/2026 publicado com quantitativos a conferir", "Sócio", false, MessageabilityNeedsEnrichment},
 	}
 	if len(cases) < 30 {
 		t.Fatalf("need >=30 cases, got %d", len(cases))
@@ -85,6 +86,7 @@ func TestAdversarialThirtyScenarios(t *testing.T) {
 				if !consultantWouldSend(out.BodyText, plan) {
 					t.Fatalf("consultant would rewrite this READY message:\n%s", out.BodyText)
 				}
+				assertServiceCoherentCopy(t, tc.svc, out.BodyText, plan)
 				if tc.generic && (strings.Contains(out.BodyText, "Pessoa") || strings.HasPrefix(out.BodyText, "Olá, Fulano")) {
 					t.Fatalf("generic invented name: %s", out.BodyText)
 				}
@@ -124,18 +126,40 @@ func consultantWouldSend(body string, plan OutboundMessagePlan) bool {
 	if plan.Hook == "" || plan.ValueUnit == "" || plan.CTA == "" {
 		return false
 	}
-	// Must mention a concrete hook token and a question.
 	if !strings.Contains(body, "?") {
 		return false
 	}
 	if countWords(body) < 20 || countWords(body) > 180 {
 		return false
 	}
-	low := strings.ToLower(body)
-	if strings.Contains(low, "somos líderes") || strings.Contains(low, "agendar 30") {
+	low := foldASCII(body)
+	if strings.Contains(low, "somos lideres") || strings.Contains(low, "agendar 30") {
+		return false
+	}
+	svc := canonicalServiceForSubject(plan.ServiceCode)
+	if !serviceUsesContractOpener(svc) && strings.Contains(low, ContractFramedOpener) {
+		return false
+	}
+	if !serviceHookFits(svc, low+" "+foldASCII(plan.Hook)) {
 		return false
 	}
 	return true
+}
+
+func assertServiceCoherentCopy(t *testing.T, svc, body string, plan OutboundMessagePlan) {
+	t.Helper()
+	low := foldASCII(body)
+	canon := canonicalServiceForSubject(svc)
+	if !serviceUsesContractOpener(canon) && strings.Contains(low, ContractFramedOpener) {
+		t.Fatalf("%s READY copy is contract-framed on a non-contract hook:\n%s", svc, body)
+	}
+	if !serviceHookFits(canon, low+" "+foldASCII(plan.Hook)) {
+		t.Fatalf("%s READY copy/hook is not service-coherent:\n%s", svc, body)
+	}
+	wantLead := foldASCII(hookLeadForService(canon))
+	if wantLead != "" && !strings.Contains(low, wantLead) {
+		t.Fatalf("%s READY copy missing service opener %q:\n%s", svc, hookLeadForService(canon), body)
+	}
 }
 
 func TestAdversarialCountLog(t *testing.T) {

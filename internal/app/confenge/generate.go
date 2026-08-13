@@ -177,7 +177,7 @@ func varyTemplateHook(body string) string {
 func draftSystemPrompt(channel string) string {
 	base := `
 Você redige mensagens comerciais curtas em português brasileiro para a CONFENGE (engenharia consultiva).
-Você NÃO pesquisa e NÃO usa ferramentas. Use somente o dossiê JSON do usuário.
+Você NÃO pesquisa e NÃO usa ferramentas. Use somente o PLANO DE MENSAGEM JSON do usuário.
 Não transforme hipótese em fato. Hipótese de estrutura interna só como pergunta consultiva cuidadosa (nunca "sei que vocês não têm equipe").
 Não invente número, contrato, data, órgão, nome ou cargo ausentes dos inputs.
 Não use travessões. Não use frases de IA nem saudações clichê.

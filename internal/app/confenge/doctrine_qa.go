@@ -315,6 +315,17 @@ func ApplyHardCommercialQA(res *DoctrineQAResult, out *DraftOutput, st *Outreach
 		res.Errors = append(res.Errors, "service/vocabulary mismatch: crédito")
 		res.Alerts = append(res.Alerts, "vocab_mismatch")
 	}
+	canon := svcCode
+	if pb != nil {
+		if s := pb.ResolveServicePlaybook(svcCode); s != nil {
+			canon = s.Code
+		}
+	}
+	if canon != "" && !serviceUsesContractOpener(canon) && strings.Contains(foldASCII(blob), ContractFramedOpener) {
+		res.OK = false
+		res.Errors = append(res.Errors, "contract-framed opener on a non-contract service")
+		res.Alerts = append(res.Alerts, "hook_frame_mismatch")
+	}
 
 	if isInitial && body != "" {
 		if isFactThenGenericCTA(body) {

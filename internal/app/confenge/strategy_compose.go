@@ -59,7 +59,11 @@ func ComposeFromPlan(plan OutboundMessagePlan, acc *models.OutreachAccount, cand
 	default:
 		body = greeting + ",\n\n"
 		if hook != "" {
-			body += "Pelo contrato publicado, " + ensureLowerStart(hook)
+			lead := strings.TrimSpace(plan.HookLead)
+			if lead == "" {
+				lead = hookLeadForService(plan.ServiceCode)
+			}
+			body += lead + ", " + ensureLowerStart(hook)
 			if !strings.HasSuffix(strings.TrimSpace(hook), ".") {
 				body += "."
 			}
@@ -163,6 +167,15 @@ func composeWhatsApp(greeting, hook, cta string) string {
 	return body
 }
 
+func canonicalServiceForSubject(code string) string {
+	if pb, _ := LoadPlaybook(); pb != nil {
+		if s := pb.ResolveServicePlaybook(code); s != nil {
+			return s.Code
+		}
+	}
+	return strings.ToUpper(strings.TrimSpace(code))
+}
+
 func planSubject(plan OutboundMessagePlan, company, hook, channel string) string {
 	if IsWhatsAppChannel(channel) {
 		return ""
@@ -173,7 +186,7 @@ func planSubject(plan OutboundMessagePlan, company, hook, channel string) string
 		}
 		return "Re: conversa anterior"
 	}
-	switch strings.ToUpper(plan.ServiceCode) {
+	switch strings.ToUpper(canonicalServiceForSubject(plan.ServiceCode)) {
 	case "REAJUSTE":
 		return "Reajuste contratual"
 	case "MEDICOES":
@@ -182,6 +195,10 @@ func planSubject(plan OutboundMessagePlan, company, hook, channel string) string
 		return trimSubject("Aditivo " + firstNonEmpty(company, ""))
 	case "ENCERRAMENTO_CONTRATUAL":
 		return "Encerramento contratual"
+	case "APOIO_LICITACAO":
+		return trimSubject("Edital " + firstNonEmpty(company, ""))
+	case "INTELIGENCIA_PNCP":
+		return trimSubject("Recorte PNCP " + firstNonEmpty(company, ""))
 	}
 	if hook != "" && hasConcreteToken(hook) {
 		return trimSubject(firstWords(hook, 4))
@@ -212,7 +229,8 @@ func ensureLowerStart(s string) string {
 func draftSystemPromptDoctrine(channel string, plan OutboundMessagePlan) string {
 	base := draftSystemPrompt(channel)
 	base += "\n\nDOUTRINA " + OutreachDoctrineVersion + " / " + ComposerVersion + ":\n"
-	base += "- Gere copy SOMENTE a partir do PLANO DE MENSAGEM (hook, relevance, value_unit, cta).\n"
+	base += "- Gere copy SOMENTE a partir do PLANO DE MENSAGEM (hook_lead, hook, relevance, value_unit, cta).\n"
+	base += "- Use hook_lead como abertura; não troque por 'Pelo contrato publicado' se o plano trouxe outro lead.\n"
 	base += "- NÃO use hipóteses internas, scores, metadados crus ou raciocínio de playbook.\n"
 	base += "- NÃO escreva 'crédito' salvo se o serviço do plano autorizar explicitamente.\n"
 	base += "- NÃO despeje campos como objeto:/órgão:/UF:/CNPJ:.\n"
@@ -225,32 +243,62 @@ func draftSystemPromptDoctrine(channel string, plan OutboundMessagePlan) string 
 	return base
 }
 
-// draftUserPromptWithPlan includes only the outbound-safe plan before the dossier.
+// draftUserPromptWithPlan feeds the model only outbound-safe plan fields plus
+// identity needed for greeting. It must not include fact_to_mention dumps,
+// offer rationale, or internal hypotheses.
 func draftUserPromptWithPlan(in GenerateInput, plan OutboundMessagePlan) string {
-	dossier := draftUserPrompt(in)
+	channel := in.Channel
+	if channel == "" {
+		channel = ChannelEmailInitial
+	}
+	identity := map[string]any{
+		"channel":        channel,
+		"recipient_mode": plan.RecipientMode,
+	}
+	if in.Account != nil {
+		identity["company"] = firstNonEmpty(in.Account.NomeFantasia, in.Account.RazaoSocial)
+	}
+	if plan.RecipientMode == RecipientModeNamed && in.Contact != nil {
+		if name := strings.TrimSpace(in.Contact.Name); name != "" && !isGenericRecipient(in.Contact) {
+			identity["first_name"] = firstName(name)
+		}
+	}
+	if in.PriorSubject != "" {
+		identity["prior_subject"] = in.PriorSubject
+	}
+	if in.PriorBody != "" {
+		identity["prior_body"] = in.PriorBody
+	}
+	if in.InboundReply != "" {
+		identity["inbound_reply"] = in.InboundReply
+	}
 	safe := struct {
-		Messageability string   `json:"messageability"`
-		RecipientMode  string   `json:"recipient_mode"`
-		ServiceCode    string   `json:"service_code"`
-		Hook           string   `json:"hook"`
-		Relevance      string   `json:"relevance"`
-		ValueUnit      string   `json:"value_unit"`
-		CTA            string   `json:"cta"`
-		EvidenceIDs    []string `json:"evidence_ids"`
-		CheckPoints    []string `json:"check_points"`
+		Messageability string         `json:"messageability"`
+		RecipientMode  string         `json:"recipient_mode"`
+		ServiceCode    string         `json:"service_code"`
+		HookLead       string         `json:"hook_lead"`
+		Hook           string         `json:"hook"`
+		Relevance      string         `json:"relevance"`
+		ValueUnit      string         `json:"value_unit"`
+		CTA            string         `json:"cta"`
+		EvidenceIDs    []string       `json:"evidence_ids"`
+		CheckPoints    []string       `json:"check_points"`
+		Identity       map[string]any `json:"identity"`
 	}{
 		Messageability: plan.Messageability,
 		RecipientMode:  plan.RecipientMode,
 		ServiceCode:    plan.ServiceCode,
+		HookLead:       plan.HookLead,
 		Hook:           plan.Hook,
 		Relevance:      plan.Relevance,
 		ValueUnit:      plan.ValueUnit,
 		CTA:            plan.CTA,
 		EvidenceIDs:    plan.EvidenceIDs,
 		CheckPoints:    plan.CheckPoints,
+		Identity:       identity,
 	}
 	b, _ := json.MarshalIndent(safe, "", "  ")
-	return "PLANO DE MENSAGEM (único material autorizado na copy; não interpolar raciocínio interno):\n" + string(b) + "\n\n" + dossier
+	return "PLANO DE MENSAGEM (único material autorizado na copy; não interpolar raciocínio interno, dumps ou hipóteses):\n" + string(b)
 }
 
 // StrategyCodeFor stamps doctrine + offer + CTA for audit.

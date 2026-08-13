@@ -41,6 +41,7 @@ type OutboundMessagePlan struct {
 	RecipientMode    string   `json:"recipient_mode"`
 	ServiceCode      string   `json:"service_code"`
 	Hook             string   `json:"hook"`
+	HookLead         string   `json:"hook_lead,omitempty"`
 	Relevance        string   `json:"relevance"`
 	ValueUnit        string   `json:"value_unit"`
 	CTA              string   `json:"cta"`
@@ -164,6 +165,10 @@ func EvaluateMessageability(
 		if looksLikeMetadataDump(rawFact) && (hook == "" || looksLikeMetadataDump(hook) || countWords(hook) < 8) {
 			add("metadata_dump", "O fato público chegou como metadado serializado, não como gancho comercial.")
 		}
+		if hook != "" && !serviceHookFits(svc.Code, blob) {
+			add("hook_service_mismatch",
+				"O fato público não é coerente com o serviço oferecido; não sustenta um primeiro contato.")
+		}
 	}
 
 	// MONITORAMENTO_CONTRATUAL: publication of a contract of value R$ X is
@@ -179,6 +184,7 @@ func EvaluateMessageability(
 	plan.CTA = outboundCTA(st, pb, svc)
 	plan.Relevance = outboundRelevance(svc.Code, hook, hasEvent)
 	plan.Hook = hook
+	plan.HookLead = hookLeadForService(svc.Code)
 
 	if strings.TrimSpace(plan.ValueUnit) == "" || isAbstractValueUnit(plan.ValueUnit) {
 		add("missing_value_unit", "Não há unidade de valor concreta para oferecer neste primeiro contato.")
@@ -219,7 +225,7 @@ func EvaluateMessageability(
 			plan.Reason = "O dossiê atual não sustenta ainda um primeiro contato específico e defensável."
 		}
 		// Fail closed: no sendable fields when not READY.
-		plan.Hook, plan.Relevance, plan.ValueUnit, plan.CTA = "", "", "", ""
+		plan.Hook, plan.HookLead, plan.Relevance, plan.ValueUnit, plan.CTA = "", "", "", "", ""
 		plan.CheckPoints = nil
 		return plan
 	}
@@ -408,6 +414,82 @@ func hasConcreteContractEvent(blob string) bool {
 		}
 	}
 	return false
+}
+
+// serviceHookFits reports whether the public fact is coherent with the service.
+// A non-empty fact is not enough: REAJUSTE + edital is not READY.
+func serviceHookFits(serviceCode, blob string) bool {
+	blob = foldASCII(blob)
+	if strings.TrimSpace(blob) == "" {
+		return false
+	}
+	tokens := serviceHookTokens(serviceCode)
+	if len(tokens) == 0 {
+		return false
+	}
+	for _, tok := range tokens {
+		if tok != "" && strings.Contains(blob, foldASCII(tok)) {
+			return true
+		}
+	}
+	return false
+}
+
+func serviceHookTokens(serviceCode string) []string {
+	switch strings.ToUpper(strings.TrimSpace(serviceCode)) {
+	case "REAJUSTE":
+		return []string{"reajuste", "anualidade", "aniversario", "aniversário"}
+	case "REEQUILIBRIO":
+		return []string{"reequilibrio", "reequilíbrio", "desequilibrio", "desequilíbrio"}
+	case "MEDICOES":
+		return []string{"medicao", "medição", "glosa"}
+	case "ADITIVOS":
+		return []string{"aditivo", "prorrogacao", "prorrogação", "prorrogado"}
+	case "EXTRACONTRATUAIS":
+		return []string{"extra", "extracontratual", "ordem de servico", "ordem de serviço"}
+	case "PLANILHAS":
+		return []string{"planilha", "quantitativo", "quantitativos"}
+	case "ENCERRAMENTO_CONTRATUAL":
+		return []string{"encerramento", "vigencia encerra", "vigência encerra", "termino", "término", "close-out", "closeout"}
+	case "APOIO_LICITACAO":
+		return []string{"edital", "licitacao", "licitação", "proposta"}
+	case "MONITORAMENTO_CONTRATUAL":
+		return []string{"aditivo", "medicao", "medição", "reajuste", "prorrogacao", "prorrogação", "encerramento", "ordem de servico", "ordem de serviço"}
+	case "DIAGNOSTICO":
+		return []string{"prorrogacao", "prorrogação", "prorrogado", "aditivo", "medicao", "medição", "reajuste", "encerramento"}
+	case "INTELIGENCIA_PNCP":
+		return []string{"recorte", "orgao", "órgão", "orgaos", "órgãos", "mercado", "pncp"}
+	case "BACKOFFICE":
+		return []string{"pico", "volume", "carga", "medicoes", "medições"}
+	default:
+		return nil
+	}
+}
+
+func hookLeadForService(serviceCode string) string {
+	switch strings.ToUpper(strings.TrimSpace(serviceCode)) {
+	case "APOIO_LICITACAO":
+		return "Pelo edital publicado"
+	case "INTELIGENCIA_PNCP":
+		return "Pelo recorte público do PNCP"
+	case "DIAGNOSTICO", "BACKOFFICE":
+		return "Pelo que está publicado"
+	default:
+		return "Pelo contrato publicado"
+	}
+}
+
+// ContractFramedOpener is the default first-touch lead for contract-family services.
+// Non-contract services must not use this phrase.
+const ContractFramedOpener = "pelo contrato publicado"
+
+func serviceUsesContractOpener(serviceCode string) bool {
+	switch strings.ToUpper(strings.TrimSpace(serviceCode)) {
+	case "APOIO_LICITACAO", "INTELIGENCIA_PNCP", "DIAGNOSTICO", "BACKOFFICE":
+		return false
+	default:
+		return true
+	}
 }
 
 func foldASCII(s string) string {

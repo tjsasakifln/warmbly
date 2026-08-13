@@ -180,13 +180,14 @@ func TestGoldenServiceMatrix(t *testing.T) {
 				t.Fatal("READY must produce copy")
 			}
 			assertNoLeaks(t, out.BodyText)
+			assertServiceCoherentCopy(t, svc, out.BodyText, plan)
 			if !CreditVocabAllowed(pb, svc) && creditWordIn(out.BodyText) {
 				t.Fatalf("crédito in non-authorized service copy: %s", out.BodyText)
 			}
 			stReady := PlanOutreachStrategy(pb, acc, named, ev, 1)
 			dqa := ValidateDoctrineCopy(&out, &stReady, pb, ChannelEmailInitial)
 			for _, e := range dqa.Errors {
-				if strings.Contains(e, "reasoning") || strings.Contains(e, "metadata") || strings.Contains(e, "crédito") {
+				if strings.Contains(e, "reasoning") || strings.Contains(e, "metadata") || strings.Contains(e, "crédito") || strings.Contains(e, "contract-framed") {
 					t.Fatalf("READY copy failed hard QA: %s\n%s", e, out.BodyText)
 				}
 			}
@@ -323,6 +324,77 @@ func TestLooksLikeMetadataDump(t *testing.T) {
 	if looksLikeMetadataDump(natural) {
 		t.Fatal("natural fact is not a dump")
 	}
+}
+
+func TestReajusteEditalIsNotReady(t *testing.T) {
+	pb := MustPlaybook()
+	acc := testAccount("REAJUSTE", "EDITAL", "edital 45/2026 publicado com quantitativos a conferir")
+	cand := testCand("Sócio")
+	ev := []models.OutreachEvidence{{SourceEvidenceID: "ev-1", EpistemicClass: models.OutreachEpistemicConfirmedFact, Synthesis: acc.FactToMention}}
+	_, plan := BuildOutboundPlan(pb, acc, cand, ev, 1)
+	if plan.Messageability == MessageabilityReady {
+		t.Fatalf("REAJUSTE + edital must not be READY: %+v", plan)
+	}
+	out := ComposeFromPlan(plan, acc, cand, ChannelEmailInitial)
+	if out.BodyText != "" {
+		t.Fatalf("fabricated: %s", out.BodyText)
+	}
+}
+
+func TestLicitationAndPNCPOpenersAreNotContractFramed(t *testing.T) {
+	pb := MustPlaybook()
+	cases := []struct {
+		svc, fact, forbid, want string
+	}{
+		{"APOIO_LICITACAO", "edital 45/2026 publicado com quantitativos a conferir", ContractFramedOpener, "pelo edital publicado"},
+		{"INTELIGENCIA_PNCP", "novos órgãos em SC no recorte PNCP do último trimestre", ContractFramedOpener, "pelo recorte publico do pncp"},
+	}
+	for _, tc := range cases {
+		acc := testAccount(tc.svc, "EVENT", tc.fact)
+		cand := testCand("Diretor")
+		ev := []models.OutreachEvidence{{SourceEvidenceID: "ev-1", EpistemicClass: models.OutreachEpistemicConfirmedFact, Synthesis: tc.fact}}
+		_, plan := BuildOutboundPlan(pb, acc, cand, ev, 1)
+		out := ComposeFromPlan(plan, acc, cand, ChannelEmailInitial)
+		if plan.Messageability != MessageabilityReady {
+			t.Fatalf("%s: want READY got %s %v", tc.svc, plan.Messageability, plan.ReasonCodes)
+		}
+		low := foldASCII(out.BodyText)
+		if strings.Contains(low, tc.forbid) {
+			t.Fatalf("%s contract-framed opener:\n%s", tc.svc, out.BodyText)
+		}
+		if !strings.Contains(low, tc.want) {
+			t.Fatalf("%s missing opener %q:\n%s", tc.svc, tc.want, out.BodyText)
+		}
+	}
+}
+
+func TestAIPromptIsPlanOnly(t *testing.T) {
+	pb := MustPlaybook()
+	acc := testAccount("REAJUSTE", "ANUALIDADE", "contrato 1149/2022 atingiu aniversário de reajuste em 2024")
+	acc.OfferRationale = "momento comercial indicado pelo extra-cli"
+	cand := testCand("Sócio")
+	ev := []models.OutreachEvidence{{
+		SourceEvidenceID: "ev-1", EpistemicClass: models.OutreachEpistemicCommercialHypothesis,
+		Synthesis: "eventos públicos relevantes sem triagem",
+	}}
+	st, plan := BuildOutboundPlan(pb, acc, cand, ev, 1)
+	if plan.Messageability != MessageabilityReady {
+		t.Fatalf("expected READY for strong reajuste, got %s %v", plan.Messageability, plan.ReasonCodes)
+	}
+	user := draftUserPromptWithPlan(BuildGenerateInput(ChannelEmailInitial, acc, cand, ev, nil), plan)
+	for _, bad := range []string{
+		"fact_to_mention", "internal_structure_hypothesis", "offer rationale",
+		"objeto:", "órgão:", "eventos públicos relevantes sem triagem",
+		"momento comercial indicado pelo extra-cli", "ProblemHypothesis",
+	} {
+		if strings.Contains(user, bad) {
+			t.Fatalf("AI prompt leaked %q:\n%s", bad, user)
+		}
+	}
+	if !strings.Contains(user, `"hook"`) || !strings.Contains(user, plan.Hook) {
+		t.Fatalf("AI prompt must carry outbound-safe hook: %s", user)
+	}
+	_ = st
 }
 
 func TestAIAndTemplateShareGate(t *testing.T) {
