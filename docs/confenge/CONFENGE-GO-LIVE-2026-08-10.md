@@ -1,5 +1,11 @@
 # CONFENGE go-live card — 2026-08-10 09:00 America/Sao_Paulo
 
+> Historical card from 2026-08-10. Superseded by the PR #45 operational
+> validation on 2026-08-13. This file is not authorization to resume dispatch
+> or send. The current state is 8 generic recipients in `NEEDS_REVIEW`, 22
+> accounts blocked by `recipient_evidence_date_missing`, 0 approved, 0 sent,
+> and dispatch paused. Issues #39, #41, #42, and #43 remain the active gates.
+
 ## Verdict
 
 ```text
