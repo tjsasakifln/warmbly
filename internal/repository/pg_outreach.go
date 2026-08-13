@@ -1062,13 +1062,22 @@ func (r *outreachRepository) ClaimPilotMembership(ctx context.Context, membershi
 	err = tx.QueryRow(ctx, `
 		SELECT true
 		FROM outreach_accounts a
-		JOIN outreach_feed_sync_state fs ON fs.organization_id=a.organization_id
+		LEFT JOIN outreach_feed_sync_state fs ON fs.organization_id=a.organization_id
+		JOIN outreach_import_runs ir ON ir.id=a.last_import_run_id AND ir.organization_id=a.organization_id
 		JOIN outreach_contact_candidates c ON c.id=$3 AND c.organization_id=a.organization_id AND c.account_id=a.id
 		JOIN outreach_touchpoints t ON t.id=$4 AND t.organization_id=a.organization_id AND t.account_id=a.id
 		JOIN outreach_drafts d ON d.id=$5 AND d.organization_id=a.organization_id AND d.account_id=a.id
 		WHERE a.id=$2 AND a.organization_id=$1 AND a.cnpj14=$6
-		  AND fs.last_status='completed' AND fs.last_snapshot_hash=$8 AND fs.last_run_id=$9
-		  AND fs.source_generated_at=$10 AND a.source_run_id=$9
+		  AND (
+			(fs.organization_id IS NOT NULL
+			  AND fs.last_status='completed' AND fs.last_snapshot_hash=$8 AND fs.last_run_id=$9
+			  AND fs.source_generated_at=$10)
+			OR
+			(fs.organization_id IS NULL
+			  AND ir.status='completed' AND ir.dry_run=false
+			  AND ir.snapshot_hash=$8 AND ir.source_run_id=$9 AND ir.source_generated_at=$10)
+		  )
+		  AND a.source_run_id=$9
 		  AND a.last_import_run_id IS NOT NULL AND c.last_import_run_id=a.last_import_run_id
 		  AND c.updated_at=$11
 		  AND a.target_fit_eligible=true AND a.target_fit_fresh=true
@@ -1092,7 +1101,7 @@ func (r *outreachRepository) ClaimPilotMembership(ctx context.Context, membershi
 		  AND d.subject=t.subject AND d.body_text=t.body_text
 		  AND lower(btrim(t.recipient))=lower(btrim(c.email))
 		  AND lower(btrim(d.recipient_email))=lower(btrim(c.email))
-		FOR UPDATE OF a, fs, c, t, d`, membership.OrganizationID, membership.AccountID,
+		FOR UPDATE OF a, ir, c, t, d`, membership.OrganizationID, membership.AccountID,
 		membership.ContactCandidateID, membership.TouchpointID, membership.DraftID,
 		membership.CNPJ14, membership.ContextHash, membership.SnapshotHash,
 		membership.SourceRunID, membership.FeedGeneratedAt, membership.CandidateUpdatedAt).Scan(&valid)
