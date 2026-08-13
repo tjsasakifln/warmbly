@@ -657,6 +657,7 @@ test.describe("CONFENGE product acceptance UI", () => {
     await expect(page.getByTestId("confenge-evidence")).toBeVisible();
     await expect(page.getByTestId("confenge-recipient")).toBeVisible();
     await expect(page.getByTestId("confenge-company")).toBeVisible();
+    await expect(page.getByText("Por que esta conta", { exact: true })).toBeVisible();
 
     const beforeEdit = await body.inputValue();
     expect(beforeEdit.trim().length).toBeGreaterThan(10);

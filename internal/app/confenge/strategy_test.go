@@ -52,6 +52,10 @@ func TestPlanStrategyAnnualidadeNoUnpaidClaim(t *testing.T) {
 	if st.WhyNow == "" || st.WhyThisAccount == "" {
 		t.Fatal("why you/now required")
 	}
+	explain := ExplainStrategy(st, "contato@empresa.com.br")
+	if explain.WhyThisAccount != st.WhyThisAccount {
+		t.Fatalf("operator projection lost why_this_account: got %q want %q", explain.WhyThisAccount, st.WhyThisAccount)
+	}
 	if !containsStr(st.RiskFlags, "annualidade_verify_only") {
 		t.Fatalf("flags %v", st.RiskFlags)
 	}

@@ -266,6 +266,7 @@ export type ConfengeAttentionItem = {
 
 
 export type ConfengeStrategyExplain = {
+  why_this_account?: string;
   why_now?: string;
   fact_used?: string;
   hypothesis?: string;

@@ -701,6 +701,7 @@ export default function ConfengePage() {
                   <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">
                     Estratégia aplicada
                   </div>
+                  <StrategyRow label="Por que esta conta" value={current.strategy_explain?.why_this_account} />
                   <StrategyRow label="Por que agora" value={current.strategy_explain?.why_now || current.account?.moment_summary} />
                   <StrategyRow label="Fato usado" value={current.strategy_explain?.fact_used || current.fact_used} />
                   <StrategyRow label="Hipótese" value={current.strategy_explain?.hypothesis} />

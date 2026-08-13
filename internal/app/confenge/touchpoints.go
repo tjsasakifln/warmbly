@@ -148,7 +148,7 @@ func (s *service) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, li
 			}
 			ex := ExplainStrategy(st, list[i].Recipient)
 			list[i].StrategyExplain = map[string]any{
-				"why_now": ex.WhyNow, "fact_used": ex.FactUsed, "hypothesis": ex.Hypothesis,
+				"why_this_account": ex.WhyThisAccount, "why_now": ex.WhyNow, "fact_used": ex.FactUsed, "hypothesis": ex.Hypothesis,
 				"service": ex.Service, "offer": ex.Offer, "recipient": ex.Recipient,
 				"sources": ex.Sources, "touch": ex.Touch, "experiment": ex.Experiment,
 				"doctrine_version": ex.Doctrine,
@@ -162,7 +162,7 @@ func (s *service) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, li
 						list[i].DoctrineAlerts = val.DoctrineAlerts
 						if val.StrategyExplain != nil {
 							list[i].StrategyExplain = map[string]any{
-								"why_now": val.StrategyExplain.WhyNow, "fact_used": val.StrategyExplain.FactUsed,
+								"why_this_account": val.StrategyExplain.WhyThisAccount, "why_now": val.StrategyExplain.WhyNow, "fact_used": val.StrategyExplain.FactUsed,
 								"hypothesis": val.StrategyExplain.Hypothesis, "service": val.StrategyExplain.Service,
 								"offer": val.StrategyExplain.Offer, "recipient": val.StrategyExplain.Recipient,
 								"sources": val.StrategyExplain.Sources, "touch": val.StrategyExplain.Touch,
