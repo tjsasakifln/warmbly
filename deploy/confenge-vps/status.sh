@@ -7,6 +7,11 @@ source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 load_vps_env
 cd "$ROOT"
 
+DEPLOYED_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+DEPLOYED_DIRTY="$(git -C "$ROOT" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+echo "DEPLOYED_SHA=$DEPLOYED_SHA"
+echo "DEPLOYED_DIRTY=$DEPLOYED_DIRTY"
+
 API="$(api_base)"
 SMTP_HOST="${CONFENGE_SMTP_HOST:-smtp.hostinger.com}"
 SMTP_PORT="${CONFENGE_SMTP_PORT:-587}"
