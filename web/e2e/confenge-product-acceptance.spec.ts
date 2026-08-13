@@ -283,13 +283,19 @@ async function preparePilotReviewTouchpoint(token: string): Promise<{
   accountId: string;
   touchpointId: string;
 }> {
-  const accounts = await apiJSON<{ data?: Array<{ id: string }> }>(
+  const feed = JSON.parse(fs.readFileSync(FEED_PATH, "utf8")) as {
+    leads?: Array<{ company?: { cnpj14?: string } }>;
+  };
+  const importedCNPJs = new Set(
+    (feed.leads || []).map((lead) => lead.company?.cnpj14 || "").filter(Boolean),
+  );
+  const accounts = await apiJSON<{ data?: Array<{ id: string; cnpj14?: string }> }>(
     token,
     "GET",
     "/v1/confenge/accounts?limit=100",
   );
   let lastBlock = "no account returned by the current feed";
-  for (const account of accounts.data || []) {
+  for (const account of (accounts.data || []).filter((item) => importedCNPJs.has(item.cnpj14 || ""))) {
     const res = await fetch(`${API}/v1/confenge/pilot/cohort/prepare`, {
       method: "POST",
       headers: {
