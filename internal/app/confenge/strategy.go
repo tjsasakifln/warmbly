@@ -60,17 +60,19 @@ type OutreachStrategy struct {
 
 // StrategyExplain is the compact operator cockpit projection.
 type StrategyExplain struct {
-	WhyThisAccount string   `json:"why_this_account"`
-	WhyNow         string   `json:"why_now"`
-	FactUsed       string   `json:"fact_used"`
-	Hypothesis     string   `json:"hypothesis"`
-	Service        string   `json:"service"`
-	Offer          string   `json:"offer"`
-	Recipient      string   `json:"recipient"`
-	Sources        []string `json:"sources,omitempty"`
-	Touch          string   `json:"touch"`
-	Experiment     string   `json:"experiment,omitempty"`
-	Doctrine       string   `json:"doctrine_version"`
+	WhyThisAccount       string   `json:"why_this_account"`
+	WhyNow               string   `json:"why_now"`
+	FactUsed             string   `json:"fact_used"`
+	Hypothesis           string   `json:"hypothesis"`
+	Service              string   `json:"service"`
+	Offer                string   `json:"offer"`
+	Recipient            string   `json:"recipient"`
+	Sources              []string `json:"sources,omitempty"`
+	Touch                string   `json:"touch"`
+	Experiment           string   `json:"experiment,omitempty"`
+	Doctrine             string   `json:"doctrine_version"`
+	Messageability       string   `json:"messageability,omitempty"`
+	MessageabilityReason string   `json:"messageability_reason,omitempty"`
 }
 
 // PlanOutreachStrategy builds strategy from dossier only (no re-scoring).
@@ -418,6 +420,26 @@ func isGenericPublicFact(s string) bool {
 	}
 	if strings.Contains(t, "ufs observadas nos contratos") {
 		return true
+	}
+	hollow := []string{
+		"empresa possui contrato público",
+		"empresa possui contrato publico",
+		"há contratos públicos",
+		"ha contratos publicos",
+		"há portfólio público observável",
+		"ha portfolio publico observavel",
+		"portfólio público observável",
+		"portfolio publico observavel",
+		"empresa com site institucional",
+		"contratos públicos esporádicos",
+		"contratos publicos esporadicos",
+	}
+	for _, h := range hollow {
+		if t == h || strings.HasPrefix(t, h) {
+			if !hasConcreteContractEvent(t) {
+				return true
+			}
+		}
 	}
 	return false
 }

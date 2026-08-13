@@ -58,10 +58,10 @@ func (fixture *pilotFixture) addReadyAccount(t *testing.T, index int) uuid.UUID 
 	account := &models.OutreachAccount{
 		OrganizationID: fixture.orgID, CNPJ14: cnpj, RazaoSocial: fmt.Sprintf("Construtora %02d LTDA", index),
 		QueueState: models.OutreachQueueReadyToGenerate, CommercialState: "NEW",
-		MomentCode: "NEW_RELEVANT_CONTRACT", MomentSummary: "Contrato público recente observado em fonte oficial.",
+		MomentCode: "ADITIVO_RECENTE", MomentSummary: "Aditivo ao contrato público recente observado em fonte oficial.",
 		MomentObservedAt: &observedAt, MomentEvidenceIDs: []string{"evidence-" + cnpj},
 		ServiceCode: "gestao_monitoramento_contratual", EntryOffer: "PUBLIC_DATA_SNAPSHOT",
-		FactToMention:      "Contrato público de engenharia publicado recentemente em fonte oficial.",
+		FactToMention:      "Aditivo ao contrato público de engenharia publicado recentemente em fonte oficial.",
 		QuestionToAsk:      "Posso compartilhar três pontos documentais para conferência?",
 		CTA:                "Posso compartilhar três pontos documentais para conferência?",
 		MessageContextHash: "context-" + cnpj,

@@ -56,9 +56,15 @@ func (g *AIDraftGenerator) Generate(ctx context.Context, in GenerateInput) (Draf
 		channel = ChannelEmailInitial
 	}
 	pb, _ := LoadPlaybook()
-	st := PlanOutreachStrategy(pb, in.Account, in.Contact, in.Evidence, sequencePosFromChannel(channel, in.Touches))
-	system := draftSystemPromptDoctrine(channel, st)
-	user := draftUserPromptWithStrategy(in, st)
+	st, plan := BuildOutboundPlan(pb, in.Account, in.Contact, in.Evidence, sequencePosFromChannel(channel, in.Touches))
+	if plan.Messageability != MessageabilityReady {
+		out := FailClosedDraft(plan, channel)
+		out.ServiceOverrideAudited = in.ServiceOverrideAudited
+		out.RiskFlags = appendUnique(out.RiskFlags, st.RiskFlags...)
+		return out, g.Provider.Name(), "messageability_gate", nil
+	}
+	system := draftSystemPromptDoctrine(channel, plan)
+	user := draftUserPromptWithPlan(in, plan)
 	model := g.Model
 	if model == "" {
 		model = g.Provider.ModelForTier(true)
@@ -70,12 +76,13 @@ func (g *AIDraftGenerator) Generate(ctx context.Context, in GenerateInput) (Draf
 	out.Channel = channel
 	out.ServiceOverrideAudited = in.ServiceOverrideAudited
 	if out.ServiceCode == "" {
-		out.ServiceCode = st.ServiceCode
+		out.ServiceCode = plan.ServiceCode
 	}
 	if out.CTA == "" {
-		out.CTA = st.CTASuggested
+		out.CTA = plan.CTA
 	}
 	out.RiskFlags = appendUnique(out.RiskFlags, st.RiskFlags...)
+	out.RiskFlags = appendUnique(out.RiskFlags, "messageability_ready")
 
 	if in.AllowNearDupRegen && len(in.RecentBodies) > 0 {
 		if _, hit := NearDuplicate(out.BodyText, in.RecentBodies); hit {
@@ -130,12 +137,15 @@ func (TemplateGenerator) Generate(ctx context.Context, in GenerateInput) (DraftO
 		ch = ChannelEmailInitial
 	}
 	pb, _ := LoadPlaybook()
-	st := PlanOutreachStrategy(pb, in.Account, in.Contact, in.Evidence, sequencePosFromChannel(ch, in.Touches))
-	out := ComposeFromStrategy(st, in.Account, in.Contact, ch)
-	if IsWhatsAppChannel(ch) || ch == ChannelReplyDraft {
-		out = TemplateDraftChannel(ch, in.Account, in.Contact, in.Evidence)
+	st, plan := BuildOutboundPlan(pb, in.Account, in.Contact, in.Evidence, sequencePosFromChannel(ch, in.Touches))
+	if plan.Messageability != MessageabilityReady {
+		out := FailClosedDraft(plan, ch)
+		out.ServiceOverrideAudited = in.ServiceOverrideAudited
 		out.RiskFlags = appendUnique(out.RiskFlags, st.RiskFlags...)
+		return out, "template", "messageability_gate", nil
 	}
+	out := ComposeFromPlan(plan, in.Account, in.Contact, ch)
+	out.RiskFlags = appendUnique(out.RiskFlags, st.RiskFlags...)
 	out.ServiceOverrideAudited = in.ServiceOverrideAudited
 	if in.AllowNearDupRegen && len(in.RecentBodies) > 0 {
 		if _, hit := NearDuplicate(out.BodyText, in.RecentBodies); hit {

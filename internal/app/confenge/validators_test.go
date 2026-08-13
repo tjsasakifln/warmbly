@@ -100,7 +100,7 @@ func TestClassifyRiskGreenOfficial(t *testing.T) {
 }
 
 func TestTemplateDraftNoEmDash(t *testing.T) {
-	acc := &models.OutreachAccount{RazaoSocial: "ACME", FactToMention: "contrato X", ServiceName: "revisao", QuestionToAsk: "Faz sentido?", CTA: "Posso enviar?", ServiceCode: "REV", MomentEvidenceIDs: []string{"e1"}}
+	acc := &models.OutreachAccount{RazaoSocial: "ACME", FactToMention: "termo aditivo 1 ao contrato X publicado", ServiceName: "revisao", QuestionToAsk: "Faz sentido?", CTA: "Posso enviar?", ServiceCode: "ADITIVOS", MomentEvidenceIDs: []string{"e1"}}
 	cand := &models.OutreachContactCandidate{Name: "Ana Silva", Email: "a@example.com", VerificationStatus: models.OutreachVerifyOfficialSource}
 	out := TemplateDraftChannel(ChannelEmailInitial, acc, cand, []models.OutreachEvidence{{SourceEvidenceID: "e1"}})
 	if emDashRe.MatchString(out.BodyText+out.Subject) || out.BodyText == "" {

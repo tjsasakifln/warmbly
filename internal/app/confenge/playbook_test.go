@@ -13,7 +13,7 @@ func TestLoadPlaybookSchema(t *testing.T) {
 	if pb.Doctrine.OutreachDoctrineVersion != OutreachDoctrineVersion {
 		t.Fatalf("version %q", pb.Doctrine.OutreachDoctrineVersion)
 	}
-	if OutreachDoctrineVersion != "confenge-outreach-v1" {
+	if OutreachDoctrineVersion != "confenge-outreach-v2" {
 		t.Fatalf("unexpected doctrine version constant")
 	}
 	if len(pb.Offers.Offers) < 5 {

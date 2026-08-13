@@ -284,6 +284,8 @@ export type ConfengeStrategyExplain = {
   touch?: string;
   experiment?: string;
   doctrine_version?: string;
+  messageability?: string;
+  messageability_reason?: string;
 };
 
 export type ConfengeTouchpoint = {

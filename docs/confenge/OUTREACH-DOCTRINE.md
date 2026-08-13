@@ -1,4 +1,4 @@
-# CONFENGE outreach doctrine (confenge-outreach-v1)
+# CONFENGE outreach doctrine (confenge-outreach-v2)
 
 Machine-readable twin: `internal/app/confenge/outreach_playbook/` (mirrored under `data/confenge/outreach_playbook/`).
 
@@ -27,15 +27,19 @@ Warmbly does **not** create `lead_score`, `commercial_score`, or re-rank activat
 
 ```
 intelligence (dossier)
-  → commercial strategy (OutreachStrategy)
-  → constrained generation
-  → deterministic validation (copy QA)
-  → human approval
+  → commercial strategy (OutreachStrategy, internal)
+  → messageability gate (READY | NEEDS_ENRICHMENT | BLOCKED)
+  → outbound-safe plan (hook, relevance, value_unit, cta)
+  → constrained generation (plan only)
+  → deterministic hard QA
+  → human approval (authorization, not rewrite)
   → send (existing gates)
   → outcomes / experiments
 ```
 
 Never: lead data → freestyle LLM → email.
+Never: interpolate ProblemHypothesis / metadata dumps into copy.
+`NEEDS_REVIEW` means the message is already sendable and only human authorization remains.
 
 ## First email
 

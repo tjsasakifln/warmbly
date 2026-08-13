@@ -4,6 +4,9 @@ import { channelLabel, formatFeedAge, formatPtBrDate, intentLabel, purposeLabel,
 describe("rótulos da Central comercial CONFENGE", () => {
   it("traduz estados, canais, etapas e motivos conhecidos", () => {
     expect(stateLabel("NEEDS_REVIEW")).toBe("Precisa de revisão");
+    expect(stateLabel("NEEDS_ENRICHMENT")).toBe("Precisa de enriquecimento");
+    expect(stateLabel("READY")).toBe("Pronto");
+    expect(reasonLabel("missing_contract_event")).toContain("evento contratual");
     expect(stateLabel("DO_NOT_CONTACT")).toBe("Não contatar");
     expect(channelLabel("EMAIL")).toBe("E-mail");
     expect(intentLabel("POSITIVE_INTEREST")).toBe("Interesse positivo");

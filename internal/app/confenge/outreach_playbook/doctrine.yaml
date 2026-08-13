@@ -1,6 +1,6 @@
 # CONFENGE outreach doctrine — machine-readable core
 # Human narrative: docs/confenge/OUTREACH-DOCTRINE.md
-outreach_doctrine_version: confenge-outreach-v1
+outreach_doctrine_version: confenge-outreach-v2
 channel_policy:
   runtime_allowed: [EMAIL]
   whatsapp: OFF

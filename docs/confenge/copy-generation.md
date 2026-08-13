@@ -10,6 +10,7 @@ There is **no research** in this path: the model receives structured JSON and re
 | `confenge.draft.v1` | Initial evidence-bound email generator + template fallback |
 | `confenge.draft.v2` | Channel-aware modes, `claims[]`, internal `rationale`, anti-template linter, near-dup single regen |
 | `confenge.draft.v3` | Strategy-first composition (`OutreachStrategy`), doctrine `confenge-outreach-v1`, micro-offers, doctrine QA |
+| `confenge.draft.v4` | Messageability gate + outbound-safe plan (`confenge.composer.v2`, doctrine `confenge-outreach-v2`). Internal strategy fields are never interpolated. Unsent prior-version drafts must be regenerated. |
 
 Constant: `internal/app/confenge/validators.go` → `PromptVersion`.
 Doctrine: `OutreachDoctrineVersion` + `internal/app/confenge/outreach_playbook/`.

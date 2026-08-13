@@ -51,6 +51,7 @@ type Service interface {
 
 	// Drafts / review (PR2)
 	GenerateDraft(ctx context.Context, orgID, userID, accountID uuid.UUID, contactID *uuid.UUID) (*models.OutreachDraft, *errx.Error)
+	InvalidatePriorComposerDrafts(ctx context.Context, orgID, actorID uuid.UUID) (*DraftInvalidationReport, *errx.Error)
 	GetDraft(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachDraft, *errx.Error)
 	ListDrafts(ctx context.Context, orgID uuid.UUID, status string, limit, offset int) ([]models.OutreachDraft, *errx.Error)
 	ReviewDraft(ctx context.Context, orgID, userID, draftID uuid.UUID, action string, edit *DraftEdit) (*models.OutreachDraft, *errx.Error)

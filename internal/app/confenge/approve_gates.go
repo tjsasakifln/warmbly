@@ -105,6 +105,9 @@ func StructuralApproveBlockers(
 	if containsAnyFlag(flags, "incomplete_strategy") {
 		add("incomplete_strategy", "strategy is incomplete")
 	}
+	if plan := messagePlanFromDraft(d); plan != nil && plan.Messageability != "" && plan.Messageability != MessageabilityReady {
+		add("not_messageable", "messageability is "+plan.Messageability+": "+firstNonEmpty(plan.Reason, "dossier cannot support a first contact"))
+	}
 	if containsAnyFlag(flags, "incomplete_copy_context") {
 		add("incomplete_copy_context", "copy context is incomplete")
 	}
@@ -261,6 +264,17 @@ func strategyFromDraft(d *models.OutreachDraft) *OutreachStrategy {
 		return nil
 	}
 	return val.Strategy
+}
+
+func messagePlanFromDraft(d *models.OutreachDraft) *OutboundMessagePlan {
+	if d == nil || len(d.ValidationJSON) == 0 {
+		return nil
+	}
+	var val ValidationResult
+	if err := json.Unmarshal(d.ValidationJSON, &val); err != nil {
+		return nil
+	}
+	return val.MessagePlan
 }
 
 // FormatApproveBlockers joins structural blockers for errx messages.
