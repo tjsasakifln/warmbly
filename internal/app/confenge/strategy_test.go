@@ -56,6 +56,10 @@ func TestPlanStrategyAnnualidadeNoUnpaidClaim(t *testing.T) {
 	if explain.WhyThisAccount != st.WhyThisAccount {
 		t.Fatalf("operator projection lost why_this_account: got %q want %q", explain.WhyThisAccount, st.WhyThisAccount)
 	}
+	legacyProjection := strategyExplainProjection(StrategyExplain{WhyNow: explain.WhyNow}, st.WhyThisAccount)
+	if legacyProjection["why_this_account"] != st.WhyThisAccount {
+		t.Fatalf("legacy validation projection lost why_this_account fallback: %#v", legacyProjection)
+	}
 	if !containsStr(st.RiskFlags, "annualidade_verify_only") {
 		t.Fatalf("flags %v", st.RiskFlags)
 	}

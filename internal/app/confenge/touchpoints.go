@@ -147,12 +147,7 @@ func (s *service) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, li
 				st.ObservedFact = list[i].FactUsed
 			}
 			ex := ExplainStrategy(st, list[i].Recipient)
-			list[i].StrategyExplain = map[string]any{
-				"why_this_account": ex.WhyThisAccount, "why_now": ex.WhyNow, "fact_used": ex.FactUsed, "hypothesis": ex.Hypothesis,
-				"service": ex.Service, "offer": ex.Offer, "recipient": ex.Recipient,
-				"sources": ex.Sources, "touch": ex.Touch, "experiment": ex.Experiment,
-				"doctrine_version": ex.Doctrine,
-			}
+			list[i].StrategyExplain = strategyExplainProjection(ex, "")
 			if list[i].DraftID != nil {
 				if d, _ := s.repo.GetDraft(ctx, orgID, *list[i].DraftID); d != nil {
 					list[i].Draft = d
@@ -161,13 +156,7 @@ func (s *service) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, li
 						_ = json.Unmarshal(d.ValidationJSON, &val)
 						list[i].DoctrineAlerts = val.DoctrineAlerts
 						if val.StrategyExplain != nil {
-							list[i].StrategyExplain = map[string]any{
-								"why_this_account": val.StrategyExplain.WhyThisAccount, "why_now": val.StrategyExplain.WhyNow, "fact_used": val.StrategyExplain.FactUsed,
-								"hypothesis": val.StrategyExplain.Hypothesis, "service": val.StrategyExplain.Service,
-								"offer": val.StrategyExplain.Offer, "recipient": val.StrategyExplain.Recipient,
-								"sources": val.StrategyExplain.Sources, "touch": val.StrategyExplain.Touch,
-								"experiment": val.StrategyExplain.Experiment, "doctrine_version": val.StrategyExplain.Doctrine,
-							}
+							list[i].StrategyExplain = strategyExplainProjection(*val.StrategyExplain, ex.WhyThisAccount)
 						}
 					}
 				}
@@ -175,6 +164,16 @@ func (s *service) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, li
 		}
 	}
 	return list, nil
+}
+
+func strategyExplainProjection(ex StrategyExplain, fallbackWhyThisAccount string) map[string]any {
+	return map[string]any{
+		"why_this_account": firstNonEmpty(ex.WhyThisAccount, fallbackWhyThisAccount),
+		"why_now":          ex.WhyNow, "fact_used": ex.FactUsed, "hypothesis": ex.Hypothesis,
+		"service": ex.Service, "offer": ex.Offer, "recipient": ex.Recipient,
+		"sources": ex.Sources, "touch": ex.Touch, "experiment": ex.Experiment,
+		"doctrine_version": ex.Doctrine,
+	}
 }
 
 func (s *service) GetTouchpoint(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachTouchpoint, *errx.Error) {
