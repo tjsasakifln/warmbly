@@ -146,7 +146,8 @@ func EvaluateMessageability(
 		hookClass = HookClassMomentOrEvent
 	}
 
-	blob := strings.ToLower(hook + " " + st.ActivationTrigger + " " + st.TriggerSummary + " " + rawFact + " " + evidenceBlob(evidence))
+	// extra-cli MomentCode/MomentSummary are WHO/WHY NOW labels, not a mentionable hook.
+	blob := mentionableSurface(hook, rawFact, evidence)
 	hasEvent := hasConcreteContractEvent(blob)
 
 	switch hookClass {
@@ -257,6 +258,12 @@ func evidenceBlob(evidence []models.OutreachEvidence) string {
 		b.WriteByte(' ')
 	}
 	return b.String()
+}
+
+// mentionableSurface is the only text that may justify READY. extra-cli
+// ActivationTrigger / TriggerSummary (MomentCode / MomentSummary) stay out.
+func mentionableSurface(hook, rawFact string, evidence []models.OutreachEvidence) string {
+	return strings.ToLower(strings.TrimSpace(hook + " " + rawFact + " " + evidenceBlob(evidence)))
 }
 
 // outboundSafeHook condenses a fact into natural language or rejects dumps.

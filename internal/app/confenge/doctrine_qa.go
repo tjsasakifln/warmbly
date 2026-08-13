@@ -344,7 +344,7 @@ func ApplyHardCommercialQA(res *DoctrineQAResult, out *DraftOutput, st *Outreach
 		// A points CTA is only legal when the composer can enumerate checkpoints.
 		// Strategy hypotheses are not checkpoints.
 		if LooksLikeInternalReasoning(st.ProblemHypothesis) || strings.TrimSpace(st.ProblemHypothesis) == "" {
-			if !hasConcreteContractEvent(strings.ToLower(st.ObservedFact + " " + st.ActivationTrigger + " " + body)) {
+			if !hasConcreteContractEvent(strings.ToLower(st.ObservedFact + " " + body)) {
 				res.OK = false
 				res.Errors = append(res.Errors, "CTA promises points the dossier cannot produce")
 				res.Alerts = append(res.Alerts, "unfulfillable_cta")

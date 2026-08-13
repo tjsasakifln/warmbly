@@ -52,6 +52,8 @@ func TestAdversarialThirtyScenarios(t *testing.T) {
 		{"31_extras_weak", "EXTRACONTRATUAIS", "PORTFOLIO", "há contratos públicos", "Engenheiro", false, MessageabilityNeedsEnrichment},
 		{"32_monitor_medicao", "MONITORAMENTO_CONTRATUAL", "MEDICAO", "medição do lote 2 do contrato de pavimentação publicada", "Diretor", false, MessageabilityReady},
 		{"33_reajuste_edital_mismatch", "REAJUSTE", "EDITAL", "edital 45/2026 publicado com quantitativos a conferir", "Sócio", false, MessageabilityNeedsEnrichment},
+		{"34_reajuste_anualidade_edital", "REAJUSTE", "ANUALIDADE", "edital 45/2026 publicado com quantitativos a conferir", "Sócio", false, MessageabilityNeedsEnrichment},
+		{"35_monitor_aditivo_moment_no_event", "MONITORAMENTO_CONTRATUAL", "ADITIVO", "objeto: Contratação de empresa; órgão: DER-RS; UF: RS; R$ 2,839,000", "Diretor", false, MessageabilityNeedsEnrichment},
 	}
 	if len(cases) < 30 {
 		t.Fatalf("need >=30 cases, got %d", len(cases))

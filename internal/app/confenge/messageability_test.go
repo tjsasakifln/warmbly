@@ -328,17 +328,47 @@ func TestLooksLikeMetadataDump(t *testing.T) {
 
 func TestReajusteEditalIsNotReady(t *testing.T) {
 	pb := MustPlaybook()
-	acc := testAccount("REAJUSTE", "EDITAL", "edital 45/2026 publicado com quantitativos a conferir")
+	// extra-cli ANUALIDADE must not make an edital fact service-coherent.
+	acc := testAccount("REAJUSTE", "ANUALIDADE", "edital 45/2026 publicado com quantitativos a conferir")
 	cand := testCand("Sócio")
 	ev := []models.OutreachEvidence{{SourceEvidenceID: "ev-1", EpistemicClass: models.OutreachEpistemicConfirmedFact, Synthesis: acc.FactToMention}}
 	_, plan := BuildOutboundPlan(pb, acc, cand, ev, 1)
 	if plan.Messageability == MessageabilityReady {
-		t.Fatalf("REAJUSTE + edital must not be READY: %+v", plan)
+		t.Fatalf("REAJUSTE + ANUALIDADE moment + edital fact must not be READY: %+v", plan)
+	}
+	if !containsStr(plan.ReasonCodes, "hook_service_mismatch") {
+		t.Fatalf("expected hook_service_mismatch, got %v", plan.ReasonCodes)
 	}
 	out := ComposeFromPlan(plan, acc, cand, ChannelEmailInitial)
 	if out.BodyText != "" {
 		t.Fatalf("fabricated: %s", out.BodyText)
 	}
+}
+
+func TestMonitoramentoAditivoMomentNeedsEventInFact(t *testing.T) {
+	pb := MustPlaybook()
+	// extra-cli ADITIVO must not READY a mere published-contract dump.
+	acc := testAccount("MONITORAMENTO_CONTRATUAL", "ADITIVO",
+		"objeto: Contratação de empresa, através de empreitada global (...) ; órgão: DER-RS; UF RS; R$ 2,839,000")
+	cand := testCand("Diretor de Contratos")
+	ev := []models.OutreachEvidence{{
+		SourceEvidenceID: "ev-1",
+		EpistemicClass:   models.OutreachEpistemicConfirmedFact,
+		Title:            "Contrato pavimentação RS",
+		Synthesis:        acc.FactToMention,
+	}}
+	_, plan := BuildOutboundPlan(pb, acc, cand, ev, 1)
+	if plan.Messageability == MessageabilityReady {
+		t.Fatalf("MONITORAMENTO + ADITIVO moment + no aditivo in fact must not be READY: %+v", plan)
+	}
+	if !containsStr(plan.ReasonCodes, "missing_contract_event") && !containsStr(plan.ReasonCodes, "metadata_dump") {
+		t.Fatalf("expected missing_contract_event, got %v", plan.ReasonCodes)
+	}
+	out := ComposeFromPlan(plan, acc, cand, ChannelEmailInitial)
+	if out.BodyText != "" {
+		t.Fatalf("fabricated: %s", out.BodyText)
+	}
+	assertNoLeaks(t, out.BodyText+" "+out.Subject)
 }
 
 func TestLicitationAndPNCPOpenersAreNotContractFramed(t *testing.T) {
