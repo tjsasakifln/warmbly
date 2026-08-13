@@ -1,6 +1,7 @@
 package confenge
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -267,6 +268,7 @@ func TestOfflineGenerateApproveWithTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	raw = bytes.ReplaceAll(raw, []byte("acme.example.com"), []byte("pilot.warmbly.com"))
 	if _, xerr := svc.ImportFromBytes(context.Background(), org, &user, raw, ImportOptions{}); xerr != nil {
 		t.Fatal(xerr)
 	}

@@ -237,6 +237,10 @@ func TestPilotRecipientBlockReasons(t *testing.T) {
 			candidate.BlockReason = "provenance_taint:fixture"
 		}, want: "provenance_tainted"},
 		{name: "fixture", mutate: func(candidate *models.OutreachContactCandidate) { candidate.Email = "fixture@example.com" }, want: "recipient_demo_or_fixture"},
+		{name: "reserved domain subdomain", mutate: func(candidate *models.OutreachContactCandidate) {
+			candidate.Email = "person@acme.example.com"
+			candidate.SourceURL = "https://acme.example.com/team"
+		}, want: "recipient_demo_or_fixture"},
 		{name: "invalid address", mutate: func(candidate *models.OutreachContactCandidate) { candidate.Email = "invalid" }, want: "recipient_invalid"},
 		{name: "generic policy", mutate: func(candidate *models.OutreachContactCandidate) { candidate.MailboxPurposeSendBlocked = true }, want: "generic_mailbox_not_allowed"},
 		{name: "missing date", mutate: func(candidate *models.OutreachContactCandidate) { candidate.SourceDate = nil }, want: "recipient_evidence_date_missing"},

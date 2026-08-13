@@ -14,7 +14,7 @@ var (
 		regexp.MustCompile(`(?i)^demo\d*obra\.com\.br$`),
 		regexp.MustCompile(`(?i)^demo\d+\.`),
 		regexp.MustCompile(`(?i)\.demo\.`),
-		regexp.MustCompile(`(?i)^example\.(com|org|net)$`),
+		regexp.MustCompile(`(?i)(^|\.)example\.(com|org|net)$`),
 		regexp.MustCompile(`(?i)^test\.`),
 		regexp.MustCompile(`(?i)\.test$`),
 		regexp.MustCompile(`(?i)\.local$`),

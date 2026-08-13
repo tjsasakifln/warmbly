@@ -50,14 +50,35 @@ function feedPayloadForImport(): string {
     leads: Array<{
       target_fit_computed_at?: string;
       target_fit_source_watermark?: string;
+      contacts?: Array<{
+        email?: string;
+        source_url?: string;
+        source_date?: string;
+        mailbox_purpose?: string;
+        ownership_status?: string;
+        recipient_commercial_suitability?: string;
+        provenance_chain_valid?: boolean;
+        derived_from_fixture?: boolean;
+      }>;
     }>;
   };
   feed.generated_at = now;
   feed.source.run_id = `confenge-e2e-${nonce}`;
   feed.source.snapshot_hash = `confenge-e2e-snapshot-${nonce}`;
-  for (const lead of feed.leads) {
+  for (const [leadIndex, lead] of feed.leads.entries()) {
     lead.target_fit_computed_at = now;
     lead.target_fit_source_watermark = now;
+    for (const [contactIndex, contact] of (lead.contacts || []).entries()) {
+      const local = contactIndex === 0 ? `confenge-ci-${leadIndex + 1}` : `confenge-ci-${leadIndex + 1}-${contactIndex + 1}`;
+      contact.email = `${local}@pilot.warmbly.com`;
+      contact.source_url = `https://pilot.warmbly.com/contacts/${local}`;
+      contact.source_date = now.slice(0, 10);
+      contact.mailbox_purpose = contact.name ? "PERSONAL_WORK" : "GENERIC_CONTACT";
+      contact.ownership_status = "COMPANY_OWNED";
+      contact.recipient_commercial_suitability = contact.name ? "SUITABLE" : "SUITABLE_GENERIC";
+      contact.provenance_chain_valid = true;
+      contact.derived_from_fixture = false;
+    }
   }
   return JSON.stringify(feed);
 }
