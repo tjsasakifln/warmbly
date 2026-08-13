@@ -38,6 +38,30 @@ const PROOF_DIR =
   process.env.CONFENGE_E2E_PROOF_DIR ||
   path.join(REPO_ROOT, "data/confenge-evidence");
 
+function feedPayloadForImport(): string {
+  const raw = fs.readFileSync(FEED_PATH, "utf8");
+  if (path.basename(FEED_PATH) !== "demo_3_companies.json") return raw;
+
+  const now = new Date().toISOString();
+  const nonce = Date.now().toString(36);
+  const feed = JSON.parse(raw) as {
+    generated_at: string;
+    source: { run_id: string; snapshot_hash: string };
+    leads: Array<{
+      target_fit_computed_at?: string;
+      target_fit_source_watermark?: string;
+    }>;
+  };
+  feed.generated_at = now;
+  feed.source.run_id = `confenge-e2e-${nonce}`;
+  feed.source.snapshot_hash = `confenge-e2e-snapshot-${nonce}`;
+  for (const lead of feed.leads) {
+    lead.target_fit_computed_at = now;
+    lead.target_fit_source_watermark = now;
+  }
+  return JSON.stringify(feed);
+}
+
 type Touchpoint = {
   id: string;
   state?: string;
@@ -636,7 +660,7 @@ test.describe("CONFENGE product acceptance UI", () => {
         "Content-Type": "application/json",
         "Idempotency-Key": `e2e-import-hard-${Date.now()}`,
       },
-      body: fs.readFileSync(FEED_PATH),
+      body: feedPayloadForImport(),
     });
     const importText = await importRes.text();
     expect(importRes.ok, `import failed: ${importRes.status} ${importText.slice(0, 400)}`).toBeTruthy();
