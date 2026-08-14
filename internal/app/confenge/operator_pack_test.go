@@ -133,8 +133,14 @@ func TestTrackAOperatorProjectionImportIdempotent(t *testing.T) {
 	if first.Company.CNPJ14 != "00820854000114" || first.Contacts[0].Name != "EDUARDO SCHMITT ESPINDOLA" {
 		t.Fatalf("first card identity invented or lost: %+v", first)
 	}
-	if first.Contacts[0].PersonID == "" {
-		t.Fatal("person_id missing from extra-cli DUI account")
+	if first.Contacts[0].PersonID != "17adca65031d71b21ebaac4c" {
+		t.Fatalf("QUALIDADE person_id: %q", first.Contacts[0].PersonID)
+	}
+	if first.Contacts[0].SourceContactID != "9f4676aa79d0cd5f5fedd7a7" {
+		t.Fatalf("QUALIDADE source_contact_id/candidate_id: %q", first.Contacts[0].SourceContactID)
+	}
+	if first.Contacts[0].PersonID == first.Contacts[0].SourceContactID {
+		t.Fatal("person_id must not collapse into source_contact_id")
 	}
 	if first.Contacts[0].EmailSendReady != nil && *first.Contacts[0].EmailSendReady {
 		t.Fatal("Track A must not publish email_send_ready")
@@ -184,12 +190,25 @@ func TestTrackAOperatorProjectionImportIdempotent(t *testing.T) {
 			t.Fatalf("duplicate CNPJ %s", a.CNPJ14)
 		}
 	}
-	cands, err := repo.ListCandidates(context.Background(), org, accs[0].ID)
+	var qualidade models.OutreachAccount
+	for _, a := range accs {
+		if a.CNPJ14 == "00820854000114" {
+			qualidade = a
+			break
+		}
+	}
+	if qualidade.ID == uuid.Nil {
+		t.Fatal("QUALIDADE account missing after import")
+	}
+	cands, err := repo.ListCandidates(context.Background(), org, qualidade.ID)
 	if err != nil || len(cands) == 0 {
 		t.Fatalf("candidates: %v %#v", err, cands)
 	}
-	if cands[0].PersonID == "" && cands[0].SourceContactID == "" {
-		t.Fatal("imported person identity missing")
+	if cands[0].PersonID != "17adca65031d71b21ebaac4c" {
+		t.Fatalf("imported person_id=%q want extra-cli 17adca65031d71b21ebaac4c", cands[0].PersonID)
+	}
+	if cands[0].SourceContactID == cands[0].PersonID {
+		t.Fatal("person_id must not be stored as source_contact_id")
 	}
 	if strings.Contains(strings.ToLower(cands[0].Name), "invent") {
 		t.Fatal("invented name")

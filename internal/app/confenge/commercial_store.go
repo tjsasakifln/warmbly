@@ -42,6 +42,7 @@ func (s *service) persistPlannedAction(ctx context.Context, planned PlannedActio
 			existing.WhyNow = a.WhyNow
 			existing.FactualHook = a.FactualHook
 			existing.CompanyName = a.CompanyName
+			existing.PersonID = firstNonEmpty(a.PersonID, existing.PersonID)
 			existing.UpdatedAt = time.Now().UTC()
 			_ = st.UpsertCommercialAction(ctx, existing)
 			return
