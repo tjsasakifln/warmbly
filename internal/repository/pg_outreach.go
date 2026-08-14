@@ -1384,6 +1384,8 @@ const outreachCandidateSelect = `
 		warmbly_contact_id, promoted_at, blocked, COALESCE(block_reason,''), do_not_contact, bounced,
 		COALESCE(email_send_ready,false), COALESCE(mailbox_purpose,''), COALESCE(mailbox_purpose_send_blocked,false),
 		COALESCE(ownership_status,''), COALESCE(recipient_commercial_suitability,''),
+		COALESCE(reachability_class,''), COALESCE(route_type,''), COALESCE(route_relation,''),
+		COALESCE(channel_value,''), COALESCE(channel_display,''),
 		last_import_run_id, created_at, updated_at `
 
 func scanCandidate(row scannable) (*models.OutreachContactCandidate, error) {
@@ -1399,6 +1401,8 @@ func scanCandidate(row scannable) (*models.OutreachContactCandidate, error) {
 		&c.WarmblyContactID, &c.PromotedAt, &c.Blocked, &c.BlockReason, &c.DoNotContact, &c.Bounced,
 		&c.EmailSendReady, &c.MailboxPurpose, &c.MailboxPurposeSendBlocked,
 		&c.OwnershipStatus, &c.RecipientCommercialSuitability,
+		&c.ReachabilityClass, &c.RouteType, &c.RouteRelation,
+		&c.ChannelValue, &c.ChannelDisplay,
 		&c.LastImportRunID, &c.CreatedAt, &c.UpdatedAt,
 	)
 	if err != nil {
@@ -1443,6 +1447,7 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 				blocked, block_reason, do_not_contact, bounced,
 				email_send_ready, mailbox_purpose, mailbox_purpose_send_blocked,
 				ownership_status, recipient_commercial_suitability,
+				reachability_class, route_type, route_relation, channel_value, channel_display,
 				last_import_run_id, created_at, updated_at
 			) VALUES (
 				$1,$2,$3,$4,
@@ -1454,7 +1459,8 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 				$23,$24,$25,$26,
 				$27,$28,$29,
 				$30,$31,
-				$32,$33,$34
+				$32,$33,$34,$35,$36,
+				$37,$38,$39
 			)
 			ON CONFLICT (organization_id, account_id, source_contact_id) WHERE source_contact_id <> '' DO UPDATE SET
 				name = EXCLUDED.name,
@@ -1500,6 +1506,11 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 				mailbox_purpose_send_blocked = EXCLUDED.mailbox_purpose_send_blocked,
 				ownership_status = EXCLUDED.ownership_status,
 				recipient_commercial_suitability = EXCLUDED.recipient_commercial_suitability,
+				reachability_class = EXCLUDED.reachability_class,
+				route_type = EXCLUDED.route_type,
+				route_relation = EXCLUDED.route_relation,
+				channel_value = EXCLUDED.channel_value,
+				channel_display = EXCLUDED.channel_display,
 				last_import_run_id = EXCLUDED.last_import_run_id,
 				updated_at = EXCLUDED.updated_at,
 				id = outreach_contact_candidates.id
@@ -1513,6 +1524,7 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 			c.Blocked, c.BlockReason, c.DoNotContact, c.Bounced,
 			c.EmailSendReady, c.MailboxPurpose, c.MailboxPurposeSendBlocked,
 			c.OwnershipStatus, c.RecipientCommercialSuitability,
+			c.ReachabilityClass, c.RouteType, c.RouteRelation, c.ChannelValue, c.ChannelDisplay,
 			c.LastImportRunID, c.CreatedAt, c.UpdatedAt,
 		).Scan(&created, &c.ID)
 		return created, err
@@ -1529,9 +1541,10 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 			blocked, block_reason, do_not_contact, bounced,
 			email_send_ready, mailbox_purpose, mailbox_purpose_send_blocked,
 			ownership_status, recipient_commercial_suitability,
+			reachability_class, route_type, route_relation, channel_value, channel_display,
 			last_import_run_id, created_at, updated_at
 		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39
 		)`,
 		c.ID, c.OrganizationID, c.AccountID, c.SourceContactID,
 		c.Name, c.Role, c.Email, c.Phone,
@@ -1542,6 +1555,7 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 		c.Blocked, c.BlockReason, c.DoNotContact, c.Bounced,
 		c.EmailSendReady, c.MailboxPurpose, c.MailboxPurposeSendBlocked,
 		c.OwnershipStatus, c.RecipientCommercialSuitability,
+		c.ReachabilityClass, c.RouteType, c.RouteRelation, c.ChannelValue, c.ChannelDisplay,
 		c.LastImportRunID, c.CreatedAt, c.UpdatedAt,
 	)
 	return true, err

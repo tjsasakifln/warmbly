@@ -1363,7 +1363,6 @@ function TodayActionCard({
             outcome_code: outcome,
             referral_name: referralName,
             referral_role: referralRole,
-            next_action_type: outcome === "REFERRED_TO_OTHER_PERSON" ? "DIRECT_CALL" : undefined,
           })}
         >
           Registrar

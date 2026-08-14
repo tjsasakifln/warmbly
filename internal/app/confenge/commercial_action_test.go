@@ -162,6 +162,16 @@ func TestCommercialOutcomeFollowupAndGuards(t *testing.T) {
 	if ref.Followup == nil || ref.Followup.PersonName != "Maria" {
 		t.Fatalf("referral must mint child: %+v", ref.Followup)
 	}
+	if ref.Followup.ActionType != models.ActionRoutedCall || ref.Followup.RouteRelation != models.RouteRelRoutesToNamedPerson {
+		t.Fatalf("switchboard referral must stay ROUTED_CALL, not direct phone: %+v", ref.Followup)
+	}
+	if ref.Followup.ChannelValue != routed.ChannelValue {
+		t.Fatalf("child must keep company number %q, got %q", routed.ChannelValue, ref.Followup.ChannelValue)
+	}
+	card := AssembleActionCard(*ref.Followup)
+	if !strings.Contains(card.RouteEpistemology, "Nao e o telefone direto") {
+		t.Fatalf("Maria card must keep switchboard epistemology: %+v", card)
+	}
 	if ref.Followup.ParentActionID == nil || *ref.Followup.ParentActionID != ref.Action.ID {
 		t.Fatal("follow-up must link to parent")
 	}
@@ -406,6 +416,9 @@ func TestCommercialImportTodayAndReferral(t *testing.T) {
 	if res.Followup == nil || res.Followup.ParentActionID == nil || *res.Followup.ParentActionID != routedID {
 		t.Fatalf("follow-up not persisted: %+v", res.Followup)
 	}
+	if res.Followup.ActionType != models.ActionRoutedCall || res.Followup.RouteRelation != models.RouteRelRoutesToNamedPerson {
+		t.Fatalf("persisted follow-up must stay routed: %+v", res.Followup)
+	}
 	today2, xerr := svc.CollectToday(context.Background(), org)
 	if xerr != nil {
 		t.Fatal(xerr)
@@ -414,6 +427,9 @@ func TestCommercialImportTodayAndReferral(t *testing.T) {
 	for _, c := range today2.Actions {
 		if c.Person == "Maria" && c.ParentActionID == routedID.String() {
 			foundChild = true
+			if c.ActionType != models.ActionRoutedCall || !strings.Contains(c.RouteEpistemology, "Nao e o telefone direto") {
+				t.Fatalf("today Maria card must stay routed switchboard: %+v", c)
+			}
 		}
 	}
 	if !foundChild {

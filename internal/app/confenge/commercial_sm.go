@@ -237,29 +237,47 @@ func mintReferralFollowup(parent models.OutreachCommercialAction, req OutcomeReq
 	child.UpdatedAt = now
 	child.StartedAt = nil
 	child.CompletedAt = nil
-	if req.NextActionType != "" {
+	// A switchboard number stays routed even if the UI asks for DIRECT_CALL.
+	// The new person is not proven to own the company number.
+	if parent.ActionType == models.ActionRoutedCall || parent.RouteRelation == models.RouteRelRoutesToNamedPerson {
+		child.ActionType = models.ActionRoutedCall
+		child.RouteRelation = models.RouteRelRoutesToNamedPerson
+		child.RouteType = firstNonEmpty(parent.RouteType, "phone")
+		child.ChannelValue = firstNonEmpty(req.ReferralChannel, parent.ChannelValue)
+		child.ChannelDisplay = firstNonEmpty(parent.ChannelDisplay, "telefone oficial da empresa")
+	} else if req.NextActionType != "" {
 		child.ActionType = strings.ToUpper(strings.TrimSpace(req.NextActionType))
-	} else if parent.ActionType == models.ActionRoutedCall || parent.ActionType == models.ActionDirectCall {
+	} else if parent.ActionType == models.ActionDirectCall {
 		child.ActionType = models.ActionDirectCall
 	}
 	switch child.ActionType {
 	case models.ActionDirectCall:
 		child.Lane = models.LaneCallQueue
-		child.RouteRelation = models.RouteRelBelongsToNamedPerson
+		if child.RouteRelation == "" {
+			child.RouteRelation = models.RouteRelBelongsToNamedPerson
+		}
 	case models.ActionRoutedCall:
 		child.Lane = models.LaneRoutedCallQueue
+		child.RouteRelation = models.RouteRelRoutesToNamedPerson
 	case models.ActionWhatsApp:
 		child.Lane = models.LaneWhatsAppQueue
 	default:
 		child.Lane = LaneManualOutreach
 	}
-	child.RecommendedAction = "Ligar para " + firstNonEmpty(name, "a pessoa indicada")
-	if role != "" {
-		child.RecommendedAction += " (" + role + ")"
+	if child.ActionType == models.ActionRoutedCall {
+		child.RecommendedAction = "Ligar para o telefone oficial da empresa e pedir para falar com " + firstNonEmpty(name, "a pessoa indicada") + "."
+	} else {
+		child.RecommendedAction = "Ligar para " + firstNonEmpty(name, "a pessoa indicada")
+		if role != "" {
+			child.RecommendedAction += " (" + role + ")"
+		}
 	}
 	child.Warnings = []string{"Indicacao humana. Validar identidade antes de tratar como decision-maker confirmado."}
+	if child.ActionType == models.ActionRoutedCall {
+		child.Warnings = append(child.Warnings, "Este numero e da empresa. Nao e o telefone direto de "+firstNonEmpty(name, "a pessoa indicada")+".")
+	}
 	child.PersonFingerprint = personFingerprint(name, role)
-	child.RouteFingerprint = routeFingerprint(child.ActionType, child.RouteType, child.RouteRelation, firstNonEmpty(req.ReferralChannel, child.ChannelValue))
+	child.RouteFingerprint = routeFingerprint(child.ActionType, child.RouteType, child.RouteRelation, firstNonEmpty(req.ReferralChannel, child.ChannelValue), name)
 	child.IdempotencyKey = "followup:" + parent.ID.String() + ":" + child.PersonFingerprint
 	child.ID = DeterministicActionID(parent.OrganizationID, parent.AccountID, child.ActionType, child.IdempotencyKey)
 	content := ComposeActionContent(child)

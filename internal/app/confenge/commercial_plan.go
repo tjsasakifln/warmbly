@@ -351,7 +351,7 @@ func blockedPlan(out models.OutreachCommercialAction, reason string) PlannedActi
 
 func finalizePlan(out models.OutreachCommercialAction, recState string) PlannedAction {
 	out.PersonFingerprint = personFingerprint(out.PersonName, out.ObservedRole)
-	out.RouteFingerprint = routeFingerprint(out.ActionType, out.RouteType, out.RouteRelation, out.ChannelValue)
+	out.RouteFingerprint = routeFingerprint(out.ActionType, out.RouteType, out.RouteRelation, out.ChannelValue, out.PersonName)
 	out.IdempotencyKey = actionIdempotency(out)
 	out.ID = DeterministicActionID(out.OrganizationID, out.AccountID, out.ActionType, out.RouteFingerprint)
 	if out.ContentJSON == nil {
@@ -412,8 +412,8 @@ func personFingerprint(name, role string) string {
 	return strings.ToLower(strings.TrimSpace(name)) + "|" + strings.ToLower(strings.TrimSpace(role))
 }
 
-func routeFingerprint(actionType, routeType, rel, value string) string {
-	return strings.ToLower(strings.Join([]string{actionType, routeType, rel, strings.TrimSpace(value)}, "|"))
+func routeFingerprint(actionType, routeType, rel, value, person string) string {
+	return strings.ToLower(strings.Join([]string{actionType, routeType, rel, strings.TrimSpace(value), strings.TrimSpace(person)}, "|"))
 }
 
 func contentHashOf(c CommercialActionContent) string {
