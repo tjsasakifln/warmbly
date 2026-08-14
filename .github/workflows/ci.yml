@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 # Default token only gets `contents: read` on PRs from forks; the
 # dorny/paths-filter action needs to list PR files via the GitHub
