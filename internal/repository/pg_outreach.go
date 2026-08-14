@@ -1374,7 +1374,7 @@ func (r *outreachRepository) ListCandidates(ctx context.Context, orgID, accountI
 }
 
 const outreachCandidateSelect = `
-	SELECT id, organization_id, account_id, COALESCE(source_contact_id,''),
+	SELECT id, organization_id, account_id, COALESCE(source_contact_id,''), COALESCE(person_id,''),
 		COALESCE(name,''), COALESCE(role,''), COALESCE(email,''), COALESCE(phone,''),
 		COALESCE(phone_e164,''), COALESCE(phone_source,''), COALESCE(phone_source_url,''),
 		COALESCE(whatsapp_consent_status,'UNKNOWN'), COALESCE(whatsapp_consent_source,''),
@@ -1388,10 +1388,9 @@ const outreachCandidateSelect = `
 		COALESCE(channel_value,''), COALESCE(channel_display,''),
 		last_import_run_id, created_at, updated_at `
 
-func scanCandidate(row scannable) (*models.OutreachContactCandidate, error) {
-	var c models.OutreachContactCandidate
-	err := row.Scan(
-		&c.ID, &c.OrganizationID, &c.AccountID, &c.SourceContactID,
+func candidateScanDest(c *models.OutreachContactCandidate) []any {
+	return []any{
+		&c.ID, &c.OrganizationID, &c.AccountID, &c.SourceContactID, &c.PersonID,
 		&c.Name, &c.Role, &c.Email, &c.Phone,
 		&c.PhoneE164, &c.PhoneSource, &c.PhoneSourceURL,
 		&c.WhatsAppConsentStatus, &c.WhatsAppConsentSource,
@@ -1404,7 +1403,12 @@ func scanCandidate(row scannable) (*models.OutreachContactCandidate, error) {
 		&c.ReachabilityClass, &c.RouteType, &c.RouteRelation,
 		&c.ChannelValue, &c.ChannelDisplay,
 		&c.LastImportRunID, &c.CreatedAt, &c.UpdatedAt,
-	)
+	}
+}
+
+func scanCandidate(row scannable) (*models.OutreachContactCandidate, error) {
+	var c models.OutreachContactCandidate
+	err := row.Scan(candidateScanDest(&c)...)
 	if err != nil {
 		return nil, err
 	}
@@ -1438,7 +1442,7 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 		var created bool
 		err := r.db.QueryRow(ctx, `
 			INSERT INTO outreach_contact_candidates (
-				id, organization_id, account_id, source_contact_id,
+				id, organization_id, account_id, source_contact_id, person_id,
 				name, role, email, phone,
 				phone_e164, phone_source, phone_source_url,
 				whatsapp_consent_status, whatsapp_consent_source, whatsapp_consent_at, whatsapp_consent_provenance_ok,
@@ -1450,17 +1454,17 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 				reachability_class, route_type, route_relation, channel_value, channel_display,
 				last_import_run_id, created_at, updated_at
 			) VALUES (
-				$1,$2,$3,$4,
-				$5,$6,$7,$8,
-				$9,$10,$11,
-				$12,$13,$14,$15,
-				$16,$17,$18,$19,
-				$20,$21,$22,
-				$23,$24,$25,$26,
-				$27,$28,$29,
-				$30,$31,
-				$32,$33,$34,$35,$36,
-				$37,$38,$39
+				$1,$2,$3,$4,$5,
+				$6,$7,$8,$9,
+				$10,$11,$12,
+				$13,$14,$15,$16,
+				$17,$18,$19,$20,
+				$21,$22,$23,
+				$24,$25,$26,$27,
+				$28,$29,$30,
+				$31,$32,
+				$33,$34,$35,$36,$37,
+				$38,$39,$40
 			)
 			ON CONFLICT (organization_id, account_id, source_contact_id) WHERE source_contact_id <> '' DO UPDATE SET
 				name = EXCLUDED.name,
@@ -1511,11 +1515,12 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 				route_relation = EXCLUDED.route_relation,
 				channel_value = EXCLUDED.channel_value,
 				channel_display = EXCLUDED.channel_display,
+				person_id = EXCLUDED.person_id,
 				last_import_run_id = EXCLUDED.last_import_run_id,
 				updated_at = EXCLUDED.updated_at,
 				id = outreach_contact_candidates.id
 			RETURNING (xmax = 0), id`,
-			c.ID, c.OrganizationID, c.AccountID, c.SourceContactID,
+			c.ID, c.OrganizationID, c.AccountID, c.SourceContactID, c.PersonID,
 			c.Name, c.Role, c.Email, c.Phone,
 			c.PhoneE164, c.PhoneSource, c.PhoneSourceURL,
 			c.WhatsAppConsentStatus, c.WhatsAppConsentSource, c.WhatsAppConsentAt, c.WhatsAppConsentProvenanceOK,
@@ -1532,7 +1537,7 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 	// No source id: insert only (cannot safely dedupe).
 	_, err := r.db.Exec(ctx, `
 		INSERT INTO outreach_contact_candidates (
-			id, organization_id, account_id, source_contact_id,
+			id, organization_id, account_id, source_contact_id, person_id,
 			name, role, email, phone,
 			phone_e164, phone_source, phone_source_url,
 			whatsapp_consent_status, whatsapp_consent_source, whatsapp_consent_at, whatsapp_consent_provenance_ok,
@@ -1544,9 +1549,9 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 			reachability_class, route_type, route_relation, channel_value, channel_display,
 			last_import_run_id, created_at, updated_at
 		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40
 		)`,
-		c.ID, c.OrganizationID, c.AccountID, c.SourceContactID,
+		c.ID, c.OrganizationID, c.AccountID, c.SourceContactID, c.PersonID,
 		c.Name, c.Role, c.Email, c.Phone,
 		c.PhoneE164, c.PhoneSource, c.PhoneSourceURL,
 		c.WhatsAppConsentStatus, c.WhatsAppConsentSource, c.WhatsAppConsentAt, c.WhatsAppConsentProvenanceOK,

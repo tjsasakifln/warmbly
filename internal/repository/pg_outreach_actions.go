@@ -15,7 +15,7 @@ import (
 
 const outreachActionSelect = `
 	SELECT id, organization_id, account_id, contact_candidate_id, parent_action_id, followup_action_id,
-		COALESCE(source_lead_id,''), COALESCE(person_name,''), COALESCE(observed_role,''), COALESCE(target_role,''),
+		COALESCE(source_lead_id,''), COALESCE(person_name,''), COALESCE(person_id,''), COALESCE(observed_role,''), COALESCE(target_role,''),
 		action_type, COALESCE(reachability_class,''), COALESCE(mapping_version,''),
 		COALESCE(route_type,''), COALESCE(route_relation,''), COALESCE(channel_value,''), COALESCE(channel_display,''),
 		COALESCE(why_now,''), COALESCE(factual_hook,''), COALESCE(recommended_action,''),
@@ -61,7 +61,7 @@ func (r *outreachRepository) UpsertCommercialAction(ctx context.Context, a *mode
 	_, err := r.db.Exec(ctx, `
 		INSERT INTO outreach_commercial_actions (
 			id, organization_id, account_id, contact_candidate_id, parent_action_id, followup_action_id,
-			source_lead_id, person_name, observed_role, target_role,
+			source_lead_id, person_name, person_id, observed_role, target_role,
 			action_type, reachability_class, mapping_version, route_type, route_relation,
 			channel_value, channel_display, why_now, factual_hook, recommended_action,
 			service_code, service_context, confidence, evidence_ids, warnings,
@@ -74,20 +74,21 @@ func (r *outreachRepository) UpsertCommercialAction(ctx context.Context, a *mode
 			created_at, updated_at, started_at, completed_at
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,
-			$7,$8,$9,$10,
-			$11,$12,$13,$14,$15,
-			$16,$17,$18,$19,$20,
-			$21,$22,$23,$24,$25,
-			$26,$27,$28,$29,$30,$31,$32,
-			$33,$34,$35,$36,$37,
-			$38,$39,$40,$41,$42,$43,
-			$44,$45,$46,$47,
-			$48,$49,$50,$51,
-			$52,$53,$54,$55,$56,
-			$57,$58,$59,$60
+			$7,$8,$9,$10,$11,
+			$12,$13,$14,$15,$16,
+			$17,$18,$19,$20,$21,
+			$22,$23,$24,$25,$26,
+			$27,$28,$29,$30,$31,$32,$33,
+			$34,$35,$36,$37,$38,
+			$39,$40,$41,$42,$43,$44,
+			$45,$46,$47,$48,
+			$49,$50,$51,$52,
+			$53,$54,$55,$56,$57,
+			$58,$59,$60,$61
 		)
 		ON CONFLICT (id) DO UPDATE SET
 			person_name = EXCLUDED.person_name,
+			person_id = EXCLUDED.person_id,
 			observed_role = EXCLUDED.observed_role,
 			target_role = EXCLUDED.target_role,
 			action_type = EXCLUDED.action_type,
@@ -140,7 +141,7 @@ func (r *outreachRepository) UpsertCommercialAction(ctx context.Context, a *mode
 			completed_at = EXCLUDED.completed_at,
 			updated_at = EXCLUDED.updated_at`,
 		a.ID, a.OrganizationID, a.AccountID, a.CandidateID, a.ParentActionID, a.FollowupActionID,
-		a.SourceLeadID, a.PersonName, a.ObservedRole, a.TargetRole,
+		a.SourceLeadID, a.PersonName, a.PersonID, a.ObservedRole, a.TargetRole,
 		a.ActionType, a.ReachabilityClass, a.MappingVersion, a.RouteType, a.RouteRelation,
 		a.ChannelValue, a.ChannelDisplay, a.WhyNow, a.FactualHook, a.RecommendedAction,
 		a.ServiceCode, a.ServiceContext, a.Confidence, ev, warn,
@@ -200,23 +201,27 @@ func (r *outreachRepository) ListCommercialActions(ctx context.Context, orgID, a
 	return out, rows.Err()
 }
 
-func scanCommercialAction(row scannable) (*models.OutreachCommercialAction, error) {
-	var a models.OutreachCommercialAction
-	var ev, warn, content, corr []byte
-	err := row.Scan(
+func commercialActionScanDest(a *models.OutreachCommercialAction, ev, warn, content, corr *[]byte) []any {
+	return []any{
 		&a.ID, &a.OrganizationID, &a.AccountID, &a.CandidateID, &a.ParentActionID, &a.FollowupActionID,
-		&a.SourceLeadID, &a.PersonName, &a.ObservedRole, &a.TargetRole,
+		&a.SourceLeadID, &a.PersonName, &a.PersonID, &a.ObservedRole, &a.TargetRole,
 		&a.ActionType, &a.ReachabilityClass, &a.MappingVersion, &a.RouteType, &a.RouteRelation,
 		&a.ChannelValue, &a.ChannelDisplay, &a.WhyNow, &a.FactualHook, &a.RecommendedAction,
-		&a.ServiceCode, &a.ServiceContext, &a.Confidence, &ev, &warn,
+		&a.ServiceCode, &a.ServiceContext, &a.Confidence, ev, warn,
 		&a.State, &a.Lane, &a.PriorityRank, &a.PriorityScore, &a.Actionable, &a.EmailSendable, &a.Dispatchable,
 		&a.PersonFingerprint, &a.RouteFingerprint, &a.ContentHash, &a.SnapshotHash, &a.IdempotencyKey,
 		&a.HumanActor, &a.HumanNotes, &a.OutcomeCode, &a.OutcomeNotes, &a.TargetReached, &a.ConversationStarted,
 		&a.InterestState, &a.NextActionType, &a.NextActionAt, &a.RouteQualityFeedback,
-		&a.PersonRelevanceFeedback, &a.MessageFeedback, &content, &corr,
+		&a.PersonRelevanceFeedback, &a.MessageFeedback, content, corr,
 		&a.BlockedPerson, &a.BlockedRoute, &a.StaleWarning, &a.RequiresFresh, &a.CompanyName,
 		&a.CreatedAt, &a.UpdatedAt, &a.StartedAt, &a.CompletedAt,
-	)
+	}
+}
+
+func scanCommercialAction(row scannable) (*models.OutreachCommercialAction, error) {
+	var a models.OutreachCommercialAction
+	var ev, warn, content, corr []byte
+	err := row.Scan(commercialActionScanDest(&a, &ev, &warn, &content, &corr)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
