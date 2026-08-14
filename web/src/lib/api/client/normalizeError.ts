@@ -4,6 +4,8 @@ import { AuthError } from "@/lib/errors/auth";
 export interface AppError {
     error: string;
     message: string;
+    /** Stable machine-readable code from the API, for branching on a specific
+     *  condition rather than matching on human-readable text. */
     code?: string;
     request_id?: string;
     status?: number;

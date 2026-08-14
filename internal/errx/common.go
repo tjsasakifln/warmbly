@@ -36,6 +36,16 @@ var (
 	ErrCode        = New(BadRequest, "Invalid or expired verification code.")
 	ErrAuthLimit   = New(BadRequest, "Too many attempts, please try again later.")
 
+	// ErrMailUndeliverable separates "we could not send you the email" from
+	// every other internal fault. It used to be a bare 500, which on a
+	// self-hosted install with no working relay is the single least helpful
+	// thing to show someone who cannot log in.
+	ErrMailUndeliverable = New(Internal, "We couldn't send the email. If you administer this server, check the mail transport configuration.")
+
+	// ErrRegistrationClosed is returned when public signups are off. The
+	// operator sets DISABLE_REGISTRATION.
+	ErrRegistrationClosed = New(Forbidden, "This server is not accepting new accounts. Ask an administrator for an invitation.")
+
 	ErrExternalCode     = New(BadRequest, "Invalid or expired code, please try again.")
 	ErrExternalEmail    = New(BadRequest, "Invalid or unverified email address.")
 	ErrExternalProvider = New(BadRequest, "This sign-in method isn't available on this server.")
@@ -63,9 +73,17 @@ var (
 	ErrGroupMax   = New(BadRequest, "You reached the maximum amount.")
 
 	// Email
-	ErrEmailCredentials          = New(BadRequest, "Invalid email credentials.")
-	ErrEmailValidation           = New(BadRequest, "Deadline exceed, try again later.")
-	ErrEmailOnboardProvider      = New(BadRequest, "Unsupported email provider. Use 'gmail', 'outlook', or 'smtp_imap'.")
+	ErrEmailCredentials     = New(BadRequest, "Invalid email credentials.")
+	ErrEmailValidation      = New(BadRequest, "Deadline exceed, try again later.")
+	ErrEmailOnboardProvider = New(BadRequest, "Unsupported email provider. Use 'gmail', 'outlook', or 'smtp_imap'.")
+	// Raised when the provider is supported but this deployment has no OAuth
+	// client for it. Self-host only: the hosted product always has both set. The
+	// message names the variables because the person hitting this is usually the
+	// same person who can fix it.
+	ErrEmailOnboardGoogleNotConfigured = NewWithIdentifier(ServiceUnavailable, "mailbox_provider_not_configured",
+		"Gmail is not configured on this deployment. Set BOX_GOOGLE_CLIENT_ID and BOX_GOOGLE_CLIENT_SECRET in your .env, then restart. See https://docs.warmbly.com/development/deployment-guide/#connect-mailboxes")
+	ErrEmailOnboardOutlookNotConfigured = NewWithIdentifier(ServiceUnavailable, "mailbox_provider_not_configured",
+		"Microsoft 365 is not configured on this deployment. Set BOX_OUTLOOK_CLIENT_ID and BOX_OUTLOOK_CLIENT_SECRET in your .env, then restart. See https://docs.warmbly.com/development/deployment-guide/#connect-mailboxes")
 	ErrEmailOnboardState         = New(BadRequest, "Invalid or expired onboarding state.")
 	ErrEmailOnboardCode          = New(BadRequest, "Authorization code is missing or invalid.")
 	ErrEmailOnboardExchange      = New(BadRequest, "Could not exchange the authorization code with the provider.")

@@ -250,8 +250,32 @@ func (s *schedulerService) CalculateNextCampaignTime(ctx context.Context, campai
 		return acctProvider == recipientProvider
 	}
 
-	// STEP 8: Build weighted account candidates
-	// Skip accounts whose local time falls outside business hours (8am-8pm)
+	// STEP 8: Build weighted account candidates, gating each mailbox on when it
+	// may next send in its OWN timezone: its rolled workday when it has a
+	// sending-behaviour profile, and the historical 8am-8pm business-hours band
+	// when it does not.
+	//
+	// Profiles are resolved for the whole pool in one query, so adding
+	// mailboxes to a campaign does not add a query per mailbox to every pass.
+	behaviors := s.behaviorForAll(ctx, accounts)
+
+	// Rotation fallback for mailboxes with no campaign_senders row (tag-resolved
+	// pools and the "all active mailboxes" default). One query for the whole
+	// pool; a failure just leaves the map empty and rotation degrades to its
+	// tie-breaker rather than blocking the send.
+	lastSends := map[uuid.UUID]time.Time{}
+	if needsRotationFallback(campaign.RotationMode) {
+		ids := make([]uuid.UUID, 0, len(accounts))
+		for _, a := range accounts {
+			if _, ok := senderMetaByID[a.ID]; !ok {
+				ids = append(ids, a.ID)
+			}
+		}
+		if sends, lerr := s.taskRepo.GetLastSendTimes(ctx, ids, "campaign"); lerr == nil {
+			lastSends = sends
+		}
+	}
+
 	var candidates []AccountCandidate
 	for _, acct := range accounts {
 		sentToday, err := s.taskRepo.CountCampaignEmailsSentToday(ctx, acct.ID)
@@ -266,6 +290,8 @@ func (s *schedulerService) CalculateNextCampaignTime(ctx context.Context, campai
 		if remaining <= 0 {
 			continue
 		}
+
+		bhv := behaviors[acct.ID]
 
 		// Health-gate cold sends on the SAME warmup health state used for pool
 		// selection, so a mailbox in deliverability trouble doesn't keep blasting
@@ -290,8 +316,32 @@ func (s *schedulerService) CalculateNextCampaignTime(ctx context.Context, campai
 			}
 		}
 
-		// If the account has its own timezone, check it is within business hours
-		if acct.Timezone != "" && acct.Timezone != campaign.Timezone {
+		// Where the mailbox may next send, in its OWN timezone. With a
+		// behaviour profile this is its rolled workday (start, lunch, end,
+		// working weekdays) with the hourly ceiling already applied; without
+		// one it falls back to the historical 8am-8pm business-hours gate.
+		var behaviorOpenAt *time.Time
+		if bhv.Enabled {
+			openAt, ok := s.placeWithinBehavior(ctx, bhv, candidateTime)
+			if !ok {
+				continue // profile has no working days at all
+			}
+			behaviorOpenAt = &openAt
+
+			// Budget the send against the day it will actually land on. When
+			// today is spent, placeWithinBehavior has already walked to a later
+			// day, and that day starts with the mailbox's full cold cap.
+			if !sameLocalDay(openAt, time.Now(), bhv.Loc) {
+				remaining = acctLimit
+			}
+			// The day's rolled cold budget, folded in by min(): a persona can
+			// only lower a mailbox's remaining sends, never lift it above the
+			// cold cap.
+			remaining = s.behaviorDailyCap(ctx, bhv, remaining, openAt)
+			if remaining <= 0 {
+				continue
+			}
+		} else if acct.Timezone != "" && acct.Timezone != campaign.Timezone {
 			acctTZ := loadLocation(acct.Timezone)
 			acctLocal := candidateTime.In(acctTZ)
 			acctHour := acctLocal.Hour()
@@ -311,12 +361,25 @@ func (s *schedulerService) CalculateNextCampaignTime(ctx context.Context, campai
 			WarmupAgeDays:  warmupAgeDays,
 			Weight:         computeWeight(remaining, warmupAgeDays),
 			ProviderMatch:  providerMatches(acct.Provider),
+			Behavior:       bhv,
+			BehaviorOpenAt: behaviorOpenAt,
 		}
 		if meta, ok := senderMetaByID[acct.ID]; ok {
 			cand.HasSenderMetadata = true
 			cand.SenderWeight = meta.weight
 			cand.RotationPosition = meta.rotationPosition
 			cand.SenderLastSentAt = meta.lastSentAt
+		} else {
+			// No explicit sender row, so no stored cursor. Derive both signals
+			// from what the mailbox has actually done: today's send count is
+			// the round-robin position (least-used goes next), and its real
+			// last send drives least-recently-used. Without this, a tag-based
+			// campaign on either mode would keep picking the same mailbox.
+			cand.RotationPosition = sentToday
+			if at, ok := lastSends[acct.ID]; ok {
+				t := at
+				cand.SenderLastSentAt = &t
+			}
 		}
 		candidates = append(candidates, cand)
 	}
@@ -406,28 +469,37 @@ func (s *schedulerService) CalculateNextCampaignTime(ctx context.Context, campai
 
 	account := &selected.Account
 
-	// STEP 9: Even distribution across the candidate day's sending window. Uses
-	// the span (earliest start → latest end) of that weekday's intervals.
+	// STEP 8.75: Send-to-send spacing for THIS send. With a behaviour profile
+	// the gap is drawn fresh from the mailbox's range, so the intervals between
+	// its sends are irregular; otherwise it is the mailbox's fixed min gap.
+	gapSeconds := s.behaviorGap(selected.Behavior, candidateTime, account.MinWaitTime)
+
+	// Move the candidate onto the mailbox's own workday before the spacing
+	// maths below runs, so distribution is computed against the window the send
+	// will actually land in.
+	if selected.BehaviorOpenAt != nil && selected.BehaviorOpenAt.After(candidateTime) {
+		candidateTime = *selected.BehaviorOpenAt
+	}
+
+	// STEP 9: Even distribution across the candidate day's sending window. With
+	// a behaviour profile that is the mailbox's own rolled workday (lunch
+	// excluded); otherwise it is the span of the campaign's intervals for that
+	// weekday.
 	remainingEmails := selected.RemainingToday
 	if remainingEmails > 0 {
-		wd := int(candidateTime.In(campaignTZ).Weekday())
-		if dayStart, dayEnd, ok := windows.DaySpan(wd); ok {
-			nowLocal := time.Now().In(campaignTZ)
-			currentMinutes := nowLocal.Hour()*60 + nowLocal.Minute()
-			remainingMinutes := dayEnd - max(currentMinutes, dayStart)
-			if remainingMinutes > 0 {
-				// Vary the pace multiplicatively (bursts and lulls) — evenly
-				// metronomed sends are a pattern even with additive jitter.
-				varied := float64(remainingMinutes/remainingEmails) * (0.55 + rand.Float64()*0.9)
-				idealInterval := time.Duration(varied * float64(time.Minute))
-				minInterval := time.Second * time.Duration(account.MinWaitTime)
-				if idealInterval < minInterval {
-					idealInterval = minInterval
-				}
-				distributedTime := time.Now().Add(idealInterval)
-				if distributedTime.After(candidateTime) {
-					candidateTime = distributedTime
-				}
+		remainingMinutes, ok := remainingSendMinutes(selected, candidateTime, windows, campaignTZ)
+		if ok && remainingMinutes > 0 {
+			// Vary the pace multiplicatively (bursts and lulls) — evenly
+			// metronomed sends are a pattern even with additive jitter.
+			varied := float64(remainingMinutes/remainingEmails) * (0.55 + rand.Float64()*0.9)
+			idealInterval := time.Duration(varied * float64(time.Minute))
+			minInterval := time.Second * time.Duration(gapSeconds)
+			if idealInterval < minInterval {
+				idealInterval = minInterval
+			}
+			distributedTime := time.Now().Add(idealInterval)
+			if distributedTime.After(candidateTime) {
+				candidateTime = distributedTime
 			}
 		}
 	}
@@ -439,7 +511,7 @@ func (s *schedulerService) CalculateNextCampaignTime(ctx context.Context, campai
 	}
 
 	if lastEmailTime != nil {
-		minWait := time.Second * time.Duration(account.MinWaitTime)
+		minWait := time.Second * time.Duration(gapSeconds)
 		earliestNext := lastEmailTime.Add(minWait)
 
 		if candidateTime.Before(earliestNext) {
@@ -452,7 +524,7 @@ func (s *schedulerService) CalculateNextCampaignTime(ctx context.Context, campai
 	// STEP 11: Add jitter. Deliberately NOT rounded to a 5-minute grid — a
 	// fleet that only ever sends at :x0/:x5 marks is a detectable pattern.
 	jitter := randomJitter(-20, 20)
-	candidateTime = candidateTime.Add(time.Minute * time.Duration(jitter))
+	candidateTime = notBefore(candidateTime.Add(time.Minute * time.Duration(jitter)))
 
 	// STEP 12: Check conflicts with other scheduled tasks
 	dateToCheck := candidateTime
@@ -461,17 +533,23 @@ func (s *schedulerService) CalculateNextCampaignTime(ctx context.Context, campai
 		return time.Time{}, nil, uuid.Nil, err
 	}
 
-	candidateTime = resolveConflicts(candidateTime, scheduledTasks, account.MinWaitTime)
+	candidateTime = resolveConflicts(candidateTime, scheduledTasks, gapSeconds)
 
-	// STEP 13: Apply human-like distribution (favor morning/afternoon peaks)
-	candidateTime = applyDistributionCurve(candidateTime, campaignTZ)
+	// STEP 13: Apply human-like distribution (favor morning/afternoon peaks).
+	// Skipped for behaviour-profiled mailboxes: the profile already describes
+	// this mailbox's workday and its own lunch break, and layering the generic
+	// curve on top would drag sends away from the hours the customer chose.
+	if !selected.Behavior.Enabled {
+		candidateTime = applyDistributionCurve(candidateTime, campaignTZ)
+	}
 
 	// STEP 14: Ensure still within a sending window after all adjustments
-	// (jitter/conflict/distribution can push into a gap between intervals).
-	candidateTime = nextScheduleSlot(candidateTime, windows, campaignTZ)
+	// (jitter/conflict/distribution can push into a gap between intervals, or
+	// out of the mailbox's workday). Satisfies both calendars.
+	candidateTime = s.intersectWindows(ctx, selected.Behavior, notBefore(candidateTime), windows, campaignTZ)
 
 	// STEP 15: Randomise the sub-minute component so sends never land on :00.
-	return humanizeSeconds(candidateTime), nextPair, account.ID, nil
+	return finalSlot(candidateTime), nextPair, account.ID, nil
 }
 
 // deferToNextDay pushes a candidate time to the next valid campaign day within

@@ -34,6 +34,8 @@ import (
 	"github.com/warmbly/warmbly/internal/app/apikey"
 	"github.com/warmbly/warmbly/internal/app/audit"
 	"github.com/warmbly/warmbly/internal/app/auth"
+	behaviorapp "github.com/warmbly/warmbly/internal/app/behavior"
+	"github.com/warmbly/warmbly/internal/app/bootstrap"
 	"github.com/warmbly/warmbly/internal/app/campaign"
 	"github.com/warmbly/warmbly/internal/app/cipher"
 	"github.com/warmbly/warmbly/internal/app/compose"
@@ -51,6 +53,7 @@ import (
 	"github.com/warmbly/warmbly/internal/app/feature"
 	"github.com/warmbly/warmbly/internal/app/fleet"
 	"github.com/warmbly/warmbly/internal/app/group"
+	"github.com/warmbly/warmbly/internal/app/guardrail"
 	idempotencyapp "github.com/warmbly/warmbly/internal/app/idempotency"
 	"github.com/warmbly/warmbly/internal/app/inboxagent"
 	"github.com/warmbly/warmbly/internal/app/integration"
@@ -59,6 +62,7 @@ import (
 	"github.com/warmbly/warmbly/internal/app/nativeactions"
 	"github.com/warmbly/warmbly/internal/app/notification"
 	"github.com/warmbly/warmbly/internal/app/oauth"
+	"github.com/warmbly/warmbly/internal/app/oidcauth"
 	"github.com/warmbly/warmbly/internal/app/organization"
 	"github.com/warmbly/warmbly/internal/app/passkey"
 	"github.com/warmbly/warmbly/internal/app/placement"
@@ -123,6 +127,12 @@ import (
 )
 
 func main() {
+	// Before anything else: refuse to run a networked deployment on the
+	// published default secrets. They are in this repository, so they protect
+	// nothing, and a forged token signed with the default AUTH_SECRET is
+	// accepted by the realtime service.
+	checkSecrets()
+
 	var addr string
 	var ginMode string
 	var websocketURI string
@@ -214,9 +224,26 @@ func main() {
 
 	// Notifications
 	var emailNotificationService notify.EmailNotificationService
+	// mailTransport is the same sender plus its metadata, kept so the auth
+	// config endpoint and admin diagnostics can report what mail is doing.
+	var mailTransport *notify.Transport
+	// Deployment auth facts resolved during boot and served by /auth/config.
+	var authPolicy *config.AuthPolicy
+	var passkeysUsable bool
+	var googleWebSignIn, appleWebSignIn bool
+	var bootstrapService *bootstrap.Service
+	// oidcLogin is nil unless OIDC_ISSUER_URL is configured.
+	var oidcLogin *oidcauth.Service
+	// authCache is the same Redis client the services use, hoisted so the
+	// middleware handler can reach it for the pre-login per-IP limiter.
+	var authCache *cache.Cache
 
 	// Warmup
 	var warmupService warmupapp.Service
+
+	// Per-mailbox human sending behaviour (rolled workday, daily/hourly
+	// ceilings, send spacing) — consumed by the schedulers and the dashboard.
+	var behaviorService behaviorapp.Service
 
 	// Danger zone (delayed deletions)
 	var dangerZoneService dangerzone.Service
@@ -320,18 +347,17 @@ func main() {
 			log.Fatal(err)
 		}
 
+		// GeoIP is optional everywhere. It only labels session and audit records
+		// with a city, so a missing database is a cosmetic loss, not a reason to
+		// refuse to start: requiring a MaxMind licence to run APP_ENV=prod made
+		// self-hosting depend on an account nobody asked for.
 		var geoloc *geo.Client
 		geoloc, err = geo.New(geoPath)
 		if err != nil {
-			if cfg.Env == "dev" {
-				log.Printf("Warning: GeoIP database not found at %s, geo lookups disabled", geoPath)
-				// geo.New returns a nil client on error; fall back to a usable,
-				// geo-disabled client so downstream callers never deref nil.
-				geoloc, _ = geo.New("")
-			} else {
-				sentry.CaptureException(err)
-				log.Fatal(err)
-			}
+			log.Printf("GeoIP database not found at %s; location lookups are disabled.", geoPath)
+			// geo.New returns a nil client on error; fall back to a usable,
+			// geo-disabled client so downstream callers never deref nil.
+			geoloc, _ = geo.New("")
 		}
 
 		s3, err := storage.NewFromEnv(ctx, awscfg, "main")
@@ -409,24 +435,23 @@ func main() {
 			log.Fatal(err)
 		}
 
-		smtpCfg := cfg.LoadSMTPConfig(ctx)
-		if smtpCfg != nil {
-			emailNotificationService = notify.NewSMTPEmailNotificationService(
-				emailCfg.EmailName,
-				emailCfg.EmailAddress,
-				smtpCfg.Host,
-				smtpCfg.Port,
-			)
+		mailTransport, err = notify.NewTransport(ctx, cfg, emailCfg.EmailName, emailCfg.EmailAddress)
+		if err != nil {
+			sentry.CaptureException(err)
+			log.Fatal(err)
+		}
+		emailNotificationService = mailTransport
+		// Dial the relay once at boot. A broken relay used to surface only as a
+		// 500 on the login screen, which is the one screen the operator needs
+		// when they cannot log in.
+		if perr := mailTransport.Preflight(ctx); perr != nil {
+			log.Printf("Warning: platform mail preflight FAILED (%s): %v", mailTransport.Description, perr)
+			log.Printf("Warning: login codes, password resets and invitations will not be delivered. Set MAIL_TRANSPORT=log to read them from these logs instead.")
 		} else {
-			emailNotificationService, err = notify.NewEmailNotficiationService(
-				ctx,
-				emailCfg.EmailName,
-				emailCfg.EmailAddress,
-			)
-			if err != nil {
-				sentry.CaptureException(err)
-				log.Fatal(err)
-			}
+			log.Printf("Platform mail transport: %s", mailTransport.Description)
+		}
+		if !mailTransport.Delivers {
+			log.Printf("Warning: MAIL_TRANSPORT=log — every platform email, including login codes, is printed here and never delivered. Do not use this on a deployment other people can reach.")
 		}
 
 		authCfg, err := cfg.LoadAuthConfig(ctx)
@@ -492,11 +517,16 @@ func main() {
 			log.Fatal(err)
 		}
 
+		// The bypass token must be set explicitly. It used to fall back to a
+		// hardcoded literal whenever APP_ENV was "dev", which is the shipped
+		// default in both compose and env.example, so any deployment that
+		// turned captcha on while leaving APP_ENV alone had a universal,
+		// publicly known bypass on login, registration and password reset.
 		turnstileBypassToken := ""
 		if cfg.Env == "dev" {
 			turnstileBypassToken = authCfg.TurnstileBypass
-			if turnstileBypassToken == "" {
-				turnstileBypassToken = "warmbly-local-turnstile-bypass"
+			if turnstileBypassToken != "" && authCfg.TurnstileSecret != "" {
+				log.Printf("Warning: TURNSTILE_BYPASS_TOKEN is set alongside a real TURNSTILE_SECRET. Anyone who learns the token skips the captcha entirely.")
 			}
 		}
 
@@ -728,6 +758,15 @@ func main() {
 		twofaService = twofa.NewService(repository.NewTOTPRepository(primaryDB.Pool), userRepostory, tokenService, cache, twofa.DeriveKey(authCfg.TwoFASecret))
 		authService.WireTwoFA(twofaService)
 
+		// Deployment-level auth policy: whether an emailed code gates a login,
+		// whether signups are open, whether verification is required. Resolved
+		// against the mail transport, because a code nobody can receive cannot
+		// be a login requirement.
+		authPolicy = config.LoadAuthPolicy(mailTransport != nil && mailTransport.Delivers)
+		authService.WireDeployment(authPolicy, mailTransport != nil && mailTransport.Delivers)
+		log.Printf("Auth policy: login_code=%s registration=%s email_verification=%t",
+			authPolicy.LoginCode, authPolicy.Registration, authPolicy.RequireEmailVerification)
+
 		// Native-app social sign-in. Declared as the interface type so an
 		// unconfigured provider stays a true nil (no typed-nil pitfall) and
 		// the service reports it as unavailable.
@@ -739,6 +778,34 @@ func main() {
 			googleIDTokens = idtoken.GoogleVerifier(authCfg.GoogleIOSClientID)
 		}
 		authService.WireExternalIDTokens(appleIDTokens, googleIDTokens)
+
+		// Federated identities keyed on (issuer, subject). Without this,
+		// external sign-in resolves accounts by email alone, which is only safe
+		// for issuers that control their own email namespace.
+		authService.WireIdentities(repository.NewIdentityRepository(primaryDB.Pool))
+
+		// Generic OIDC. Discovery runs at boot: an unreachable issuer is a
+		// configuration error worth surfacing now rather than as a login button
+		// that always fails.
+		if issuer := os.Getenv("OIDC_ISSUER_URL"); issuer != "" {
+			oidcSvc, oerr := oidcauth.New(ctx, oidcauth.Config{
+				IssuerURL:      issuer,
+				ClientID:       os.Getenv("OIDC_CLIENT_ID"),
+				ClientSecret:   os.Getenv("OIDC_CLIENT_SECRET"),
+				RedirectURL:    oidcRedirectURL(),
+				Scopes:         splitList(os.Getenv("OIDC_SCOPES")),
+				AllowedDomains: splitList(os.Getenv("OIDC_ALLOWED_DOMAINS")),
+				DefaultOrgID:   os.Getenv("OIDC_DEFAULT_ORG"),
+				ProviderName:   os.Getenv("OIDC_PROVIDER_NAME"),
+			})
+			if oerr != nil {
+				log.Printf("Warning: OIDC disabled: %v", oerr)
+			} else {
+				oidcLogin = oidcSvc
+				authService.WireOIDC(oidcSvc)
+				log.Printf("OIDC login enabled (issuer %s)", oidcSvc.Issuer())
+			}
+		}
 		externalAuthProviders = models.ExternalAuthProviders{
 			AppleBundleID:     authCfg.AppleIOSBundleID,
 			GoogleIOSClientID: authCfg.GoogleIOSClientID,
@@ -774,6 +841,27 @@ func main() {
 			sentry.CaptureException(passkeyErr)
 			log.Fatal(passkeyErr)
 		}
+		passkeysUsable = passkeysUsableFor(os.Getenv("APP_URL"))
+		googleWebSignIn = authCfg.GoogleClientID != ""
+		appleWebSignIn = authCfg.AppleAppID != ""
+		authCache = cache
+		warnDeploymentURLs(ctx, os.Getenv("APP_URL"))
+
+		// First-owner bootstrap. A no-op once any user exists, so it runs on
+		// every boot and only ever does something on a fresh install.
+		bootstrapService = bootstrap.NewService(
+			userRepostory,
+			userService,
+			organizationService,
+			trialService,
+			repository.NewAdminRepository(primaryDB.Pool),
+			cache,
+		)
+		if berr := bootstrapService.Run(ctx); berr != nil {
+			sentry.CaptureException(berr)
+			log.Printf("Warning: bootstrap failed: %v", berr)
+		}
+
 		cipherService = cipher.NewService(kms, cache, encryptedKeys)
 
 		// Third-party integrations: OAuth connect flows + encrypted token
@@ -902,20 +990,32 @@ func main() {
 			credentialsRepository,
 			cipherService,
 			worker_orchestrator.WorkerEnvConfig{
-				AppEnv:                   os.Getenv("APP_ENV"),
-				WorkerImage:              getenvDefault("WORKER_IMAGE", "ghcr.io/warmbly/worker:latest"),
-				KafkaBootstrap:           os.Getenv("KAFKA_BOOTSTRAP_SERVERS"),
-				KafkaSASLUsername:        os.Getenv("KAFKA_SASL_USERNAME"),
-				KafkaSASLPassword:        os.Getenv("KAFKA_SASL_PASSWORD"),
-				SchemaRegistryURL:        os.Getenv("SCHEMA_REGISTRY_URL"),
-				SchemaRegistryKey:        os.Getenv("SCHEMA_REGISTRY_KEY"),
-				SchemaRegistrySecret:     os.Getenv("SCHEMA_REGISTRY_SECRET"),
-				RedisURL:                 os.Getenv("REDIS"),
-				AWSRegion:                os.Getenv("AWS_REGION"),
-				AWSAccessKeyID:           os.Getenv("WORKER_AWS_ACCESS_KEY_ID"),
-				AWSSecretAccessKey:       os.Getenv("WORKER_AWS_SECRET_ACCESS_KEY"),
-				EncryptedKeysBackendURL:  os.Getenv("ENCRYPTED_KEYS_BACKEND_URL"),
+				AppEnv:               os.Getenv("APP_ENV"),
+				WorkerImage:          getenvDefault("WORKER_IMAGE", "ghcr.io/warmbly/worker:latest"),
+				KafkaBootstrap:       os.Getenv("KAFKA_BOOTSTRAP_SERVERS"),
+				KafkaSASLUsername:    os.Getenv("KAFKA_SASL_USERNAME"),
+				KafkaSASLPassword:    os.Getenv("KAFKA_SASL_PASSWORD"),
+				SchemaRegistryURL:    os.Getenv("SCHEMA_REGISTRY_URL"),
+				SchemaRegistryKey:    os.Getenv("SCHEMA_REGISTRY_KEY"),
+				SchemaRegistrySecret: os.Getenv("SCHEMA_REGISTRY_SECRET"),
+				RedisURL:             os.Getenv("REDIS"),
+				AWSRegion:            os.Getenv("AWS_REGION"),
+				AWSAccessKeyID:       os.Getenv("WORKER_AWS_ACCESS_KEY_ID"),
+				AWSSecretAccessKey:   os.Getenv("WORKER_AWS_SECRET_ACCESS_KEY"),
+				// A remote worker reaches the internal API over the network, so
+				// fall back to the public API URL. ENCRYPTED_KEYS_BACKEND_URL is
+				// typically only set on workers themselves (compose points it at
+				// the in-network hostname), leaving it empty here and shipping a
+				// config the worker cannot use.
+				EncryptedKeysBackendURL:  getenvDefault("ENCRYPTED_KEYS_BACKEND_URL", os.Getenv("API_PUBLIC_URL")),
 				EncryptedKeysWorkerToken: os.Getenv("INTERNAL_API_TOKEN"),
+				KMSProvider:              getenvDefault("KMS_PROVIDER", "local"),
+				KMSLocalMasterKey:        os.Getenv("KMS_LOCAL_MASTER_KEY"),
+				KMSAWSKeyID:              os.Getenv("KMS_AWS_KEY_ID"),
+				CredentialsEncryptionKey: os.Getenv("CREDENTIALS_ENCRYPTION_KEY"),
+				BlobProvider:             getenvDefault("BLOB_PROVIDER", "filesystem"),
+				BlobBucket:               os.Getenv("BLOB_BUCKET"),
+				BlobFSRoot:               os.Getenv("BLOB_FS_ROOT"),
 				EventBusProvider:         os.Getenv("EVENTBUS_PROVIDER"),
 				NATSURL:                  os.Getenv("NATS_URL"),
 				CodecProvider:            os.Getenv("CODEC_PROVIDER"),
@@ -1082,7 +1182,17 @@ func main() {
 
 		// Template & email send services
 		templateService = template.NewService(templateRepository)
+
+		// Sending behaviour. Wired onto the scheduler rather than passed to its
+		// constructor so a deployment without it keeps every mailbox on the
+		// legacy fixed cap and min-gap path.
+		behaviorRepository := repository.NewBehaviorRepository(primaryDB.Pool)
+		behaviorService = behaviorapp.NewService(behaviorRepository, emailRepostory)
+
 		schedulerService := scheduler.NewSchedulerService(taskRepository, warmupRepository, campaignProgressRepository, emailRepostory, campaignRepostory, contactRepostory, campaignLogRepository)
+		if aware, ok := schedulerService.(scheduler.BehaviorAware); ok {
+			aware.WireBehavior(behaviorService)
+		}
 		campaignService = campaign.NewService(campaignRepostory, taskRepository, emailRepostory, campaignLogRepository, featureGateService, dailyThrottleService, schedulerService, tasksClient, streamingPublisher)
 		// CONFENGE enroll uses campaign + contact services (execution plane).
 		if confengeServiceForHandler != nil {
@@ -1392,6 +1502,21 @@ func main() {
 		placementPoller := jobs.NewPlacementPoller(placementService, 2*time.Minute)
 		go placementPoller.Start(ctx)
 
+		// Auto-pause guardrails: pause any active campaign whose bounce,
+		// complaint, or reply rate has left the band its owner set. Fifteen
+		// minutes is fast enough that a campaign cannot do much damage inside
+		// one window at the platform's per-mailbox defaults. The same tick
+		// prunes expired daily sending plans.
+		guardrailService := guardrail.NewService(
+			repository.NewGuardrailRepository(primaryDB.Pool),
+			campaignLogRepository,
+			auditService,
+			notificationService,
+		)
+		guardrailJob := jobs.NewGuardrailJob(guardrailService, behaviorRepository)
+		guardrailScheduler := jobs.NewGuardrailScheduler(guardrailJob, 15*time.Minute)
+		go guardrailScheduler.Start(ctx)
+
 		// Advisor. Detection is deterministic Go over a per-org snapshot and
 		// always runs; the narrator is optional and only rewrites the card copy,
 		// so an install with no LLM provider still gets every recommendation.
@@ -1457,6 +1582,15 @@ func main() {
 	h := &handler.Handler{
 		AuthService:           authService,
 		ExternalAuthProviders: externalAuthProviders,
+
+		GoogleWebSignIn:  googleWebSignIn,
+		AppleWebSignIn:   appleWebSignIn,
+		OIDCEnabled:      oidcLogin != nil,
+		MailDelivers:     mailTransport != nil && mailTransport.Delivers,
+		MailTransport:    mailTransportKind(mailTransport),
+		MailTransportRef: mailTransport,
+		BootstrapService: bootstrapService,
+		PasskeysUsable:   passkeysUsable,
 
 		TokenService:     tokenService,
 		PasskeyService:   passkeyService,
@@ -1555,6 +1689,7 @@ func main() {
 		PlacementRepo:    placementRepository,
 		PlacementService: placementService,
 
+		BehaviorService:   behaviorService,
 		AdvisorService:    advisorService,
 		AdvisorRepository: advisorRepository,
 
@@ -1608,6 +1743,7 @@ func main() {
 		IdempotencyService:  idempotencyService,
 		OrganizationService: organizationService,
 		OAuthService:        oauthService,
+		Cache:               authCache,
 	}
 
 	oidcH := &middleware.OidcHandler{

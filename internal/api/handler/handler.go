@@ -11,6 +11,8 @@ import (
 	"github.com/warmbly/warmbly/internal/app/apikey"
 	"github.com/warmbly/warmbly/internal/app/audit"
 	"github.com/warmbly/warmbly/internal/app/auth"
+	"github.com/warmbly/warmbly/internal/app/behavior"
+	"github.com/warmbly/warmbly/internal/app/bootstrap"
 	"github.com/warmbly/warmbly/internal/app/campaign"
 	"github.com/warmbly/warmbly/internal/app/compose"
 	"github.com/warmbly/warmbly/internal/app/confenge"
@@ -74,12 +76,26 @@ type Handler struct {
 
 	// Native-app social sign-in discovery (GET /auth/providers).
 	ExternalAuthProviders models.ExternalAuthProviders
-	UserService           user.UserService
-	EmailService          email.EmailService
-	CampaignService       campaign.CampaignService
-	ContactService        contact.ContactService
-	SequenceService       sequence.SequenceService
-	UniboxService         unibox.UniboxService
+
+	// Deployment facts served by GET /auth/config so the login screen renders
+	// what this backend can actually do instead of guessing.
+	GoogleWebSignIn bool
+	AppleWebSignIn  bool
+	OIDCEnabled     bool
+	MailDelivers    bool
+	PasskeysUsable  bool
+	MailTransport   string
+	// MailTransportRef backs the admin mail diagnostics, which need Preflight
+	// and so cannot go through the EmailNotificationService interface.
+	MailTransportRef *notify.Transport
+	// BootstrapService backs the first-run setup page.
+	BootstrapService *bootstrap.Service
+	UserService      user.UserService
+	EmailService     email.EmailService
+	CampaignService  campaign.CampaignService
+	ContactService   contact.ContactService
+	SequenceService  sequence.SequenceService
+	UniboxService    unibox.UniboxService
 
 	FolderService   group.GroupService
 	TagService      group.GroupService
@@ -154,6 +170,12 @@ type Handler struct {
 	// Pre-send email verification (control-plane SMTP RCPT probe / pluggable
 	// paid backend). Drops hard-bouncing addresses before a worker sends.
 	EmailVerifyService emailverifyapp.Service
+
+	// Per-mailbox human sending behaviour: the ranges a mailbox rolls its
+	// workday from, and the plan it rolled for today. Nil disables the
+	// behaviour endpoints (the schedulers then run every mailbox on its fixed
+	// cap and gap).
+	BehaviorService behavior.Service
 
 	// Warmup health
 	WarmupService warmup.Service

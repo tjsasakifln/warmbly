@@ -88,6 +88,8 @@ import AdminWorkerDetailPage from './app/app/admin/workers/[id]/page';
 import AdminCredentialsPage from './app/app/admin/credentials/page';
 import AdminAuditPage from './app/app/admin/audit/page';
 import { CONFENGE_OPERATOR_MODE } from './lib/information';
+import SetupPage from './app/setup/page';
+import SSOCallbackPage from './app/auth/sso/page';
 
 // React-Query defaults tuned for a dashboard. The library's
 // out-of-the-box behaviour treats every query as immediately stale
@@ -162,6 +164,11 @@ const standardRoutes = [
             ]
           },
           {
+            // Landing for the single-use code an SSO redirect carries.
+            path: "sso",
+            element: <SSOCallbackPage />,
+          },
+          {
             path: "reset-password",
             element: <ResetPasswordLayout />,
             children: [
@@ -194,6 +201,11 @@ const standardRoutes = [
       {
         path: "invite",
         element: <InviteAcceptPage />,
+      },
+      {
+        // First-run claim link printed by the backend on an empty database.
+        path: "setup",
+        element: <SetupPage />,
       },
       {
         path: "oauth",

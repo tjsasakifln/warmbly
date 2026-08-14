@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/warmbly/warmbly/internal/app/behavior"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/repository"
 )
@@ -158,7 +159,7 @@ func calculateFirstSlotTomorrowAt(timezone, startTime string) time.Time {
 	firstSlot := time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(),
 		startMinutes/60, startMinutes%60, 0, 0, loc)
 	jitter := randomJitter(0, 60)
-	return humanizeSeconds(firstSlot.Add(time.Minute * time.Duration(jitter)))
+	return finalSlot(firstSlot.Add(time.Minute * time.Duration(jitter)))
 }
 
 // humanizeSeconds randomises the sub-minute component of a scheduled time. All
@@ -166,8 +167,25 @@ func calculateFirstSlotTomorrowAt(timezone, startTime string) time.Time {
 // second :00, so without this the whole platform sends at second zero — a
 // fleet-wide fingerprint in Received headers. Applied as the last step of the
 // schedulers.
+//
+// It truncates DOWN to the minute before re-randomising, so on its own it can
+// move a slot up to 59 seconds EARLIER. Callers that are producing a real
+// scheduled_at must therefore use finalSlot, which clamps afterwards; this
+// helper deliberately stays a pure formatter.
 func humanizeSeconds(t time.Time) time.Time {
 	return t.Truncate(time.Minute).Add(time.Duration(rand.Intn(60)) * time.Second)
+}
+
+// finalSlot is the last thing a scheduler does to a candidate: randomise its
+// sub-minute component, then guarantee the result is still in the future.
+//
+// Both halves matter. Without the randomisation the whole fleet sends at second
+// :00, which is a fingerprint in Received headers. Without the clamp, that same
+// randomisation — plus the symmetric jitter each scheduler applies — can land a
+// near-term send in the past, where it fires immediately with none of the
+// spacing it was placed with, or gets cancelled outright by the overdue sweep.
+func finalSlot(t time.Time) time.Time {
+	return notBefore(humanizeSeconds(t))
 }
 
 // avoidRoundTimes adds randomness to avoid exact round times (10:00, 11:00)
@@ -279,6 +297,54 @@ type AccountCandidate struct {
 	// recipient ESP under ESP matching. Always true when ESP matching is off or
 	// the recipient provider is unknown.
 	ProviderMatch bool
+
+	// Behavior is the mailbox's resolved sending-behaviour profile for this
+	// pass. Zero value (Enabled false) means the mailbox has not opted in.
+	Behavior behavior.Resolved
+	// BehaviorOpenAt is the earliest instant the mailbox's rolled workday and
+	// hourly ceiling allow, computed while filtering candidates. nil when
+	// behaviour is off for this mailbox.
+	BehaviorOpenAt *time.Time
+}
+
+// remainingSendMinutes returns how much sending time is left in the day the
+// candidate is about to send on, which is what the even-distribution step
+// paces the day's remaining emails across.
+//
+// With a behaviour profile the answer comes from the mailbox's own rolled
+// workday in its own timezone, with any part of the lunch break still ahead
+// subtracted — pacing across a window that includes a break the mailbox will
+// not send in would bunch the remainder into the afternoon. Without one it is
+// the campaign's window span for that weekday, exactly as before.
+func remainingSendMinutes(c *AccountCandidate, at time.Time, sw models.ScheduleWindows, campaignTZ *time.Location) (int, bool) {
+	if c.Behavior.Enabled {
+		loc := c.Behavior.Loc
+		plan := c.Behavior.PlanOn(behavior.PlanDateFor(at, loc))
+		if !plan.IsWorkingDay {
+			return 0, false
+		}
+		cur := max(behavior.MinuteOfDay(at, loc), plan.WorkStartMinute)
+		if cur >= plan.WorkEndMinute {
+			return 0, false
+		}
+		remaining := plan.WorkEndMinute - cur
+		if plan.HasLunch() {
+			breakStart, breakEnd := *plan.LunchStartMinute, *plan.LunchEndMinute
+			if breakEnd > cur {
+				remaining -= breakEnd - max(breakStart, cur)
+			}
+		}
+		return max(remaining, 0), true
+	}
+
+	wd := int(at.In(campaignTZ).Weekday())
+	dayStart, dayEnd, ok := sw.DaySpan(wd)
+	if !ok {
+		return 0, false
+	}
+	nowLocal := time.Now().In(campaignTZ)
+	currentMinutes := nowLocal.Hour()*60 + nowLocal.Minute()
+	return dayEnd - max(currentMinutes, dayStart), true
 }
 
 // campaignRampCeiling returns the day's effective ramp ceiling. When ramp is
@@ -424,6 +490,13 @@ func selectAccountRoundRobin(candidates []AccountCandidate) *AccountCandidate {
 		}
 	}
 	return best
+}
+
+// needsRotationFallback reports whether a rotation mode depends on per-sender
+// bookkeeping that only explicitly-picked senders carry. Weighted selection is
+// driven by remaining capacity, so it already spreads without a cursor.
+func needsRotationFallback(rotationMode string) bool {
+	return rotationMode == "round_robin" || rotationMode == "least_recently_used"
 }
 
 // selectAccountByRotationMode dispatches to the chosen rotation strategy. For
