@@ -82,16 +82,24 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 	recent := recentDraftBodies(ctx, s, orgID, accountID, models.OutreachChannelEmail)
 	in := BuildGenerateInput(ChannelEmailInitial, acc, cand, evidence, recent)
 	pb, _ := LoadPlaybook()
-	st := PlanOutreachStrategy(pb, acc, cand, evidence, 1)
+	st, plan := BuildOutboundPlan(pb, acc, cand, evidence, 1)
 	gen := s.generator()
-	out, provider, model, genErr := gen.Generate(ctx, in)
+	var out DraftOutput
+	var provider, model string
+	var genErr error
 	usedTemplate := false
-	if genErr != nil {
-		out = ComposeFromStrategy(st, acc, cand, ChannelEmailInitial)
-		provider = "template"
-		model = "strategy_compose"
-		usedTemplate = true
-		out.RiskFlags = append(out.RiskFlags, "generation_failed_strategy_compose")
+	if plan.Messageability != MessageabilityReady {
+		out = FailClosedDraft(plan, ChannelEmailInitial)
+		provider, model = "template", "messageability_gate"
+	} else {
+		out, provider, model, genErr = gen.Generate(ctx, in)
+		if genErr != nil {
+			out = ComposeFromPlan(plan, acc, cand, ChannelEmailInitial)
+			provider = "template"
+			model = "strategy_compose"
+			usedTemplate = true
+			out.RiskFlags = append(out.RiskFlags, "generation_failed_strategy_compose")
+		}
 	}
 	if out.ServiceCode == "" {
 		out.ServiceCode = acc.ServiceCode
@@ -125,13 +133,22 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 		strings.TrimSpace(st.WhyNow) == "" ||
 		strings.TrimSpace(st.ObservedFact) == ""
 	if usedTemplate && incomplete {
-		flags = append(flags, "template_fallback_incomplete_context", "needs_review")
+		flags = append(flags, "template_fallback_incomplete_context")
 		risk = "RED"
 	}
 	if incomplete {
 		flags = append(flags, "incomplete_copy_context")
 		if risk == "GREEN" {
 			risk = "YELLOW"
+		}
+	}
+	if plan.Messageability != MessageabilityReady {
+		flags = appendUnique(flags, "messageability_"+strings.ToLower(plan.Messageability))
+		flags = appendUnique(flags, plan.ReasonCodes...)
+		risk = "RED"
+		val.OK = false
+		if plan.Reason != "" {
+			val.Errors = appendUnique(val.Errors, plan.Reason)
 		}
 	}
 	val.Claims = out.Claims
@@ -141,7 +158,7 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 	if cand.Name != "" && !isGenericRecipient(cand) {
 		recipient = cand.Name + " <" + cand.Email + ">"
 	}
-	valJSON := PackValidationWithStrategy(val, st, recipient)
+	valJSON := PackValidationWithPlan(val, st, plan, recipient)
 	followJSON, _ := json.Marshal(out.Followups)
 	draft.Subject = SanitizeText(out.Subject, 200)
 	draft.BodyText = SanitizeText(out.BodyText, 8000)
@@ -160,13 +177,29 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 	draft.ValidationOK = &ok
 	draft.RiskClass = risk
 	draft.RiskFlags = flags
-	draft.Status = models.OutreachDraftNeedsReview
+	// NEEDS_REVIEW is only for sendable copy awaiting human authorization.
+	switch plan.Messageability {
+	case MessageabilityBlocked:
+		draft.Status = models.OutreachDraftBlocked
+		draft.Subject, draft.BodyText = "", ""
+	case MessageabilityNeedsEnrichment:
+		draft.Status = models.OutreachDraftSkipped
+		draft.Subject, draft.BodyText = "", ""
+	default:
+		if !val.OK || strings.TrimSpace(out.BodyText) == "" {
+			draft.Status = models.OutreachDraftSkipped
+			draft.Subject, draft.BodyText = "", ""
+		} else {
+			draft.Status = models.OutreachDraftNeedsReview
+		}
+	}
 	if err := s.repo.UpsertDraft(ctx, draft); err != nil {
 		return nil, errx.New(errx.Internal, "failed to save draft: "+err.Error())
 	}
 
-	// Move account into review queue when machine-owned.
-	if acc.QueueState == models.OutreachQueueReadyToGenerate || acc.QueueState == models.OutreachQueueNeedsContact {
+	// Move account into review queue only when the message is sendable.
+	if draft.Status == models.OutreachDraftNeedsReview &&
+		(acc.QueueState == models.OutreachQueueReadyToGenerate || acc.QueueState == models.OutreachQueueNeedsContact) {
 		_ = s.repo.SetAccountHumanFlags(ctx, orgID, accountID, acc.Blocked, acc.DoNotContact, acc.BlockReason, models.OutreachQueueNeedsReview)
 	}
 

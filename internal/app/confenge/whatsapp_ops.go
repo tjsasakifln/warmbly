@@ -191,7 +191,7 @@ func (s *service) GenerateWhatsAppDraft(ctx context.Context, orgID, userID, acco
 		FactUsed: SanitizeText(out.FactUsed, 2000), EvidenceIDs: collectEvidenceIDs(&out),
 		Question: SanitizeText(out.Question, 1000), CTA: SanitizeText(out.CTA, 500),
 		Provider: provider, Model: model, PromptVersion: PromptVersion, ValidationJSON: valJSON,
-		ValidationOK: &ok, Status: models.OutreachDraftNeedsReview, RiskClass: risk, RiskFlags: flags,
+		ValidationOK: &ok, Status: draftStatusFromMessageability(out, val), RiskClass: risk, RiskFlags: flags,
 	}
 	if err := s.repo.UpsertDraft(ctx, draft); err != nil {
 		return nil, errx.New(errx.Internal, "failed to save whatsapp draft: "+err.Error())

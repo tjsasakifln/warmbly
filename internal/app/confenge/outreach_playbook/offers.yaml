@@ -1,4 +1,4 @@
-outreach_doctrine_version: confenge-outreach-v1
+outreach_doctrine_version: confenge-outreach-v2
 
 # Micro-offers: value before meeting. Cold path only suggests LOW budget.
 offers:
@@ -7,7 +7,7 @@ offers:
     buyer_value: Clareza sobre o que verificar antes de qualquer diagnóstico pago
     fulfillment_path: draft_from_evidence
     fulfillment_cost: LOW
-    required_evidence: [any_public_contract_fact]
+    required_evidence: [contract_event]
     applicable_service_codes: ["*"]
     prohibited_claims: [crédito confirmado, valor a receber]
     cta_patterns:
@@ -67,7 +67,7 @@ offers:
     buyer_value: Reduz caça documental sem vender o serviço completo
     fulfillment_path: draft_from_evidence
     fulfillment_cost: LOW
-    required_evidence: [any]
+    required_evidence: [moment_or_event]
     applicable_service_codes: ["*"]
     prohibited_claims: []
     cta_patterns:
@@ -89,7 +89,7 @@ offers:
     buyer_value: Amostra da capacidade de leitura pública da CONFENGE
     fulfillment_path: draft_from_evidence
     fulfillment_cost: LOW
-    required_evidence: [public_fact]
+    required_evidence: [moment_or_event]
     applicable_service_codes: ["*"]
     prohibited_claims: [estamos monitorando sua empresa, analisamos toda a carteira]
     cta_patterns:
@@ -111,7 +111,7 @@ offers:
     buyer_value: Antecipar premissas frágeis
     fulfillment_path: draft_from_evidence
     fulfillment_cost: LOW
-    required_evidence: [public_fact]
+    required_evidence: [moment_or_event]
     applicable_service_codes: [APOIO_LICITACAO, ADITIVOS]
     prohibited_claims: [vão perder a licitação]
     cta_patterns:
@@ -122,7 +122,7 @@ offers:
     buyer_value: Clareza sobre o próximo passo factual antes de ofertar serviço especializado
     fulfillment_path: draft_from_evidence
     fulfillment_cost: LOW
-    required_evidence: [any]
+    required_evidence: [moment_or_event]
     applicable_service_codes: [DIAGNOSTICO, MONITORAMENTO_CONTRATUAL, INTELIGENCIA_PNCP]
     prohibited_claims: [reajuste a receber, crédito confirmado]
     cta_patterns:
@@ -134,7 +134,7 @@ offers:
     buyer_value: Leitura priorizada de órgãos e oportunidades aderentes
     fulfillment_path: draft_from_evidence
     fulfillment_cost: LOW
-    required_evidence: [public_fact]
+    required_evidence: [moment_or_event]
     applicable_service_codes: [INTELIGENCIA_PNCP, APOIO_LICITACAO]
     prohibited_claims: [garantimos vitória]
     cta_patterns:

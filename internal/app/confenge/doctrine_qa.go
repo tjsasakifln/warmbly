@@ -185,6 +185,9 @@ func ValidateDoctrineCopy(out *DraftOutput, st *OutreachStrategy, pb *Playbook, 
 		res.Errors = append(res.Errors, "strategy missing value_to_recipient (so-what test)")
 	}
 
+	// Hard commercial QA: leak, dump, vocab, empty value, unfulfillable CTA.
+	ApplyHardCommercialQA(&res, out, st, pb, channel)
+
 	// Subject: no ALL CAPS shouting, no emoji
 	if subj != "" {
 		if subj == strings.ToUpper(subj) && utf8.RuneCountInString(subj) > 4 && hasLetter(subj) {
@@ -266,6 +269,121 @@ func containsEmoji(s string) bool {
 			return true
 		}
 		if r >= 0x2600 && r <= 0x27BF {
+			return true
+		}
+	}
+	return false
+}
+
+// ApplyHardCommercialQA blocks sendable-looking junk that formal doctrine
+// checks used to miss: reasoning leak, metadata dump, service/vocab mismatch,
+// empty value, unsupported micro-offer, unfulfillable CTA, fact-then-generic-CTA.
+func ApplyHardCommercialQA(res *DoctrineQAResult, out *DraftOutput, st *OutreachStrategy, pb *Playbook, channel string) {
+	if res == nil || out == nil {
+		return
+	}
+	body := strings.TrimSpace(out.BodyText)
+	subj := strings.TrimSpace(out.Subject)
+	blob := subj + "\n" + body
+	isInitial := channel == ChannelEmailInitial || channel == ""
+
+	if LooksLikeInternalReasoning(blob) {
+		res.OK = false
+		res.Errors = append(res.Errors, "internal reasoning leaked into copy")
+		res.Alerts = append(res.Alerts, "reasoning_leak")
+	}
+	if looksLikeMetadataDump(blob) {
+		res.OK = false
+		res.Errors = append(res.Errors, "metadata dump in copy")
+		res.Alerts = append(res.Alerts, "metadata_dump")
+	}
+	if looksMalformedCurrency(blob) {
+		res.OK = false
+		res.Errors = append(res.Errors, "malformed currency in copy")
+		res.Alerts = append(res.Alerts, "malformed_currency")
+	}
+
+	svcCode := ""
+	if st != nil {
+		svcCode = st.ServiceCode
+	}
+	if out.ServiceCode != "" {
+		svcCode = out.ServiceCode
+	}
+	if svcCode != "" && creditWordIn(blob) && !CreditVocabAllowed(pb, svcCode) {
+		res.OK = false
+		res.Errors = append(res.Errors, "service/vocabulary mismatch: crédito")
+		res.Alerts = append(res.Alerts, "vocab_mismatch")
+	}
+	canon := svcCode
+	if pb != nil {
+		if s := pb.ResolveServicePlaybook(svcCode); s != nil {
+			canon = s.Code
+		}
+	}
+	if canon != "" && !serviceUsesContractOpener(canon) && strings.Contains(foldASCII(blob), ContractFramedOpener) {
+		res.OK = false
+		res.Errors = append(res.Errors, "contract-framed opener on a non-contract service")
+		res.Alerts = append(res.Alerts, "hook_frame_mismatch")
+	}
+
+	if isInitial && body != "" {
+		if isFactThenGenericCTA(body) {
+			res.OK = false
+			res.Errors = append(res.Errors, "copy only restates the public fact then adds a generic CTA")
+			res.Alerts = append(res.Alerts, "empty_value_proposition")
+		}
+		if isUnnecessaryDisclaimer(blob) {
+			res.OK = false
+			res.Errors = append(res.Errors, "unnecessary defensive disclaimer")
+			res.Alerts = append(res.Alerts, "defensive_disclaimer")
+		}
+	}
+
+	if st != nil && ctaPromisesPoints(firstNonEmpty(out.CTA, st.CTASuggested)) {
+		// A points CTA is only legal when the composer can enumerate checkpoints.
+		// Strategy hypotheses are not checkpoints.
+		if LooksLikeInternalReasoning(st.ProblemHypothesis) || strings.TrimSpace(st.ProblemHypothesis) == "" {
+			if !hasConcreteContractEvent(strings.ToLower(st.ObservedFact + " " + body)) {
+				res.OK = false
+				res.Errors = append(res.Errors, "CTA promises points the dossier cannot produce")
+				res.Alerts = append(res.Alerts, "unfulfillable_cta")
+			}
+		}
+	}
+}
+
+func isFactThenGenericCTA(body string) bool {
+	// Two short paragraphs: dumped fact + generic permission CTA, no so-what.
+	parts := strings.Split(strings.TrimSpace(body), "\n\n")
+	if len(parts) < 2 {
+		return false
+	}
+	last := strings.ToLower(strings.TrimSpace(parts[len(parts)-1]))
+	genericCTA := strings.Contains(last, "posso te mandar") || strings.Contains(last, "faz sentido")
+	if !genericCTA {
+		return false
+	}
+	middle := strings.Join(parts[1:len(parts)-1], " ")
+	if strings.TrimSpace(middle) == "" {
+		fact := parts[0]
+		if looksLikeMetadataDump(fact) || looksMalformedCurrency(fact) {
+			return true
+		}
+	}
+	return false
+}
+
+func isUnnecessaryDisclaimer(blob string) bool {
+	t := foldASCII(blob)
+	for _, p := range []string{
+		"isso nao prova credito sozinho",
+		"isso nao prova",
+		"hipotese, nao credito comprovado",
+		"sem afirmar credito",
+		"nao e credito comprovado",
+	} {
+		if strings.Contains(t, p) {
 			return true
 		}
 	}

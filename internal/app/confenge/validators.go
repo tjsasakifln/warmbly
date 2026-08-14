@@ -10,8 +10,8 @@ import (
 )
 
 // PromptVersion tags generation prompt revisions (see docs/confenge/copy-generation.md).
-// v3: strategy-first composition + outreach doctrine confenge-outreach-v1.
-const PromptVersion = "confenge.draft.v3"
+// v4: messageability gate + outbound-safe plan (doctrine confenge-outreach-v2).
+const PromptVersion = "confenge.draft.v4"
 
 // DraftClaim is one auditable fact/phrase anchored to evidence ids.
 type DraftClaim struct {
@@ -48,19 +48,22 @@ type DraftFollowup struct {
 
 // ValidationResult is deterministic pre-send / pre-approve checks.
 type ValidationResult struct {
-	OK              bool                `json:"ok"`
-	Errors          []string            `json:"errors,omitempty"`
-	Warnings        []string            `json:"warnings,omitempty"`
-	Claims          []DraftClaim        `json:"claims,omitempty"`
-	Rationale       string              `json:"rationale,omitempty"`
-	Channel         string              `json:"channel,omitempty"`
-	NearDupScore    float64             `json:"near_dup_score,omitempty"`
-	DoctrineVersion string              `json:"doctrine_version,omitempty"`
-	Strategy        *OutreachStrategy   `json:"strategy,omitempty"`
-	StrategyExplain *StrategyExplain    `json:"strategy_explain,omitempty"`
-	DoctrineAlerts  []string            `json:"doctrine_alerts,omitempty"`
-	OperatorEdit    *OperatorEditSignal `json:"operator_edit,omitempty"`
-	OperatorReject  *OperatorRejection  `json:"operator_reject,omitempty"`
+	OK                   bool                 `json:"ok"`
+	Errors               []string             `json:"errors,omitempty"`
+	Warnings             []string             `json:"warnings,omitempty"`
+	Claims               []DraftClaim         `json:"claims,omitempty"`
+	Rationale            string               `json:"rationale,omitempty"`
+	Channel              string               `json:"channel,omitempty"`
+	NearDupScore         float64              `json:"near_dup_score,omitempty"`
+	DoctrineVersion      string               `json:"doctrine_version,omitempty"`
+	Strategy             *OutreachStrategy    `json:"strategy,omitempty"`
+	StrategyExplain      *StrategyExplain     `json:"strategy_explain,omitempty"`
+	DoctrineAlerts       []string             `json:"doctrine_alerts,omitempty"`
+	OperatorEdit         *OperatorEditSignal  `json:"operator_edit,omitempty"`
+	OperatorReject       *OperatorRejection   `json:"operator_reject,omitempty"`
+	Messageability       string               `json:"messageability,omitempty"`
+	MessageabilityReason string               `json:"messageability_reason,omitempty"`
+	MessagePlan          *OutboundMessagePlan `json:"message_plan,omitempty"`
 }
 
 // ValidateOpts configures deterministic validation for a channel.
@@ -516,130 +519,18 @@ func TemplateDraft(acc *models.OutreachAccount, cand *models.OutreachContactCand
 	return TemplateDraftChannel(ChannelEmailInitial, acc, cand, nil)
 }
 
-// TemplateDraftChannel builds channel-aware deterministic copy from staging only.
+// TemplateDraftChannel builds channel-aware deterministic copy from the
+// outbound-safe plan only. Not READY means fail-closed, no sendable body.
 func TemplateDraftChannel(channel string, acc *models.OutreachAccount, cand *models.OutreachContactCandidate, evidence []models.OutreachEvidence) DraftOutput {
 	if channel == "" {
 		channel = ChannelEmailInitial
 	}
-	if IsWhatsAppChannel(channel) {
-		body := BuildWhatsAppCopy(acc, cand)
-		fact, question, cta, sc := "", "", "", ""
-		if acc != nil {
-			fact, question, cta, sc = acc.FactToMention, acc.QuestionToAsk, acc.CTA, acc.ServiceCode
-		}
-		ids := evidenceIDsFrom(evidence, acc)
-		return DraftOutput{
-			Channel: channel, Subject: "", BodyText: body, FactUsed: fact, EvidenceIDs: ids,
-			Claims: claimsFromFact(fact, ids), ServiceCode: sc, Question: question, CTA: cta,
-			RiskFlags: []string{"template_fallback", "whatsapp_channel"},
-			Rationale: "deterministic whatsapp template from staging fact/offer/question",
-		}
+	pb, _ := LoadPlaybook()
+	_, plan := BuildOutboundPlan(pb, acc, cand, evidence, sequencePosFromChannel(channel, nil))
+	if plan.Messageability != MessageabilityReady {
+		return FailClosedDraft(plan, channel)
 	}
-
-	name, role, email := "", "", ""
-	if cand != nil {
-		name, role, email = strings.TrimSpace(cand.Name), strings.TrimSpace(cand.Role), strings.TrimSpace(cand.Email)
-	}
-	company := ""
-	if acc != nil {
-		company = firstNonEmpty(acc.NomeFantasia, acc.RazaoSocial)
-	}
-	greeting := "Olá"
-	if name != "" && cand != nil && cand.VerificationStatus != models.OutreachVerifyInstitutionalGeneric {
-		greeting = "Olá, " + firstName(name)
-	} else if cand != nil && cand.VerificationStatus == models.OutreachVerifyInstitutionalGeneric {
-		greeting = "Olá, equipe"
-	}
-	fact, question, cta, service, sc, whyNow := "", "Faz sentido conversarmos brevemente?", "Posso enviar um checklist de uma página?", "", "", ""
-	if acc != nil {
-		fact = acc.FactToMention
-		if acc.QuestionToAsk != "" {
-			question = acc.QuestionToAsk
-		}
-		if acc.CTA != "" {
-			cta = acc.CTA
-		}
-		service = acc.ServiceName
-		if service == "" {
-			service = acc.ServiceCode
-		}
-		sc = acc.ServiceCode
-		whyNow = acc.MomentSummary
-	}
-	ids := evidenceIDsFrom(evidence, acc)
-	weakFact := fact == "" && len(ids) == 0
-	var body, subj string
-	switch channel {
-	case ChannelEmailFollowup:
-		body = greeting + ",\n\nRetomo o contato sobre "
-		if fact != "" {
-			body += fact
-		} else if whyNow != "" {
-			body += whyNow
-		} else {
-			body += company
-		}
-		body += ".\n\n"
-		if service != "" {
-			body += "Seguimos disponíveis para " + strings.ToLower(service) + " se ainda for útil.\n\n"
-		}
-		// No text identity close; Atenciosamente + image applied at enroll/send.
-		body += question + " " + cta
-		subj = "Re: " + company
-		if utf8.RuneCountInString(subj) > 80 || company == "" {
-			subj = "Re: conversa anterior"
-		}
-	case ChannelReplyDraft:
-		body = greeting + ",\n\nObrigado pela resposta. "
-		if fact != "" {
-			body += "Sobre " + fact + ", "
-		}
-		if service != "" {
-			body += "posso detalhar como trabalhamos " + strings.ToLower(service) + ". "
-		}
-		body += question + " " + cta
-		subj = "Re: " + firstNonEmpty(company, "sua mensagem")
-	default:
-		if weakFact {
-			body = greeting + ",\n\nSou da CONFENGE. Trabalho com engenharia consultiva em contratos públicos.\n\n"
-			if service != "" {
-				body += "Para " + company + ", o ponto de entrada seria " + strings.ToLower(service) + " a partir do que vocês já publicam.\n\n"
-			}
-			body += "Há algum processo de aditivo ou reajuste em que uma leitura externa ajude agora? " + cta
-			if fact == "" {
-				fact = "abordagem diagnóstica sem fato público forte"
-			}
-			if question == "Faz sentido conversarmos brevemente?" {
-				question = "Há algum processo de aditivo ou reajuste em que uma leitura externa ajude agora?"
-			}
-		} else {
-			if fact == "" {
-				fact = "acompanhei publicações recentes relacionadas à " + company
-			}
-			body = greeting + ",\n\nSou da CONFENGE. Notei que " + fact + ".\n\n"
-			if service != "" {
-				body += "Ajudamos times de engenharia com " + strings.ToLower(service) + ", sempre a partir de fatos públicos e sem pressa.\n\n"
-			}
-			body += question + " " + cta
-		}
-		subj = "Sobre " + company
-		if company == "" || utf8.RuneCountInString(subj) > 80 {
-			subj = "Conversa rápida sobre contratos"
-		}
-		if fact != "" && hasConcreteToken(fact) {
-			subj = trimSubject("Sobre " + firstWords(fact, 6))
-		}
-	}
-	body = emDashRe.ReplaceAllString(body, ",")
-	subj = emDashRe.ReplaceAllString(subj, ",")
-	_ = email
-	_ = role
-	return DraftOutput{
-		Channel: channel, Subject: subj, BodyText: body, Followups: defaultFollowups(question),
-		FactUsed: fact, EvidenceIDs: ids, Claims: claimsFromFact(fact, ids), ServiceCode: sc,
-		Question: question, CTA: cta, RiskFlags: []string{"template_fallback"},
-		Rationale: "deterministic template from staging dossier only; no research",
-	}
+	return ComposeFromPlan(plan, acc, cand, channel)
 }
 
 func evidenceIDsFrom(evidence []models.OutreachEvidence, acc *models.OutreachAccount) []string {

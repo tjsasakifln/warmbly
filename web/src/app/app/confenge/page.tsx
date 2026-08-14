@@ -697,10 +697,22 @@ export default function ConfengePage() {
                   <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">
                     Estratégia aplicada
                   </div>
+                  <StrategyRow
+                    label="Messageability"
+                    value={
+                      current.strategy_explain?.messageability
+                        ? `${stateLabel(current.strategy_explain.messageability)}${
+                            current.strategy_explain.messageability_reason
+                              ? `: ${current.strategy_explain.messageability_reason}`
+                              : ""
+                          }`
+                        : undefined
+                    }
+                  />
                   <StrategyRow label="Por que esta conta" value={current.strategy_explain?.why_this_account} />
                   <StrategyRow label="Por que agora" value={current.strategy_explain?.why_now || current.account?.moment_summary} />
                   <StrategyRow label="Fato usado" value={current.strategy_explain?.fact_used || current.fact_used} />
-                  <StrategyRow label="Hipótese" value={current.strategy_explain?.hypothesis} />
+                  <StrategyRow label="Raciocínio interno (não é copy)" value={current.strategy_explain?.hypothesis} />
                   <StrategyRow label="Serviço" value={current.strategy_explain?.service || current.service_code} />
                   <StrategyRow label="Oferta" value={current.strategy_explain?.offer} />
                   <StrategyRow label="Destinatário" value={current.strategy_explain?.recipient || current.recipient} />

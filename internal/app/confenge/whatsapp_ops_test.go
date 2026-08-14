@@ -93,7 +93,8 @@ func TestDecideChannelGenerateAndSend(t *testing.T) {
 	repo := newMemRepo()
 	repo.byID[accID] = &models.OutreachAccount{
 		ID: accID, OrganizationID: org, SourceLeadID: "L1", CNPJ14: "12345678000199",
-		FactToMention: "edital X", EntryOffer: "revisão", QuestionToAsk: "Posso explicar?",
+		FactToMention: "termo aditivo 1 ao contrato X publicado", ServiceCode: "ADITIVOS",
+		EntryOffer: "revisão", QuestionToAsk: "Posso explicar?",
 		QueueState: models.OutreachQueueReadyToGenerate,
 	}
 	markTestAccountTargetFitReady(repo.byID[accID])

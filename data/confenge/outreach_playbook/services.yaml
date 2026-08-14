@@ -1,6 +1,6 @@
 # Service playbooks mapped to real-ish CONFENGE service_code patterns used in feeds.
 # Codes are matched case-insensitively by exact code or prefix (e.g. REAJUSTE_14133 → REAJUSTE).
-outreach_doctrine_version: confenge-outreach-v1
+outreach_doctrine_version: confenge-outreach-v2
 
 services:
   - code: REAJUSTE
@@ -24,6 +24,8 @@ services:
       - crédito de reajuste confirmado
     default_micro_offer: REAJUSTE_CHECK
     cta_families: [permission_checklist, permission_points]
+    credit_vocab_allowed: true
+    outbound_hook_class: moment_or_event
 
   - code: REEQUILIBRIO
     name: Reequilíbrio econômico-financeiro
@@ -41,6 +43,8 @@ services:
       - o contrato está desequilibrado
     default_micro_offer: CLAIM_READINESS_CHECK
     cta_families: [permission_checklist, permission_snapshot]
+    credit_vocab_allowed: true
+    outbound_hook_class: moment_or_event
 
   - code: MEDICOES
     name: Medições e medições contratuais
@@ -58,6 +62,8 @@ services:
       - há medição não paga de
     default_micro_offer: MEDICAO_CHECK
     cta_families: [permission_points, permission_checklist]
+    credit_vocab_allowed: false
+    outbound_hook_class: moment_or_event
 
   - code: ADITIVOS
     name: Aditivos contratuais
@@ -75,6 +81,8 @@ services:
       - vocês perderam valor no aditivo
     default_micro_offer: ADITIVO_RISK_CHECK
     cta_families: [permission_snapshot, permission_points]
+    credit_vocab_allowed: false
+    outbound_hook_class: moment_or_event
 
   - code: EXTRACONTRATUAIS
     name: Serviços e custos extracontratuais
@@ -90,6 +98,8 @@ services:
       - o órgão deve pagar os extras
     default_micro_offer: DOCUMENT_CHECKLIST
     cta_families: [permission_checklist]
+    credit_vocab_allowed: false
+    outbound_hook_class: moment_or_event
 
   - code: PLANILHAS
     name: Planilhas e quantitativos
@@ -105,6 +115,8 @@ services:
       - a planilha está errada em
     default_micro_offer: DOCUMENT_CHECKLIST
     cta_families: [permission_points]
+    credit_vocab_allowed: false
+    outbound_hook_class: moment_or_event
 
   - code: ENCERRAMENTO_CONTRATUAL
     name: Encerramento e close-out
@@ -120,6 +132,8 @@ services:
       - o contrato vence sem quitação
     default_micro_offer: CLOSEOUT_CHECK
     cta_families: [permission_checklist, permission_timeline]
+    credit_vocab_allowed: false
+    outbound_hook_class: moment_or_event
 
   - code: APOIO_LICITACAO
     name: Apoio a licitação e propostas
@@ -135,6 +149,8 @@ services:
       - vocês vão perder a licitação
     default_micro_offer: PROCUREMENT_RISK_SNAPSHOT
     cta_families: [permission_snapshot]
+    credit_vocab_allowed: false
+    outbound_hook_class: moment_or_event
 
   - code: MONITORAMENTO_CONTRATUAL
     name: Monitoramento contratual contínuo
@@ -143,6 +159,7 @@ services:
       Carteira grande esconde eventos de baixo ruído; o valor está em priorizar o que merece leitura agora.
     common_miss: Tratar todos os contratos com a mesma atenção.
     problem_hypotheses:
+      # Internal reasoning only. Never interpolate into outbound copy.
       - eventos públicos relevantes sem triagem
     implications:
       - sobrecarga e atraso em temas de maior impacto
@@ -150,10 +167,12 @@ services:
       - sua carteira está descontrolada
     default_micro_offer: PUBLIC_DATA_SNAPSHOT
     cta_families: [permission_snapshot, permission_points]
+    credit_vocab_allowed: false
+    outbound_hook_class: contract_event
 
   - code: DIAGNOSTICO
     name: Diagnóstico contratual B2G
-    aliases: [DIAGNOSTICO_CONTRATUAL, DISCOVERY, diagnostico_contratual_b2g]
+    aliases: [DIAGNOSTICO_CONTRATUAL, DISCOVERY, diagnostico_contratual_b2g, DIAGNOSTIC]
     commercial_insight: |
       Quando o material público não sustenta especialidade, o caminho honesto é diagnóstico focal — não inventar reajuste.
     common_miss: Forçar reajuste ou especialidade sem fato gerador.
@@ -167,6 +186,8 @@ services:
       - identificamos perda de
     default_micro_offer: DIAGNOSTIC_CHECKLIST
     cta_families: [permission_checklist, permission_points]
+    credit_vocab_allowed: false
+    outbound_hook_class: moment_or_event
 
   - code: INTELIGENCIA_PNCP
     name: Inteligência PNCP e mercado público
@@ -182,6 +203,8 @@ services:
       - garantimos que vocês ganham
     default_micro_offer: MARKET_BRIEF
     cta_families: [permission_snapshot]
+    credit_vocab_allowed: false
+    outbound_hook_class: moment_or_event
 
   - code: BACKOFFICE
     name: Reforço temporário de backoffice técnico/contratual
@@ -198,3 +221,5 @@ services:
       - precisam terceirizar tudo
     default_micro_offer: BACKOFFICE_SCOPE_CHECK
     cta_families: [permission_checklist, permission_points]
+    credit_vocab_allowed: false
+    outbound_hook_class: moment_or_event

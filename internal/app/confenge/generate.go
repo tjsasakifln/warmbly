@@ -48,17 +48,24 @@ type AIDraftGenerator struct {
 // Generate asks the model for JSON only from structured inputs (no research).
 // Strategy is planned first; the model only words within those constraints.
 func (g *AIDraftGenerator) Generate(ctx context.Context, in GenerateInput) (DraftOutput, string, string, error) {
-	if g == nil || g.Provider == nil {
-		return DraftOutput{}, "", "", generation.ErrNotConfigured
-	}
 	channel := in.Channel
 	if channel == "" {
 		channel = ChannelEmailInitial
 	}
 	pb, _ := LoadPlaybook()
-	st := PlanOutreachStrategy(pb, in.Account, in.Contact, in.Evidence, sequencePosFromChannel(channel, in.Touches))
-	system := draftSystemPromptDoctrine(channel, st)
-	user := draftUserPromptWithStrategy(in, st)
+	st, plan := BuildOutboundPlan(pb, in.Account, in.Contact, in.Evidence, sequencePosFromChannel(channel, in.Touches))
+	if plan.Messageability != MessageabilityReady {
+		out := FailClosedDraft(plan, channel)
+		out.ServiceOverrideAudited = in.ServiceOverrideAudited
+		out.RiskFlags = appendUnique(out.RiskFlags, st.RiskFlags...)
+		return out, "ai", "messageability_gate", nil
+	}
+	if g == nil || g.Provider == nil {
+		// Gate already ran; READY + no provider is fail-closed (caller may template-fallback).
+		return DraftOutput{}, "ai", "", generation.ErrNotConfigured
+	}
+	system := draftSystemPromptDoctrine(channel, plan)
+	user := draftUserPromptWithPlan(in, plan)
 	model := g.Model
 	if model == "" {
 		model = g.Provider.ModelForTier(true)
@@ -70,12 +77,13 @@ func (g *AIDraftGenerator) Generate(ctx context.Context, in GenerateInput) (Draf
 	out.Channel = channel
 	out.ServiceOverrideAudited = in.ServiceOverrideAudited
 	if out.ServiceCode == "" {
-		out.ServiceCode = st.ServiceCode
+		out.ServiceCode = plan.ServiceCode
 	}
 	if out.CTA == "" {
-		out.CTA = st.CTASuggested
+		out.CTA = plan.CTA
 	}
 	out.RiskFlags = appendUnique(out.RiskFlags, st.RiskFlags...)
+	out.RiskFlags = appendUnique(out.RiskFlags, "messageability_ready")
 
 	if in.AllowNearDupRegen && len(in.RecentBodies) > 0 {
 		if _, hit := NearDuplicate(out.BodyText, in.RecentBodies); hit {
@@ -130,12 +138,15 @@ func (TemplateGenerator) Generate(ctx context.Context, in GenerateInput) (DraftO
 		ch = ChannelEmailInitial
 	}
 	pb, _ := LoadPlaybook()
-	st := PlanOutreachStrategy(pb, in.Account, in.Contact, in.Evidence, sequencePosFromChannel(ch, in.Touches))
-	out := ComposeFromStrategy(st, in.Account, in.Contact, ch)
-	if IsWhatsAppChannel(ch) || ch == ChannelReplyDraft {
-		out = TemplateDraftChannel(ch, in.Account, in.Contact, in.Evidence)
+	st, plan := BuildOutboundPlan(pb, in.Account, in.Contact, in.Evidence, sequencePosFromChannel(ch, in.Touches))
+	if plan.Messageability != MessageabilityReady {
+		out := FailClosedDraft(plan, ch)
+		out.ServiceOverrideAudited = in.ServiceOverrideAudited
 		out.RiskFlags = appendUnique(out.RiskFlags, st.RiskFlags...)
+		return out, "template", "messageability_gate", nil
 	}
+	out := ComposeFromPlan(plan, in.Account, in.Contact, ch)
+	out.RiskFlags = appendUnique(out.RiskFlags, st.RiskFlags...)
 	out.ServiceOverrideAudited = in.ServiceOverrideAudited
 	if in.AllowNearDupRegen && len(in.RecentBodies) > 0 {
 		if _, hit := NearDuplicate(out.BodyText, in.RecentBodies); hit {
@@ -167,7 +178,7 @@ func varyTemplateHook(body string) string {
 func draftSystemPrompt(channel string) string {
 	base := `
 Você redige mensagens comerciais curtas em português brasileiro para a CONFENGE (engenharia consultiva).
-Você NÃO pesquisa e NÃO usa ferramentas. Use somente o dossiê JSON do usuário.
+Você NÃO pesquisa e NÃO usa ferramentas. Use somente o PLANO DE MENSAGEM JSON do usuário.
 Não transforme hipótese em fato. Hipótese de estrutura interna só como pergunta consultiva cuidadosa (nunca "sei que vocês não têm equipe").
 Não invente número, contrato, data, órgão, nome ou cargo ausentes dos inputs.
 Não use travessões. Não use frases de IA nem saudações clichê.

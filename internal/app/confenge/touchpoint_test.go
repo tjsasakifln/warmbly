@@ -225,7 +225,7 @@ func TestRestartPreservesStates(t *testing.T) {
 	repo := newMemRepo()
 	svc1 := testSvc(repo).(*service)
 	org, user := uuid.New(), uuid.New()
-	acc := &models.OutreachAccount{ID: uuid.New(), OrganizationID: org, CNPJ14: "12345678000155", RazaoSocial: "E", QueueState: models.OutreachQueueReadyToGenerate, SourceLeadID: "L5"}
+	acc := &models.OutreachAccount{ID: uuid.New(), OrganizationID: org, CNPJ14: "12345678000155", RazaoSocial: "E", QueueState: models.OutreachQueueReadyToGenerate, SourceLeadID: "L5", ServiceCode: "ADITIVOS", FactToMention: "termo aditivo 1 ao contrato 88/2021 publicado", MomentEvidenceIDs: []string{"ev-1"}}
 	_, _ = repo.UpsertAccount(context.Background(), acc)
 	cand := &models.OutreachContactCandidate{ID: uuid.New(), OrganizationID: org, AccountID: acc.ID, Email: "k@e.com", Name: "C", VerificationStatus: models.OutreachVerifyOfficialSource}
 	_, _ = repo.UpsertCandidate(context.Background(), cand)
@@ -248,7 +248,7 @@ func TestQueueWithoutApprovalServiceBlocked(t *testing.T) {
 	repo := newMemRepo()
 	svc := testSvc(repo).(*service)
 	org, user := uuid.New(), uuid.New()
-	acc := &models.OutreachAccount{ID: uuid.New(), OrganizationID: org, CNPJ14: "12345678000144", RazaoSocial: "Z", QueueState: models.OutreachQueueReadyToGenerate, SourceLeadID: "L6"}
+	acc := &models.OutreachAccount{ID: uuid.New(), OrganizationID: org, CNPJ14: "12345678000144", RazaoSocial: "Z", QueueState: models.OutreachQueueReadyToGenerate, SourceLeadID: "L6", ServiceCode: "ADITIVOS", FactToMention: "termo aditivo 1 ao contrato 88/2021 publicado", MomentEvidenceIDs: []string{"ev-1"}}
 	_, _ = repo.UpsertAccount(context.Background(), acc)
 	cand := &models.OutreachContactCandidate{ID: uuid.New(), OrganizationID: org, AccountID: acc.ID, Email: "q@e.com", Name: "Q", VerificationStatus: models.OutreachVerifyOfficialSource}
 	_, _ = repo.UpsertCandidate(context.Background(), cand)

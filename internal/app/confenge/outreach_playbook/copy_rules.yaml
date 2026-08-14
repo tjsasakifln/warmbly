@@ -1,6 +1,14 @@
-outreach_doctrine_version: confenge-outreach-v1
+outreach_doctrine_version: confenge-outreach-v2
 
 banned_phrases:
+  - isso não prova crédito sozinho
+  - isso nao prova credito sozinho
+  - eventos públicos relevantes sem triagem
+  - eventos publicos relevantes sem triagem
+  - sem presumir falta de capacidade interna
+  - hipótese, não crédito comprovado
+  - hipotese, nao credito comprovado
+  - momento comercial indicado pelo extra-cli
   - espero que este email o encontre bem
   - espero que esta mensagem o encontre bem
   - venho por meio deste

@@ -27,7 +27,7 @@ func sampleLeadWithActivation(score float64, state string) FeedLead {
 		},
 		Offer: FeedOffer{ServiceCode: "reajuste", ServiceName: "Reajuste", EntryOffer: "Diagnóstico"},
 		MessagingContext: FeedMessaging{
-			FactToMention: "Contrato público recente",
+			FactToMention: "Contrato público recente atingiu aniversário de reajuste",
 			QuestionToAsk: "Vocês formalizaram reajuste?",
 			CTA:           "Posso enviar checklist",
 			ClaimsToAvoid: []string{"garantimos pagamento"},
@@ -194,7 +194,7 @@ func TestStaleContextBlocksQueue(t *testing.T) {
 	// Reimport material F2
 	lead2 := sampleLeadWithActivation(80, ActivationActionableNow)
 	lead2.Moment.Summary = "Contrato prorrogado — fato F2"
-	lead2.MessagingContext.FactToMention = "Prorrogação observada em 2026-08"
+	lead2.MessagingContext.FactToMention = "Prorrogação observada em 2026-08 com janela de reajuste"
 	feed2 := feed
 	feed2.Source.RunID = "run-b"
 	feed2.Source.SnapshotHash = "snap2"

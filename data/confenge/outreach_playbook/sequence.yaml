@@ -1,4 +1,4 @@
-outreach_doctrine_version: confenge-outreach-v1
+outreach_doctrine_version: confenge-outreach-v2
 
 # Each touch must earn existence. Cadence delays are defaults (experimental priors), not governor limits.
 sequence:

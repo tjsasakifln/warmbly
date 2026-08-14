@@ -172,12 +172,27 @@ func (s *service) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, li
 
 func strategyExplainProjection(ex StrategyExplain, fallbackWhyThisAccount string) map[string]any {
 	return map[string]any{
-		"why_this_account": firstNonEmpty(ex.WhyThisAccount, fallbackWhyThisAccount),
-		"why_now":          ex.WhyNow, "fact_used": ex.FactUsed, "hypothesis": ex.Hypothesis,
-		"service": ex.Service, "offer": ex.Offer, "recipient": ex.Recipient,
-		"sources": ex.Sources, "touch": ex.Touch, "experiment": ex.Experiment,
-		"doctrine_version": ex.Doctrine,
+		"why_this_account":      firstNonEmpty(ex.WhyThisAccount, fallbackWhyThisAccount),
+		"why_now":               ex.WhyNow,
+		"fact_used":             ex.FactUsed,
+		"hypothesis":            ex.Hypothesis,
+		"service":               ex.Service,
+		"offer":                 ex.Offer,
+		"recipient":             ex.Recipient,
+		"sources":               ex.Sources,
+		"touch":                 ex.Touch,
+		"experiment":            ex.Experiment,
+		"doctrine_version":      ex.Doctrine,
+		"messageability":        ex.Messageability,
+		"messageability_reason": ex.MessageabilityReason,
 	}
+}
+
+func firstNonEmptyIDs(a, b []string) []string {
+	if len(a) > 0 {
+		return a
+	}
+	return b
 }
 
 func (s *service) GetTouchpoint(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachTouchpoint, *errx.Error) {
@@ -265,18 +280,26 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	pb, _ := LoadPlaybook()
 	pos := SequencePositionForTouch(tp.Ordinal, tp.Purpose)
 	genCh := GenerationChannelForTouch(tp.Ordinal, tp.Purpose)
-	st := PlanOutreachStrategy(pb, acc, cand, evidence, pos)
-	if factUsed != "" {
+	st, plan := BuildOutboundPlan(pb, acc, cand, evidence, pos)
+	if factUsed != "" && plan.Messageability == MessageabilityReady && plan.Hook != "" {
 		st.ObservedFact = factUsed
+	}
+	if plan.Messageability != MessageabilityReady {
+		subject, body = "", ""
+		factUsed = ""
+	} else {
+		composed := ComposeFromPlan(plan, acc, cand, genCh)
+		subject, body = composed.Subject, composed.BodyText
+		factUsed = composed.FactUsed
 	}
 	// Classify risk with the same validators as GenerateDraft. Policy-authorized
 	// deterministic templates may stay GREEN when AllowPolicyTemplateGREEN is set.
 	// Follow-up/close use EMAIL_FOLLOWUP so legitimate "Re:" subjects are not first-touch fakes.
 	synth := &DraftOutput{
-		Subject: subject, BodyText: body, ServiceCode: acc.ServiceCode,
-		FactUsed: factUsed, EvidenceIDs: evidIDs, Claims: claimsFromFact(factUsed, evidIDs),
+		Subject: subject, BodyText: body, ServiceCode: firstNonEmpty(plan.ServiceCode, acc.ServiceCode),
+		FactUsed: factUsed, EvidenceIDs: firstNonEmptyIDs(plan.EvidenceIDs, evidIDs), Claims: claimsFromFact(factUsed, evidIDs),
 		Channel: genCh, Rationale: "touchpoint strategy compose",
-		CTA: st.CTASuggested, Question: st.CTASuggested,
+		CTA: plan.CTA, Question: plan.CTA,
 	}
 	val := ValidateDraft(synth, acc, cand, ValidateOpts{
 		MaxWords: s.cfg.MaxInitialEmailWords, Evidence: evidence, Channel: genCh,
@@ -286,9 +309,19 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	if cand != nil && recipient == "" {
 		recipient = cand.Email
 	}
-	// Persist validation + strategy explain for green-autorun / review UI.
-	valJSON := PackValidationWithStrategy(val, st, recipient)
+	if plan.Messageability != MessageabilityReady {
+		val.OK = false
+		if plan.Reason != "" {
+			val.Errors = appendUnique(val.Errors, plan.Reason)
+		}
+	}
 	risk, flags := ClassifyRisk(acc, cand, synth, val)
+	if plan.Messageability != MessageabilityReady {
+		risk = "RED"
+		flags = appendUnique(flags, "messageability_"+strings.ToLower(plan.Messageability))
+		flags = appendUnique(flags, plan.ReasonCodes...)
+	}
+	valJSON := PackValidationWithPlan(val, st, plan, recipient)
 	allowTemplateGREEN := false
 	if s.cfg.GreenAutorunEnabled && s.policyStore != nil {
 		if settings, _ := s.repo.GetOrgSettings(ctx, orgID); settings != nil && settings.CampaignID != nil {
@@ -317,6 +350,20 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 		flags = append(flags, "template_fallback")
 	}
 	flags = append(flags, "per_touch", "jit")
+	draftStatus := models.OutreachDraftNeedsReview
+	switch plan.Messageability {
+	case MessageabilityBlocked:
+		draftStatus = models.OutreachDraftBlocked
+		subject, body = "", ""
+	case MessageabilityNeedsEnrichment:
+		draftStatus = models.OutreachDraftSkipped
+		subject, body = "", ""
+	default:
+		if !val.OK || strings.TrimSpace(body) == "" {
+			draftStatus = models.OutreachDraftSkipped
+			subject, body = "", ""
+		}
+	}
 	// One active draft per account (unique index). Reuse when present so
 	// generate is not blocked by outreach_drafts_org_account_active_uidx.
 	draft, _ := s.repo.GetActiveDraftForAccount(ctx, orgID, tp.AccountID)
@@ -326,7 +373,7 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 			Channel: tp.Channel, Subject: subject, BodyText: body, ServiceCode: acc.ServiceCode,
 			StrategyCode: StrategyCodeFor(st), FactUsed: factUsed, EvidenceIDs: evidIDs,
 			Provider: "template", Model: modelName, PromptVersion: PromptVersion + "+touch",
-			Status: models.OutreachDraftNeedsReview, RiskClass: risk, RiskFlags: flags,
+			Status: draftStatus, RiskClass: risk, RiskFlags: flags,
 			ValidationJSON: valJSON,
 		}
 	} else {
@@ -339,7 +386,7 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 		draft.EvidenceIDs = evidIDs
 		draft.Provider, draft.Model = "template", modelName
 		draft.PromptVersion = PromptVersion + "+touch"
-		draft.Status = models.OutreachDraftNeedsReview
+		draft.Status = draftStatus
 		draft.RiskClass, draft.RiskFlags = risk, flags
 		draft.ValidationJSON = valJSON
 		draft.ApprovedBy, draft.ApprovedAt = nil, nil
@@ -359,14 +406,21 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	}
 	ApplyContentMutation(tp, tp.Channel, tp.Recipient, draft.Subject, draft.BodyText)
 	tp.DraftID = &draft.ID
-	tp.State = models.TouchpointNeedsReview
+	if draftStatus == models.OutreachDraftNeedsReview {
+		tp.State = models.TouchpointNeedsReview
+	} else {
+		tp.State = models.TouchpointDrafted
+		tp.StopReason = firstNonEmpty(plan.Reason, "messageability_"+strings.ToLower(plan.Messageability))
+	}
 	tp.ServiceCode, tp.FactUsed, tp.EvidenceIDs = acc.ServiceCode, draft.FactUsed, draft.EvidenceIDs
 	// Capture message-material context at generation for stale-approval guard.
 	tp.GeneratedContextHash = acc.MessageContextHash
 	if err := s.repo.UpdateTouchpoint(ctx, tp); err != nil {
 		return nil, errx.New(errx.Internal, "update touchpoint: "+err.Error())
 	}
-	_ = s.repo.SetAccountHumanFlags(ctx, orgID, tp.AccountID, acc.Blocked, acc.DoNotContact, acc.BlockReason, models.OutreachQueueNeedsReview)
+	if draftStatus == models.OutreachDraftNeedsReview {
+		_ = s.repo.SetAccountHumanFlags(ctx, orgID, tp.AccountID, acc.Blocked, acc.DoNotContact, acc.BlockReason, models.OutreachQueueNeedsReview)
+	}
 	_ = userID
 	return tp, nil
 }

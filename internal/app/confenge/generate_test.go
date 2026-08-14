@@ -129,6 +129,17 @@ func TestGoldenContrastMessagesDiffer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s generate: %v", sc.ID, err)
 		}
+		if sc.ID == "weak_fact_diagnostic" {
+			if out.BodyText != "" {
+				t.Fatalf("%s must fail closed without sendable body, got %q", sc.ID, out.BodyText)
+			}
+			if !containsStr(out.RiskFlags, "messageability_needs_enrichment") && !containsStr(out.RiskFlags, "messageability_blocked") {
+				t.Fatalf("%s expected messageability fail-closed flags, got %v", sc.ID, out.RiskFlags)
+			}
+			bodies[sc.ID] = "NEEDS_ENRICHMENT"
+			subjects[sc.ID] = ""
+			continue
+		}
 		if provider != "template" || model != "deterministic" {
 			t.Fatalf("%s unexpected provider %s/%s", sc.ID, provider, model)
 		}
@@ -241,11 +252,8 @@ func TestGoldenContrastMessagesDiffer(t *testing.T) {
 			}
 		}
 		if p[0] == "aditivo_reajuste_fact" && p[1] == "weak_fact_diagnostic" {
-			if !strings.Contains(strings.ToLower(b), "diagn") && !strings.Contains(strings.ToLower(b), "aditivo ou reajuste") {
-				t.Fatalf("weak-fact path should be diagnostic: %s", b)
-			}
-			if strings.Contains(b, "88/2023") {
-				t.Fatalf("weak-fact account must not invent strong contract fact")
+			if b != "NEEDS_ENRICHMENT" {
+				t.Fatalf("weak-fact path must be NEEDS_ENRICHMENT, not fabricated copy: %s", b)
 			}
 		}
 	}
@@ -360,13 +368,25 @@ func TestDraftUserPromptContainsNoResearchInstruction(t *testing.T) {
 	}
 	// Provider interface usage stays Complete-only: AIDraftGenerator uses Complete.
 	var _ generation.Provider
+	pb := MustPlaybook()
+	st, plan := BuildOutboundPlan(pb, in.Account, in.Contact, in.Evidence, 1)
+	_ = st
+	planUser := draftUserPromptWithPlan(in, plan)
+	for _, bad := range []string{"fact_to_mention", "internal_structure_hypothesis", "web_search"} {
+		if strings.Contains(planUser, bad) {
+			t.Fatalf("plan prompt leaked %q", bad)
+		}
+	}
 }
 
-func TestPromptVersionV3(t *testing.T) {
-	if PromptVersion != "confenge.draft.v3" {
+func TestPromptVersionV4(t *testing.T) {
+	if PromptVersion != "confenge.draft.v4" {
 		t.Fatalf("PromptVersion=%s", PromptVersion)
 	}
-	if OutreachDoctrineVersion != "confenge-outreach-v1" {
+	if OutreachDoctrineVersion != "confenge-outreach-v2" {
 		t.Fatalf("doctrine=%s", OutreachDoctrineVersion)
+	}
+	if ComposerVersion != "confenge.composer.v2" {
+		t.Fatalf("composer=%s", ComposerVersion)
 	}
 }

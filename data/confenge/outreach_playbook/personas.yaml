@@ -1,5 +1,5 @@
 # Buyer roles — map only when role evidence exists; else UNKNOWN.
-outreach_doctrine_version: confenge-outreach-v1
+outreach_doctrine_version: confenge-outreach-v2
 
 roles:
   - code: OWNER_PARTNER

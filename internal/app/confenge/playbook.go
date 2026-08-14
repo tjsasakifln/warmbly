@@ -10,7 +10,7 @@ import (
 )
 
 // OutreachDoctrineVersion is stamped on every strategy and draft metadata.
-const OutreachDoctrineVersion = "confenge-outreach-v1"
+const OutreachDoctrineVersion = "confenge-outreach-v2"
 
 //go:embed outreach_playbook/*.yaml
 var playbookFS embed.FS
@@ -68,16 +68,18 @@ type ServicesFile struct {
 }
 
 type ServicePlaybook struct {
-	Code              string   `yaml:"code"`
-	Name              string   `yaml:"name"`
-	Aliases           []string `yaml:"aliases"`
-	CommercialInsight string   `yaml:"commercial_insight"`
-	CommonMiss        string   `yaml:"common_miss"`
-	ProblemHypotheses []string `yaml:"problem_hypotheses"`
-	Implications      []string `yaml:"implications"`
-	DisallowedClaims  []string `yaml:"disallowed_claims"`
-	DefaultMicroOffer string   `yaml:"default_micro_offer"`
-	CTAFamilies       []string `yaml:"cta_families"`
+	Code               string   `yaml:"code"`
+	Name               string   `yaml:"name"`
+	Aliases            []string `yaml:"aliases"`
+	CommercialInsight  string   `yaml:"commercial_insight"`
+	CommonMiss         string   `yaml:"common_miss"`
+	ProblemHypotheses  []string `yaml:"problem_hypotheses"`
+	Implications       []string `yaml:"implications"`
+	DisallowedClaims   []string `yaml:"disallowed_claims"`
+	DefaultMicroOffer  string   `yaml:"default_micro_offer"`
+	CTAFamilies        []string `yaml:"cta_families"`
+	CreditVocabAllowed bool     `yaml:"credit_vocab_allowed"`
+	OutboundHookClass  string   `yaml:"outbound_hook_class"`
 }
 
 type TriggersFile struct {
