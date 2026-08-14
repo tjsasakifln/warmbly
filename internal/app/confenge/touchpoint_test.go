@@ -228,7 +228,12 @@ func TestRestartPreservesStates(t *testing.T) {
 	acc := &models.OutreachAccount{ID: uuid.New(), OrganizationID: org, CNPJ14: "12345678000155", RazaoSocial: "E", QueueState: models.OutreachQueueReadyToGenerate, SourceLeadID: "L5", ServiceCode: "ADITIVOS", FactToMention: "termo aditivo 1 ao contrato 88/2021 publicado", MomentEvidenceIDs: []string{"ev-1"}}
 	_, _ = repo.UpsertAccount(context.Background(), acc)
 	cand := &models.OutreachContactCandidate{ID: uuid.New(), OrganizationID: org, AccountID: acc.ID, Email: "k@e.com", Name: "C", VerificationStatus: models.OutreachVerifyOfficialSource}
+	applyValidatedIdentity(cand)
 	_, _ = repo.UpsertCandidate(context.Background(), cand)
+	_, _ = repo.UpsertEvidence(context.Background(), &models.OutreachEvidence{
+		OrganizationID: org, AccountID: acc.ID, SourceEvidenceID: "ev-1",
+		Synthesis: acc.FactToMention, EpistemicClass: models.OutreachEpistemicConfirmedFact,
+	})
 	list, x := svc1.PlanAccountCadence(context.Background(), org, user, acc.ID, &cand.ID, models.OutreachChannelEmail)
 	if x != nil {
 		t.Fatal(x)

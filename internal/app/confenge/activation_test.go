@@ -33,8 +33,10 @@ func sampleLeadWithActivation(score float64, state string) FeedLead {
 			ClaimsToAvoid: []string{"garantimos pagamento"},
 		},
 		Contacts: []FeedContact{{
-			SourceContactID: "c1", Name: "Maria Silva", Email: "maria@acme.com.br",
+			SourceContactID: "c1", Name: "Maria Silva", Role: "Diretora de Contratos",
+			Email: "maria@acme.com.br", SourceURL: "https://acme.com.br/equipe", SourceDate: "2026-07-01",
 			VerificationStatus: models.OutreachVerifyOfficialSource, Recommended: true, EmailSendReady: &ready,
+			OwnershipStatus: "COMPANY_OWNED", RecipientCommercialSuitability: "SUITABLE", MailboxPurpose: "COMERCIAL",
 		}},
 		TargetFitClass: TargetFitConfirmed, TargetFitVersion: "confenge-target-fit-v1",
 		TargetFitComputedAt: "2026-08-08T10:00:00Z", TargetFitSourceWatermark: "2026-08-08T10:00:00Z",

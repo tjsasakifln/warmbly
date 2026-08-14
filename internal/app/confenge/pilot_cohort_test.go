@@ -2,7 +2,9 @@ package confenge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,8 +96,14 @@ func (fixture *pilotFixture) addReadyAccount(t *testing.T, index int) uuid.UUID 
 	valid := legacy
 	valid.ID = uuid.New()
 	valid.SourceContactID = "authoritative-" + cnpj
+	valid.Name = fmt.Sprintf("Ana Silva %02d", index)
+	valid.Role = "Diretora de Contratos"
+	valid.Email = fmt.Sprintf("ana%d@empresa%d.com.br", index, index)
+	valid.SourceURL = fmt.Sprintf("https://empresa%d.com.br/equipe", index)
 	valid.SourceDate = &validDate
 	valid.EmailSendReady = true
+	valid.MailboxPurpose = "COMERCIAL"
+	valid.OwnershipStatus = "COMPANY_OWNED"
 	valid.RecipientCommercialSuitability = "SUITABLE"
 	valid.CreatedAt = fixture.now.Add(-time.Hour)
 	valid.LastImportRunID = &currentImportID
@@ -442,6 +450,16 @@ func TestPilotEditInvalidatesApproval(t *testing.T) {
 	if xerr != nil || approved.ApprovedBy == nil {
 		t.Fatalf("approve failed: %+v %v", approved, xerr)
 	}
+	if approved.DraftID != nil {
+		draft, err := fixture.repo.GetDraft(context.Background(), fixture.orgID, *approved.DraftID)
+		if err != nil || draft == nil {
+			t.Fatalf("approved draft: %v", err)
+		}
+		var val ValidationResult
+		if err := json.Unmarshal(draft.ValidationJSON, &val); err != nil || val.HumanCorrection == nil || val.HumanCorrection.Decision != DecisionApprove {
+			t.Fatalf("approve must persist HumanCorrection: %+v err=%v", val.HumanCorrection, err)
+		}
+	}
 	editedBody := approved.BodyText + "\n\nRevisão humana."
 	edited, xerr := fixture.service.EditTouchpoint(context.Background(), fixture.orgID, fixture.userID, touchpointID, nil, &editedBody, nil, nil)
 	if xerr != nil {
@@ -452,23 +470,36 @@ func TestPilotEditInvalidatesApproval(t *testing.T) {
 	}
 }
 
-func TestGenericRecipientApprovalRequiresAuditableAcknowledgement(t *testing.T) {
+func TestGenericRecipientApprovalNeverSucceeds(t *testing.T) {
 	fixture := newPilotFixture(t)
 	accountID := fixture.addReadyAccount(t, 51)
 	valid := fixture.repo.cands[accountID][1]
 	valid.MailboxPurpose = "GENERIC_CONTACT"
 	valid.RecipientCommercialSuitability = "SUITABLE_GENERIC"
-	fixture.repo.cands[accountID] = []models.OutreachContactCandidate{fixture.repo.cands[accountID][0], valid}
+	valid.Email = fmt.Sprintf("contato51@empresa51.com.br")
+	valid.Name, valid.Role = "", ""
+	fixture.repo.cands[accountID] = []models.OutreachContactCandidate{valid}
 	result, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID, []uuid.UUID{accountID}, PilotOperation{IdempotencyKey: "generic-ack"})
-	if xerr != nil || result.Results[0].TouchpointID == nil {
-		t.Fatalf("prepare generic recipient: %+v %v", result, xerr)
+	if xerr != nil {
+		t.Fatal(xerr)
 	}
-	touchpointID := *result.Results[0].TouchpointID
-	if _, xerr := fixture.service.ApproveTouchpoint(context.Background(), fixture.orgID, fixture.userID, touchpointID, ApprovalOptions{}); xerr == nil {
-		t.Fatal("generic mailbox approval must require explicit acknowledgement")
+	if result.Prepared != 0 || result.Results[0].Status == PilotPrepared {
+		t.Fatalf("generic mailbox must not prepare a sendable review item: %+v", result.Results[0])
 	}
-	if _, xerr := fixture.service.ApproveTouchpoint(context.Background(), fixture.orgID, fixture.userID, touchpointID, ApprovalOptions{GenericRecipientAcknowledged: true}); xerr != nil {
-		t.Fatalf("acknowledged generic mailbox should remain review-eligible: %v", xerr)
+	candidateID := valid.ID
+	touchpoints, pxerr := fixture.service.PlanAccountCadence(context.Background(), fixture.orgID, fixture.userID, accountID, &candidateID, models.OutreachChannelEmail)
+	if pxerr != nil || len(touchpoints) == 0 {
+		t.Fatalf("plan: %v", pxerr)
+	}
+	generated, gxerr := fixture.service.GenerateTouchpointDraft(context.Background(), fixture.orgID, fixture.userID, touchpoints[0].ID)
+	if gxerr != nil {
+		t.Fatal(gxerr)
+	}
+	if strings.TrimSpace(generated.BodyText) != "" || generated.State == models.TouchpointNeedsReview {
+		t.Fatalf("generic must fail closed: state=%s body=%q", generated.State, generated.BodyText)
+	}
+	if _, axerr := fixture.service.ApproveTouchpoint(context.Background(), fixture.orgID, fixture.userID, generated.ID, ApprovalOptions{GenericRecipientAcknowledged: true}); axerr == nil {
+		t.Fatal("acknowledgement must not authorize a generic mailbox")
 	}
 }
 

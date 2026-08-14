@@ -142,9 +142,10 @@ func TestReviewDraftApproveSucceedsAfterCompleteRepair(t *testing.T) {
 	}
 	cand := &models.OutreachContactCandidate{
 		ID: uuid.New(), OrganizationID: org, AccountID: acc.ID,
-		Name: "Ana Silva", Role: "Engenheira de contratos", Email: "ana.silva@acme.example.com",
+		Name: "Ana Silva", Role: "Engenheira de contratos", Email: "ana.silva@acme.com.br",
 		VerificationStatus: models.OutreachVerifyOfficialSource, Recommended: true, Confidence: "HIGH",
 	}
+	applyValidatedIdentity(cand)
 	if _, err := rf.UpsertCandidate(context.Background(), cand); err != nil {
 		t.Fatal(err)
 	}

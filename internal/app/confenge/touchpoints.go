@@ -146,6 +146,11 @@ func (s *service) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, li
 					list[i].RecipientGeneric = isGenericRecipient(cand)
 				}
 			}
+			if allCands, listErr := s.repo.ListCandidates(ctx, orgID, list[i].AccountID); listErr == nil {
+				rec := ResolveRecipient(acc, allCands, time.Now().UTC())
+				list[i].RecipientState = rec.State
+				list[i].RecipientReason = rec.Reason
+			}
 			st := PlanOutreachStrategy(pb, acc, cand, nil, pos)
 			if list[i].FactUsed != "" {
 				st.ObservedFact = list[i].FactUsed
@@ -161,6 +166,10 @@ func (s *service) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, li
 						list[i].DoctrineAlerts = val.DoctrineAlerts
 						if val.StrategyExplain != nil {
 							list[i].StrategyExplain = strategyExplainProjection(*val.StrategyExplain, ex.WhyThisAccount)
+						}
+						if val.Recipient != nil && val.Recipient.State != "" {
+							list[i].RecipientState = val.Recipient.State
+							list[i].RecipientReason = val.Recipient.Reason
 						}
 					}
 				}
@@ -258,6 +267,11 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 			return nil, errx.New(errx.BadRequest, err.Error())
 		}
 	}
+	allCands, listErr := s.repo.ListCandidates(ctx, orgID, tp.AccountID)
+	if listErr != nil {
+		allCands = nil
+	}
+	rec := ResolveRecipient(acc, allCands, time.Now().UTC())
 	evidence, _ := s.repo.ListEvidence(ctx, orgID, tp.AccountID)
 	priors, _ := s.repo.ListTouchpoints(ctx, orgID, tp.AccountID, models.TouchpointSent, 20, 0)
 	subject, body := jitCompose(tp, acc, cand, evidence, priors)
@@ -284,7 +298,7 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	if factUsed != "" && plan.Messageability == MessageabilityReady && plan.Hook != "" {
 		st.ObservedFact = factUsed
 	}
-	if plan.Messageability != MessageabilityReady {
+	if plan.Messageability != MessageabilityReady || rec.State != RecipientValidated {
 		subject, body = "", ""
 		factUsed = ""
 	} else {
@@ -315,11 +329,23 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 			val.Errors = appendUnique(val.Errors, plan.Reason)
 		}
 	}
+	val.Recipient = &rec
+	if rec.State != RecipientValidated {
+		val.OK = false
+		if rec.Reason != "" {
+			val.Errors = appendUnique(val.Errors, rec.Reason)
+		}
+	}
 	risk, flags := ClassifyRisk(acc, cand, synth, val)
 	if plan.Messageability != MessageabilityReady {
 		risk = "RED"
 		flags = appendUnique(flags, "messageability_"+strings.ToLower(plan.Messageability))
 		flags = appendUnique(flags, plan.ReasonCodes...)
+	}
+	if rec.State != RecipientValidated {
+		risk = "RED"
+		flags = appendUnique(flags, "recipient_"+strings.ToLower(rec.State))
+		flags = appendUnique(flags, rec.ReasonCodes...)
 	}
 	valJSON := PackValidationWithPlan(val, st, plan, recipient)
 	allowTemplateGREEN := false
@@ -350,12 +376,13 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 		flags = append(flags, "template_fallback")
 	}
 	flags = append(flags, "per_touch", "jit")
+	// NEEDS_REVIEW is only for sendable copy awaiting human authorization.
 	draftStatus := models.OutreachDraftNeedsReview
-	switch plan.Messageability {
-	case MessageabilityBlocked:
+	switch {
+	case rec.State == RecipientBlocked || plan.Messageability == MessageabilityBlocked:
 		draftStatus = models.OutreachDraftBlocked
 		subject, body = "", ""
-	case MessageabilityNeedsEnrichment:
+	case rec.State != RecipientValidated || plan.Messageability != MessageabilityReady:
 		draftStatus = models.OutreachDraftSkipped
 		subject, body = "", ""
 	default:
@@ -410,7 +437,7 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 		tp.State = models.TouchpointNeedsReview
 	} else {
 		tp.State = models.TouchpointDrafted
-		tp.StopReason = firstNonEmpty(plan.Reason, "messageability_"+strings.ToLower(plan.Messageability))
+		tp.StopReason = firstNonEmpty(rec.Reason, plan.Reason, "recipient_"+strings.ToLower(rec.State), "messageability_"+strings.ToLower(plan.Messageability))
 	}
 	tp.ServiceCode, tp.FactUsed, tp.EvidenceIDs = acc.ServiceCode, draft.FactUsed, draft.EvidenceIDs
 	// Capture message-material context at generation for stale-approval guard.
@@ -472,7 +499,7 @@ func (s *service) EditTouchpoint(ctx context.Context, orgID, userID, id uuid.UUI
 	if models.TouchpointTerminalStates[tp.State] || tp.State == models.TouchpointQueued || tp.State == models.TouchpointSent {
 		return nil, errx.New(errx.BadRequest, "cannot edit touchpoint in state "+tp.State)
 	}
-	origBody := tp.BodyText
+	origBody, origSubj, origRecipient := tp.BodyText, tp.Subject, tp.Recipient
 	ch, rec, sub, bod := tp.Channel, tp.Recipient, tp.Subject, tp.BodyText
 	if channel != nil && *channel != "" {
 		ch = strings.ToUpper(strings.TrimSpace(*channel))
@@ -557,6 +584,15 @@ func (s *service) EditTouchpoint(ctx context.Context, orgID, userID, id uuid.UUI
 					d.ValidationJSON = b
 				}
 			}
+			decision := DecisionEdit
+			if origRecipient != tp.Recipient {
+				decision = DecisionRecipientChange
+			}
+			if hc, herr := RecordHumanDecision(decision, d.ID.String(), userID.String(), origBody, tp.BodyText, origSubj, tp.Subject, nil); herr == nil {
+				hc.RecipientBefore = origRecipient
+				hc.RecipientAfter = tp.Recipient
+				attachHumanCorrection(d, hc)
+			}
 			if err := s.repo.UpsertDraft(ctx, d); err != nil {
 				return nil, errx.New(errx.Internal, "draft update failed")
 			}
@@ -613,8 +649,8 @@ func (s *service) ApproveTouchpoint(ctx context.Context, orgID, userID, id uuid.
 	if cand == nil {
 		return nil, errx.New(errx.BadRequest, "approved contact candidate is missing")
 	}
-	if isGenericRecipient(cand) && !options.GenericRecipientAcknowledged {
-		return nil, errx.New(errx.BadRequest, "generic recipient requires explicit institutional-copy acknowledgement")
+	if isGenericRecipient(cand) {
+		return nil, errx.New(errx.BadRequest, "generic mailbox cannot be approved")
 	}
 	if tp.Channel == models.OutreachChannelWhatsApp {
 		phone := firstNonEmpty(cand.PhoneE164, cand.Phone)
@@ -652,6 +688,12 @@ func (s *service) ApproveTouchpoint(ctx context.Context, orgID, userID, id uuid.
 	RecomputeContentHash(tp)
 	if err := ApplyHumanApproval(tp, userID, time.Now().UTC()); err != nil {
 		return nil, errx.New(errx.BadRequest, err.Error())
+	}
+	if hc, herr := RecordHumanDecision(DecisionApprove, draft.ID.String(), userID.String(), draft.BodyText, draft.BodyText, draft.Subject, draft.Subject, nil); herr == nil {
+		attachHumanCorrection(draft, hc)
+		if err := s.repo.UpsertDraft(ctx, draft); err != nil {
+			return nil, errx.New(errx.Internal, "approve correction persist failed")
+		}
 	}
 	if err := s.repo.UpdateTouchpoint(ctx, tp); err != nil {
 		return nil, errx.New(errx.Internal, "approve persist failed")
@@ -705,22 +747,37 @@ func (s *service) RejectOrSkipTouchpointReason(ctx context.Context, orgID, userI
 	tp.State, tp.StopReason = state, stop
 	ClearApproval(tp)
 	// Persist operator rejection learning signal on the draft when present.
-	if (action == "reject" || action == "REJECTED") && tp.DraftID != nil {
+	if tp.DraftID != nil {
 		if d, _ := s.repo.GetDraft(ctx, orgID, *tp.DraftID); d != nil {
-			rej := NewOperatorRejection(strings.TrimPrefix(stop, "REJECTED:"), d.ID.String(), tp.ServiceCode, "")
-			if rej.Reason == "REJECTED" || rej.Reason == "" {
-				rej.Reason = "other"
-			}
-			var val ValidationResult
-			if len(d.ValidationJSON) > 0 {
-				_ = json.Unmarshal(d.ValidationJSON, &val)
-			}
-			val.OperatorReject = &rej
-			if b, err := json.Marshal(val); err == nil {
-				d.ValidationJSON = b
+			if action == "reject" || action == "REJECTED" {
+				rej := NewOperatorRejection(strings.TrimPrefix(stop, "REJECTED:"), d.ID.String(), tp.ServiceCode, "")
+				if rej.Reason == "REJECTED" || rej.Reason == "" {
+					rej.Reason = "other"
+				}
+				var val ValidationResult
+				if len(d.ValidationJSON) > 0 {
+					_ = json.Unmarshal(d.ValidationJSON, &val)
+				}
+				val.OperatorReject = &rej
+				if b, err := json.Marshal(val); err == nil {
+					d.ValidationJSON = b
+				}
 				d.Status = models.OutreachDraftRejected
-				_ = s.repo.UpsertDraft(ctx, d)
+			} else if action == "skip" || action == "SKIPPED" {
+				d.Status = models.OutreachDraftSkipped
 			}
+			decision := DecisionSkip
+			reasons := []string{}
+			if action == "reject" || action == "REJECTED" {
+				decision = DecisionReject
+				if r := strings.TrimSpace(reason); r != "" {
+					reasons = []string{r}
+				}
+			}
+			if hc, herr := RecordHumanDecision(decision, d.ID.String(), userID.String(), d.BodyText, d.BodyText, d.Subject, d.Subject, reasons); herr == nil {
+				attachHumanCorrection(d, hc)
+			}
+			_ = s.repo.UpsertDraft(ctx, d)
 		}
 	}
 	if err := s.repo.UpdateTouchpoint(ctx, tp); err != nil {

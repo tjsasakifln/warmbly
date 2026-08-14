@@ -81,9 +81,16 @@ export default function ConfengePage() {
   const [idx, setIdx] = useState(0);
   const [reviewLane, setReviewLane] = useState<"ready" | "exception">("ready");
   const allReview = review.data ?? [];
-  const queue = allReview.filter((tp) => {
+  const isAuthorizeReady = (tp: ConfengeTouchpoint) => {
+    const recipientOK = (tp.recipient_state || "").toUpperCase() === "VALIDATED";
+    const messageability = (tp.strategy_explain?.messageability || "").toUpperCase();
+    const messageOK = !messageability || messageability === "READY";
     const sendable = !!(tp.body_text && tp.body_text.trim());
-    return reviewLane === "ready" ? sendable : !sendable;
+    return recipientOK && messageOK && sendable;
+  };
+  const queue = allReview.filter((tp) => {
+    const ready = isAuthorizeReady(tp);
+    return reviewLane === "ready" ? ready : !ready;
   });
   const current: ConfengeTouchpoint | undefined = queue[idx];
   const timeline = useConfengeAccountTimeline(current?.account_id ?? null);
@@ -91,7 +98,6 @@ export default function ConfengePage() {
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [recipient, setRecipient] = useState("");
-	const [genericRecipientConfirmed, setGenericRecipientConfirmed] = useState(false);
   const [pilotSelection, setPilotSelection] = useState<string[]>([]);
 
   useEffect(() => {
@@ -110,7 +116,6 @@ export default function ConfengePage() {
       setSubject(current.subject ?? "");
       setBody(current.body_text ?? "");
       setRecipient(current.recipient ?? "");
-		setGenericRecipientConfirmed(false);
     }
   }, [current]);
 
@@ -699,9 +704,11 @@ export default function ConfengePage() {
                       {[current.draft?.recipient_name, current.draft?.recipient_role].filter(Boolean).join(" · ")}
                     </div>
                   )}
-				  {current.recipient_generic && (
+				  {(current.recipient_generic || (current.recipient_state && current.recipient_state.toUpperCase() !== "VALIDATED")) && (
 					<div className="mt-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900">
-						Caixa genérica ({current.recipient_mailbox_purpose || "finalidade desconhecida"}). Não presuma nome, cargo ou uma pessoa específica.
+						{current.recipient_state && current.recipient_state.toUpperCase() !== "VALIDATED"
+							? `Destinatário ${current.recipient_state}${current.recipient_reason ? `: ${current.recipient_reason}` : ""}. Aprovar fica bloqueado até extra-cli publicar uma pessoa comprovada.`
+							: `Caixa genérica (${current.recipient_mailbox_purpose || "finalidade desconhecida"}). Não presuma nome, cargo ou uma pessoa específica.`}
 					</div>
 				  )}
                 </div>
@@ -827,12 +834,6 @@ export default function ConfengePage() {
                   />
                 </label>
                 <div className="flex flex-wrap gap-1.5 pt-1">
-				  {current.recipient_generic && (
-					<label className="w-full mb-1 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900">
-						<Checkbox checked={genericRecipientConfirmed} onCheckedChange={(checked) => setGenericRecipientConfirmed(checked === true)} />
-						<span>Confirmei que a mensagem trata esta caixa como canal institucional, sem inventar uma pessoa.</span>
-					</label>
-				  )}
                   {(current.state === "DUE" || !current.body_text) && (
                     <button
                       type="button"
@@ -844,24 +845,25 @@ export default function ConfengePage() {
                       Gerar mensagem
                     </button>
                   )}
+                  {reviewLane === "ready" && (
                   <button
                     type="button"
                     data-testid="confenge-approve"
                     className="h-7 px-2.5 rounded-md bg-sky-600 text-white text-[12.5px] disabled:opacity-50"
-                    disabled={approve.isPending || !body.trim() || !recipient.trim() || (current.recipient_generic && !genericRecipientConfirmed)}
+                    disabled={approve.isPending || !body.trim() || !recipient.trim() || !isAuthorizeReady(current)}
                     onClick={() =>
                       approve.mutate({
                         id: current.id,
                         subject,
                         body_text: body,
                         recipient,
-                        generic_recipient_acknowledged: genericRecipientConfirmed,
                       })
                     }
                   >
                     <Check className="inline h-3.5 w-3.5 mr-1" />
                     Aprovar mensagem
                   </button>
+                  )}
                   <button
                     type="button"
                     className="h-7 px-2.5 rounded-md border border-slate-200 text-[12.5px]"

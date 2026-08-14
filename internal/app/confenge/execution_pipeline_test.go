@@ -15,30 +15,37 @@ import (
 	"github.com/warmbly/warmbly/internal/models"
 )
 
+func applyValidatedIdentity(c *models.OutreachContactCandidate) {
+	if c == nil {
+		return
+	}
+	now := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	if strings.TrimSpace(c.Name) == "" {
+		c.Name = "Ana Silva"
+	}
+	if strings.TrimSpace(c.Role) == "" {
+		c.Role = "Diretora de Contratos"
+	}
+	c.EmailSendReady = true
+	c.OwnershipStatus = "COMPANY_OWNED"
+	c.RecipientCommercialSuitability = "SUITABLE"
+	c.MailboxPurpose = "COMERCIAL"
+	c.MailboxPurposeSendBlocked = false
+	c.SourceDate = &now
+	if c.Email != "" && strings.TrimSpace(c.SourceURL) == "" {
+		c.SourceURL = "https://" + emailDomain(c.Email) + "/equipe"
+	}
+}
+
 func stampValidatedCandidates(t *testing.T, repo *memRepo, org, acc uuid.UUID) {
 	t.Helper()
 	list, err := repo.ListCandidates(context.Background(), org, acc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	for i := range list {
 		c := list[i]
-		if strings.TrimSpace(c.Name) == "" {
-			c.Name = "Ana Silva"
-		}
-		if strings.TrimSpace(c.Role) == "" {
-			c.Role = "Diretora de Contratos"
-		}
-		c.EmailSendReady = true
-		c.OwnershipStatus = "COMPANY_OWNED"
-		c.RecipientCommercialSuitability = "SUITABLE"
-		c.MailboxPurpose = "COMERCIAL"
-		c.MailboxPurposeSendBlocked = false
-		c.SourceDate = &now
-		if c.Email != "" {
-			c.SourceURL = "https://" + emailDomain(c.Email) + "/equipe"
-		}
+		applyValidatedIdentity(&c)
 		if _, err := repo.UpsertCandidate(context.Background(), &c); err != nil {
 			t.Fatal(err)
 		}
@@ -78,6 +85,64 @@ func TestResolveRecipientValidatedRequiresProvenIdentity(t *testing.T) {
 	}
 	if res.CanonicalTargetID != "lead-encopav" || res.CanonicalContactID == "" {
 		t.Fatal("canonical ids required")
+	}
+}
+
+func TestGenerateTouchpointDraftGenericMailboxFailClosed(t *testing.T) {
+	repo := newMemRepo()
+	svc := testSvc(repo).(*service)
+	org, user := uuid.New(), uuid.New()
+	acc := testAccount("REAJUSTE", "ANUALIDADE", "contrato 1149/2022 atingiu aniversário de reajuste em 2024")
+	acc.OrganizationID = org
+	acc.QueueState = models.OutreachQueueReadyToGenerate
+	acc.SourceLeadID = "lead-generic-mailbox"
+	if _, err := repo.UpsertAccount(context.Background(), acc); err != nil {
+		t.Fatal(err)
+	}
+	c := validatedCand("Pessoa Histórica", "Contato", "contato@encopav.com.br")
+	c.OrganizationID = org
+	c.AccountID = acc.ID
+	c.MailboxPurpose = "GENERIC_CONTACT"
+	c.VerificationStatus = models.OutreachVerifyOfficialSource
+	if _, err := repo.UpsertCandidate(context.Background(), &c); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.UpsertEvidence(context.Background(), &models.OutreachEvidence{
+		OrganizationID: org, AccountID: acc.ID, SourceEvidenceID: "ev-1",
+		Title: "Contrato", Synthesis: acc.FactToMention,
+		EpistemicClass: models.OutreachEpistemicConfirmedFact,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	list, xerr := svc.PlanAccountCadence(context.Background(), org, user, acc.ID, &c.ID, models.OutreachChannelEmail)
+	if xerr != nil || len(list) == 0 {
+		t.Fatalf("plan: %v", xerr)
+	}
+	tp, xerr := svc.GenerateTouchpointDraft(context.Background(), org, user, list[0].ID)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if strings.TrimSpace(tp.BodyText) != "" {
+		t.Fatalf("generic mailbox must not produce a sendable body: %q", tp.BodyText)
+	}
+	if tp.State == models.TouchpointNeedsReview {
+		t.Fatalf("generic mailbox must not enter NEEDS_REVIEW: %+v", tp)
+	}
+	if tp.DraftID == nil {
+		t.Fatal("fail-closed draft must still be persisted")
+	}
+	draft, err := repo.GetDraft(context.Background(), org, *tp.DraftID)
+	if err != nil || draft == nil {
+		t.Fatalf("draft: %v", err)
+	}
+	if draft.Status == models.OutreachDraftNeedsReview || strings.TrimSpace(draft.BodyText) != "" {
+		t.Fatalf("draft must not be sendable: status=%s body=%q", draft.Status, draft.BodyText)
+	}
+	if rec := recipientFromDraft(draft); rec == nil || rec.State == RecipientValidated {
+		t.Fatalf("recipient must not be VALIDATED: %+v", rec)
+	}
+	if _, xerr := svc.ApproveTouchpoint(context.Background(), org, user, tp.ID, ApprovalOptions{GenericRecipientAcknowledged: true}); xerr == nil {
+		t.Fatal("acknowledgement must not authorize a generic mailbox")
 	}
 }
 
@@ -345,6 +410,15 @@ func TestRealSmokeCorpusHonestTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 	rep := ProcessFeedCorpus(feed, 30, time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC))
+	if out := os.Getenv("CORPUS_AUDIT_OUT"); out != "" {
+		b, err := json.MarshalIndent(rep, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(out, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if rep.Selected != 30 {
 		t.Fatalf("selected=%d", rep.Selected)
 	}
