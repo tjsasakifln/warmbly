@@ -168,6 +168,8 @@ type FeedContact struct {
 	ProvenanceTrust      string `json:"provenance_trust,omitempty"`
 	RootSourceType       string `json:"root_source_type,omitempty"`
 	DerivedFromFixture   *bool  `json:"derived_from_fixture,omitempty"`
+	ContactTier          string `json:"contact_tier,omitempty"`
+	Channel              string `json:"channel,omitempty"`
 }
 
 // FeedEvidence is one evidence item (text only; HTML stripped on import).

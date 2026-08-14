@@ -2,6 +2,7 @@ package confenge
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -143,5 +144,62 @@ func TestInvalidatePriorComposerDrafts(t *testing.T) {
 
 	if strings.Contains(gotSent.BodyText, "fake") {
 		t.Fatal("no invented content")
+	}
+}
+
+func TestInvalidatePriorComposerSkipsSuppressedReservoir(t *testing.T) {
+	ctx := context.Background()
+	repo := newMemRepo()
+	org, actor := uuid.New(), uuid.New()
+	svc := NewService(Config{Enabled: true, RequireHumanApproval: true, MaxInitialEmailWords: 120}, repo, nil).(*service)
+	for i := 0; i < 20; i++ {
+		acc := &models.OutreachAccount{
+			ID: uuid.New(), OrganizationID: org, CNPJ14: fmt.Sprintf("40000000000%03d", i),
+			QueueState: models.OutreachQueueTargetFitSuppressed, RazaoSocial: "Suppressed",
+		}
+		if _, err := repo.UpsertAccount(ctx, acc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ready := &models.OutreachAccount{
+		ID: uuid.New(), OrganizationID: org, CNPJ14: "50000000000191",
+		QueueState: models.OutreachQueueReadyToGenerate, RazaoSocial: "Ready",
+	}
+	if _, err := repo.UpsertAccount(ctx, ready); err != nil {
+		t.Fatal(err)
+	}
+	old := &models.OutreachDraft{
+		ID: uuid.New(), OrganizationID: org, AccountID: ready.ID,
+		Status: models.OutreachDraftSkipped, PromptVersion: "confenge.draft.v3+touch",
+		Subject: "old", BodyText: "objeto: dump",
+	}
+	if err := repo.UpsertDraft(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	tp := &models.OutreachTouchpoint{
+		ID: uuid.New(), OrganizationID: org, AccountID: ready.ID, Ordinal: 1,
+		Channel: models.OutreachChannelEmail, State: models.TouchpointNeedsReview,
+		DraftID: &old.ID, Recipient: "ana@horizontesul.com.br",
+	}
+	if err := repo.InsertTouchpoint(ctx, tp); err != nil {
+		t.Fatal(err)
+	}
+	rep, xerr := svc.InvalidatePriorComposerDrafts(ctx, org, actor)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if rep.TouchpointsInvalidated != 1 {
+		t.Fatalf("ready-queue stale touchpoint must be cancelled: %+v", rep)
+	}
+	got, _ := repo.GetTouchpoint(ctx, org, tp.ID)
+	if got.State != models.TouchpointCancelled || got.StopReason != StopComposerStale {
+		t.Fatalf("stale review touchpoint left: %+v", got)
+	}
+	rep2, xerr := svc.InvalidatePriorComposerDrafts(ctx, org, actor)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if rep2.TouchpointsInvalidated != 0 {
+		t.Fatalf("second pass must be a no-op: %+v", rep2)
 	}
 }

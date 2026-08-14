@@ -52,6 +52,8 @@ type Service interface {
 	// Drafts / review (PR2)
 	GenerateDraft(ctx context.Context, orgID, userID, accountID uuid.UUID, contactID *uuid.UUID) (*models.OutreachDraft, *errx.Error)
 	InvalidatePriorComposerDrafts(ctx context.Context, orgID, actorID uuid.UUID) (*DraftInvalidationReport, *errx.Error)
+	CollectContactCockpit(ctx context.Context, orgID uuid.UUID) (*ContactCockpit, *errx.Error)
+	ApplyManualAction(ctx context.Context, orgID, userID, accountID uuid.UUID, action, reason string) (*HumanCorrection, *errx.Error)
 	GetDraft(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachDraft, *errx.Error)
 	ListDrafts(ctx context.Context, orgID uuid.UUID, status string, limit, offset int) ([]models.OutreachDraft, *errx.Error)
 	ReviewDraft(ctx context.Context, orgID, userID, draftID uuid.UUID, action string, edit *DraftEdit) (*models.OutreachDraft, *errx.Error)
@@ -606,6 +608,7 @@ func leadToCandidate(orgID, accountID, runID uuid.UUID, fc FeedContact) *models.
 	if cand.WhatsAppConsentStatus == "" {
 		cand.WhatsAppConsentStatus = "UNKNOWN"
 	}
+	applyPublishedContactTier(cand, fc.ContactTier)
 	return cand
 }
 

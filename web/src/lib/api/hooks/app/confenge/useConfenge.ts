@@ -16,6 +16,8 @@ import {
     getConfengeDispatchStatus,
     getConfengeStatus,
     getConfengeSummary,
+    applyConfengeManualAction,
+    getConfengeCockpit,
     getConfengeWorkingOverview,
     listConfengeAccountTouchpoints,
     listConfengeAccounts,
@@ -65,6 +67,26 @@ export function useConfengeWorkingOverview(enabled = true) {
         queryFn: getConfengeWorkingOverview,
         enabled,
         staleTime: 15_000,
+    });
+}
+
+export function useConfengeCockpit(enabled = true) {
+    return useQuery({
+        queryKey: [...KEY, "cockpit"],
+        queryFn: getConfengeCockpit,
+        enabled,
+        staleTime: 10_000,
+    });
+}
+
+export function useApplyConfengeManualAction() {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({ accountId, action, reason }: { accountId: string; action: string; reason?: string }) =>
+            applyConfengeManualAction(accountId, action, reason),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: [...KEY, "cockpit"] });
+        },
     });
 }
 

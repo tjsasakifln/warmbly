@@ -665,6 +665,47 @@ func (h *Handler) InvalidatePriorComposerDrafts(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": rep})
 }
 
+func (h *Handler) GetConfengeContactCockpit(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	cockpit, xerr := h.ConfengeService.CollectContactCockpit(c.Request.Context(), orgID)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": cockpit})
+}
+
+func (h *Handler) ApplyConfengeManualAction(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	accountID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	userID, _ := c.Get("user_id")
+	uid, _ := userID.(uuid.UUID)
+	var body struct {
+		Action string `json:"action"`
+		Reason string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		errx.JSON(c, errx.New(errx.BadRequest, "invalid body"))
+		return
+	}
+	hc, xerr := h.ConfengeService.ApplyManualAction(c.Request.Context(), orgID, uid, accountID, body.Action, body.Reason)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": hc})
+}
+
 // ResumeConfengeDispatch — POST /confenge/dispatch/resume
 func (h *Handler) ResumeConfengeDispatch(c *gin.Context) {
 	orgID, ok := h.confengeOrg(c)

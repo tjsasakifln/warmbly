@@ -59,6 +59,47 @@ export type ConfengeSummary = {
     total: number;
 };
 
+export type ConfengeContactFunnel = {
+    imported: number;
+    tier_a: number;
+    tier_b: number;
+    tier_c: number;
+    tier_d: number;
+    blocked_exhausted: number;
+    messageability_ready: number;
+    needs_review: number;
+    manual_outreach_ready: number;
+    approved: number;
+    contacted: number;
+    replied: number;
+    meeting: number;
+};
+
+export type ConfengeManualItem = {
+    company: string;
+    person?: string;
+    role?: string;
+    contact_tier: string;
+    lane: string;
+    channel?: string;
+    source?: string;
+    service?: string;
+    why_now?: string;
+    factual_hook?: string;
+    recommended_action?: string;
+    suggested_text?: string;
+    confidence?: string;
+    blocking_warning?: string;
+    actions: string[];
+    canonical_target_id?: string;
+};
+
+export type ConfengeCockpit = {
+    funnel: ConfengeContactFunnel;
+    manual: ConfengeManualItem[];
+    needs_review: ConfengeManualItem[];
+};
+
 export type ConfengeAccount = {
     id: string;
     organization_id: string;
