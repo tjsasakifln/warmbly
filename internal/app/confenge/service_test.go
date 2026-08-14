@@ -36,6 +36,8 @@ type memRepo struct {
 	pilotSlots         map[string]string
 	listTouchpointsErr error
 	upsertDraftErr     error
+	actions            map[uuid.UUID]*models.OutreachCommercialAction
+	actionByIdem       map[string]*models.OutreachCommercialAction
 }
 
 func newMemRepo() *memRepo {
@@ -49,6 +51,8 @@ func newMemRepo() *memRepo {
 		pilotMemberships: map[uuid.UUID]*models.OutreachPilotMembership{},
 		pilotOperations:  map[string]string{},
 		pilotSlots:       map[string]string{},
+		actions:          map[uuid.UUID]*models.OutreachCommercialAction{},
+		actionByIdem:     map[string]*models.OutreachCommercialAction{},
 	}
 }
 
@@ -1214,4 +1218,83 @@ func (m *memRepo) AdvisoryUnlock(ctx context.Context, key int64) error {
 		delete(m.advLocks, key)
 	}
 	return nil
+}
+
+func (m *memRepo) ensureActions() {
+	if m.actions == nil {
+		m.actions = map[uuid.UUID]*models.OutreachCommercialAction{}
+	}
+	if m.actionByIdem == nil {
+		m.actionByIdem = map[string]*models.OutreachCommercialAction{}
+	}
+}
+
+func (m *memRepo) UpsertCommercialAction(_ context.Context, a *models.OutreachCommercialAction) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureActions()
+	if a.ID == uuid.Nil {
+		a.ID = uuid.New()
+	}
+	if a.CreatedAt.IsZero() {
+		a.CreatedAt = time.Now().UTC()
+	}
+	a.UpdatedAt = time.Now().UTC()
+	cp := *a
+	m.actions[a.ID] = &cp
+	if a.IdempotencyKey != "" {
+		m.actionByIdem[a.OrganizationID.String()+"|"+a.IdempotencyKey] = &cp
+	}
+	return nil
+}
+
+func (m *memRepo) GetCommercialAction(_ context.Context, orgID, id uuid.UUID) (*models.OutreachCommercialAction, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureActions()
+	a := m.actions[id]
+	if a == nil || a.OrganizationID != orgID {
+		return nil, nil
+	}
+	cp := *a
+	return &cp, nil
+}
+
+func (m *memRepo) GetCommercialActionByIdempotency(_ context.Context, orgID uuid.UUID, key string) (*models.OutreachCommercialAction, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureActions()
+	a := m.actionByIdem[orgID.String()+"|"+key]
+	if a == nil {
+		return nil, nil
+	}
+	cp := *a
+	return &cp, nil
+}
+
+func (m *memRepo) ListCommercialActions(_ context.Context, orgID, accountID uuid.UUID, openOnly bool, limit int) ([]models.OutreachCommercialAction, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureActions()
+	var out []models.OutreachCommercialAction
+	for _, a := range m.actions {
+		if a.OrganizationID != orgID {
+			continue
+		}
+		if accountID != uuid.Nil && a.AccountID != accountID {
+			continue
+		}
+		if openOnly {
+			switch a.State {
+			case models.ActionStatePlanned, models.ActionStateReady, models.ActionStateInProgress, models.ActionStateNeedsFollowup:
+			default:
+				continue
+			}
+		}
+		out = append(out, *a)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
 }

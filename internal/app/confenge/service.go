@@ -53,6 +53,9 @@ type Service interface {
 	GenerateDraft(ctx context.Context, orgID, userID, accountID uuid.UUID, contactID *uuid.UUID) (*models.OutreachDraft, *errx.Error)
 	InvalidatePriorComposerDrafts(ctx context.Context, orgID, actorID uuid.UUID) (*DraftInvalidationReport, *errx.Error)
 	CollectContactCockpit(ctx context.Context, orgID uuid.UUID) (*ContactCockpit, *errx.Error)
+	CollectToday(ctx context.Context, orgID uuid.UUID) (*TodayView, *errx.Error)
+	RecordCommercialOutcome(ctx context.Context, orgID, userID, actionID uuid.UUID, req OutcomeRequest) (*OutcomeApply, *errx.Error)
+	StartCommercialWork(ctx context.Context, orgID, userID, actionID uuid.UUID) (*models.OutreachCommercialAction, *errx.Error)
 	ApplyManualAction(ctx context.Context, orgID, userID, accountID uuid.UUID, action, reason string) (*HumanCorrection, *errx.Error)
 	GetDraft(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachDraft, *errx.Error)
 	ListDrafts(ctx context.Context, orgID uuid.UUID, status string, limit, offset int) ([]models.OutreachDraft, *errx.Error)
@@ -273,6 +276,7 @@ func (s *service) ImportFromBytes(ctx context.Context, orgID uuid.UUID, userID *
 
 	counts, leadErrs, warns := s.applyFeed(ctx, orgID, run, feed, opts.DryRun)
 	run.Counts = counts
+	applyOperatorSummary(&run.Counts, SummarizeOperatorProjection(feed))
 	run.Errors = leadErrs
 	run.Warnings = warns
 	now := time.Now().UTC()
@@ -435,6 +439,7 @@ func (s *service) applyFeed(ctx context.Context, orgID uuid.UUID, run *models.Ou
 				counts.LeadsSkippedError++
 			}
 		}
+		s.planAndPersistAccount(ctx, orgID, acc)
 		counts.LeadsProcessed++
 	}
 	return counts, leadErrs, warns
@@ -532,7 +537,7 @@ func leadToAccount(orgID uuid.UUID, lead FeedLead, feed *Feed, runID uuid.UUID, 
 	acc.TargetFitSuppressionReason = decision.Reason
 	now := time.Now().UTC()
 	acc.TargetFitReconciledAt = &now
-	if !decision.Eligible && !isHistoricalTerminalQueue(acc.QueueState) {
+	if !decision.Eligible && !isHistoricalTerminalQueue(acc.QueueState) && acc.QueueState != models.OutreachQueueNeedsContact {
 		acc.QueueState = models.OutreachQueueTargetFitSuppressed
 	}
 	return acc
@@ -552,7 +557,8 @@ func leadToCandidate(orgID, accountID, runID uuid.UUID, fc FeedContact) *models.
 	cand := &models.OutreachContactCandidate{
 		OrganizationID:                 orgID,
 		AccountID:                      accountID,
-		SourceContactID:                SanitizeText(fc.SourceContactID, 200),
+		SourceContactID:                SanitizeText(firstNonEmpty(fc.SourceContactID, fc.PersonID), 200),
+		PersonID:                       SanitizeText(fc.PersonID, 80),
 		Name:                           SanitizeText(fc.Name, 300),
 		Role:                           SanitizeText(fc.Role, 200),
 		Email:                          email,
@@ -577,6 +583,11 @@ func leadToCandidate(orgID, accountID, runID uuid.UUID, fc FeedContact) *models.
 		OwnershipStatus:                strings.ToUpper(SanitizeText(fc.OwnershipStatus, 40)),
 		RecipientCommercialSuitability: SanitizeText(fc.RecipientCommercialSuitability, 80),
 		LastImportRunID:                &runID,
+		ReachabilityClass:              SanitizeText(fc.ReachabilityClass, 80),
+		RouteType:                      SanitizeText(fc.RouteType, 80),
+		RouteRelation:                  SanitizeText(fc.RouteRelation, 80),
+		ChannelValue:                   SanitizeText(fc.ChannelValue, 300),
+		ChannelDisplay:                 SanitizeText(fc.ChannelDisplay, 300),
 	}
 	if fc.EmailSendReady != nil {
 		cand.EmailSendReady = *fc.EmailSendReady

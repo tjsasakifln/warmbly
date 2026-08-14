@@ -25,6 +25,7 @@ export function TextInput({
     autoFocus,
     className,
     onKeyDown,
+    onBlur,
     testId,
     ariaLabel,
     "data-testid": dataTestId,
@@ -37,6 +38,10 @@ export function TextInput({
     autoFocus?: boolean;
     className?: string;
     onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+    // Fires when the field loses focus. Use it for inputs that parse their
+    // text into something else (a clock value, a number) so the parse happens
+    // once the user settles rather than on every keystroke.
+    onBlur?: () => void;
     testId?: string;
     "data-testid"?: string;
     ariaLabel?: string;
@@ -50,6 +55,7 @@ export function TextInput({
             autoFocus={autoFocus}
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={onKeyDown}
+            onBlur={onBlur}
             data-testid={dataTestId ?? testId}
             aria-label={ariaLabel}
             className={cn(base, "min-w-0", className)}

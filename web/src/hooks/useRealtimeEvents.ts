@@ -292,7 +292,11 @@ export function useRealtimeEvents() {
           contact: [['contacts']],
           campaign: [['campaigns'], ['analytics']],
           step: [['campaigns']],
-          email_account: [['emails', 'list'], ['analytics', 'accounts']],
+          // ['emails'] rather than ['emails', 'list']: it prefix-matches the
+          // per-mailbox detail reads too (['emails', id, 'behavior'] and its
+          // rolled plan), so a teammate retuning a mailbox's sending behaviour
+          // refreshes everyone's open drawer instead of only the list row.
+          email_account: [['emails'], ['analytics', 'accounts']],
           api_key: [['api-keys']],
           webhook: [['webhooks'], ['integrations', 'connections']],
           template: [['templates']],
@@ -324,6 +328,7 @@ export function useRealtimeEvents() {
           advisor_finding: [['advisor']],
           outreach_import_run: [['confenge']],
           outreach_account: [['confenge']],
+          outreach_commercial_action: [['confenge']],
           settings: [['organizations', 'current']],
           unibox: [['unibox']],
           crm_note: [['crm'], ['contacts']],

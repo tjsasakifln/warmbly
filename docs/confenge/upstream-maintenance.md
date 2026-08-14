@@ -6,7 +6,7 @@ Fork: `tjsasakifln/warmbly` · Upstream: `warmbly/warmbly`
 
 | Area | Paths |
 | --- | --- |
-| Migration | `internal/infrastructure/db/migrations/000080_outreach_staging.{up,down}.sql` |
+| Migration | `internal/infrastructure/db/migrations/000083_outreach_staging.{up,down}.sql` |
 | Models | `internal/models/outreach.go`; audit entity constants in `audit.go` |
 | App | `internal/app/confenge/*` |
 | Repository | `internal/repository/pg_outreach.go` |

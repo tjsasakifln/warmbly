@@ -77,7 +77,10 @@ Dominant stops: `DO_NOT_CONTACT`, opt-out, bounce, and human reply cancel open f
 `POST /api/v1/confenge/import` accepts:
 
 - the full feed JSON body (`schema_version: confenge.outreach.v1`; legacy shapes remain auditable but are not outreach-eligible)
+- the extra-cli operator pack (`cards.json`) or `confenge.decision_unit_account.v1` accounts. Routed calls and manual lanes import as first-class work even when no email is VALIDATED
 - or `{"uri":"https://...","dry_run":true}` to fetch then import
+
+The import printout includes the operator summary: actionable accounts, route distribution, number requiring a manual call, number that are email-safe, unresolved blockers, and the next human actions. Re-import of the same extra-cli identity does not create a second account.
 
 Use `?dry_run=true` for counts only (`creates`, `updates`, `unchanged`, `missing_contact`, and related fields). Send `Idempotency-Key` for safe retries.
 
@@ -117,7 +120,10 @@ Target-fit is updated only by a current authoritative decision. A downgrade take
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /confenge/status` | Whether the feature is on |
-| `GET /confenge/cockpit` | Contact funnel plus `NEEDS_REVIEW` and honest manual lanes |
+| `GET /confenge/cockpit` | Contact funnel, Today view, action cards, and honest manual lanes |
+| `GET /confenge/today` | Executable human work only (calls, routed calls, reviews, forms) |
+| `POST /confenge/actions/:id/start` | Mark a commercial action in progress |
+| `POST /confenge/actions/:id/outcome` | Record a lean commercial outcome (never infers WON) |
 | `POST /confenge/manual-queue/:id/action` | Persist a `HumanCorrection` without auto-approve |
 | `GET /confenge/summary` | Queue counters |
 | `GET /confenge/accounts` | Staged companies |
@@ -143,7 +149,19 @@ The CONFENGE page is a PT-BR commercial operations center. It uses the CONFENGE 
 
 Feed freshness uses the upstream manifest's durable `source_generated_at`, not the time at which Warmbly downloaded it. The API retains `feed_last_success_at` as a backward-compatible alias for that authoritative source time and exposes `feed_synced_at` separately for operational diagnostics. The dashboard, API and VPS status script use the same `CONFENGE_FEED_MAX_AGE` threshold, which defaults to 24 hours. Missing, stale, corrupt, or rolled-back feed state blocks cohort preparation.
 
-The page also opens with the recommended next action, a three-step usage guide, operational readiness, and short descriptions for each work area. The operational funnel counts imported tiers, `NEEDS_REVIEW`, the manual lanes, approvals, and post-send outcomes (`SENT` as contacted, `REPLIED`, `MEETING`) from `GET /confenge/cockpit`. Each manual-lane card shows why now, the factual hook, the recommended action, confidence, and a Copy text control. The per-message review queue shows company, exact recipient, channel, service, fact and evidence, stage number, short history, and the exact send preview. The operator can approve without dispatch, skip the stage, reject with a reason, or mark the account as do not contact.
+The page also opens with **O que fazer agora**: only executable human work (calls, routed calls, emails to review, role mailboxes, WhatsApp, professional profiles, forms). Each card shows company, person or target role, why now, offer, channel, reachability class, confidence, factual hook, evidence, warnings, channel-appropriate copy, last outcome, and next action. A corporate switchboard is labeled as the company number, never as the person's direct phone. Calls, WhatsApp, social, and forms are human-executed only. They never auto-send and never bypass the email `VALIDATED + READY → NEEDS_REVIEW → human approval → dispatch` path.
+
+The operational funnel counts imported tiers, `NEEDS_REVIEW`, the manual lanes, planned and actionable work, approvals, and post-send outcomes (`SENT` as contacted, `REPLIED`, `MEETING`) from `GET /confenge/cockpit`. Each manual-lane card shows why now, the factual hook, the recommended action, confidence, and a Copy text control. The per-message review queue shows company, exact recipient, channel, service, fact and evidence, stage number, short history, and the exact send preview. The operator can approve without dispatch, skip the stage, reject with a reason, or mark the account as do not contact.
+
+## Commercial actions
+
+Actionability is not email sendability. A named person plus a company switchboard is a `ROUTED_CALL` (actionable, not sendable). An inferred email is `INFERRED_EMAIL_REVIEW` and never enters `VALIDATED` or dispatch. A role mailbox is `ROLE_EMAIL`, not a personal inbox. Missing reachability is left empty: Warmbly does not invent an R-class from the current `confenge.outreach.v1` feed.
+
+Execution state (`PLANNED`, `READY`, `IN_PROGRESS`, `COMPLETED`, `NEEDS_FOLLOWUP`, `BLOCKED`) is separate from outcome (`GATEKEEPER_REACHED`, `REFERRED_TO_OTHER_PERSON`, `TARGET_REACHED`, `INTERESTED`, `MEETING_SCHEDULED`, `WRONG_PERSON`, `INVALID_ROUTE`, `DNC`). A gatekeeper who names Maria in contratos is new Decision-Unit intelligence, not a failed call. That outcome mints a child action linked to the parent. WON is never inferred.
+
+`HumanCorrection` is reused for person, role, route, and DNC feedback (`source = HUMAN_INTERACTION`). It never overwrites upstream evidence. `WRONG_PERSON` and `INVALID_ROUTE` block silent replan of the same person or route.
+
+The extra-cli plug contract (additive fields the future producer can fill) is documented in `docs/confenge/commercial-actions.md`.
 
 ## Global dispatch governor
 

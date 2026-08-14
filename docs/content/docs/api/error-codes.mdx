@@ -228,6 +228,19 @@ Returned when an unexpected error occurs on the server.
 - Retry the request after a short delay
 - If persistent, contact support with request details
 
+One `internal_error` variant is worth distinguishing. When an authentication endpoint cannot send its email, the message names that specifically rather than reporting a generic fault:
+
+```json
+{
+  "error": "Internal Server Error",
+  "message": "We couldn't send the email. If you administer this server, check the mail transport configuration.",
+  "code": "internal_error",
+  "request_id": "4bbbd1b2-8f86-47dd-8a7f-9476501ad20e"
+}
+```
+
+On a self-hosted deployment that means `MAIL_TRANSPORT` and the `SMTP_` variables. See [self-hosting](/development/deployment-guide/).
+
 ### 503 Service Unavailable
 
 Returned when the service is temporarily unavailable.
@@ -246,6 +259,24 @@ Returned when the service is temporarily unavailable.
 **How to fix:**
 - Wait and retry with exponential backoff
 - Check status page for incidents
+
+#### `mailbox_provider_not_configured`
+
+A `503` whose `code` is `mailbox_provider_not_configured` is not transient and retrying will not help. It means the deployment has no OAuth client for the mailbox provider the request asked for, which only happens on a self-hosted install.
+
+```json
+{
+  "error": "Service Unavailable",
+  "message": "Gmail is not configured on this deployment. Set BOX_GOOGLE_CLIENT_ID and BOX_GOOGLE_CLIENT_SECRET in your .env, then restart.",
+  "code": "mailbox_provider_not_configured",
+  "request_id": "4bbbd1b2-8f86-47dd-8a7f-9476501ad20e"
+}
+```
+
+**How to fix:**
+- Set `BOX_GOOGLE_CLIENT_ID` and `BOX_GOOGLE_CLIENT_SECRET`, or `BOX_OUTLOOK_CLIENT_ID` and `BOX_OUTLOOK_CLIENT_SECRET`, in the `.env` at your install root, then restart
+- Or connect the mailbox over SMTP and IMAP instead, which needs no configuration
+- Full walkthrough: [connect mailboxes](/development/deployment-guide/#connect-mailboxes)
 
 ## CONFENGE pilot account results
 

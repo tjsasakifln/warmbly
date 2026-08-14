@@ -1,7 +1,10 @@
 package api
 
 import (
+	"log"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -11,6 +14,17 @@ import (
 	"github.com/warmbly/warmbly/internal/api/middleware"
 	"github.com/warmbly/warmbly/internal/models"
 )
+
+// splitCSV parses a comma-separated env list, dropping empty entries.
+func splitCSV(value string) []string {
+	out := make([]string, 0, 4)
+	for _, part := range strings.Split(value, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
 
 func Run(
 	h *handler.Handler,
@@ -22,6 +36,20 @@ func Run(
 	gin.SetMode(ginMode)
 
 	r := gin.Default()
+
+	// Gin trusts every proxy by default, which makes X-Forwarded-For (and so
+	// c.ClientIP()) attacker-controlled: forged values reach the captcha
+	// verifier, session records, audit rows, and the API-key IP allowlist.
+	// Default to trusting nothing and honor the header only for the CIDRs an
+	// operator names in TRUSTED_PROXIES.
+	if proxies := splitCSV(os.Getenv("TRUSTED_PROXIES")); len(proxies) > 0 {
+		if err := r.SetTrustedProxies(proxies); err != nil {
+			log.Fatalf("invalid TRUSTED_PROXIES: %v", err)
+		}
+	} else {
+		_ = r.SetTrustedProxies(nil)
+	}
+
 	r.Use(middleware.RequestIDMiddleware())
 	r.Use(middleware.APIVersionMiddleware(middleware.APIVersion))
 
@@ -188,7 +216,21 @@ func Run(
 	v1.GET("/invitations/lookup", h.PreviewInvitation)
 
 	auth := v1.Group("/auth")
+	// Every unauthenticated auth route shares one per-IP budget. Nothing
+	// throttled these before: RateLimitMiddleware is keyed on the user id and
+	// short-circuits when there is none, so password guessing was unbounded and
+	// each guess cost a 64 MiB Argon2 hash.
+	auth.Use(m.AuthIPRateLimitMiddleware())
 	{
+		// Public deployment capabilities. Deliberately outside the rate limiter
+		// below is not an option (it is a GET the login screen makes first), so
+		// it shares the budget with a generous allowance.
+		auth.GET("/config", h.AuthConfig)
+
+		// First-run claim. Public because there is no account to authenticate
+		// as yet; the one-time token is the protection.
+		auth.POST("/setup", h.SetupClaim)
+
 		auth.POST("/login", h.LoginStart)
 		auth.POST("/login/confirm", h.LoginConfirm)
 		auth.POST("/register", h.RegistrationStart)
@@ -215,6 +257,13 @@ func Run(
 		// Dedicated loopback deployment only. The handler returns 404 unless
 		// CONFENGE_OPERATOR_MODE is explicitly enabled and validated on boot.
 		auth.POST("/confenge-operator/session", h.ConfengeOperatorSession)
+
+		// Generic OpenID Connect. The only sign-in path with no dependency on
+		// outbound mail, which is what makes it the one that matters for a
+		// deployment with no relay.
+		auth.POST("/oidc/begin", h.OIDCBegin)
+		auth.GET("/oidc/callback", h.OIDCCallback)
+		auth.POST("/oidc/exchange", h.OIDCExchange)
 
 		// 2FA login challenge (PUBLIC): exchanges a single-use pending token +
 		// TOTP/recovery code for a real session. Rate-limited in the service
@@ -319,6 +368,11 @@ func Run(
 				emails.POST("/:id/warmup/resume", m.RequireAccess(models.PermManageEmails, models.APIPermWriteEmails), middleware.RequireAPIKeyEmailAccountParam("id"), h.ResumeWarmup)
 				emails.POST("/:id/warmup/stop", m.RequireAccess(models.PermManageEmails, models.APIPermWriteEmails), middleware.RequireAPIKeyEmailAccountParam("id"), h.StopWarmup)
 				emails.GET("/:id/auth-check", m.RequireAccess(models.PermViewCampaigns, models.APIPermReadEmails), middleware.RequireAPIKeyEmailAccountParam("id"), h.GetEmailAuthCheck)
+				// Human sending behaviour: the ranges the mailbox rolls its
+				// workday from, and the workday it rolled for today.
+				emails.GET("/:id/behavior", m.RequireAccess(models.PermViewCampaigns, models.APIPermReadEmails), middleware.RequireAPIKeyEmailAccountParam("id"), h.GetEmailBehavior)
+				emails.PUT("/:id/behavior", m.RequireAccess(models.PermManageEmails, models.APIPermWriteEmails), middleware.RequireAPIKeyEmailAccountParam("id"), h.UpdateEmailBehavior)
+				emails.GET("/:id/behavior/plan", m.RequireAccess(models.PermViewCampaigns, models.APIPermReadEmails), middleware.RequireAPIKeyEmailAccountParam("id"), h.GetEmailBehaviorPlan)
 				emails.POST("/verify", m.RequireAccess(models.PermViewCampaigns, models.APIPermReadEmails), h.VerifyEmail)
 				emails.GET("/:id/warmup/ban-status", m.RequireAccess(models.PermViewCampaigns, models.APIPermReadEmails), middleware.RequireAPIKeyEmailAccountParam("id"), h.GetWarmupBanStatus)
 				emails.POST("/:id/warmup/appeal", m.RequireAccess(models.PermManageEmails, models.APIPermWriteEmails), middleware.RequireAPIKeyEmailAccountParam("id"), h.SubmitWarmupAppeal)
@@ -464,6 +518,7 @@ func Run(
 				confengeGroup.GET("/working-overview", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeWorkingOverview)
 				confengeGroup.GET("/working-queue", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeWorkingQueue)
 				confengeGroup.GET("/cockpit", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeContactCockpit)
+				confengeGroup.GET("/today", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeToday)
 				confengeGroup.GET("/attention", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeAttention)
 				confengeGroup.GET("/attention/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeAttention)
 				confengeGroup.GET("/accounts", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeAccounts)
@@ -508,6 +563,8 @@ func Run(
 					confengeWrite.POST("/crm/bootstrap", m.RequireAccess(models.PermManageContacts, models.APIPermWriteCRM), h.BootstrapConfengePipeline)
 					confengeWrite.POST("/drafts/invalidate-prior-composer", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.InvalidatePriorComposerDrafts)
 					confengeWrite.POST("/manual-queue/:id/action", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ApplyConfengeManualAction)
+					confengeWrite.POST("/actions/:id/start", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.StartConfengeCommercialAction)
+					confengeWrite.POST("/actions/:id/outcome", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.RecordConfengeCommercialOutcome)
 					confengeWrite.POST("/dispatch/pause", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.PauseConfengeDispatch)
 					confengeWrite.POST("/dispatch/resume", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ResumeConfengeDispatch)
 				}
@@ -1095,6 +1152,12 @@ func Run(
 	adminRoutes.Use(m.AuthMiddleware(), m.AdminMiddleware())
 	{
 		// Settings → Storage backends (pluggable infrastructure registry)
+		// Platform mail diagnostics. A broken relay locks everyone out, so the
+		// operator needs to see the SMTP dialogue from inside the panel rather
+		// than inferring it from a 500 on the login screen.
+		adminRoutes.GET("/mail/status", middleware.RequireAdminPermission(models.AdminPermManageSettings), h.AdminMailStatus)
+		adminRoutes.POST("/mail/test", middleware.RequireAdminPermission(models.AdminPermManageSettings), h.AdminSendTestEmail)
+
 		adminRoutes.GET("/settings/backends", middleware.RequireAdminPermission(models.AdminPermManageSettings), h.AdminListStorageBackends)
 		adminRoutes.GET("/settings/backends/active/:kind", middleware.RequireAdminPermission(models.AdminPermManageSettings), h.AdminGetActiveStorageBackend)
 		adminRoutes.POST("/settings/backends/:id/activate", middleware.RequireAdminPermission(models.AdminPermManageSettings), h.AdminActivateStorageBackend)

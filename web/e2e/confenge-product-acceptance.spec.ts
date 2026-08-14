@@ -120,40 +120,54 @@ async function loginViaAPIAndMailpit(): Promise<Record<string, string>> {
   if (!startRes.ok) {
     throw new Error(`login start ${startRes.status}: ${await startRes.text()}`);
   }
-  const start = (await startRes.json()) as { session: string };
+  const start = (await startRes.json()) as {
+    session?: string;
+    code_required?: boolean;
+    token?: Record<string, string>;
+    access_token?: string;
+  };
 
-  let code = "";
-  for (let i = 0; i < 40; i++) {
-    const listRes = await fetch(`${MAILPIT}/api/v1/messages`);
-    const list = (await listRes.json()) as {
-      messages?: Array<{ ID: string; Subject?: string }>;
-    };
-    const msg = (list.messages || []).find((m) =>
-      (m.Subject || "").includes("Login Code"),
-    );
-    if (msg) {
-      const bodyRes = await fetch(`${MAILPIT}/api/v1/message/${msg.ID}`);
-      const body = (await bodyRes.json()) as { Text?: string; HTML?: string };
-      const text = body.Text || body.HTML || "";
-      const m = text.match(/\b(\d{6})\b/);
-      if (m) {
-        code = m[1];
-        break;
+  // After #99, self-host / BILLING_PROVIDER=none defaults AUTH_LOGIN_CODE=off,
+  // so LoginStart already returns the token pair and never mails a code.
+  let tokens: Record<string, string>;
+  if (start.token?.access_token) {
+    tokens = start.token;
+  } else if (start.access_token) {
+    tokens = start as Record<string, string>;
+  } else {
+    let code = "";
+    for (let i = 0; i < 40; i++) {
+      const listRes = await fetch(`${MAILPIT}/api/v1/messages`);
+      const list = (await listRes.json()) as {
+        messages?: Array<{ ID: string; Subject?: string }>;
+      };
+      const msg = (list.messages || []).find((m) =>
+        (m.Subject || "").includes("Login Code"),
+      );
+      if (msg) {
+        const bodyRes = await fetch(`${MAILPIT}/api/v1/message/${msg.ID}`);
+        const body = (await bodyRes.json()) as { Text?: string; HTML?: string };
+        const text = body.Text || body.HTML || "";
+        const m = text.match(/\b(\d{6})\b/);
+        if (m) {
+          code = m[1];
+          break;
+        }
       }
+      await new Promise((r) => setTimeout(r, 300));
     }
-    await new Promise((r) => setTimeout(r, 300));
-  }
-  if (!code) throw new Error("no login code in Mailpit");
+    if (!code) throw new Error("no login code in Mailpit");
 
-  const confirmRes = await fetch(`${API}/v1/auth/login/confirm`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code, session: start.session }),
-  });
-  if (!confirmRes.ok) {
-    throw new Error(`login confirm ${confirmRes.status}: ${await confirmRes.text()}`);
+    const confirmRes = await fetch(`${API}/v1/auth/login/confirm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, session: start.session }),
+    });
+    if (!confirmRes.ok) {
+      throw new Error(`login confirm ${confirmRes.status}: ${await confirmRes.text()}`);
+    }
+    tokens = (await confirmRes.json()) as Record<string, string>;
   }
-  const tokens = (await confirmRes.json()) as Record<string, string>;
 
   const sw = await fetch(`${API}/v1/organization/switch/${ORG}`, {
     method: "POST",

@@ -118,8 +118,9 @@ const (
 	AuditEntityAdvisorFinding AuditEntityType = "advisor_finding"
 
 	// CONFENGE / outreach staging (intelligence-plane import + company queue).
-	AuditEntityOutreachImportRun AuditEntityType = "outreach_import_run"
-	AuditEntityOutreachAccount   AuditEntityType = "outreach_account"
+	AuditEntityOutreachImportRun        AuditEntityType = "outreach_import_run"
+	AuditEntityOutreachAccount          AuditEntityType = "outreach_account"
+	AuditEntityOutreachCommercialAction AuditEntityType = "outreach_commercial_action"
 )
 
 // AuditActor is the minimal identity of the member who performed an action,

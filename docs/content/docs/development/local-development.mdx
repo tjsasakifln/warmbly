@@ -32,6 +32,14 @@ and admin panel together in your terminal.
 
 Open `http://localhost:5173` and log in with `dev@warmbly.com` / `password123`.
 
+The native dev stack keeps the emailed login code on (`AUTH_LOGIN_CODE=always`)
+so the flow stays exercised, and local mail goes to Mailpit rather than a real
+inbox. Open `http://localhost:18025`, read the newest "Your Login Code"
+message, and paste the code into the dashboard.
+
+A self-hosted install behaves differently: there the code is off by default, so
+signing in never depends on mail. See [self-hosting](/development/deployment-guide/#authentication).
+
 Ctrl-C stops the app services; the Docker infra stays up, so the next `make dev`
 skips straight to starting the app. The Go services run natively with `go run`,
 so a code change plus Ctrl-C and re-run recompiles in a second or two. Variants:
@@ -95,7 +103,7 @@ docker compose -p warmbly up -d postgres redis nats mailpit          # infra
 docker compose -p warmbly -f docker-compose.yml -f docker-compose.dev.yml up -d --build \
     backend consumer worker tracking realtime web admin              # app
 docker compose -p warmbly up -d dovecot                              # sandbox IMAP host
-docker compose -p warmbly --profile seed run --rm seed               # seed
+docker compose -p warmbly --profile seed run --rm --build seed       # seed
 docker compose -p warmbly --profile seed --profile sandbox down -v   # reset
 ```
 
@@ -156,7 +164,7 @@ The dev user's org always loads as a mid-flight workspace, not an empty shell:
 
 All dates are computed relative to the current time, so the workspace looks active no matter when you seed.
 
-When `SEED_RICH=true` (default in `docker-compose.yml`), also loads:
+When `SEED_RICH=true` (set in `docker-compose.yml`, and by `make seed`), also loads:
 
 - 3 orgs (Acme free, Beta pro, Gamma enterprise) each with their own owner user (password `password123`)
 - 3 workers matching the `docker-compose.yml` hostnames (shared / premium / dedicated)
@@ -235,7 +243,9 @@ make backend AI_PROVIDER=openai AI_KEY=sk-...
 
 ## Mailpit
 
-All outbound mail is captured by Mailpit. The backend uses plain SMTP (`mailpit:1025`) in dev rather than SES, so no AWS credentials are needed. Mailpit accepts SMTP AUTH with any credentials (no TLS required), so worker sends from sandbox mailboxes are captured too.
+All outbound mail is captured by Mailpit. The dev targets set `MAIL_TRANSPORT=smtp` with `SMTP_SECURITY=none`, because a sink offers no STARTTLS and the platform transport refuses to send credentials over an unencrypted connection. Mailpit accepts SMTP AUTH with any credentials, so worker sends from sandbox mailboxes are captured too.
+
+Mailpit sits in the `sandbox` compose profile, so the self-host `make up` never starts it. `make dev`, `make infra` and `make sandbox` name it explicitly, which starts it regardless of the profile.
 
 - Web UI: `http://localhost:18025`
 - SMTP from inside docker: `mailpit:1025`

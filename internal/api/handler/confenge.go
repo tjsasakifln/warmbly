@@ -678,6 +678,91 @@ func (h *Handler) GetConfengeContactCockpit(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": cockpit})
 }
 
+func (h *Handler) GetConfengeToday(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	today, xerr := h.ConfengeService.CollectToday(c.Request.Context(), orgID)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": today})
+}
+
+func (h *Handler) StartConfengeCommercialAction(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	actionID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	userID, _ := c.Get("user_id")
+	uid, _ := userID.(uuid.UUID)
+	a, xerr := h.ConfengeService.StartCommercialWork(c.Request.Context(), orgID, uid, actionID)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": a})
+}
+
+func (h *Handler) RecordConfengeCommercialOutcome(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	actionID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	userID, _ := c.Get("user_id")
+	uid, _ := userID.(uuid.UUID)
+	var body struct {
+		OutcomeCode             string `json:"outcome_code"`
+		Notes                   string `json:"notes"`
+		ReferralName            string `json:"referral_name"`
+		ReferralRole            string `json:"referral_role"`
+		ReferralChannel         string `json:"referral_channel"`
+		NextActionType          string `json:"next_action_type"`
+		NextActionAt            string `json:"next_action_at"`
+		RouteQualityFeedback    string `json:"route_quality_feedback"`
+		PersonRelevanceFeedback string `json:"person_relevance_feedback"`
+		MessageFeedback         string `json:"message_feedback"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		errx.JSON(c, errx.New(errx.BadRequest, "invalid body"))
+		return
+	}
+	req := confenge.OutcomeRequest{
+		OutcomeCode:             body.OutcomeCode,
+		Notes:                   body.Notes,
+		ReferralName:            body.ReferralName,
+		ReferralRole:            body.ReferralRole,
+		ReferralChannel:         body.ReferralChannel,
+		NextActionType:          body.NextActionType,
+		RouteQualityFeedback:    body.RouteQualityFeedback,
+		PersonRelevanceFeedback: body.PersonRelevanceFeedback,
+		MessageFeedback:         body.MessageFeedback,
+	}
+	if ts := strings.TrimSpace(body.NextActionAt); ts != "" {
+		if parsed, err := time.Parse(time.RFC3339, ts); err == nil {
+			req.NextActionAt = &parsed
+		}
+	}
+	res, xerr := h.ConfengeService.RecordCommercialOutcome(c.Request.Context(), orgID, uid, actionID, req)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": res})
+}
+
 func (h *Handler) ApplyConfengeManualAction(c *gin.Context) {
 	orgID, ok := h.confengeOrg(c)
 	if !ok {

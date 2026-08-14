@@ -79,6 +79,25 @@ export interface AdminWorkerEmailsResult {
     };
 }
 
+export interface CreateWorkerInput {
+    name: string;
+    notes?: string;
+    worker_type: WorkerType;
+    free_tier: boolean;
+    ssh_host: string;
+    ssh_port?: number;
+    ssh_user?: string;
+    generate_enrollment_token?: boolean;
+}
+
+// The public key and enrollment token are returned once, at creation. Neither is
+// retrievable later, so the create flow has to surface both before navigating.
+export interface CreateWorkerResponse extends ManagedWorker {
+    ssh_public_key: string;
+    enrollment_token?: string;
+    enrollment_token_ttl_seconds?: number;
+}
+
 export interface WorkerLiveStatus {
     service_active: boolean;
     container_up: boolean;
@@ -503,7 +522,7 @@ export interface AdminCampaignSearch {
     q?: string;
     user_id?: string;
     org_id?: string;
-    status?: string; // "" | draft | active | paused | completed | paused_trial_expired | paused_no_accounts
+    status?: string; // "" | draft | active | paused | completed | paused_trial_expired | paused_no_accounts | paused_guardrail
     // Boolean flags
     open_tracking?: boolean;
     link_tracking?: boolean;

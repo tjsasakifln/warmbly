@@ -27,6 +27,14 @@ var HumanReasonCodes = []string{
 	"wrong_hook",
 	"channel_preference",
 	"contact_correction",
+	"gatekeeper_reached",
+	"referral",
+	"wrong_person",
+	"invalid_route",
+	"person_confirmed",
+	"route_confirmed",
+	"preferred_channel",
+	"dnc",
 	"awkward_tone",
 	"excessive_metadata",
 	"unclear_value",
@@ -53,6 +61,11 @@ type HumanCorrection struct {
 	RecipientVer    string    `json:"recipient_version,omitempty"`
 	PolicyVersion   string    `json:"policy_version,omitempty"`
 	Silent          bool      `json:"silent"`
+	// Additive interaction corrections (person/role/route/DNC). Never
+	// overwrite upstream evidence; source is always HUMAN_INTERACTION.
+	Kind   string `json:"kind,omitempty"`
+	Source string `json:"source,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // EvaluationRecord binds a human decision to the ledger chain.

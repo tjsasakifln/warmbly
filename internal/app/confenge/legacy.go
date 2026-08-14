@@ -22,6 +22,11 @@ func DetectAndNormalize(raw []byte) (*Feed, error) {
 		Leads         json.RawMessage `json:"leads"`
 	}
 	_ = json.Unmarshal(raw, &peek)
+	var wrap map[string]any
+	_ = json.Unmarshal(raw, &wrap)
+	if isOperatorProjection(strField(wrap, "schema_id"), peek.SchemaVersion, wrap) {
+		return normalizeOperatorProjection(raw)
+	}
 	if peek.SchemaVersion == models.OutreachSchemaV1 {
 		return ParseFeed(raw)
 	}
@@ -37,9 +42,10 @@ func DetectAndNormalize(raw []byte) (*Feed, error) {
 	}
 
 	// Object with leads key (commercial run export / commercial-leads.json).
-	var wrap map[string]any
-	if err := json.Unmarshal(raw, &wrap); err != nil {
-		return nil, fmt.Errorf("legacy object: %w", err)
+	if wrap == nil {
+		if err := json.Unmarshal(raw, &wrap); err != nil {
+			return nil, fmt.Errorf("legacy object: %w", err)
+		}
 	}
 	src := FeedSource{
 		System:         "extra-cli",

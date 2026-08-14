@@ -71,6 +71,12 @@ type FeedLead struct {
 	EmailSendReady           *bool    `json:"email_send_ready,omitempty"`
 	MailboxPurpose           string   `json:"mailbox_purpose,omitempty"`
 	OwnershipStatus          string   `json:"ownership_status,omitempty"`
+	// Additive extra-cli Decision-Unit + Reachability (unknown fields tolerated).
+	DecisionUnitCandidates []json.RawMessage `json:"decision_unit_candidates,omitempty"`
+	ReachabilityRoutes     []json.RawMessage `json:"reachability_routes,omitempty"`
+	RecommendedTarget      json.RawMessage   `json:"recommended_target,omitempty"`
+	RecommendedRoute       json.RawMessage   `json:"recommended_route,omitempty"`
+	RecommendedAction      string            `json:"recommended_action,omitempty"`
 }
 
 // FeedActivation is the extra-cli commercial activation planner projection.
@@ -170,6 +176,17 @@ type FeedContact struct {
 	DerivedFromFixture   *bool  `json:"derived_from_fixture,omitempty"`
 	ContactTier          string `json:"contact_tier,omitempty"`
 	Channel              string `json:"channel,omitempty"`
+	// Additive Decision-Unit / Reachability boundary. Unknown extra-cli
+	// strings are tolerated; Warmbly never invents a class when absent.
+	ReachabilityClass string `json:"reachability_class,omitempty"`
+	RouteType         string `json:"route_type,omitempty"`
+	RouteRelation     string `json:"route_relation,omitempty"`
+	ChannelValue      string `json:"channel_value,omitempty"`
+	ChannelDisplay    string `json:"channel_display,omitempty"`
+	RecommendedAction string `json:"recommended_action,omitempty"`
+	InferredEmail     *bool  `json:"inferred_email,omitempty"`
+	PersonID          string `json:"person_id,omitempty"`
+	ActionMode        string `json:"action_mode,omitempty"`
 }
 
 // FeedEvidence is one evidence item (text only; HTML stripped on import).
@@ -604,12 +621,39 @@ func DefaultQueueState(lead FeedLead, existing *models.OutreachAccount) string {
 		}
 	}
 	if !LeadTargetFitDecision(lead).Eligible {
+		// Target-fit still blocks email. Manual/routed commercial work stays visible.
+		if leadHasManualCommercialRoute(lead) {
+			return models.OutreachQueueNeedsContact
+		}
 		return models.OutreachQueueTargetFitSuppressed
 	}
 	if hasEnrollableContact(lead) {
 		return models.OutreachQueueReadyToGenerate
 	}
 	return models.OutreachQueueNeedsContact
+}
+
+func leadHasManualCommercialRoute(lead FeedLead) bool {
+	for _, c := range lead.Contacts {
+		class := MapReachability(c.ReachabilityClass)
+		if class == "" {
+			class = MapActionMode(c.ActionMode)
+		}
+		switch class {
+		case models.ReachabilityR3Routed, models.ReachabilityR4Role, models.ReachabilityR5Corporate:
+			return true
+		}
+		switch strings.ToUpper(strings.TrimSpace(c.ActionMode)) {
+		case ActionModeManualRoutedCall, ActionModeNamedHumanManual, ActionModeManualCall,
+			ActionModeManualWhatsApp, ActionModeManualSocial, ActionModeRoleEmail, ActionModeContactForm:
+			return true
+		}
+		switch strings.ToUpper(strings.TrimSpace(c.ContactTier)) {
+		case ContactTierB, ContactTierC, ContactTierD:
+			return true
+		}
+	}
+	return false
 }
 
 func hasEnrollableContact(lead FeedLead) bool {

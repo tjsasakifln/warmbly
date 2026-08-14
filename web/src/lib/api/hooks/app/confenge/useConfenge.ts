@@ -18,6 +18,9 @@ import {
     getConfengeSummary,
     applyConfengeManualAction,
     getConfengeCockpit,
+    getConfengeToday,
+    recordConfengeActionOutcome,
+    startConfengeAction,
     getConfengeWorkingOverview,
     listConfengeAccountTouchpoints,
     listConfengeAccounts,
@@ -76,6 +79,55 @@ export function useConfengeCockpit(enabled = true) {
         queryFn: getConfengeCockpit,
         enabled,
         staleTime: 10_000,
+    });
+}
+
+export function useConfengeToday(enabled = true) {
+    return useQuery({
+        queryKey: [...KEY, "today"],
+        queryFn: getConfengeToday,
+        enabled,
+        staleTime: 10_000,
+    });
+}
+
+export function useStartConfengeAction() {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: (actionId: string) => startConfengeAction(actionId),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: [...KEY, "cockpit"] });
+            qc.invalidateQueries({ queryKey: [...KEY, "today"] });
+        },
+    });
+}
+
+export function useRecordConfengeActionOutcome() {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({
+            actionId,
+            outcome_code,
+            notes,
+            referral_name,
+            referral_role,
+            next_action_type,
+            next_action_at,
+        }: {
+            actionId: string;
+            outcome_code: string;
+            notes?: string;
+            referral_name?: string;
+            referral_role?: string;
+            next_action_type?: string;
+            next_action_at?: string;
+        }) => recordConfengeActionOutcome(actionId, { outcome_code, notes, referral_name, referral_role, next_action_type, next_action_at }),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: [...KEY, "cockpit"] });
+            qc.invalidateQueries({ queryKey: [...KEY, "today"] });
+            toast.success("Outcome registrado");
+        },
+        onError: (error) => toast.error(confengeError(error, "Nao foi possivel registrar o outcome")),
     });
 }
 
