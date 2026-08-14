@@ -36,6 +36,7 @@ const STATE_LABELS: Record<string, string> = {
   MANUAL_OUTREACH: "Abordagem manual",
   ROLE_MAILBOX_EXCEPTION: "Exceção de caixa funcional",
   LOW_CONFIDENCE_MANUAL: "Manual de baixa confiança",
+  COPY_TEXT: "Copiar texto",
   MARK_CONTACTED: "Marcar como contatado",
   CORRECT_CONTACT: "Corrigir contato",
   PROMOTE_AFTER_NEW_EVIDENCE: "Promover após nova evidência",

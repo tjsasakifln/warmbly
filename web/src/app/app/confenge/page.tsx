@@ -353,6 +353,9 @@ export default function ConfengePage() {
                 ["Prontas para revisar", cockpit.data.funnel.needs_review],
                 ["Fila manual", cockpit.data.funnel.manual_outreach_ready],
                 ["Aprovadas", cockpit.data.funnel.approved],
+                ["Contatadas", cockpit.data.funnel.contacted],
+                ["Respostas", cockpit.data.funnel.replied],
+                ["Reuniões", cockpit.data.funnel.meeting],
               ].map(([label, n]) => (
                 <ReadinessItem key={String(label)} label={String(label)} value={String(n)} />
               ))}
@@ -371,15 +374,31 @@ export default function ConfengePage() {
               <li key={`${item.canonical_target_id}-${item.lane}`} className="px-3 py-2.5 text-[12.5px] space-y-1">
                 <div className="font-medium text-slate-900">{item.company} <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">{stateLabel(item.contact_tier)}</span></div>
                 <div className="text-slate-600">{[item.person, item.role, item.channel, item.service].filter(Boolean).join(" · ") || "Sem pessoa nomeada"}</div>
+                {item.why_now && <div data-testid="confenge-manual-why-now" className="text-slate-500">Por que agora: {item.why_now}</div>}
+                {item.factual_hook && <div data-testid="confenge-manual-hook" className="text-slate-500">Gancho: {item.factual_hook}</div>}
+                {item.recommended_action && <div data-testid="confenge-manual-next" className="text-slate-500">Próxima ação: {item.recommended_action}</div>}
+                {item.confidence && <div data-testid="confenge-manual-confidence" className="text-[11px] text-slate-400">Confiança: {item.confidence}</div>}
                 {item.source && <div className="text-[11px] text-slate-400 break-all">Fonte: {item.source}</div>}
                 {item.suggested_text && <div className="rounded border border-slate-100 bg-slate-50 px-2 py-1 text-[11.5px] whitespace-pre-wrap">{item.suggested_text}</div>}
                 {item.blocking_warning && <div className="text-amber-800">{item.blocking_warning}</div>}
                 <div className="flex flex-wrap gap-1.5 pt-1">
                   {item.source && <a href={item.source} target="_blank" rel="noreferrer" className="h-7 px-2.5 inline-flex items-center rounded-md border border-slate-200 text-[12.5px]">Abrir fonte</a>}
-                  {(item.actions || []).filter((a) => a !== "OPEN_SOURCE" && a !== "COPY_TEXT" && a !== "APPROVE").map((action) => (
+                  {item.suggested_text && (
+                    <button
+                      type="button"
+                      data-testid="confenge-manual-copy-text"
+                      className="h-7 px-2.5 rounded-md border border-slate-200 text-[12.5px]"
+                      onClick={() => { void navigator.clipboard.writeText(item.suggested_text || ""); }}
+                    >
+                      {stateLabel("COPY_TEXT")}
+                    </button>
+                  )}
+                  {(item.actions || []).filter((a) => a !== "OPEN_SOURCE" && a !== "APPROVE").map((action) => (
+                    action === "COPY_TEXT" ? null : (
                     <button key={action} type="button" className="h-7 px-2.5 rounded-md border border-slate-200 text-[12.5px]" disabled={manualAction.isPending || !item.canonical_target_id} onClick={() => item.canonical_target_id && manualAction.mutate({ accountId: item.canonical_target_id, action })}>
                       {stateLabel(action)}
                     </button>
+                    )
                   ))}
                 </div>
               </li>

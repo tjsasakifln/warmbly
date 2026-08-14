@@ -27,6 +27,12 @@ func TestConfengeUIAcceptanceAffordancesPresent(t *testing.T) {
 		`data-testid="confenge-body-input"`,
 		`data-testid="confenge-recipient"`,
 		`data-testid="confenge-recipient-input"`,
+		`data-testid="confenge-manual-queue"`,
+		`data-testid="confenge-manual-why-now"`,
+		`data-testid="confenge-manual-hook"`,
+		`data-testid="confenge-manual-next"`,
+		`data-testid="confenge-manual-confidence"`,
+		`data-testid="confenge-manual-copy-text"`,
 		`confenge-stat-`, // template for Sent/Review/etc.
 		"Aprovar mensagem",
 		"Precisa de atenção",
