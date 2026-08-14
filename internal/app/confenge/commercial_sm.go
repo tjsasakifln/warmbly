@@ -187,6 +187,10 @@ func ApplyCommercialOutcome(a models.OutreachCommercialAction, req OutcomeReques
 		a.State = models.ActionStateBlocked
 		a.Lane = models.LaneBlockedAction
 		a.Actionable = false
+		a.EmailSendable = false
+		a.Dispatchable = false
+		a.BlockedPerson = true
+		a.BlockedRoute = true
 		a.CompletedAt = &now
 		res.Correction = interactionCorrection(CorrectionDNC, req.Actor, "", "DNC", req.Notes)
 	case models.OutcomeSkippedCode:

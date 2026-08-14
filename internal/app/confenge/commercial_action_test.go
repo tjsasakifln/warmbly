@@ -524,6 +524,81 @@ func TestCommercialTodaySurvivesKillSwitchAndPause(t *testing.T) {
 	}
 }
 
+// Record DNC on a shipped Today card, then CollectToday again: the same
+// route must stay off Today (persist must not upsert a fresh READY row).
+func TestCommercialDNCStaysOffToday(t *testing.T) {
+	repo := newMemRepo()
+	svc := testSvc(repo).(*service)
+	org, user := uuid.New(), uuid.New()
+	raw, err := os.ReadFile(filepath.Join("testdata", "reachability_r0_r5_v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, xerr := svc.ImportFromBytes(context.Background(), org, &user, raw, ImportOptions{IdempotencyKey: "dnc-today-1"}); xerr != nil {
+		t.Fatal(xerr)
+	}
+	accs, err := repo.ListAccounts(context.Background(), org, repository.OutreachAccountFilter{Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range accs {
+		if accs[i].DoNotContact {
+			continue
+		}
+		accs[i].QueueState = models.OutreachQueueReadyToGenerate
+		if _, err := repo.UpsertAccount(context.Background(), &accs[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, xerr := svc.CollectToday(context.Background(), org)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	var routedID uuid.UUID
+	for _, c := range before.Actions {
+		if c.ActionType == models.ActionRoutedCall {
+			routedID = uuid.MustParse(c.ActionID)
+			break
+		}
+	}
+	if routedID == uuid.Nil {
+		t.Fatal("need ROUTED_CALL in today before DNC")
+	}
+	res, xerr := svc.RecordCommercialOutcome(context.Background(), org, user, routedID, OutcomeRequest{
+		OutcomeCode: models.OutcomeDNCCode, Notes: "do not call again",
+	})
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if res.Action.State != models.ActionStateBlocked || res.Action.Actionable || !res.Action.BlockedPerson || !res.Action.BlockedRoute {
+		t.Fatalf("DNC must block person and route: %+v", res.Action)
+	}
+	if CanReplanPerson(res.Action, res.Action.PersonFingerprint) || CanReplanRoute(res.Action, res.Action.RouteFingerprint) {
+		t.Fatal("DNC must refuse silent replan of the same person/route")
+	}
+
+	after, xerr := svc.CollectToday(context.Background(), org)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	for _, c := range after.Actions {
+		if c.ActionID == routedID.String() {
+			t.Fatalf("DNC card must leave Today, got %+v", c)
+		}
+		if c.ActionType == models.ActionRoutedCall && c.Actionable {
+			t.Fatalf("no actionable ROUTED_CALL after DNC: %+v", c)
+		}
+	}
+	stored, err := repo.GetCommercialAction(context.Background(), org, routedID)
+	if err != nil || stored == nil {
+		t.Fatalf("persisted DNC action: %v", err)
+	}
+	if stored.State != models.ActionStateBlocked || stored.OutcomeCode != models.OutcomeDNCCode || stored.Actionable {
+		t.Fatalf("CollectToday must not replace DNC with a fresh READY card: %+v", stored)
+	}
+	fmt.Printf("DNC stays off today id=%s state=%s outcome=%s\n", stored.ID, stored.State, stored.OutcomeCode)
+}
+
 func containsWarning(in []string, sub string) bool {
 	for _, w := range in {
 		if strings.Contains(w, sub) {

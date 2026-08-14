@@ -37,10 +37,8 @@ func (s *service) persistPlannedAction(ctx context.Context, planned PlannedActio
 		if !CanReplanPerson(*existing, a.PersonFingerprint) || !CanReplanRoute(*existing, a.RouteFingerprint) {
 			return
 		}
-		InvalidateOnPersonChange(existing, a.PersonFingerprint)
-		InvalidateOnRouteChange(existing, a.RouteFingerprint)
-		if existing.State == models.ActionStateInProgress || existing.State == models.ActionStateNeedsFollowup || existing.State == models.ActionStateCompleted {
-			// Keep execution history; refresh display fields only.
+		if keepPersistedCommercialAction(*existing) {
+			// Keep execution / DNC history; refresh display fields only.
 			existing.WhyNow = a.WhyNow
 			existing.FactualHook = a.FactualHook
 			existing.CompanyName = a.CompanyName
@@ -48,6 +46,8 @@ func (s *service) persistPlannedAction(ctx context.Context, planned PlannedActio
 			_ = st.UpsertCommercialAction(ctx, existing)
 			return
 		}
+		InvalidateOnPersonChange(existing, a.PersonFingerprint)
+		InvalidateOnRouteChange(existing, a.RouteFingerprint)
 		a.ID = existing.ID
 		a.CreatedAt = existing.CreatedAt
 		a.OutcomeCode = existing.OutcomeCode
@@ -55,6 +55,14 @@ func (s *service) persistPlannedAction(ctx context.Context, planned PlannedActio
 		a.BlockedRoute = existing.BlockedRoute
 	}
 	_ = st.UpsertCommercialAction(ctx, &a)
+}
+
+func keepPersistedCommercialAction(existing models.OutreachCommercialAction) bool {
+	switch existing.State {
+	case models.ActionStateInProgress, models.ActionStateNeedsFollowup, models.ActionStateCompleted, models.ActionStateBlocked:
+		return true
+	}
+	return existing.OutcomeCode == models.OutcomeDNCCode
 }
 
 func (s *service) CollectToday(ctx context.Context, orgID uuid.UUID) (*TodayView, *errx.Error) {
@@ -205,6 +213,17 @@ func mergeTodayActions(planned []models.OutreachCommercialAction, persisted []mo
 			continue
 		}
 		if cur, ok := byKey[p.IdempotencyKey]; ok {
+			if p.State == models.ActionStateBlocked || p.OutcomeCode == models.OutcomeDNCCode {
+				p.Actionable = false
+				p.EmailSendable = false
+				p.Dispatchable = false
+				p.Lane = models.LaneBlockedAction
+				p.CompanyName = firstNonEmpty(p.CompanyName, cur.CompanyName)
+				p.WhyNow = firstNonEmpty(p.WhyNow, cur.WhyNow)
+				p.FactualHook = firstNonEmpty(p.FactualHook, cur.FactualHook)
+				byKey[p.IdempotencyKey] = p
+				continue
+			}
 			InvalidateOnPersonChange(&p, cur.PersonFingerprint)
 			InvalidateOnRouteChange(&p, cur.RouteFingerprint)
 			if !CanReplanPerson(p, cur.PersonFingerprint) || !CanReplanRoute(p, cur.RouteFingerprint) {
