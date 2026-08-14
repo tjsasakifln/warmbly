@@ -243,7 +243,8 @@ func sourceMatchesEmailDomain(source, email string) bool {
 
 func isGenericMailboxPurpose(value string) bool {
 	v := strings.ToUpper(strings.TrimSpace(value))
-	return v == "GENERIC" || v == "GENERIC_CONTACT" || v == "UNKNOWN"
+	return v == "GENERIC" || v == "GENERIC_CONTACT" || v == "UNKNOWN" ||
+		v == "ROLE" || v == "ROLE_MAILBOX" || v == "FUNCTIONAL" || v == "INSTITUTIONAL"
 }
 
 func isGenericRecipient(candidate *models.OutreachContactCandidate) bool {

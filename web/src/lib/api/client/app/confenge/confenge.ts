@@ -9,6 +9,7 @@ import type {
     ConfengeStatus,
     ConfengeSummary,
     ConfengeTouchpoint,
+    ConfengeCockpit,
     ConfengeWorkingQueueItem,
     ConfengeWorkingQueueSummary,
 } from "@/lib/api/models/app/confenge/Confenge";
@@ -54,6 +55,28 @@ export async function listConfengeWorkingQueue(params?: {
         authorization: true,
     });
     return res.data ?? [];
+}
+
+export async function getConfengeCockpit(): Promise<ConfengeCockpit> {
+    const res = await Request<{ data: ConfengeCockpit }>({
+        method: "GET",
+        url: "/confenge/cockpit",
+        authorization: true,
+    });
+    return res.data;
+}
+
+export async function applyConfengeManualAction(
+    accountId: string,
+    action: string,
+    reason?: string,
+): Promise<void> {
+    await Request({
+        method: "POST",
+        url: `/confenge/manual-queue/${accountId}/action`,
+        authorization: true,
+        data: { action, reason },
+    });
 }
 
 export async function syncConfengeFeed(manifestUri?: string): Promise<ConfengeFeedSyncResult> {

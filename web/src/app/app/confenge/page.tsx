@@ -25,6 +25,8 @@ import {
   useConfengeReviewTouchpoints,
   useConfengeStatus,
   useConfengeSummary,
+  useApplyConfengeManualAction,
+  useConfengeCockpit,
   useConfengeWorkingOverview,
   useConfengeWorkingQueue,
   useDncConfengeAccount,
@@ -58,6 +60,8 @@ export default function ConfengePage() {
   const enabled = !!status.data?.enabled;
   const summary = useConfengeSummary(enabled);
   const workingOverview = useConfengeWorkingOverview(enabled);
+  const cockpit = useConfengeCockpit(enabled);
+  const manualAction = useApplyConfengeManualAction();
   const agoraQueue = useConfengeWorkingQueue("agora", enabled);
   const needsContactQueue = useConfengeWorkingQueue("needs_contact", enabled);
   const ready = useConfengeAccounts("READY_TO_GENERATE", enabled);
@@ -333,6 +337,55 @@ export default function ConfengePage() {
             <span><strong className="text-slate-800">2. Revise</strong> destinatário, contexto e mensagem.</span>
             <span><strong className="text-slate-800">3. Aprove</strong> o conteúdo exato e mantenha o dispatch pausado até o GO/NO-GO.</span>
           </div>
+        </section>
+
+        {cockpit.data?.funnel && (
+          <section id="funil" data-testid="confenge-funnel" className="rounded-md border border-slate-200 bg-white px-3 py-3">
+            <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Funil operacional</div>
+            <div className="mt-2 flex flex-wrap gap-2 text-[11.5px]">
+              {[
+                ["Importadas", cockpit.data.funnel.imported],
+                ["TIER A", cockpit.data.funnel.tier_a],
+                ["TIER B", cockpit.data.funnel.tier_b],
+                ["TIER C", cockpit.data.funnel.tier_c],
+                ["TIER D", cockpit.data.funnel.tier_d],
+                ["Bloqueadas", cockpit.data.funnel.blocked_exhausted],
+                ["Prontas para revisar", cockpit.data.funnel.needs_review],
+                ["Fila manual", cockpit.data.funnel.manual_outreach_ready],
+                ["Aprovadas", cockpit.data.funnel.approved],
+              ].map(([label, n]) => (
+                <ReadinessItem key={String(label)} label={String(label)} value={String(n)} />
+              ))}
+            </div>
+          </section>
+        )}
+
+        <section id="fila-manual" data-testid="confenge-manual-queue" className="rounded-md border border-slate-200 bg-white">
+          <div className="px-3 h-10 flex items-center border-b border-slate-200">
+            <span className="text-[12.5px] font-medium">Fila manual honesta</span>
+            <span className="ml-2 text-[12.5px] text-slate-500 tabular-nums">{cockpit.data?.manual?.length ?? 0}</span>
+          </div>
+          <p className="px-3 pt-2 text-[11.5px] text-slate-500">TIER B, C e D nao entram em e-mail nominal. Aprovar nao aparece aqui.</p>
+          <ul className="divide-y divide-slate-100 max-h-80 overflow-auto">
+            {(cockpit.data?.manual ?? []).map((item) => (
+              <li key={`${item.canonical_target_id}-${item.lane}`} className="px-3 py-2.5 text-[12.5px] space-y-1">
+                <div className="font-medium text-slate-900">{item.company} <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">{stateLabel(item.contact_tier)}</span></div>
+                <div className="text-slate-600">{[item.person, item.role, item.channel, item.service].filter(Boolean).join(" · ") || "Sem pessoa nomeada"}</div>
+                {item.source && <div className="text-[11px] text-slate-400 break-all">Fonte: {item.source}</div>}
+                {item.suggested_text && <div className="rounded border border-slate-100 bg-slate-50 px-2 py-1 text-[11.5px] whitespace-pre-wrap">{item.suggested_text}</div>}
+                {item.blocking_warning && <div className="text-amber-800">{item.blocking_warning}</div>}
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {item.source && <a href={item.source} target="_blank" rel="noreferrer" className="h-7 px-2.5 inline-flex items-center rounded-md border border-slate-200 text-[12.5px]">Abrir fonte</a>}
+                  {(item.actions || []).filter((a) => a !== "OPEN_SOURCE" && a !== "COPY_TEXT" && a !== "APPROVE").map((action) => (
+                    <button key={action} type="button" className="h-7 px-2.5 rounded-md border border-slate-200 text-[12.5px]" disabled={manualAction.isPending || !item.canonical_target_id} onClick={() => item.canonical_target_id && manualAction.mutate({ accountId: item.canonical_target_id, action })}>
+                      {stateLabel(action)}
+                    </button>
+                  ))}
+                </div>
+              </li>
+            ))}
+            {!(cockpit.data?.manual?.length) && <li className="px-3 py-8 text-center text-slate-400 text-[12.5px]">Nenhuma conta manual no recorte atual.</li>}
+          </ul>
         </section>
 
         {status.data?.readiness && (

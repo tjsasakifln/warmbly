@@ -155,8 +155,17 @@ func (s *service) InvalidatePriorComposerDrafts(ctx context.Context, orgID, acto
 	}
 
 	accounts := map[uuid.UUID]bool{}
-	accList, err := s.repo.ListAccounts(ctx, orgID, repository.OutreachAccountFilter{Limit: 500})
-	if err == nil {
+	for _, qs := range []string{
+		models.OutreachQueueNeedsReview,
+		models.OutreachQueueApproved,
+		models.OutreachQueueReadyToGenerate,
+		models.OutreachQueueNeedsContact,
+		models.OutreachQueueEnrolled,
+	} {
+		accList, err := s.repo.ListAccounts(ctx, orgID, repository.OutreachAccountFilter{QueueState: qs, Limit: 500})
+		if err != nil {
+			return nil, errx.New(errx.Internal, "list accounts: "+err.Error())
+		}
 		for _, a := range accList {
 			accounts[a.ID] = true
 		}

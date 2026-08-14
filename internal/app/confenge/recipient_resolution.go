@@ -138,7 +138,9 @@ func ResolveRecipient(acc *models.OutreachAccount, candidates []models.OutreachC
 			if blk.Code == "generic_mailbox" || blk.Code == "recipient_conflict_identity" ||
 				blk.Code == "role_unproven" || blk.Code == "name_unproven" ||
 				blk.Code == "suitability_ambiguous" || blk.Code == "source_conflict" ||
-				blk.Code == "recipient_evidence_stale" || blk.Code == "ownership_uncertain" {
+				blk.Code == "recipient_evidence_stale" || blk.Code == "ownership_uncertain" ||
+				blk.Code == "named_human_manual_channel" || blk.Code == "recipient_not_send_ready" ||
+				blk.Code == "role_mailbox" {
 				exceptions = append(exceptions, c)
 			}
 		} else {
@@ -256,7 +258,21 @@ func classifyRecipientCandidate(acc *models.OutreachAccount, c *models.OutreachC
 		return &pilotBlock{Code: code, Reason: "O destinatário está bloqueado.", Remediation: "Revise a fonte ou escolha outro contato."}
 	}
 	if strings.TrimSpace(c.Email) == "" {
+		if provenPersonName(c) && provenRole(c) && !isGenericRecipient(c) {
+			return &pilotBlock{
+				Code:        "named_human_manual_channel",
+				Reason:      "Pessoa nomeada sem e-mail direto validado.",
+				Remediation: "Abordar no canal manual publicado. Não promover para envio automático.",
+			}
+		}
 		return &pilotBlock{Code: "recipient_missing", Reason: "Não há email publicado para este candidato.", Remediation: "Publique um email corporativo com fonte e data."}
+	}
+	if isRoleMailbox(c) && !provenPersonName(c) {
+		return &pilotBlock{
+			Code:        "role_mailbox",
+			Reason:      "A caixa é funcional oficial; não prova uma pessoa.",
+			Remediation: "Decida a exceção manualmente. Não aprovar como humano validado.",
+		}
 	}
 	if blk := validatePilotRecipient(c, now); blk != nil {
 		// Remap generic policy-allowed into EXCEPTION, never VALIDATED.
