@@ -20,6 +20,7 @@ type CommercialActionContent struct {
 	Ask              string   `json:"ask,omitempty"`
 	ObjectionNotes   string   `json:"objection_notes,omitempty"`
 	DoNotClaim       []string `json:"do_not_claim,omitempty"`
+	PersonID         string   `json:"person_id,omitempty"`
 }
 
 // ComposeActionContent builds executable copy from the planned action.
@@ -28,18 +29,18 @@ func ComposeActionContent(a models.OutreachCommercialAction) CommercialActionCon
 	hook := strings.TrimSpace(a.FactualHook)
 	offer := firstNonEmpty(a.ServiceContext, a.ServiceCode)
 	ask := firstNonEmpty(a.RecommendedAction, "Posso enviar um recorte objetivo?")
+	var c CommercialActionContent
 	switch a.ActionType {
 	case models.ActionDirectEmail:
-		return composeDirectEmail(a, company, hook, offer)
+		c = composeDirectEmail(a, company, hook, offer)
 	case models.ActionInferredEmailReview:
-		c := composeDirectEmail(a, company, hook, offer)
+		c = composeDirectEmail(a, company, hook, offer)
 		c.Kind = "INFERRED_EMAIL"
 		c.DoNotClaim = append(c.DoNotClaim, "Nao tratar este endereco como e-mail validado para envio.")
-		return c
 	case models.ActionRoleEmail:
-		return composeRoleEmail(a, company, hook, offer)
+		c = composeRoleEmail(a, company, hook, offer)
 	case models.ActionGenericEmail, models.ActionOtherManual:
-		return CommercialActionContent{
+		c = CommercialActionContent{
 			Kind: "MANUAL",
 			Body: "Nao abordar como pessoa. Se for o caso, use o canal geral sem fingir destinatario nominal.",
 			DoNotClaim: []string{
@@ -48,18 +49,27 @@ func ComposeActionContent(a models.OutreachCommercialAction) CommercialActionCon
 			},
 		}
 	case models.ActionDirectCall:
-		return composeCall(a, company, hook, offer, ask, false)
+		c = composeCall(a, company, hook, offer, ask, false)
 	case models.ActionRoutedCall:
-		return composeCall(a, company, hook, offer, ask, true)
+		c = composeCall(a, company, hook, offer, ask, true)
 	case models.ActionWhatsApp:
-		return composeWhatsAppAction(a, hook)
+		c = composeWhatsAppAction(a, hook)
 	case models.ActionProfessionalSocial:
-		return composeSocial(a, company, hook)
+		c = composeSocial(a, company, hook)
 	case models.ActionContactForm:
-		return composeForm(a, company, hook, offer)
+		c = composeForm(a, company, hook, offer)
 	default:
-		return CommercialActionContent{Kind: "MANUAL", Body: strings.TrimSpace(a.RecommendedAction)}
+		c = CommercialActionContent{Kind: "MANUAL", Body: strings.TrimSpace(a.RecommendedAction)}
 	}
+	c.PersonID = firstNonEmpty(a.PersonID, c.PersonID)
+	if len(a.Warnings) > 0 {
+		for _, w := range a.Warnings {
+			if strings.Contains(strings.ToLower(w), "nao alegar") || strings.Contains(strings.ToLower(w), "não alegar") {
+				c.DoNotClaim = appendUnique(c.DoNotClaim, w)
+			}
+		}
+	}
+	return c
 }
 
 func composeDirectEmail(a models.OutreachCommercialAction, company, hook, offer string) CommercialActionContent {

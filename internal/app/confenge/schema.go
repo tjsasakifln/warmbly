@@ -185,6 +185,8 @@ type FeedContact struct {
 	ChannelDisplay    string `json:"channel_display,omitempty"`
 	RecommendedAction string `json:"recommended_action,omitempty"`
 	InferredEmail     *bool  `json:"inferred_email,omitempty"`
+	PersonID          string `json:"person_id,omitempty"`
+	ActionMode        string `json:"action_mode,omitempty"`
 }
 
 // FeedEvidence is one evidence item (text only; HTML stripped on import).
@@ -619,12 +621,39 @@ func DefaultQueueState(lead FeedLead, existing *models.OutreachAccount) string {
 		}
 	}
 	if !LeadTargetFitDecision(lead).Eligible {
+		// Target-fit still blocks email. Manual/routed commercial work stays visible.
+		if leadHasManualCommercialRoute(lead) {
+			return models.OutreachQueueNeedsContact
+		}
 		return models.OutreachQueueTargetFitSuppressed
 	}
 	if hasEnrollableContact(lead) {
 		return models.OutreachQueueReadyToGenerate
 	}
 	return models.OutreachQueueNeedsContact
+}
+
+func leadHasManualCommercialRoute(lead FeedLead) bool {
+	for _, c := range lead.Contacts {
+		class := MapReachability(c.ReachabilityClass)
+		if class == "" {
+			class = MapActionMode(c.ActionMode)
+		}
+		switch class {
+		case models.ReachabilityR3Routed, models.ReachabilityR4Role, models.ReachabilityR5Corporate:
+			return true
+		}
+		switch strings.ToUpper(strings.TrimSpace(c.ActionMode)) {
+		case ActionModeManualRoutedCall, ActionModeNamedHumanManual, ActionModeManualCall,
+			ActionModeManualWhatsApp, ActionModeManualSocial, ActionModeRoleEmail, ActionModeContactForm:
+			return true
+		}
+		switch strings.ToUpper(strings.TrimSpace(c.ContactTier)) {
+		case ContactTierB, ContactTierC, ContactTierD:
+			return true
+		}
+	}
+	return false
 }
 
 func hasEnrollableContact(lead FeedLead) bool {

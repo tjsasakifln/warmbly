@@ -112,6 +112,7 @@ export function useRecordConfengeActionOutcome() {
             referral_name,
             referral_role,
             next_action_type,
+            next_action_at,
         }: {
             actionId: string;
             outcome_code: string;
@@ -119,7 +120,8 @@ export function useRecordConfengeActionOutcome() {
             referral_name?: string;
             referral_role?: string;
             next_action_type?: string;
-        }) => recordConfengeActionOutcome(actionId, { outcome_code, notes, referral_name, referral_role, next_action_type }),
+            next_action_at?: string;
+        }) => recordConfengeActionOutcome(actionId, { outcome_code, notes, referral_name, referral_role, next_action_type, next_action_at }),
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: [...KEY, "cockpit"] });
             qc.invalidateQueries({ queryKey: [...KEY, "today"] });

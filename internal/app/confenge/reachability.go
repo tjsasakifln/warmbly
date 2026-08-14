@@ -24,7 +24,8 @@ func MapReachability(raw string) string {
 var reachabilityAliases = map[string]string{
 	"R1": models.ReachabilityR1Direct, "R1_DIRECT": models.ReachabilityR1Direct,
 	"DIRECT": models.ReachabilityR1Direct, "DIRECT_EMAIL": models.ReachabilityR1Direct,
-	"R2": models.ReachabilityR2Inferred, "R2_HIGH_CONFIDENCE_DIRECT": models.ReachabilityR2Inferred,
+	"DIRECT_EMAIL_VALIDATED": models.ReachabilityR1Direct,
+	"R2":                     models.ReachabilityR2Inferred, "R2_HIGH_CONFIDENCE_DIRECT": models.ReachabilityR2Inferred,
 	"HIGH_CONFIDENCE_DIRECT": models.ReachabilityR2Inferred, "INFERRED_DIRECT": models.ReachabilityR2Inferred,
 	"INFERRED_EMAIL": models.ReachabilityR2Inferred,
 	"R3":             models.ReachabilityR3Routed, "R3_ROUTED_TO_NAMED_PERSON": models.ReachabilityR3Routed,
@@ -45,13 +46,13 @@ func MapRouteRelation(raw string) string {
 	switch s {
 	case "", models.RouteRelUnknown:
 		return ""
-	case models.RouteRelBelongsToNamedPerson, "DIRECT", "PERSONAL", "OWNED_BY_PERSON":
+	case models.RouteRelBelongsToNamedPerson, "DIRECT", "PERSONAL", "OWNED_BY_PERSON", "PERSON_OWNS_CHANNEL":
 		return models.RouteRelBelongsToNamedPerson
 	case models.RouteRelRoutesToNamedPerson, "SWITCHBOARD", "CORPORATE_PHONE", "RECEPTION":
 		return models.RouteRelRoutesToNamedPerson
-	case models.RouteRelRoleMailbox, "ROLE", "FUNCTIONAL":
+	case models.RouteRelRoleMailbox, "ROLE", "FUNCTIONAL", "ROUTES_TO_ROLE":
 		return models.RouteRelRoleMailbox
-	case models.RouteRelCorporateGeneric, "GENERIC", "INSTITUTIONAL":
+	case models.RouteRelCorporateGeneric, "GENERIC", "INSTITUTIONAL", "ACCOUNT_LEVEL_ONLY":
 		return models.RouteRelCorporateGeneric
 	default:
 		return s

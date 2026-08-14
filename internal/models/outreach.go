@@ -97,6 +97,13 @@ type OutreachImportCounts struct {
 	Warnings          int `json:"warnings"`
 	LeadsProcessed    int `json:"leads_processed"`
 	LeadsSkippedError int `json:"leads_skipped_error"`
+	// Operator briefing (additive). Omitted on older import rows.
+	Actionable         int            `json:"actionable,omitempty"`
+	ManualCall         int            `json:"manual_call,omitempty"`
+	EmailSafe          int            `json:"email_safe,omitempty"`
+	UnresolvedBlockers int            `json:"unresolved_blockers,omitempty"`
+	RouteDistribution  map[string]int `json:"route_distribution,omitempty"`
+	NextHumanActions   []string       `json:"next_human_actions,omitempty"`
 }
 
 // OutreachImportError is a per-lead error recorded without aborting the run.
@@ -224,6 +231,7 @@ type OutreachContactCandidate struct {
 	OrganizationID  uuid.UUID `json:"organization_id"`
 	AccountID       uuid.UUID `json:"account_id"`
 	SourceContactID string    `json:"source_contact_id"`
+	PersonID        string    `json:"person_id,omitempty"`
 	Name            string    `json:"name"`
 	Role            string    `json:"role"`
 	Email           string    `json:"email"`
@@ -682,6 +690,9 @@ const (
 	OutcomeBlockedCode           = "BLOCKED"
 	OutcomeWrongChannel          = "WRONG_CHANNEL"
 	OutcomeInvalidRoute          = "INVALID_ROUTE"
+	OutcomeAttempted             = "ATTEMPTED"
+	OutcomeContactedCode         = "CONTACTED"
+	OutcomeFollowUp              = "FOLLOW_UP"
 )
 
 // Operational lanes for the commercial-action cockpit.
@@ -720,6 +731,7 @@ type OutreachCommercialAction struct {
 	SourceLeadID   string     `json:"source_lead_id,omitempty"`
 
 	PersonName   string `json:"person_name,omitempty"`
+	PersonID     string `json:"person_id,omitempty"`
 	ObservedRole string `json:"observed_role,omitempty"`
 	TargetRole   string `json:"target_role,omitempty"`
 

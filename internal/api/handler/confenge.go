@@ -730,6 +730,7 @@ func (h *Handler) RecordConfengeCommercialOutcome(c *gin.Context) {
 		ReferralRole            string `json:"referral_role"`
 		ReferralChannel         string `json:"referral_channel"`
 		NextActionType          string `json:"next_action_type"`
+		NextActionAt            string `json:"next_action_at"`
 		RouteQualityFeedback    string `json:"route_quality_feedback"`
 		PersonRelevanceFeedback string `json:"person_relevance_feedback"`
 		MessageFeedback         string `json:"message_feedback"`
@@ -738,7 +739,7 @@ func (h *Handler) RecordConfengeCommercialOutcome(c *gin.Context) {
 		errx.JSON(c, errx.New(errx.BadRequest, "invalid body"))
 		return
 	}
-	res, xerr := h.ConfengeService.RecordCommercialOutcome(c.Request.Context(), orgID, uid, actionID, confenge.OutcomeRequest{
+	req := confenge.OutcomeRequest{
 		OutcomeCode:             body.OutcomeCode,
 		Notes:                   body.Notes,
 		ReferralName:            body.ReferralName,
@@ -748,7 +749,13 @@ func (h *Handler) RecordConfengeCommercialOutcome(c *gin.Context) {
 		RouteQualityFeedback:    body.RouteQualityFeedback,
 		PersonRelevanceFeedback: body.PersonRelevanceFeedback,
 		MessageFeedback:         body.MessageFeedback,
-	})
+	}
+	if ts := strings.TrimSpace(body.NextActionAt); ts != "" {
+		if parsed, err := time.Parse(time.RFC3339, ts); err == nil {
+			req.NextActionAt = &parsed
+		}
+	}
+	res, xerr := h.ConfengeService.RecordCommercialOutcome(c.Request.Context(), orgID, uid, actionID, req)
 	if xerr != nil {
 		errx.JSON(c, xerr)
 		return

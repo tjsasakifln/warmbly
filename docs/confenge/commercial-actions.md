@@ -41,8 +41,25 @@ empty (current contact-tier contract). An unknown non-empty class maps to
 | `R0`, `NO_ACTIONABLE_ROUTE` | `R0_NO_ACTIONABLE_ROUTE` | none | none |
 | `BLOCKED`, `DNC` | `BLOCKED` | blocked | `BLOCKED` |
 
+Published extra-cli ActionMode tokens map the same way. `MANUAL_ROUTED_CALL`
+is `R3` and is executable without a VALIDATED email. `DIRECT_EMAIL_VALIDATED`
+still requires VALIDATED + messageability READY + human approval before
+`EmailSendable`. `NAMED_HUMAN_MANUAL_CHANNEL` is a first-class manual lane.
+`ROLE_MAILBOX` / `GENERIC` stay exception or low-confidence manual. Unknown
+tokens fail closed to `UNMAPPED`.
+
 A named person plus a company phone without `BELONGS_TO_NAMED_PERSON` is
 `ROUTED_CALL`, never a direct phone.
+
+`confenge import` also accepts the extra-cli operator pack (`cards.json`) and
+`confenge.decision_unit_account.v1` accounts. Re-import is idempotent. Warmbly
+keeps extra-cli account id, person id, evidence ids, why-now, route class,
+confidence, recommended action, and service. It does not invent a person,
+role, email, or phone.
+
+After import the CLI prints an operator summary: actionable accounts, route
+distribution, manual-call count, email-safe count, unresolved blockers, and
+the next human actions.
 
 ## Plug contract for extra-cli (additive)
 

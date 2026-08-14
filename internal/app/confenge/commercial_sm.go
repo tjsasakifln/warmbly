@@ -60,6 +60,7 @@ var allowedOutcomeCodes = map[string]bool{
 	models.OutcomeFormSubmitted: true, models.OutcomeSocialMessageSent: true,
 	models.OutcomeSkippedCode: true, models.OutcomeBlockedCode: true,
 	models.OutcomeWrongChannel: true, models.OutcomeInvalidRoute: true,
+	models.OutcomeAttempted: true, models.OutcomeContactedCode: true, models.OutcomeFollowUp: true,
 }
 
 var terminalOutcomes = map[string]bool{
@@ -129,6 +130,21 @@ func ApplyCommercialOutcome(a models.OutreachCommercialAction, req OutcomeReques
 	res := OutcomeApply{Action: a, History: appendOutcomeHistory(a, code)}
 
 	switch code {
+	case models.OutcomeAttempted:
+		a.State = models.ActionStateInProgress
+		if a.StartedAt == nil {
+			a.StartedAt = &now
+		}
+	case models.OutcomeContactedCode:
+		a.State = models.ActionStateNeedsFollowup
+		t := true
+		a.TargetReached = &t
+		a.ConversationStarted = true
+	case models.OutcomeFollowUp:
+		a.State = models.ActionStateNeedsFollowup
+		if a.NextActionType == "" {
+			a.NextActionType = a.ActionType
+		}
 	case models.OutcomeGatekeeperReached:
 		a.State = models.ActionStateNeedsFollowup
 		a.ConversationStarted = false

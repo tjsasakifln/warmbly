@@ -14,12 +14,15 @@ type ActionCard struct {
 	AccountID         string                  `json:"account_id,omitempty"`
 	Company           string                  `json:"company"`
 	Person            string                  `json:"person,omitempty"`
+	PersonID          string                  `json:"person_id,omitempty"`
 	Role              string                  `json:"role,omitempty"`
 	TargetRole        string                  `json:"target_role,omitempty"`
 	WhyNow            string                  `json:"why_now,omitempty"`
 	Offer             string                  `json:"offer,omitempty"`
 	RecommendedAction string                  `json:"recommended_action,omitempty"`
 	Channel           string                  `json:"channel,omitempty"`
+	ChannelValue      string                  `json:"channel_value,omitempty"`
+	NextActionAt      string                  `json:"next_action_at,omitempty"`
 	RouteType         string                  `json:"route_type,omitempty"`
 	RouteRelation     string                  `json:"route_relation,omitempty"`
 	ReachabilityClass string                  `json:"reachability_class,omitempty"`
@@ -112,12 +115,14 @@ func AssembleActionCard(a models.OutreachCommercialAction) ActionCard {
 		AccountID:         a.AccountID.String(),
 		Company:           a.CompanyName,
 		Person:            a.PersonName,
+		PersonID:          firstNonEmpty(a.PersonID, copy.PersonID),
 		Role:              firstNonEmpty(a.ObservedRole, a.TargetRole),
 		TargetRole:        a.TargetRole,
 		WhyNow:            a.WhyNow,
 		Offer:             firstNonEmpty(a.ServiceContext, a.ServiceCode),
 		RecommendedAction: a.RecommendedAction,
 		Channel:           firstNonEmpty(a.ChannelDisplay, a.ChannelValue, a.RouteType),
+		ChannelValue:      a.ChannelValue,
 		RouteType:         a.RouteType,
 		RouteRelation:     a.RouteRelation,
 		ReachabilityClass: a.ReachabilityClass,
@@ -141,6 +146,9 @@ func AssembleActionCard(a models.OutreachCommercialAction) ActionCard {
 	}
 	if a.FollowupActionID != nil {
 		card.FollowupActionID = a.FollowupActionID.String()
+	}
+	if a.NextActionAt != nil && !a.NextActionAt.IsZero() {
+		card.NextActionAt = a.NextActionAt.UTC().Format("2006-01-02T15:04:05Z")
 	}
 	card.RouteEpistemology = routeEpistemology(a)
 	if card.RouteEpistemology != "" {

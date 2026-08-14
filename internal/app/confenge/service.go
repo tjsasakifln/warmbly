@@ -276,6 +276,7 @@ func (s *service) ImportFromBytes(ctx context.Context, orgID uuid.UUID, userID *
 
 	counts, leadErrs, warns := s.applyFeed(ctx, orgID, run, feed, opts.DryRun)
 	run.Counts = counts
+	applyOperatorSummary(&run.Counts, SummarizeOperatorProjection(feed))
 	run.Errors = leadErrs
 	run.Warnings = warns
 	now := time.Now().UTC()
@@ -536,7 +537,7 @@ func leadToAccount(orgID uuid.UUID, lead FeedLead, feed *Feed, runID uuid.UUID, 
 	acc.TargetFitSuppressionReason = decision.Reason
 	now := time.Now().UTC()
 	acc.TargetFitReconciledAt = &now
-	if !decision.Eligible && !isHistoricalTerminalQueue(acc.QueueState) {
+	if !decision.Eligible && !isHistoricalTerminalQueue(acc.QueueState) && acc.QueueState != models.OutreachQueueNeedsContact {
 		acc.QueueState = models.OutreachQueueTargetFitSuppressed
 	}
 	return acc
@@ -556,7 +557,8 @@ func leadToCandidate(orgID, accountID, runID uuid.UUID, fc FeedContact) *models.
 	cand := &models.OutreachContactCandidate{
 		OrganizationID:                 orgID,
 		AccountID:                      accountID,
-		SourceContactID:                SanitizeText(fc.SourceContactID, 200),
+		SourceContactID:                SanitizeText(firstNonEmpty(fc.SourceContactID, fc.PersonID), 200),
+		PersonID:                       SanitizeText(fc.PersonID, 80),
 		Name:                           SanitizeText(fc.Name, 300),
 		Role:                           SanitizeText(fc.Role, 200),
 		Email:                          email,

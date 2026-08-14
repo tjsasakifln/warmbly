@@ -111,6 +111,7 @@ export type ConfengeActionCopy = {
     ask?: string;
     objection_notes?: string;
     do_not_claim?: string[];
+    person_id?: string;
 };
 
 export type ConfengeActionCard = {
@@ -118,12 +119,15 @@ export type ConfengeActionCard = {
     account_id?: string;
     company: string;
     person?: string;
+    person_id?: string;
     role?: string;
     target_role?: string;
     why_now?: string;
     offer?: string;
     recommended_action?: string;
     channel?: string;
+    channel_value?: string;
+    next_action_at?: string;
     route_type?: string;
     route_relation?: string;
     reachability_class?: string;

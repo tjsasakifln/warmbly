@@ -92,6 +92,7 @@ export async function recordConfengeActionOutcome(
         referral_name?: string;
         referral_role?: string;
         next_action_type?: string;
+        next_action_at?: string;
     },
 ): Promise<void> {
     await Request({

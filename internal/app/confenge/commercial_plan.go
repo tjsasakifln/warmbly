@@ -95,6 +95,7 @@ func PlanCommercialAction(in PlanInput) PlannedAction {
 			out.CandidateID = &id
 		}
 		out.Confidence = c.Confidence
+		out.PersonID = firstNonEmpty(c.PersonID, "")
 		if provenPersonName(c) {
 			out.PersonName = strings.TrimSpace(c.Name)
 		}

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -364,6 +365,29 @@ func FormatImportSummary(run *models.OutreachImportRun) string {
 	fmt.Fprintf(&b, "  creates=%d updates=%d unchanged=%d blocked=%d\n", c.Creates, c.Updates, c.Unchanged, c.Blocked)
 	fmt.Fprintf(&b, "  missing_contact=%d invalid=%d leads_processed=%d errors=%d\n",
 		c.MissingContact, c.Invalid, c.LeadsProcessed, c.LeadsSkippedError)
+	fmt.Fprintf(&b, "  actionable_accounts=%d manual_call=%d email_safe=%d unresolved_blockers=%d\n",
+		c.Actionable, c.ManualCall, c.EmailSafe, c.UnresolvedBlockers)
+	if len(c.RouteDistribution) > 0 {
+		b.WriteString("  route_distribution:\n")
+		keys := make([]string, 0, len(c.RouteDistribution))
+		for k := range c.RouteDistribution {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Fprintf(&b, "    %s=%d\n", k, c.RouteDistribution[k])
+		}
+	}
+	if len(c.NextHumanActions) > 0 {
+		b.WriteString("  next_human_actions:\n")
+		n := len(c.NextHumanActions)
+		if n > 20 {
+			n = 20
+		}
+		for i := 0; i < n; i++ {
+			fmt.Fprintf(&b, "    - %s\n", c.NextHumanActions[i])
+		}
+	}
 	if len(run.Errors) > 0 {
 		fmt.Fprintf(&b, "  first errors:\n")
 		n := len(run.Errors)

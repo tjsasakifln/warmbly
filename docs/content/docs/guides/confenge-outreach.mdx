@@ -77,7 +77,10 @@ Dominant stops: `DO_NOT_CONTACT`, opt-out, bounce, and human reply cancel open f
 `POST /api/v1/confenge/import` accepts:
 
 - the full feed JSON body (`schema_version: confenge.outreach.v1`; legacy shapes remain auditable but are not outreach-eligible)
+- the extra-cli operator pack (`cards.json`) or `confenge.decision_unit_account.v1` accounts. Routed calls and manual lanes import as first-class work even when no email is VALIDATED
 - or `{"uri":"https://...","dry_run":true}` to fetch then import
+
+The import printout includes the operator summary: actionable accounts, route distribution, number requiring a manual call, number that are email-safe, unresolved blockers, and the next human actions. Re-import of the same extra-cli identity does not create a second account.
 
 Use `?dry_run=true` for counts only (`creates`, `updates`, `unchanged`, `missing_contact`, and related fields). Send `Idempotency-Key` for safe retries.
 

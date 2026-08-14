@@ -1258,12 +1258,16 @@ function WorkingLaneList({
 }
 
 const OUTCOME_OPTIONS = [
+  "ATTEMPTED",
   "NO_ANSWER",
   "BUSY",
+  "CONTACTED",
   "GATEKEEPER_REACHED",
   "REFERRED_TO_OTHER_PERSON",
   "TARGET_REACHED",
   "CALLBACK_REQUESTED",
+  "FOLLOW_UP",
+  "REPLIED",
   "INTERESTED",
   "NOT_INTERESTED",
   "MEETING_SCHEDULED",
@@ -1280,12 +1284,14 @@ function TodayActionCard({
 }: {
   card: ConfengeActionCard;
   submitting: boolean;
-  onOutcome: (payload: { outcome_code: string; notes?: string; referral_name?: string; referral_role?: string; next_action_type?: string }) => void;
+  onOutcome: (payload: { outcome_code: string; notes?: string; referral_name?: string; referral_role?: string; next_action_type?: string; next_action_at?: string }) => void;
 }) {
   const [outcome, setOutcome] = useState("");
   const [referralName, setReferralName] = useState("");
   const [referralRole, setReferralRole] = useState("");
+  const [nextActionAt, setNextActionAt] = useState("");
   const copy = card.copy || {};
+  const phone = card.channel_value || (card.route_type === "phone" ? card.channel : "");
   return (
     <article data-testid="confenge-action-card" className="px-3 py-3 text-[12.5px] space-y-1.5">
       <div className="flex flex-wrap items-baseline gap-2">
@@ -1307,6 +1313,17 @@ function TodayActionCard({
       {card.why_now && <div data-testid="confenge-today-why">Por que agora: {card.why_now}</div>}
       {card.offer && <div>Oferta: {card.offer}</div>}
       {card.channel && <div>Canal: {card.channel}{card.route_type ? ` · ${card.route_type}` : ""}</div>}
+      {phone && (
+        <button
+          type="button"
+          data-testid="confenge-copy-phone"
+          className="h-7 px-2.5 rounded-md border border-slate-200 text-[12.5px]"
+          onClick={() => { void navigator.clipboard.writeText(phone); }}
+        >
+          Copiar telefone
+        </button>
+      )}
+      {card.person_id && <div className="text-[11px] text-slate-400">Pessoa extra-cli: {card.person_id}</div>}
       {card.factual_hook && <div>Gancho: {card.factual_hook}</div>}
       {card.confidence && <div className="text-[11px] text-slate-400">Confianca: {card.confidence}</div>}
       {card.route_epistemology && (
@@ -1332,7 +1349,7 @@ function TodayActionCard({
         <div key={w} className="text-amber-800">{w}</div>
       ))}
       {card.last_outcome && <div>Ultimo outcome: {stateLabel(card.last_outcome)}</div>}
-      {card.next_action && <div>Proxima acao: {stateLabel(card.next_action)}</div>}
+      {card.next_action && <div>Proxima acao: {stateLabel(card.next_action)}{card.next_action_at ? ` · ${card.next_action_at}` : ""}</div>}
       <div className="flex flex-wrap items-end gap-1.5 pt-1">
         <label className="text-[11px] text-slate-500">
           Outcome
@@ -1354,6 +1371,27 @@ function TodayActionCard({
             <TextInput value={referralRole} onChange={setReferralRole} placeholder="Funcao" />
           </>
         )}
+        {(outcome === "FOLLOW_UP" || outcome === "NO_ANSWER" || outcome === "CALLBACK_REQUESTED" || outcome === "ATTEMPTED") && (
+          <label className="text-[11px] text-slate-500">
+            Proximo prazo
+            <input
+              type="datetime-local"
+              data-testid="confenge-next-action-at"
+              className="mt-0.5 h-7 block rounded-md border border-slate-200 bg-white px-2 text-[12.5px]"
+              value={nextActionAt}
+              onChange={(e) => setNextActionAt(e.target.value)}
+            />
+          </label>
+        )}
+        <button
+          type="button"
+          data-testid="confenge-mark-attempted"
+          className="h-7 px-2.5 rounded-md border border-slate-200 text-[12.5px]"
+          disabled={submitting}
+          onClick={() => onOutcome({ outcome_code: "ATTEMPTED" })}
+        >
+          Marcar tentativa
+        </button>
         <button
           type="button"
           data-testid="confenge-record-outcome"
@@ -1363,6 +1401,8 @@ function TodayActionCard({
             outcome_code: outcome,
             referral_name: referralName,
             referral_role: referralRole,
+            next_action_type: outcome === "FOLLOW_UP" ? card.action_type : undefined,
+            next_action_at: nextActionAt ? new Date(nextActionAt).toISOString() : undefined,
           })}
         >
           Registrar
