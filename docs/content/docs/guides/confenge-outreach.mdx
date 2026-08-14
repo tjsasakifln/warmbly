@@ -42,6 +42,14 @@ This mode is disabled by default in Warmbly. It must only be enabled when both t
 
 The browser skips login, registration, workspace selection, and onboarding. Internally it receives a normal organization-scoped JWT session, so the existing permission gates, human approval controls, idempotency, and audit attribution remain active. All browser actions are attributed to the configured technical operator.
 
+## Recipient and messageability gates
+
+Every target ends in `VALIDATED`, `EXCEPTION`, or `BLOCKED`. A generic mailbox is never auto-promoted to `VALIDATED`. Warmbly never invents a name, role, ownership, personal email, consent, or evidence.
+
+Copy is planned only after extra-cli intelligence is reduced to an internal `OutreachStrategy`. The messageability gate then decides `READY`, `NEEDS_ENRICHMENT`, or `BLOCKED`. Only a `READY` plan is rendered. `NEEDS_REVIEW` means the exact body is sendable if a human presses Approve. Unready items go to a separate exception or enrichment queue.
+
+Human `APPROVE`, `EDIT`, `REJECT`, `RECIPIENT_CHANGE`, and `SKIP` persist as `HumanCorrection`. Edits keep before/after. AI never substitutes the human gate.
+
 ## Per-touch human approval (product invariant)
 
 Every CONFENGE outbound message (email or WhatsApp) requires **explicit human approval of that exact message** before it can enter the send queue. AI may generate, classify, and suggest. AI never approves and never sends.

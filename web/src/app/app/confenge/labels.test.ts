@@ -6,6 +6,9 @@ describe("rótulos da Central comercial CONFENGE", () => {
     expect(stateLabel("NEEDS_REVIEW")).toBe("Precisa de revisão");
     expect(stateLabel("NEEDS_ENRICHMENT")).toBe("Precisa de enriquecimento");
     expect(stateLabel("READY")).toBe("Pronto");
+    expect(stateLabel("VALIDATED")).toBe("Destinatário validado");
+    expect(stateLabel("EXCEPTION")).toBe("Exceção de destinatário");
+    expect(reasonLabel("generic_mailbox")).toContain("genérica");
     expect(reasonLabel("missing_contract_event")).toContain("evento contratual");
     expect(stateLabel("DO_NOT_CONTACT")).toBe("Não contatar");
     expect(channelLabel("EMAIL")).toBe("E-mail");

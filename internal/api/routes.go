@@ -505,6 +505,7 @@ func Run(
 					confengeWrite.POST("/campaign/bootstrap", m.RequireAccess(models.PermManageCampaigns, models.APIPermWriteCampaigns), h.BootstrapConfengeCampaign)
 					confengeGroup.GET("/campaign/policy", m.RequireAccess(models.PermViewCampaigns, models.APIPermReadCampaigns), h.GetConfengeCampaignPolicy)
 					confengeWrite.POST("/crm/bootstrap", m.RequireAccess(models.PermManageContacts, models.APIPermWriteCRM), h.BootstrapConfengePipeline)
+					confengeWrite.POST("/drafts/invalidate-prior-composer", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.InvalidatePriorComposerDrafts)
 					confengeWrite.POST("/dispatch/pause", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.PauseConfengeDispatch)
 					confengeWrite.POST("/dispatch/resume", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ResumeConfengeDispatch)
 				}

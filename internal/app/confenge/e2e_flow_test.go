@@ -56,6 +56,7 @@ func TestSyntheticOperationalFlow(t *testing.T) {
 	if acme == nil {
 		t.Fatal("acme missing")
 	}
+	stampValidatedCandidates(t, rf.memRepo, org, acme.ID)
 
 	draft, xerr := svc.GenerateDraft(context.Background(), org, user, acme.ID, nil)
 	if xerr != nil {
