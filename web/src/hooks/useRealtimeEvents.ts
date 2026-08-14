@@ -324,6 +324,7 @@ export function useRealtimeEvents() {
           advisor_finding: [['advisor']],
           outreach_import_run: [['confenge']],
           outreach_account: [['confenge']],
+          outreach_commercial_action: [['confenge']],
           settings: [['organizations', 'current']],
           unibox: [['unibox']],
           crm_note: [['crm'], ['contacts']],

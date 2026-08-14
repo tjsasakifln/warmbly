@@ -464,6 +464,7 @@ func Run(
 				confengeGroup.GET("/working-overview", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeWorkingOverview)
 				confengeGroup.GET("/working-queue", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeWorkingQueue)
 				confengeGroup.GET("/cockpit", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeContactCockpit)
+				confengeGroup.GET("/today", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeToday)
 				confengeGroup.GET("/attention", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeAttention)
 				confengeGroup.GET("/attention/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeAttention)
 				confengeGroup.GET("/accounts", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeAccounts)
@@ -508,6 +509,8 @@ func Run(
 					confengeWrite.POST("/crm/bootstrap", m.RequireAccess(models.PermManageContacts, models.APIPermWriteCRM), h.BootstrapConfengePipeline)
 					confengeWrite.POST("/drafts/invalidate-prior-composer", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.InvalidatePriorComposerDrafts)
 					confengeWrite.POST("/manual-queue/:id/action", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ApplyConfengeManualAction)
+					confengeWrite.POST("/actions/:id/start", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.StartConfengeCommercialAction)
+					confengeWrite.POST("/actions/:id/outcome", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.RecordConfengeCommercialOutcome)
 					confengeWrite.POST("/dispatch/pause", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.PauseConfengeDispatch)
 					confengeWrite.POST("/dispatch/resume", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ResumeConfengeDispatch)
 				}

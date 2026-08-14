@@ -79,6 +79,12 @@ type ContactFunnel struct {
 	Contacted           int `json:"contacted"`
 	Replied             int `json:"replied"`
 	Meeting             int `json:"meeting"`
+	Actionable          int `json:"actionable"`
+	ActionPlanned       int `json:"action_planned"`
+	Touched             int `json:"touched"`
+	TargetReached       int `json:"target_reached"`
+	Conversation        int `json:"conversation"`
+	Interested          int `json:"interested"`
 }
 
 func ClassifyContactTier(acc *models.OutreachAccount, c *models.OutreachContactCandidate, now time.Time) ContactClass {

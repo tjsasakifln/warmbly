@@ -33,6 +33,11 @@ func TestConfengeUIAcceptanceAffordancesPresent(t *testing.T) {
 		`data-testid="confenge-manual-next"`,
 		`data-testid="confenge-manual-confidence"`,
 		`data-testid="confenge-manual-copy-text"`,
+		`data-testid="confenge-today"`,
+		`data-testid="confenge-today-summary"`,
+		`data-testid="confenge-action-card"`,
+		`data-testid="confenge-route-epistemology"`,
+		`data-testid="confenge-record-outcome"`,
 		`confenge-stat-`, // template for Sent/Review/etc.
 		"Aprovar mensagem",
 		"Precisa de atenção",

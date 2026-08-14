@@ -46,15 +46,30 @@ type OutcomeEnvelope struct {
 	CampaignID     string `json:"campaign_id,omitempty"`
 	MessageID      string `json:"message_id,omitempty"`
 	// Commercial snapshot for Decision Memory analysis (not a second ledger).
-	ServiceCode             string         `json:"service_code,omitempty"`
-	MomentCode              string         `json:"moment_code,omitempty"`
-	ActivationPolicyVersion string         `json:"activation_policy_version,omitempty"`
-	ActivationScore         float64        `json:"activation_score,omitempty"`
-	ActivationReasonCodes   []string       `json:"activation_reason_codes,omitempty"`
-	ActivationSourceHash    string         `json:"activation_source_hash,omitempty"`
-	GeneratedContextHash    string         `json:"generated_context_hash,omitempty"`
-	TouchpointOrdinal       int            `json:"touchpoint_ordinal,omitempty"`
-	Channel                 string         `json:"channel,omitempty"`
+	ServiceCode             string   `json:"service_code,omitempty"`
+	MomentCode              string   `json:"moment_code,omitempty"`
+	ActivationPolicyVersion string   `json:"activation_policy_version,omitempty"`
+	ActivationScore         float64  `json:"activation_score,omitempty"`
+	ActivationReasonCodes   []string `json:"activation_reason_codes,omitempty"`
+	ActivationSourceHash    string   `json:"activation_source_hash,omitempty"`
+	GeneratedContextHash    string   `json:"generated_context_hash,omitempty"`
+	TouchpointOrdinal       int      `json:"touchpoint_ordinal,omitempty"`
+	Channel                 string   `json:"channel,omitempty"`
+	// Additive commercial-action feedback for extra-cli Decision Memory.
+	ActionID                string         `json:"action_id,omitempty"`
+	ActionType              string         `json:"action_type,omitempty"`
+	ReachabilityClass       string         `json:"reachability_class,omitempty"`
+	OutcomeCode             string         `json:"outcome_code,omitempty"`
+	TargetReached           *bool          `json:"target_reached,omitempty"`
+	ConversationStarted     *bool          `json:"conversation_started,omitempty"`
+	InterestState           string         `json:"interest_state,omitempty"`
+	PersonRelevanceFeedback string         `json:"person_relevance_feedback,omitempty"`
+	RouteValidity           string         `json:"route_validity,omitempty"`
+	Referral                map[string]any `json:"referral,omitempty"`
+	NewPerson               string         `json:"new_person,omitempty"`
+	NewRole                 string         `json:"new_role,omitempty"`
+	NewRoute                string         `json:"new_route,omitempty"`
+	PreferredChannel        string         `json:"preferred_channel,omitempty"`
 	Metadata                map[string]any `json:"metadata,omitempty"`
 }
 
@@ -237,6 +252,26 @@ func BuildOutcomeEnvelope(ev *models.OutreachOutcome) OutcomeEnvelope {
 	}
 	if mid, ok := meta["message_id"].(string); ok && mid != "" {
 		env.MessageID = mid
+	}
+	env.ActionID = metaString(meta, "action_id")
+	env.ActionType = metaString(meta, "action_type")
+	env.ReachabilityClass = metaString(meta, "reachability_class")
+	env.OutcomeCode = metaString(meta, "outcome_code")
+	env.InterestState = metaString(meta, "interest_state")
+	env.PersonRelevanceFeedback = metaString(meta, "person_relevance_feedback")
+	env.RouteValidity = firstNonEmpty(metaString(meta, "route_validity"), metaString(meta, "route_quality_feedback"))
+	env.NewPerson = metaString(meta, "new_person")
+	env.NewRole = metaString(meta, "new_role")
+	env.NewRoute = metaString(meta, "new_route")
+	env.PreferredChannel = metaString(meta, "preferred_channel")
+	if v, ok := meta["target_reached"].(bool); ok {
+		env.TargetReached = &v
+	}
+	if v, ok := meta["conversation_started"].(bool); ok {
+		env.ConversationStarted = &v
+	}
+	if raw, ok := meta["referral"].(map[string]any); ok {
+		env.Referral = raw
 	}
 	return env
 }

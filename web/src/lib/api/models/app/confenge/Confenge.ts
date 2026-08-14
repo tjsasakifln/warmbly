@@ -73,6 +73,12 @@ export type ConfengeContactFunnel = {
     contacted: number;
     replied: number;
     meeting: number;
+    actionable?: number;
+    action_planned?: number;
+    touched?: number;
+    target_reached?: number;
+    conversation?: number;
+    interested?: number;
 };
 
 export type ConfengeManualItem = {
@@ -94,10 +100,92 @@ export type ConfengeManualItem = {
     canonical_target_id?: string;
 };
 
+export type ConfengeActionCopy = {
+    kind?: string;
+    subject?: string;
+    body?: string;
+    cta?: string;
+    opening?: string;
+    reason_for_call?: string;
+    value_proposition?: string;
+    ask?: string;
+    objection_notes?: string;
+    do_not_claim?: string[];
+};
+
+export type ConfengeActionCard = {
+    action_id: string;
+    account_id?: string;
+    company: string;
+    person?: string;
+    role?: string;
+    target_role?: string;
+    why_now?: string;
+    offer?: string;
+    recommended_action?: string;
+    channel?: string;
+    route_type?: string;
+    route_relation?: string;
+    reachability_class?: string;
+    confidence?: string;
+    factual_hook?: string;
+    evidence?: string[];
+    warnings?: string[];
+    copy: ConfengeActionCopy;
+    last_outcome?: string;
+    next_action?: string;
+    route_epistemology?: string;
+    action_type: string;
+    lane: string;
+    state: string;
+    actionable: boolean;
+    email_sendable: boolean;
+    dispatchable: boolean;
+    parent_action_id?: string;
+    followup_action_id?: string;
+    stale_warning?: string;
+};
+
+export type ConfengeTodaySummary = {
+    calls: number;
+    routed_calls: number;
+    emails_to_review: number;
+    inferred_emails: number;
+    role_emails: number;
+    whatsapp: number;
+    professional_social: number;
+    contact_forms: number;
+    low_confidence: number;
+    total: number;
+};
+
+export type ConfengeToday = {
+    summary: ConfengeTodaySummary;
+    actions: ConfengeActionCard[];
+};
+
+export type ConfengeActionMetrics = {
+    actions_planned: number;
+    actions_executed: number;
+    by_action_type?: Record<string, number>;
+    by_reachability_class?: Record<string, number>;
+    target_reached_rate?: number | null;
+    conversation_rate?: number | null;
+    interest_rate?: number | null;
+    meeting_rate?: number | null;
+    wrong_person: number;
+    wrong_channel: number;
+    referrals: number;
+    dnc: number;
+    bounce: number;
+};
+
 export type ConfengeCockpit = {
     funnel: ConfengeContactFunnel;
     manual: ConfengeManualItem[];
     needs_review: ConfengeManualItem[];
+    today?: ConfengeToday;
+    metrics?: ConfengeActionMetrics;
 };
 
 export type ConfengeAccount = {

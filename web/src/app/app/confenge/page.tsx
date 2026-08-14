@@ -27,6 +27,7 @@ import {
   useConfengeSummary,
   useApplyConfengeManualAction,
   useConfengeCockpit,
+  useRecordConfengeActionOutcome,
   useConfengeWorkingOverview,
   useConfengeWorkingQueue,
   useDncConfengeAccount,
@@ -41,6 +42,7 @@ import {
   useSyncConfengeFeed,
 } from "@/lib/api/hooks/app/confenge/useConfenge";
 import type {
+  ConfengeActionCard,
   ConfengeAttentionFilter,
   ConfengeTouchpoint,
   ConfengeWorkingQueueItem,
@@ -62,6 +64,7 @@ export default function ConfengePage() {
   const workingOverview = useConfengeWorkingOverview(enabled);
   const cockpit = useConfengeCockpit(enabled);
   const manualAction = useApplyConfengeManualAction();
+  const recordOutcome = useRecordConfengeActionOutcome();
   const agoraQueue = useConfengeWorkingQueue("agora", enabled);
   const needsContactQueue = useConfengeWorkingQueue("needs_contact", enabled);
   const ready = useConfengeAccounts("READY_TO_GENERATE", enabled);
@@ -339,6 +342,44 @@ export default function ConfengePage() {
           </div>
         </section>
 
+        {cockpit.data?.today && (
+          <section id="hoje" data-testid="confenge-today" className="rounded-md border border-slate-200 bg-white">
+            <div className="px-3 h-10 flex items-center border-b border-slate-200">
+              <span className="text-[12.5px] font-medium text-slate-900">O que fazer agora</span>
+              <span className="ml-2 text-[12.5px] text-slate-500 tabular-nums">{cockpit.data.today.summary.total}</span>
+            </div>
+            <p className="px-3 pt-2 text-[11.5px] text-slate-500">
+              Trabalho comercial humano executavel agora. Ligacao, WhatsApp, perfil e formulario nao sao enviados pelo sistema.
+            </p>
+            <div className="px-3 py-2 flex flex-wrap gap-2 text-[11.5px]" data-testid="confenge-today-summary">
+              {[
+                ["Ligacoes", cockpit.data.today.summary.calls],
+                ["Ligacoes roteadas", cockpit.data.today.summary.routed_calls],
+                ["E-mails para revisar", cockpit.data.today.summary.emails_to_review],
+                ["E-mails inferidos", cockpit.data.today.summary.inferred_emails],
+                ["Caixas funcionais", cockpit.data.today.summary.role_emails],
+                ["WhatsApp", cockpit.data.today.summary.whatsapp],
+                ["Perfil profissional", cockpit.data.today.summary.professional_social],
+                ["Formularios", cockpit.data.today.summary.contact_forms],
+              ].map(([label, n]) => (
+                <span key={String(label)} className="rounded border border-slate-200 px-2 py-1">
+                  <strong className="text-slate-800 tabular-nums">{n}</strong> {label}
+                </span>
+              ))}
+            </div>
+            <ul className="divide-y divide-slate-100">
+              {(cockpit.data.today.actions ?? []).map((card) => (
+                <li key={card.action_id}>
+                  <TodayActionCard card={card} submitting={recordOutcome.isPending} onOutcome={(payload) => recordOutcome.mutate({ actionId: card.action_id, ...payload })} />
+                </li>
+              ))}
+              {!(cockpit.data.today.actions?.length) && (
+                <li className="px-3 py-8 text-center text-slate-400 text-[12.5px]">Nenhuma acao humana executavel agora.</li>
+              )}
+            </ul>
+          </section>
+        )}
+
         {cockpit.data?.funnel && (
           <section id="funil" data-testid="confenge-funnel" className="rounded-md border border-slate-200 bg-white px-3 py-3">
             <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Funil operacional</div>
@@ -353,7 +394,11 @@ export default function ConfengePage() {
                 ["Prontas para revisar", cockpit.data.funnel.needs_review],
                 ["Fila manual", cockpit.data.funnel.manual_outreach_ready],
                 ["Aprovadas", cockpit.data.funnel.approved],
+                ["Acionaveis", cockpit.data.funnel.actionable ?? 0],
+                ["Planejadas", cockpit.data.funnel.action_planned ?? 0],
                 ["Contatadas", cockpit.data.funnel.contacted],
+                ["Alvo alcancado", cockpit.data.funnel.target_reached ?? 0],
+                ["Conversas", cockpit.data.funnel.conversation ?? 0],
                 ["Respostas", cockpit.data.funnel.replied],
                 ["Reuniões", cockpit.data.funnel.meeting],
               ].map(([label, n]) => (
@@ -1209,6 +1254,122 @@ function WorkingLaneList({
         );
       })}
     </ul>
+  );
+}
+
+const OUTCOME_OPTIONS = [
+  "NO_ANSWER",
+  "BUSY",
+  "GATEKEEPER_REACHED",
+  "REFERRED_TO_OTHER_PERSON",
+  "TARGET_REACHED",
+  "CALLBACK_REQUESTED",
+  "INTERESTED",
+  "NOT_INTERESTED",
+  "MEETING_SCHEDULED",
+  "WRONG_PERSON",
+  "INVALID_ROUTE",
+  "DNC",
+  "SKIPPED",
+];
+
+function TodayActionCard({
+  card,
+  submitting,
+  onOutcome,
+}: {
+  card: ConfengeActionCard;
+  submitting: boolean;
+  onOutcome: (payload: { outcome_code: string; notes?: string; referral_name?: string; referral_role?: string; next_action_type?: string }) => void;
+}) {
+  const [outcome, setOutcome] = useState("");
+  const [referralName, setReferralName] = useState("");
+  const [referralRole, setReferralRole] = useState("");
+  const copy = card.copy || {};
+  return (
+    <article data-testid="confenge-action-card" className="px-3 py-3 text-[12.5px] space-y-1.5">
+      <div className="flex flex-wrap items-baseline gap-2">
+        <div className="font-medium text-slate-900">{card.company}</div>
+        <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">{stateLabel(card.action_type)}</span>
+        {card.reachability_class && <span className="text-[10px] uppercase tracking-[0.14em] text-slate-400">{stateLabel(card.reachability_class)}</span>}
+      </div>
+      <div className="text-slate-700">
+        {card.person ? (
+          <>
+            Falar com <strong>{card.person}</strong>
+            {card.role ? ` (${card.role})` : ""}
+          </>
+        ) : (
+          <>Alvo por funcao: <strong>{card.target_role || card.role || "equipe"}</strong></>
+        )}
+      </div>
+      {card.recommended_action && <div data-testid="confenge-today-next" className="text-slate-800">{card.recommended_action}</div>}
+      {card.why_now && <div data-testid="confenge-today-why">Por que agora: {card.why_now}</div>}
+      {card.offer && <div>Oferta: {card.offer}</div>}
+      {card.channel && <div>Canal: {card.channel}{card.route_type ? ` · ${card.route_type}` : ""}</div>}
+      {card.factual_hook && <div>Gancho: {card.factual_hook}</div>}
+      {card.confidence && <div className="text-[11px] text-slate-400">Confianca: {card.confidence}</div>}
+      {card.route_epistemology && (
+        <div data-testid="confenge-route-epistemology" className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-amber-900">
+          {card.route_epistemology}
+        </div>
+      )}
+      {(copy.opening || copy.body) && (
+        <div className="rounded border border-slate-100 bg-slate-50 px-2 py-1.5 space-y-0.5 whitespace-pre-wrap">
+          {copy.subject && <div>Assunto: {copy.subject}</div>}
+          {copy.opening && <div>Abertura: {copy.opening}</div>}
+          {copy.reason_for_call && <div>Motivo: {copy.reason_for_call}</div>}
+          {copy.value_proposition && <div>Valor: {copy.value_proposition}</div>}
+          {copy.ask && <div>Pedido: {copy.ask}</div>}
+          {copy.body && <div>{copy.body}</div>}
+          {copy.do_not_claim?.map((line) => (
+            <div key={line} className="text-amber-800">Nao alegar: {line}</div>
+          ))}
+        </div>
+      )}
+      {card.evidence && card.evidence.length > 0 && <div className="text-[11px] text-slate-400">Evidencia: {card.evidence.join(", ")}</div>}
+      {card.warnings?.map((w) => (
+        <div key={w} className="text-amber-800">{w}</div>
+      ))}
+      {card.last_outcome && <div>Ultimo outcome: {stateLabel(card.last_outcome)}</div>}
+      {card.next_action && <div>Proxima acao: {stateLabel(card.next_action)}</div>}
+      <div className="flex flex-wrap items-end gap-1.5 pt-1">
+        <label className="text-[11px] text-slate-500">
+          Outcome
+          <select
+            data-testid="confenge-outcome-select"
+            className="mt-0.5 h-7 block min-w-[180px] rounded-md border border-slate-200 bg-white px-2 text-[12.5px]"
+            value={outcome}
+            onChange={(e) => setOutcome(e.target.value)}
+          >
+            <option value="">Registrar resultado</option>
+            {OUTCOME_OPTIONS.map((code) => (
+              <option key={code} value={code}>{stateLabel(code)}</option>
+            ))}
+          </select>
+        </label>
+        {outcome === "REFERRED_TO_OTHER_PERSON" && (
+          <>
+            <TextInput value={referralName} onChange={setReferralName} placeholder="Nome indicado" />
+            <TextInput value={referralRole} onChange={setReferralRole} placeholder="Funcao" />
+          </>
+        )}
+        <button
+          type="button"
+          data-testid="confenge-record-outcome"
+          className="h-7 px-2.5 rounded-md border border-slate-200 text-[12.5px]"
+          disabled={submitting || !outcome}
+          onClick={() => onOutcome({
+            outcome_code: outcome,
+            referral_name: referralName,
+            referral_role: referralRole,
+            next_action_type: outcome === "REFERRED_TO_OTHER_PERSON" ? "DIRECT_CALL" : undefined,
+          })}
+        >
+          Registrar
+        </button>
+      </div>
+    </article>
   );
 }
 

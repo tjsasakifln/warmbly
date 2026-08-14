@@ -256,8 +256,15 @@ type OutreachContactCandidate struct {
 	OwnershipStatus                string     `json:"ownership_status,omitempty"`
 	RecipientCommercialSuitability string     `json:"recipient_commercial_suitability,omitempty"`
 	LastImportRunID                *uuid.UUID `json:"last_import_run_id,omitempty"`
-	CreatedAt                      time.Time  `json:"created_at"`
-	UpdatedAt                      time.Time  `json:"updated_at"`
+	// Additive extra-cli reachability boundary. Empty means the current
+	// contact-tier contract applies; Warmbly never invents a class.
+	ReachabilityClass string    `json:"reachability_class,omitempty"`
+	RouteType         string    `json:"route_type,omitempty"`
+	RouteRelation     string    `json:"route_relation,omitempty"`
+	ChannelValue      string    `json:"channel_value,omitempty"`
+	ChannelDisplay    string    `json:"channel_display,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 // CanEnroll reports whether this candidate may be put into a campaign.
@@ -612,4 +619,171 @@ type OutreachTouchpoint struct {
 	RecipientGeneric        bool           `json:"recipient_generic,omitempty"`
 	RecipientState          string         `json:"recipient_state,omitempty"`
 	RecipientReason         string         `json:"recipient_reason,omitempty"`
+}
+
+// Commercial action types. Semantic differences are load-bearing.
+const (
+	ActionDirectEmail         = "DIRECT_EMAIL"
+	ActionInferredEmailReview = "INFERRED_EMAIL_REVIEW"
+	ActionRoleEmail           = "ROLE_EMAIL"
+	ActionGenericEmail        = "GENERIC_EMAIL"
+	ActionDirectCall          = "DIRECT_CALL"
+	ActionRoutedCall          = "ROUTED_CALL"
+	ActionWhatsApp            = "WHATSAPP"
+	ActionProfessionalSocial  = "PROFESSIONAL_SOCIAL"
+	ActionContactForm         = "CONTACT_FORM"
+	ActionOtherManual         = "OTHER_MANUAL"
+)
+
+// Canonical reachability classes (mapped from extra-cli strings).
+const (
+	ReachabilityR1Direct    = "R1_DIRECT"
+	ReachabilityR2Inferred  = "R2_HIGH_CONFIDENCE_DIRECT"
+	ReachabilityR3Routed    = "R3_ROUTED_TO_NAMED_PERSON"
+	ReachabilityR4Role      = "R4_ROLE_ROUTE"
+	ReachabilityR5Corporate = "R5_CORPORATE_ONLY"
+	ReachabilityR0None      = "R0_NO_ACTIONABLE_ROUTE"
+	ReachabilityBlocked     = "BLOCKED"
+	ReachabilityUnmapped    = "UNMAPPED"
+)
+
+// Commercial action execution states. Outcome is stored separately.
+const (
+	ActionStatePlanned       = "PLANNED"
+	ActionStateReady         = "READY"
+	ActionStateInProgress    = "IN_PROGRESS"
+	ActionStateCompleted     = "COMPLETED"
+	ActionStateFailed        = "FAILED"
+	ActionStateSkipped       = "SKIPPED"
+	ActionStateBlocked       = "BLOCKED"
+	ActionStateNeedsFollowup = "NEEDS_FOLLOWUP"
+)
+
+// Lean commercial outcome codes. WON is never inferred from these.
+const (
+	OutcomeNoAnswer              = "NO_ANSWER"
+	OutcomeBusy                  = "BUSY"
+	OutcomeInvalidChannel        = "INVALID_CHANNEL"
+	OutcomeGatekeeperReached     = "GATEKEEPER_REACHED"
+	OutcomeReferredToOtherPerson = "REFERRED_TO_OTHER_PERSON"
+	OutcomeWrongPerson           = "WRONG_PERSON"
+	OutcomeTargetReached         = "TARGET_REACHED"
+	OutcomeCallbackRequested     = "CALLBACK_REQUESTED"
+	OutcomeNotInterested         = "NOT_INTERESTED"
+	OutcomeInterested            = "INTERESTED"
+	OutcomeMeetingScheduled      = "MEETING_SCHEDULED"
+	OutcomeRepliedCode           = "REPLIED"
+	OutcomeBouncedCode           = "BOUNCED"
+	OutcomeComplaint             = "COMPLAINT"
+	OutcomeDNCCode               = "DNC"
+	OutcomeFormSubmitted         = "FORM_SUBMITTED"
+	OutcomeSocialMessageSent     = "SOCIAL_MESSAGE_SENT"
+	OutcomeSkippedCode           = "SKIPPED"
+	OutcomeBlockedCode           = "BLOCKED"
+	OutcomeWrongChannel          = "WRONG_CHANNEL"
+	OutcomeInvalidRoute          = "INVALID_ROUTE"
+)
+
+// Operational lanes for the commercial-action cockpit.
+const (
+	LaneEmailNeedsReview        = "EMAIL_NEEDS_REVIEW"
+	LaneHumanReviewEmail        = "HUMAN_REVIEW_EMAIL"
+	LaneCallQueue               = "CALL_QUEUE"
+	LaneRoutedCallQueue         = "ROUTED_CALL_QUEUE"
+	LaneWhatsAppQueue           = "WHATSAPP_QUEUE"
+	LaneProfessionalSocialQueue = "PROFESSIONAL_SOCIAL_QUEUE"
+	LaneRoleEmailQueue          = "ROLE_EMAIL_QUEUE"
+	LaneContactFormQueue        = "CONTACT_FORM_QUEUE"
+	LaneLowConfidenceManual     = "LOW_CONFIDENCE_MANUAL"
+	LaneNeedsEnrichment         = "NEEDS_ENRICHMENT"
+	LaneBlockedAction           = "BLOCKED"
+	LaneDone                    = "DONE"
+)
+
+const (
+	RouteRelBelongsToNamedPerson = "BELONGS_TO_NAMED_PERSON"
+	RouteRelRoutesToNamedPerson  = "ROUTES_TO_NAMED_PERSON"
+	RouteRelRoleMailbox          = "ROLE_MAILBOX"
+	RouteRelCorporateGeneric     = "CORPORATE_GENERIC"
+	RouteRelUnknown              = "UNKNOWN"
+)
+
+const ReachabilityMappingVersionV1 = "confenge.reachability.v1"
+
+// OutreachCommercialAction is recommended next human work on one route.
+// Distinct from an email-sendable draft or touchpoint.
+type OutreachCommercialAction struct {
+	ID             uuid.UUID  `json:"id"`
+	OrganizationID uuid.UUID  `json:"organization_id"`
+	AccountID      uuid.UUID  `json:"account_id"`
+	CandidateID    *uuid.UUID `json:"candidate_id,omitempty"`
+	SourceLeadID   string     `json:"source_lead_id,omitempty"`
+
+	PersonName   string `json:"person_name,omitempty"`
+	ObservedRole string `json:"observed_role,omitempty"`
+	TargetRole   string `json:"target_role,omitempty"`
+
+	ActionType        string `json:"action_type"`
+	ReachabilityClass string `json:"reachability_class,omitempty"`
+	MappingVersion    string `json:"mapping_version,omitempty"`
+	RouteType         string `json:"route_type,omitempty"`
+	RouteRelation     string `json:"route_relation,omitempty"`
+	ChannelValue      string `json:"channel_value,omitempty"`
+	ChannelDisplay    string `json:"channel_display,omitempty"`
+
+	WhyNow            string   `json:"why_now,omitempty"`
+	FactualHook       string   `json:"factual_hook,omitempty"`
+	RecommendedAction string   `json:"recommended_action,omitempty"`
+	ServiceCode       string   `json:"service_code,omitempty"`
+	ServiceContext    string   `json:"service_context,omitempty"`
+	Confidence        string   `json:"confidence,omitempty"`
+	EvidenceIDs       []string `json:"evidence_ids,omitempty"`
+	Warnings          []string `json:"warnings,omitempty"`
+
+	State         string  `json:"state"`
+	Lane          string  `json:"lane"`
+	PriorityRank  int     `json:"priority_rank"`
+	PriorityScore float64 `json:"priority_score"`
+
+	Actionable    bool `json:"actionable"`
+	EmailSendable bool `json:"email_sendable"`
+	Dispatchable  bool `json:"dispatchable"`
+
+	PersonFingerprint string `json:"person_fingerprint,omitempty"`
+	RouteFingerprint  string `json:"route_fingerprint,omitempty"`
+	ContentHash       string `json:"content_hash,omitempty"`
+	SnapshotHash      string `json:"snapshot_hash,omitempty"`
+	IdempotencyKey    string `json:"idempotency_key,omitempty"`
+
+	ParentActionID   *uuid.UUID `json:"parent_action_id,omitempty"`
+	FollowupActionID *uuid.UUID `json:"followup_action_id,omitempty"`
+
+	HumanActor string `json:"human_actor,omitempty"`
+	HumanNotes string `json:"human_notes,omitempty"`
+
+	OutcomeCode             string     `json:"outcome_code,omitempty"`
+	OutcomeNotes            string     `json:"outcome_notes,omitempty"`
+	TargetReached           *bool      `json:"target_reached,omitempty"`
+	ConversationStarted     bool       `json:"conversation_started"`
+	InterestState           string     `json:"interest_state,omitempty"`
+	NextActionType          string     `json:"next_action_type,omitempty"`
+	NextActionAt            *time.Time `json:"next_action_at,omitempty"`
+	RouteQualityFeedback    string     `json:"route_quality_feedback,omitempty"`
+	PersonRelevanceFeedback string     `json:"person_relevance_feedback,omitempty"`
+	MessageFeedback         string     `json:"message_feedback,omitempty"`
+
+	ContentJSON    []byte `json:"content,omitempty"`
+	CorrectionJSON []byte `json:"corrections,omitempty"`
+
+	BlockedPerson bool   `json:"blocked_person,omitempty"`
+	BlockedRoute  bool   `json:"blocked_route,omitempty"`
+	StaleWarning  string `json:"stale_warning,omitempty"`
+	RequiresFresh bool   `json:"requires_freshness,omitempty"`
+
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+
+	CompanyName string `json:"company_name,omitempty"`
 }

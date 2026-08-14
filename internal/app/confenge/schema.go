@@ -71,6 +71,12 @@ type FeedLead struct {
 	EmailSendReady           *bool    `json:"email_send_ready,omitempty"`
 	MailboxPurpose           string   `json:"mailbox_purpose,omitempty"`
 	OwnershipStatus          string   `json:"ownership_status,omitempty"`
+	// Additive extra-cli Decision-Unit + Reachability (unknown fields tolerated).
+	DecisionUnitCandidates []json.RawMessage `json:"decision_unit_candidates,omitempty"`
+	ReachabilityRoutes     []json.RawMessage `json:"reachability_routes,omitempty"`
+	RecommendedTarget      json.RawMessage   `json:"recommended_target,omitempty"`
+	RecommendedRoute       json.RawMessage   `json:"recommended_route,omitempty"`
+	RecommendedAction      string            `json:"recommended_action,omitempty"`
 }
 
 // FeedActivation is the extra-cli commercial activation planner projection.
@@ -170,6 +176,15 @@ type FeedContact struct {
 	DerivedFromFixture   *bool  `json:"derived_from_fixture,omitempty"`
 	ContactTier          string `json:"contact_tier,omitempty"`
 	Channel              string `json:"channel,omitempty"`
+	// Additive Decision-Unit / Reachability boundary. Unknown extra-cli
+	// strings are tolerated; Warmbly never invents a class when absent.
+	ReachabilityClass string `json:"reachability_class,omitempty"`
+	RouteType         string `json:"route_type,omitempty"`
+	RouteRelation     string `json:"route_relation,omitempty"`
+	ChannelValue      string `json:"channel_value,omitempty"`
+	ChannelDisplay    string `json:"channel_display,omitempty"`
+	RecommendedAction string `json:"recommended_action,omitempty"`
+	InferredEmail     *bool  `json:"inferred_email,omitempty"`
 }
 
 // FeedEvidence is one evidence item (text only; HTML stripped on import).

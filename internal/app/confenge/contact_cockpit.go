@@ -13,9 +13,11 @@ import (
 )
 
 type ContactCockpit struct {
-	Funnel ContactFunnel     `json:"funnel"`
-	Manual []ManualQueueItem `json:"manual"`
-	Ready  []ManualQueueItem `json:"needs_review"`
+	Funnel  ContactFunnel     `json:"funnel"`
+	Manual  []ManualQueueItem `json:"manual"`
+	Ready   []ManualQueueItem `json:"needs_review"`
+	Today   TodayView         `json:"today"`
+	Metrics ActionMetrics     `json:"metrics"`
 }
 
 func humanQueueStates() []string {
@@ -44,6 +46,7 @@ func (s *service) CollectContactCockpit(ctx context.Context, orgID uuid.UUID) (*
 	var classes []ContactClass
 	var manual []ManualQueueItem
 	var ready []ManualQueueItem
+	var planned []models.OutreachCommercialAction
 	extras := ContactFunnel{}
 	for _, qs := range outcomeQueueStates() {
 		accs, err := s.repo.ListAccounts(ctx, orgID, repository.OutreachAccountFilter{QueueState: qs, Limit: 200})
@@ -94,9 +97,27 @@ func (s *service) CollectContactCockpit(ctx context.Context, orgID uuid.UUID) (*
 			case LaneManualOutreach, LaneRoleMailboxException, LaneLowConfidenceManual:
 				manual = append(manual, item)
 			}
+			p := PlanCommercialAction(PlanInput{
+				Account: &acc, Candidate: cand, Candidates: cands, Evidence: ev, Now: now,
+				Snapshot: acc.LastPayloadHash,
+			})
+			if !p.NoAction {
+				planned = append(planned, p.Action)
+				s.persistPlannedAction(ctx, p)
+			}
 		}
 	}
-	return &ContactCockpit{Funnel: SummarizeContactFunnel(classes, extras), Manual: manual, Ready: ready}, nil
+	merged := mergeTodayActions(planned, s.loadPersistedActions(ctx, orgID))
+	today := AssembleToday(merged)
+	metrics := SummarizeActionMetrics(merged)
+	funnel := SummarizeContactFunnel(classes, extras)
+	funnel.Actionable = today.Summary.Total
+	funnel.ActionPlanned = metrics.Planned
+	funnel.Touched = metrics.Executed
+	funnel.TargetReached = metrics.TargetReachedCount
+	funnel.Conversation = metrics.ConversationCount
+	funnel.Interested = metrics.InterestCount
+	return &ContactCockpit{Funnel: funnel, Manual: manual, Ready: ready, Today: today, Metrics: metrics}, nil
 }
 
 func (s *service) ApplyManualAction(ctx context.Context, orgID, userID, accountID uuid.UUID, action, reason string) (*HumanCorrection, *errx.Error) {

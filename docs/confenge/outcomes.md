@@ -27,6 +27,13 @@ HMAC webhook**. Warmbly never writes the datalake database.
 `LEAD_IMPORTED`, `LEAD_REVIEWED`, `CONTACT_APPROVED`, `CONTACTED`, `REPLIED`,
 `MEETING`, `PROPOSAL`, `WON`, `LOST`, `DO_NOT_CONTACT`, `BOUNCED`.
 
+Additive commercial-action fields (optional, ignored by older consumers):
+`action_id`, `action_type`, `reachability_class`, `outcome_code`,
+`target_reached`, `conversation_started`, `interest_state`,
+`person_relevance_feedback`, `route_validity`, `referral`, `new_person`,
+`new_role`, `new_route`, `preferred_channel`. WON is never inferred from
+these fields.
+
 ## Transport
 
 | Setting | Purpose |
