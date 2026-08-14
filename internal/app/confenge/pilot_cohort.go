@@ -246,6 +246,13 @@ func (s *service) preparePilotAccount(
 
 	if hasExisting && existing.DraftID != nil {
 		if existing.GeneratedContextHash == acc.MessageContextHash && existing.ContactCandidateID != nil && *existing.ContactCandidateID == recipient.Candidate.ID {
+			if existing.State != models.TouchpointNeedsReview {
+				return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, pilotBlock{
+					Code:        "already_advanced",
+					Reason:      "A etapa existente já saiu da fila de revisão.",
+					Remediation: "Revise ou cancele a etapa atual antes de preparar de novo.",
+				})
+			}
 			if block := s.claimPilotPrepared(ctx, orgID, cohortID, operation, requestHash, feed, acc, recipient.Candidate, existing); block != nil {
 				return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, *block)
 			}

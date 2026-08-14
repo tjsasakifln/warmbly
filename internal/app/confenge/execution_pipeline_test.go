@@ -401,7 +401,11 @@ func TestCanaryFailClosedNoLiveSend(t *testing.T) {
 }
 
 func TestRealSmokeCorpusHonestTerminal(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("testdata", "real_smoke_chunk.json"))
+	path := os.Getenv("CORPUS_AUDIT_IN")
+	if path == "" {
+		path = filepath.Join("testdata", "real_smoke_chunk.json")
+	}
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Skip(err)
 	}
