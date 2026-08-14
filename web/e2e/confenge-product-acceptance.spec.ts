@@ -76,9 +76,9 @@ function feedPayloadForImport(): string {
     lead.target_fit_computed_at = now;
     lead.target_fit_source_watermark = now;
     if (lead.company?.cnpj14) {
-      // Fresh CNPJ so seed leftovers cannot claim a QUEUED touchpoint as prepared.
-      const suffix = (Number.parseInt(nonce.slice(-4), 36) + leadIndex).toString().padStart(4, "0").slice(-4);
-      lead.company.cnpj14 = `${lead.company.cnpj14.slice(0, 10)}${suffix}`;
+      // 77-prefix never collides with seed 11… ACME leftovers.
+      const stamp = Date.now().toString().slice(-8).padStart(8, "0");
+      lead.company.cnpj14 = `77${stamp}${String(leadIndex).padStart(4, "0")}`;
     }
     for (const [contactIndex, contact] of (lead.contacts || []).entries()) {
       const local = contactIndex === 0 ? `confenge-ci-${leadIndex + 1}` : `confenge-ci-${leadIndex + 1}-${contactIndex + 1}`;
@@ -340,7 +340,20 @@ async function preparePilotReviewTouchpoint(token: string): Promise<{
       blocks.push(lastBlock);
       continue;
     }
-    const touchpoint = await getTouchpoint(token, result.touchpoint_id);
+    let touchpoint = await getTouchpoint(token, result.touchpoint_id);
+    if ((touchpoint.state || "").toUpperCase() !== "NEEDS_REVIEW") {
+      try {
+        const gen = await apiJSON<{ data: Touchpoint }>(
+          token,
+          "POST",
+          `/v1/confenge/touchpoints/${result.touchpoint_id}/generate`,
+          {},
+        );
+        touchpoint = gen.data;
+      } catch {
+        // generate is illegal on QUEUED/SENT; try the next imported account
+      }
+    }
     if ((touchpoint.state || "").toUpperCase() !== "NEEDS_REVIEW") {
       lastBlock = `account ${account.id}: prepared touchpoint is ${touchpoint.state || "unknown"}`;
       blocks.push(lastBlock);
