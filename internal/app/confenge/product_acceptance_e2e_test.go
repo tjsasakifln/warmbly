@@ -97,6 +97,9 @@ func TestProductAcceptanceMultichannelSum(t *testing.T) {
 		t.Fatal("acme missing")
 	}
 	accs, _ := rf.ListAccounts(context.Background(), org, repository.OutreachAccountFilter{Limit: 50})
+	for _, a := range accs {
+		stampValidatedCandidates(t, rf.memRepo, org, a.ID)
+	}
 	services := map[string]struct{}{}
 	for _, a := range accs {
 		if a.ServiceCode != "" {
