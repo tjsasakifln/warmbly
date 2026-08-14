@@ -10,6 +10,7 @@ describe("rótulos da Central comercial CONFENGE", () => {
     expect(stateLabel("EXCEPTION")).toBe("Exceção de destinatário");
     expect(stateLabel("ROLE_MAILBOX_EXCEPTION")).toBe("Exceção de caixa funcional");
     expect(stateLabel("MANUAL_OUTREACH")).toBe("Abordagem manual");
+    expect(stateLabel("COPY_TEXT")).toBe("Copiar texto");
     expect(reasonLabel("generic_mailbox")).toContain("genérica");
     expect(reasonLabel("missing_contract_event")).toContain("evento contratual");
     expect(stateLabel("DO_NOT_CONTACT")).toBe("Não contatar");

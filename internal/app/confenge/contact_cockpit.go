@@ -27,6 +27,14 @@ func humanQueueStates() []string {
 	}
 }
 
+func outcomeQueueStates() []string {
+	return []string{
+		models.OutreachQueueSent,
+		models.OutreachQueueReplied,
+		models.OutreachQueueMeeting,
+	}
+}
+
 func (s *service) CollectContactCockpit(ctx context.Context, orgID uuid.UUID) (*ContactCockpit, *errx.Error) {
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, xerr
@@ -37,6 +45,20 @@ func (s *service) CollectContactCockpit(ctx context.Context, orgID uuid.UUID) (*
 	var manual []ManualQueueItem
 	var ready []ManualQueueItem
 	extras := ContactFunnel{}
+	for _, qs := range outcomeQueueStates() {
+		accs, err := s.repo.ListAccounts(ctx, orgID, repository.OutreachAccountFilter{QueueState: qs, Limit: 200})
+		if err != nil {
+			return nil, errx.New(errx.Internal, "list outcome accounts: "+err.Error())
+		}
+		switch qs {
+		case models.OutreachQueueSent:
+			extras.Contacted += len(accs)
+		case models.OutreachQueueReplied:
+			extras.Replied += len(accs)
+		case models.OutreachQueueMeeting:
+			extras.Meeting += len(accs)
+		}
+	}
 	for _, qs := range humanQueueStates() {
 		accs, err := s.repo.ListAccounts(ctx, orgID, repository.OutreachAccountFilter{QueueState: qs, Limit: 200})
 		if err != nil {
@@ -44,15 +66,8 @@ func (s *service) CollectContactCockpit(ctx context.Context, orgID uuid.UUID) (*
 		}
 		for i := range accs {
 			acc := accs[i]
-			switch acc.QueueState {
-			case models.OutreachQueueApproved:
+			if acc.QueueState == models.OutreachQueueApproved {
 				extras.Approved++
-			case models.OutreachQueueSent:
-				extras.Contacted++
-			case models.OutreachQueueReplied:
-				extras.Replied++
-			case models.OutreachQueueMeeting:
-				extras.Meeting++
 			}
 			cands, _ := s.repo.ListCandidates(ctx, orgID, acc.ID)
 			ev, _ := s.repo.ListEvidence(ctx, orgID, acc.ID)

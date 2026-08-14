@@ -262,3 +262,105 @@ func TestManualActionNeverApproves(t *testing.T) {
 		}
 	}
 }
+
+func TestTwoValidatedHumansNeverEnterNeedsReview(t *testing.T) {
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	repo := newMemRepo()
+	svc := testSvc(repo).(*service)
+	org := uuid.New()
+	acc := testAccount("REAJUSTE", "ANUALIDADE", "contrato 1149/2022 atingiu aniversário de reajuste em 2024")
+	acc.OrganizationID = org
+	acc.QueueState = models.OutreachQueueReadyToGenerate
+	acc.NomeFantasia = "Horizonte Sul"
+	if _, err := repo.UpsertAccount(context.Background(), acc); err != nil {
+		t.Fatal(err)
+	}
+	a := validatedCand("Ana Souza", "Diretora de Contratos", "ana.souza@horizontesul.com.br")
+	a.OrganizationID, a.AccountID, a.SourceContactID = org, acc.ID, "ct-ana"
+	b := validatedCand("Bruno Lima", "Gerente de Contratos", "bruno.lima@horizontesul.com.br")
+	b.OrganizationID, b.AccountID, b.SourceContactID = org, acc.ID, "ct-bruno"
+	if _, err := repo.UpsertCandidate(context.Background(), &a); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.UpsertCandidate(context.Background(), &b); err != nil {
+		t.Fatal(err)
+	}
+	cands := []models.OutreachContactCandidate{a, b}
+	rec := ResolveRecipient(acc, cands, now)
+	if rec.State != RecipientException {
+		t.Fatalf("two validated humans must be EXCEPTION, got %s %v", rec.State, rec.ReasonCodes)
+	}
+	cls := ClassifyContactTier(acc, &a, now)
+	_, plan := BuildOutboundPlan(MustPlaybook(), acc, &a, nil, 1)
+	out := ComposeFromPlan(plan, acc, &a, ChannelEmailInitial)
+	lane := ClassifyActionLane(cls, rec, plan, out.BodyText)
+	if lane == LaneNeedsReviewEmail {
+		t.Fatalf("EXCEPTION must never become NEEDS_REVIEW: tier=%s rec=%s lane=%s", cls.Tier, rec.State, lane)
+	}
+	cockpit, xerr := svc.CollectContactCockpit(context.Background(), org)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	for _, item := range cockpit.Ready {
+		if item.CanonicalTargetID == acc.ID.String() {
+			t.Fatalf("conflict account leaked into NEEDS_REVIEW: %+v", item)
+		}
+	}
+}
+
+func TestCollectContactCockpitLanesAndOutcomeFunnel(t *testing.T) {
+	repo := newMemRepo()
+	svc := testSvc(repo).(*service)
+	org, user := uuid.New(), uuid.New()
+	raw, err := os.ReadFile(filepath.Join("testdata", "contact_tiers_v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, xerr := svc.ImportFromBytes(context.Background(), org, &user, raw, ImportOptions{IdempotencyKey: "cockpit-lanes"}); xerr != nil {
+		t.Fatal(xerr)
+	}
+	accs, err := repo.ListAccounts(context.Background(), org, repository.OutreachAccountFilter{Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accs) != 5 {
+		t.Fatalf("imported=%d", len(accs))
+	}
+	for i := range accs {
+		accs[i].QueueState = models.OutreachQueueReadyToGenerate
+		if _, err := repo.UpsertAccount(context.Background(), &accs[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sent := &models.OutreachAccount{OrganizationID: org, CNPJ14: "70000000000101", QueueState: models.OutreachQueueSent, NomeFantasia: "Enviada"}
+	replied := &models.OutreachAccount{OrganizationID: org, CNPJ14: "70000000000112", QueueState: models.OutreachQueueReplied, NomeFantasia: "Respondeu"}
+	meeting := &models.OutreachAccount{OrganizationID: org, CNPJ14: "70000000000123", QueueState: models.OutreachQueueMeeting, NomeFantasia: "Reuniao"}
+	for _, acc := range []*models.OutreachAccount{sent, replied, meeting} {
+		if _, err := repo.UpsertAccount(context.Background(), acc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cockpit, xerr := svc.CollectContactCockpit(context.Background(), org)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if cockpit.Funnel.Contacted < 1 || cockpit.Funnel.Replied < 1 || cockpit.Funnel.Meeting < 1 {
+		t.Fatalf("outcome funnel dead: %+v", cockpit.Funnel)
+	}
+	byLane := map[string]int{}
+	for _, item := range cockpit.Ready {
+		byLane[item.Lane]++
+		if item.Lane != LaneNeedsReviewEmail {
+			t.Fatalf("ready list must only hold NEEDS_REVIEW: %+v", item)
+		}
+	}
+	for _, item := range cockpit.Manual {
+		byLane[item.Lane]++
+		if item.Lane == LaneNeedsReviewEmail {
+			t.Fatalf("manual list must not hold NEEDS_REVIEW: %+v", item)
+		}
+	}
+	if byLane[LaneManualOutreach] < 1 || byLane[LaneRoleMailboxException] < 1 || byLane[LaneLowConfidenceManual] < 1 {
+		t.Fatalf("fixture lanes missing: %+v ready=%d manual=%d", byLane, len(cockpit.Ready), len(cockpit.Manual))
+	}
+}

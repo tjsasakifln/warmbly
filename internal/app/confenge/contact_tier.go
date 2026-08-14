@@ -110,7 +110,8 @@ func ClassifyContactTier(acc *models.OutreachAccount, c *models.OutreachContactC
 	email := strings.TrimSpace(c.Email)
 	sendReady := c.EmailSendReady && email != "" && !generic && !roleBox
 	if sendReady && named && roleOK && validatePilotRecipient(c, now) == nil {
-		out.Tier, out.EmailValidated, out.RecipientState, out.Lane = ContactTierA, true, RecipientValidated, LaneNeedsReviewEmail
+		// TIER A is identity only. NEEDS_REVIEW is decided later by VALIDATED+READY+body.
+		out.Tier, out.EmailValidated, out.RecipientState = ContactTierA, true, RecipientValidated
 		out.RecommendedNext = "Gerar mensagem so se messageability for READY; autorizacao humana obrigatoria."
 		return out
 	}
@@ -136,11 +137,13 @@ func ClassifyContactTier(acc *models.OutreachAccount, c *models.OutreachContactC
 }
 
 func ClassifyActionLane(cls ContactClass, rec RecipientResolution, plan OutboundMessagePlan, body string) string {
+	// NEEDS_REVIEW is only sendable copy awaiting human authorization.
+	if rec.State == RecipientValidated && cls.Tier == ContactTierA &&
+		plan.Messageability == MessageabilityReady && strings.TrimSpace(body) != "" {
+		return LaneNeedsReviewEmail
+	}
 	if cls.Tier == ContactTierE || rec.State == RecipientBlocked {
 		return LaneBlockedExhausted
-	}
-	if cls.Tier == ContactTierA && rec.State == RecipientValidated && plan.Messageability == MessageabilityReady && strings.TrimSpace(body) != "" {
-		return LaneNeedsReviewEmail
 	}
 	switch cls.Tier {
 	case ContactTierB:
@@ -150,8 +153,9 @@ func ClassifyActionLane(cls ContactClass, rec RecipientResolution, plan Outbound
 	case ContactTierD:
 		return LaneLowConfidenceManual
 	}
-	if rec.State == RecipientException && cls.Lane != "" {
-		return cls.Lane
+	if rec.State == RecipientException {
+		// Conflict / ambiguous identity is an operator decision, never authorize.
+		return LaneManualOutreach
 	}
 	return LaneBlockedExhausted
 }

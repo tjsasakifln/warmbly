@@ -48,6 +48,8 @@ Every target ends in `VALIDATED`, `EXCEPTION`, or `BLOCKED`. A generic mailbox i
 
 Copy is planned only after extra-cli intelligence is reduced to an internal `OutreachStrategy`. The messageability gate then decides `READY`, `NEEDS_ENRICHMENT`, or `BLOCKED`. Only a `READY` plan is rendered. `NEEDS_REVIEW` means the exact body is sendable if a human presses Approve. Unready items go to a separate exception or enrichment queue.
 
+`NEEDS_REVIEW` is assigned only when recipient resolution is `VALIDATED`, the contact tier is `DIRECT_EMAIL_VALIDATED`, messageability is `READY`, and the composed body is non-empty. An `EXCEPTION` never becomes `NEEDS_REVIEW`. Two individually valid named humans on the same account stay `EXCEPTION` and land in `MANUAL_OUTREACH` until a human picks one recipient.
+
 Human `APPROVE`, `EDIT`, `REJECT`, `RECIPIENT_CHANGE`, and `SKIP` persist as `HumanCorrection`. Edits keep before/after. AI never substitutes the human gate.
 
 ## Per-touch human approval (product invariant)
@@ -115,6 +117,8 @@ Target-fit is updated only by a current authoritative decision. A downgrade take
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /confenge/status` | Whether the feature is on |
+| `GET /confenge/cockpit` | Contact funnel plus `NEEDS_REVIEW` and honest manual lanes |
+| `POST /confenge/manual-queue/:id/action` | Persist a `HumanCorrection` without auto-approve |
 | `GET /confenge/summary` | Queue counters |
 | `GET /confenge/accounts` | Staged companies |
 | `GET /confenge/accounts/:id` | Company with candidates and evidence |
@@ -139,7 +143,7 @@ The CONFENGE page is a PT-BR commercial operations center. It uses the CONFENGE 
 
 Feed freshness uses the upstream manifest's durable `source_generated_at`, not the time at which Warmbly downloaded it. The API retains `feed_last_success_at` as a backward-compatible alias for that authoritative source time and exposes `feed_synced_at` separately for operational diagnostics. The dashboard, API and VPS status script use the same `CONFENGE_FEED_MAX_AGE` threshold, which defaults to 24 hours. Missing, stale, corrupt, or rolled-back feed state blocks cohort preparation.
 
-The page also opens with the recommended next action, a three-step usage guide, operational readiness, and short descriptions for each work area. The per-message review queue shows company, exact recipient, channel, service, fact and evidence, stage number, short history, and the exact send preview. The operator can approve without dispatch, skip the stage, reject with a reason, or mark the account as do not contact.
+The page also opens with the recommended next action, a three-step usage guide, operational readiness, and short descriptions for each work area. The operational funnel counts imported tiers, `NEEDS_REVIEW`, the manual lanes, approvals, and post-send outcomes (`SENT` as contacted, `REPLIED`, `MEETING`) from `GET /confenge/cockpit`. Each manual-lane card shows why now, the factual hook, the recommended action, confidence, and a Copy text control. The per-message review queue shows company, exact recipient, channel, service, fact and evidence, stage number, short history, and the exact send preview. The operator can approve without dispatch, skip the stage, reject with a reason, or mark the account as do not contact.
 
 ## Global dispatch governor
 
