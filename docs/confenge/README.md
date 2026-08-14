@@ -94,7 +94,7 @@ Missing fields are left empty. Nothing is invented.
 
 ## Data model (staging)
 
-Multi-tenant tables (migration `000080_outreach_staging`):
+Multi-tenant tables (migration `000083_outreach_staging`):
 
 - `outreach_import_runs` — audit of each dry-run/apply
 - `outreach_accounts` — company staging, unique `(organization_id, cnpj14)`

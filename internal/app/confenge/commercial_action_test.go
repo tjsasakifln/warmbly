@@ -437,6 +437,93 @@ func TestCommercialImportTodayAndReferral(t *testing.T) {
 	}
 }
 
+// Kill switch / dispatch pause must not drop planned commercial work or
+// promote any card to dispatchable. Sending is deferred; Today stays.
+func TestCommercialTodaySurvivesKillSwitchAndPause(t *testing.T) {
+	t.Setenv(EnvKillSwitchPath, filepath.Join(t.TempDir(), "kill"))
+	t.Setenv(EnvSendingPaused, "false")
+
+	repo := newMemRepo()
+	svc := testSvc(repo).(*service)
+	org, user := uuid.New(), uuid.New()
+	raw, err := os.ReadFile(filepath.Join("testdata", "reachability_r0_r5_v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, xerr := svc.ImportFromBytes(context.Background(), org, &user, raw, ImportOptions{IdempotencyKey: "pause-1"}); xerr != nil {
+		t.Fatal(xerr)
+	}
+	accs, err := repo.ListAccounts(context.Background(), org, repository.OutreachAccountFilter{Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range accs {
+		if accs[i].DoNotContact {
+			continue
+		}
+		accs[i].QueueState = models.OutreachQueueReadyToGenerate
+		if _, err := repo.UpsertAccount(context.Background(), &accs[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, xerr := svc.CollectToday(context.Background(), org)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if before.Summary.RoutedCalls < 1 || before.Summary.EmailsToReview < 1 || before.Summary.InferredEmails < 1 {
+		t.Fatalf("pre-pause today missing work: %+v", before.Summary)
+	}
+	ids := map[string]ActionCard{}
+	for _, c := range before.Actions {
+		ids[c.ActionID] = c
+		if c.Dispatchable {
+			t.Fatalf("pre-pause card dispatchable: %+v", c)
+		}
+	}
+
+	if err := EngageKillSwitch(); err != nil {
+		t.Fatal(err)
+	}
+	if svc.cfg.SendingAllowed() {
+		t.Fatal("kill switch must block SendingAllowed")
+	}
+	gate := svc.GateCampaignEmail(context.Background(), org, "CONFENGE pause retention", "ana.souza@aurora.example", uuid.Nil, uuid.Nil, uuid.Nil)
+	if gate.Kind != GateDeferred || gate.Reason != ReasonSendingOff {
+		t.Fatalf("pause must defer CONFENGE send, got kind=%v reason=%s", gate.Kind, gate.Reason)
+	}
+
+	after, xerr := svc.CollectToday(context.Background(), org)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if after.Summary.RoutedCalls != before.Summary.RoutedCalls ||
+		after.Summary.EmailsToReview != before.Summary.EmailsToReview ||
+		after.Summary.InferredEmails != before.Summary.InferredEmails {
+		t.Fatalf("pause dropped today work: before=%+v after=%+v", before.Summary, after.Summary)
+	}
+	for _, c := range after.Actions {
+		if _, ok := ids[c.ActionID]; !ok {
+			t.Fatalf("pause invented a new card: %+v", c)
+		}
+		if c.Dispatchable || (c.ActionType != models.ActionDirectEmail && c.EmailSendable) {
+			t.Fatalf("pause must not promote sendability: %+v", c)
+		}
+		if c.ActionType == models.ActionRoutedCall && !c.Actionable {
+			t.Fatalf("routed call must stay actionable through pause: %+v", c)
+		}
+		if c.ActionType == models.ActionInferredEmailReview && (c.EmailSendable || c.Dispatchable) {
+			t.Fatalf("inferred email must stay unsendable through pause: %+v", c)
+		}
+	}
+	open, err := repo.ListCommercialActions(context.Background(), org, uuid.Nil, false, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(open) == 0 {
+		t.Fatal("pause must not delete persisted commercial actions")
+	}
+}
+
 func containsWarning(in []string, sub string) bool {
 	for _, w := range in {
 		if strings.Contains(w, sub) {
