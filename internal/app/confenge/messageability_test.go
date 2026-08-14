@@ -442,16 +442,16 @@ func TestAIAndTemplateShareGate(t *testing.T) {
 	}
 	// AI with nil provider still evaluates the gate before Complete.
 	g := &AIDraftGenerator{Provider: nil}
-	// Generate on nil provider: we still run the gate first and return fail-closed
-	// without calling the provider when not READY.
+	aiOut, _, aiModel, aiErr := g.Generate(context.Background(), in)
+	if aiErr != nil {
+		t.Fatalf("not-READY AI path must not error, got %v", aiErr)
+	}
+	if aiModel != "messageability_gate" || aiOut.BodyText != "" {
+		t.Fatalf("AI: model=%s body=%q", aiModel, aiOut.BodyText)
+	}
 	st, plan := BuildOutboundPlan(pb, acc, cand, ev, 1)
 	if plan.Messageability == MessageabilityReady {
 		t.Fatal("gate must not READY ENCOPAV")
 	}
-	closed := FailClosedDraft(plan, ChannelEmailInitial)
-	if closed.BodyText != "" {
-		t.Fatal("fail closed body")
-	}
-	_ = g
 	_ = st
 }

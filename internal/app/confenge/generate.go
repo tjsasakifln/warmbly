@@ -48,9 +48,6 @@ type AIDraftGenerator struct {
 // Generate asks the model for JSON only from structured inputs (no research).
 // Strategy is planned first; the model only words within those constraints.
 func (g *AIDraftGenerator) Generate(ctx context.Context, in GenerateInput) (DraftOutput, string, string, error) {
-	if g == nil || g.Provider == nil {
-		return DraftOutput{}, "", "", generation.ErrNotConfigured
-	}
 	channel := in.Channel
 	if channel == "" {
 		channel = ChannelEmailInitial
@@ -61,7 +58,11 @@ func (g *AIDraftGenerator) Generate(ctx context.Context, in GenerateInput) (Draf
 		out := FailClosedDraft(plan, channel)
 		out.ServiceOverrideAudited = in.ServiceOverrideAudited
 		out.RiskFlags = appendUnique(out.RiskFlags, st.RiskFlags...)
-		return out, g.Provider.Name(), "messageability_gate", nil
+		return out, "ai", "messageability_gate", nil
+	}
+	if g == nil || g.Provider == nil {
+		// Gate already ran; READY + no provider is fail-closed (caller may template-fallback).
+		return DraftOutput{}, "ai", "", generation.ErrNotConfigured
 	}
 	system := draftSystemPromptDoctrine(channel, plan)
 	user := draftUserPromptWithPlan(in, plan)

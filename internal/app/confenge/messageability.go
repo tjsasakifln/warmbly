@@ -384,7 +384,6 @@ func stripTruncation(s string) string {
 }
 
 func hasConcreteContractEvent(blob string) bool {
-	blob = foldASCII(blob)
 	for _, ev := range []string{
 		"aditivo",
 		"medicao",
@@ -397,7 +396,7 @@ func hasConcreteContractEvent(blob string) bool {
 		"ordem de serviço",
 		"inicio de execucao",
 		"início de execução",
-		"marco",
+		"marco contratual",
 		"prorrogacao",
 		"prorrogação",
 		"reequilibrio",
@@ -416,9 +415,48 @@ func hasConcreteContractEvent(blob string) bool {
 		"extracontratual",
 		"termo aditivo",
 	} {
-		if strings.Contains(blob, foldASCII(ev)) {
+		if containsMentionToken(blob, ev) {
 			return true
 		}
+	}
+	return false
+}
+
+// containsMentionToken matches mentionable evidence tokens. Short/ambiguous
+// tokens (extra, marco) must be whole words so "março" / "extraordinário"
+// cannot mint a contract event.
+func containsMentionToken(blob, tok string) bool {
+	blob = foldASCII(blob)
+	tok = foldASCII(strings.TrimSpace(tok))
+	if tok == "" || blob == "" {
+		return false
+	}
+	if strings.Contains(tok, " ") || strings.Contains(tok, "-") {
+		return strings.Contains(blob, tok)
+	}
+	if utf8.RuneCountInString(tok) <= 5 {
+		return containsWholeWord(blob, tok)
+	}
+	return strings.Contains(blob, tok)
+}
+
+func containsWholeWord(blob, word string) bool {
+	if word == "" {
+		return false
+	}
+	for start := 0; start <= len(blob); {
+		idx := strings.Index(blob[start:], word)
+		if idx < 0 {
+			return false
+		}
+		i := start + idx
+		leftOK := i == 0 || !unicode.IsLetter(rune(blob[i-1]))
+		right := i + len(word)
+		rightOK := right >= len(blob) || !unicode.IsLetter(rune(blob[right]))
+		if leftOK && rightOK {
+			return true
+		}
+		start = i + 1
 	}
 	return false
 }
@@ -426,7 +464,6 @@ func hasConcreteContractEvent(blob string) bool {
 // serviceHookFits reports whether the public fact is coherent with the service.
 // A non-empty fact is not enough: REAJUSTE + edital is not READY.
 func serviceHookFits(serviceCode, blob string) bool {
-	blob = foldASCII(blob)
 	if strings.TrimSpace(blob) == "" {
 		return false
 	}
@@ -435,7 +472,7 @@ func serviceHookFits(serviceCode, blob string) bool {
 		return false
 	}
 	for _, tok := range tokens {
-		if tok != "" && strings.Contains(blob, foldASCII(tok)) {
+		if tok != "" && containsMentionToken(blob, tok) {
 			return true
 		}
 	}

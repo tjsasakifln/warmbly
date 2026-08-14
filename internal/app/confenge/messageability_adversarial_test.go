@@ -1,6 +1,7 @@
 package confenge
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -54,6 +55,7 @@ func TestAdversarialThirtyScenarios(t *testing.T) {
 		{"33_reajuste_edital_mismatch", "REAJUSTE", "EDITAL", "edital 45/2026 publicado com quantitativos a conferir", "Sócio", false, MessageabilityNeedsEnrichment},
 		{"34_reajuste_anualidade_edital", "REAJUSTE", "ANUALIDADE", "edital 45/2026 publicado com quantitativos a conferir", "Sócio", false, MessageabilityNeedsEnrichment},
 		{"35_monitor_aditivo_moment_no_event", "MONITORAMENTO_CONTRATUAL", "ADITIVO", "objeto: Contratação de empresa; órgão: DER-RS; UF: RS; R$ 2,839,000", "Diretor", false, MessageabilityNeedsEnrichment},
+		{"36_marco_calendar_not_event", "MONITORAMENTO_CONTRATUAL", "PORTFOLIO", "contrato público de pavimentação publicado em março no RS", "Diretor", false, MessageabilityNeedsEnrichment},
 	}
 	if len(cases) < 30 {
 		t.Fatalf("need >=30 cases, got %d", len(cases))
@@ -166,5 +168,100 @@ func assertServiceCoherentCopy(t *testing.T, svc, body string, plan OutboundMess
 
 func TestAdversarialCountLog(t *testing.T) {
 	// Companion so the run always prints a stable line for scratch capture.
-	fmt.Println("adversarial_matrix_defined=32")
+	fmt.Println("adversarial_matrix_defined=36")
+}
+
+func TestMarcoCalendarIsNotContractEvent(t *testing.T) {
+	if hasConcreteContractEvent("contrato público publicado em março no RS") {
+		t.Fatal("março must not count as a contract event")
+	}
+	if hasConcreteContractEvent("extraordinário volume de contratos") {
+		t.Fatal("extraordinário must not count as extra/event")
+	}
+	if !hasConcreteContractEvent("aditivo 1 ao contrato publicado") {
+		t.Fatal("real aditivo must count")
+	}
+	if !containsMentionToken("ordem de serviço de extra publicada", "extra") {
+		t.Fatal("standalone extra must match")
+	}
+}
+
+func TestDNCBounceSuppressedFailClosed(t *testing.T) {
+	pb := MustPlaybook()
+	fact := "contrato 1149/2022 atingiu aniversário de reajuste em 2024"
+	ev := []models.OutreachEvidence{{SourceEvidenceID: "ev-1", EpistemicClass: models.OutreachEpistemicConfirmedFact, Synthesis: fact}}
+
+	dncAcc := testAccount("REAJUSTE", "ANUALIDADE", fact)
+	dncAcc.DoNotContact = true
+	_, plan := BuildOutboundPlan(pb, dncAcc, testCand("Sócio"), ev, 1)
+	out := ComposeFromPlan(plan, dncAcc, testCand("Sócio"), ChannelEmailInitial)
+	if plan.Messageability != MessageabilityBlocked || out.BodyText != "" {
+		t.Fatalf("DNC must BLOCK with empty body: %s %q", plan.Messageability, out.BodyText)
+	}
+
+	bounceCand := testCand("Sócio")
+	bounceCand.Bounced = true
+	_, bplan := BuildOutboundPlan(pb, testAccount("REAJUSTE", "ANUALIDADE", fact), bounceCand, ev, 1)
+	bout := ComposeFromPlan(bplan, testAccount("REAJUSTE", "ANUALIDADE", fact), bounceCand, ChannelEmailInitial)
+	if bplan.Messageability != MessageabilityBlocked || bout.BodyText != "" {
+		t.Fatalf("bounce must BLOCK with empty body: %s %q", bplan.Messageability, bout.BodyText)
+	}
+
+	supAcc := testAccount("REAJUSTE", "ANUALIDADE", fact)
+	st := PlanOutreachStrategy(pb, supAcc, testCand("Sócio"), ev, 1)
+	st.RiskFlags = append(st.RiskFlags, "suppressed")
+	splan := EvaluateMessageability(st, supAcc, testCand("Sócio"), ev, pb)
+	sout := ComposeFromPlan(splan, supAcc, testCand("Sócio"), ChannelEmailInitial)
+	if splan.Messageability != MessageabilityBlocked || sout.BodyText != "" {
+		t.Fatalf("suppressed must BLOCK with empty body: %s %q", splan.Messageability, sout.BodyText)
+	}
+}
+
+func TestHallucinatedPersonNotUsed(t *testing.T) {
+	pb := MustPlaybook()
+	acc := testAccount("REAJUSTE", "ANUALIDADE", "contrato 1149/2022 atingiu aniversário de reajuste em 2024")
+	cand := testCand("Diretor inventado")
+	cand.Name = "Fulano Inexistente"
+	cand.Email = "contato@exemplo.com.br"
+	cand.MailboxPurpose = "GENERIC_CONTACT"
+	ev := []models.OutreachEvidence{{SourceEvidenceID: "ev-1", EpistemicClass: models.OutreachEpistemicConfirmedFact, Synthesis: acc.FactToMention}}
+	_, plan := BuildOutboundPlan(pb, acc, cand, ev, 1)
+	out := ComposeFromPlan(plan, acc, cand, ChannelEmailInitial)
+	if plan.RecipientMode != RecipientModeGenericInbox {
+		t.Fatalf("generic must stay GENERIC_INBOX, got %s", plan.RecipientMode)
+	}
+	if strings.Contains(out.BodyText, "Fulano") || strings.Contains(out.BodyText, "Inexistente") {
+		t.Fatalf("hallucinated/generic name leaked: %s", out.BodyText)
+	}
+	if out.BodyText != "" && !strings.HasPrefix(out.BodyText, "Olá, equipe") {
+		t.Fatalf("generic greeting: %s", out.BodyText)
+	}
+}
+
+func TestAIUnavailableFailClosed(t *testing.T) {
+	enc := encopavAccount()
+	ev := encopavEvidence()
+	in := BuildGenerateInput(ChannelEmailInitial, enc, testCand("Sócio"), ev, nil)
+	g := &AIDraftGenerator{Provider: nil}
+	out, _, model, err := g.Generate(context.Background(), in)
+	if err != nil {
+		t.Fatalf("not-READY must fail-closed without provider error, got %v", err)
+	}
+	if model != "messageability_gate" || out.BodyText != "" {
+		t.Fatalf("AI unavailable on junk dossier must be empty gate close: model=%s body=%q", model, out.BodyText)
+	}
+
+	readyAcc := testAccount("REAJUSTE", "ANUALIDADE", "contrato 1149/2022 atingiu aniversário de reajuste em 2024")
+	readyEv := []models.OutreachEvidence{{SourceEvidenceID: "ev-1", EpistemicClass: models.OutreachEpistemicConfirmedFact, Synthesis: readyAcc.FactToMention}}
+	readyIn := BuildGenerateInput(ChannelEmailInitial, readyAcc, testCand("Sócio"), readyEv, nil)
+	_, _, _, err = g.Generate(context.Background(), readyIn)
+	if err == nil {
+		t.Fatal("READY + AI unavailable must error so the caller can fail closed / template-fallback")
+	}
+	// Template path is the shipped fallback when AI is down.
+	tout, _, tmodel, terr := TemplateGenerator{}.Generate(context.Background(), readyIn)
+	if terr != nil || tout.BodyText == "" {
+		t.Fatalf("template fallback must still produce sendable READY copy: err=%v model=%s", terr, tmodel)
+	}
+	assertNoLeaks(t, tout.BodyText)
 }
