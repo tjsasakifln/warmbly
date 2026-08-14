@@ -79,7 +79,12 @@ export default function ConfengePage() {
   const detail = useConfengeAttentionDetail(selectedId);
   const generateReply = useGenerateConfengeReplyDraft();
   const [idx, setIdx] = useState(0);
-  const queue = review.data ?? [];
+  const [reviewLane, setReviewLane] = useState<"ready" | "exception">("ready");
+  const allReview = review.data ?? [];
+  const queue = allReview.filter((tp) => {
+    const sendable = !!(tp.body_text && tp.body_text.trim());
+    return reviewLane === "ready" ? sendable : !sendable;
+  });
   const current: ConfengeTouchpoint | undefined = queue[idx];
   const timeline = useConfengeAccountTimeline(current?.account_id ?? null);
   const reviewAccount = useConfengeAccount(current?.account_id ?? null);
@@ -641,16 +646,36 @@ export default function ConfengePage() {
               Fila de revisão ({queue.length})
               {current ? ` · ${idx + 1}/${queue.length}` : ""}
             </span>
-            {current && (
-              <span className="text-[10px] uppercase tracking-[0.14em] px-1.5 py-0.5 rounded bg-sky-50 text-sky-700">
-                Etapa {current.ordinal} · {channelLabel(current.channel)} · {stateLabel(current.state)}
-              </span>
-            )}
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className={`relative h-10 px-2.5 inline-flex items-center text-[12.5px] ${reviewLane === "ready" ? "text-slate-900 font-medium" : "text-slate-500"}`}
+                onClick={() => { setReviewLane("ready"); setIdx(0); }}
+              >
+                Prontas para autorizar
+                {reviewLane === "ready" && <span className="absolute inset-x-2 -bottom-px h-0.5 bg-sky-600" />}
+              </button>
+              <button
+                type="button"
+                className={`relative h-10 px-2.5 inline-flex items-center text-[12.5px] ${reviewLane === "exception" ? "text-slate-900 font-medium" : "text-slate-500"}`}
+                onClick={() => { setReviewLane("exception"); setIdx(0); }}
+              >
+                Exceções
+                {reviewLane === "exception" && <span className="absolute inset-x-2 -bottom-px h-0.5 bg-sky-600" />}
+              </button>
+              {current && (
+                <span className="text-[10px] uppercase tracking-[0.14em] px-1.5 py-0.5 rounded bg-sky-50 text-sky-700">
+                  Etapa {current.ordinal} · {channelLabel(current.channel)} · {stateLabel(current.state)}
+                </span>
+              )}
+            </div>
           </div>
           <p className="px-3 pt-2 text-[11.5px] text-slate-500">Confira destinatário, contexto e conteúdo exato. Aprovar não coloca a mensagem na fila nem libera o envio.</p>
           {!current ? (
             <div className="px-3 py-10 text-center text-slate-400 text-[12.5px]">
-              Nenhuma mensagem aguarda revisão. Planeje uma conta e gere a mensagem quando ela estiver pronta.
+              {reviewLane === "ready"
+                ? "Nenhuma mensagem pronta para autorização. Destinatários sem identidade comprovada ficam em Exceções."
+                : "Nenhuma exceção aberta nesta fila."}
             </div>
           ) : (
             <div className="p-3 grid md:grid-cols-2 gap-4">

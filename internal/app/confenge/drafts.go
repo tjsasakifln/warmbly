@@ -51,6 +51,12 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 		return nil, errx.New(errx.BadRequest, err.Error())
 	}
 
+	allCands, listErr := s.repo.ListCandidates(ctx, orgID, accountID)
+	if listErr != nil {
+		allCands = nil
+	}
+	rec := ResolveRecipient(acc, allCands, time.Now().UTC())
+
 	evidence, err := s.repo.ListEvidence(ctx, orgID, accountID)
 	if err != nil {
 		return nil, errx.New(errx.Internal, "failed to load evidence")
@@ -151,6 +157,16 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 			val.Errors = appendUnique(val.Errors, plan.Reason)
 		}
 	}
+	val.Recipient = &rec
+	if rec.State != RecipientValidated {
+		flags = appendUnique(flags, "recipient_"+strings.ToLower(rec.State))
+		flags = appendUnique(flags, rec.ReasonCodes...)
+		risk = "RED"
+		val.OK = false
+		if rec.Reason != "" {
+			val.Errors = appendUnique(val.Errors, rec.Reason)
+		}
+	}
 	val.Claims = out.Claims
 	val.Rationale = out.Rationale
 	val.Channel = out.Channel
@@ -178,11 +194,11 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 	draft.RiskClass = risk
 	draft.RiskFlags = flags
 	// NEEDS_REVIEW is only for sendable copy awaiting human authorization.
-	switch plan.Messageability {
-	case MessageabilityBlocked:
+	switch {
+	case rec.State == RecipientBlocked || plan.Messageability == MessageabilityBlocked:
 		draft.Status = models.OutreachDraftBlocked
 		draft.Subject, draft.BodyText = "", ""
-	case MessageabilityNeedsEnrichment:
+	case rec.State != RecipientValidated || plan.Messageability != MessageabilityReady:
 		draft.Status = models.OutreachDraftSkipped
 		draft.Subject, draft.BodyText = "", ""
 	default:
@@ -293,6 +309,7 @@ func (s *service) ReviewDraft(ctx context.Context, orgID, userID, draftID uuid.U
 	if err != nil || d == nil {
 		return nil, errx.New(errx.NotFound, "draft not found")
 	}
+	beforeBody, beforeSubj := d.BodyText, d.Subject
 	switch action {
 	case "edit":
 		if edit == nil {
@@ -477,6 +494,24 @@ func (s *service) ReviewDraft(ctx context.Context, orgID, userID, draftID uuid.U
 	default:
 		return nil, errx.New(errx.BadRequest, "unknown action (approve|reject|skip|edit|block)")
 	}
+	decision := mapReviewAction(action)
+	if decision != "" {
+		reasons := []string{}
+		if edit != nil && edit.Reason != nil {
+			reasons = []string{*edit.Reason}
+		}
+		if hc, herr := RecordHumanDecision(decision, d.ID.String(), userID.String(), beforeBody, d.BodyText, beforeSubj, d.Subject, reasons); herr == nil {
+			var val ValidationResult
+			if len(d.ValidationJSON) > 0 {
+				_ = json.Unmarshal(d.ValidationJSON, &val)
+			}
+			hcCopy := hc
+			val.HumanCorrection = &hcCopy
+			if packed, perr := json.Marshal(val); perr == nil {
+				d.ValidationJSON = packed
+			}
+		}
+	}
 	if err := s.repo.UpsertDraft(ctx, d); err != nil {
 		return nil, errx.New(errx.Internal, "failed to update draft")
 	}
@@ -487,6 +522,23 @@ func (s *service) ReviewDraft(ctx context.Context, orgID, userID, draftID uuid.U
 		)
 	}
 	return d, nil
+}
+
+func mapReviewAction(action string) string {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "approve":
+		return DecisionApprove
+	case "edit":
+		return DecisionEdit
+	case "reject":
+		return DecisionReject
+	case "skip":
+		return DecisionSkip
+	case "recipient_change":
+		return DecisionRecipientChange
+	default:
+		return ""
+	}
 }
 
 // DraftEdit is an optional body for review actions.

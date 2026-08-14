@@ -64,6 +64,8 @@ type ValidationResult struct {
 	Messageability       string               `json:"messageability,omitempty"`
 	MessageabilityReason string               `json:"messageability_reason,omitempty"`
 	MessagePlan          *OutboundMessagePlan `json:"message_plan,omitempty"`
+	Recipient            *RecipientResolution `json:"recipient,omitempty"`
+	HumanCorrection      *HumanCorrection     `json:"human_correction,omitempty"`
 }
 
 // ValidateOpts configures deterministic validation for a channel.

@@ -649,6 +649,22 @@ func (h *Handler) PauseConfengeDispatch(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": st})
 }
 
+// InvalidatePriorComposerDrafts — POST /confenge/drafts/invalidate-prior-composer
+func (h *Handler) InvalidatePriorComposerDrafts(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, _ := c.Get("user_id")
+	uid, _ := userID.(uuid.UUID)
+	rep, xerr := h.ConfengeService.InvalidatePriorComposerDrafts(c.Request.Context(), orgID, uid)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": rep})
+}
+
 // ResumeConfengeDispatch — POST /confenge/dispatch/resume
 func (h *Handler) ResumeConfengeDispatch(c *gin.Context) {
 	orgID, ok := h.confengeOrg(c)

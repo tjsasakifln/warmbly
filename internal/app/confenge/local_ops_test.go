@@ -276,6 +276,7 @@ func TestOfflineGenerateApproveWithTemplate(t *testing.T) {
 	if acc == nil {
 		t.Fatal("acme missing")
 	}
+	stampValidatedCandidates(t, rf.memRepo, org, acc.ID)
 	draft, xerr := svc.GenerateDraft(context.Background(), org, user, acc.ID, nil)
 	if xerr != nil {
 		t.Fatal(xerr)
