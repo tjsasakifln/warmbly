@@ -38,9 +38,15 @@ const PROOF_DIR =
   process.env.CONFENGE_E2E_PROOF_DIR ||
   path.join(REPO_ROOT, "data/confenge-evidence");
 
+let cachedFeedPayload: string | null = null;
+
 function feedPayloadForImport(): string {
+  if (cachedFeedPayload) return cachedFeedPayload;
   const raw = fs.readFileSync(FEED_PATH, "utf8");
-  if (path.basename(FEED_PATH) !== "demo_3_companies.json") return raw;
+  if (path.basename(FEED_PATH) !== "demo_3_companies.json") {
+    cachedFeedPayload = raw;
+    return raw;
+  }
 
   const now = new Date().toISOString();
   const nonce = Date.now().toString(36);
@@ -50,6 +56,7 @@ function feedPayloadForImport(): string {
     leads: Array<{
       target_fit_computed_at?: string;
       target_fit_source_watermark?: string;
+      company?: { cnpj14?: string };
       contacts?: Array<{
         email?: string;
         source_url?: string;
@@ -68,19 +75,25 @@ function feedPayloadForImport(): string {
   for (const [leadIndex, lead] of feed.leads.entries()) {
     lead.target_fit_computed_at = now;
     lead.target_fit_source_watermark = now;
+    if (lead.company?.cnpj14) {
+      // 77-prefix never collides with seed 11… ACME leftovers.
+      const stamp = Date.now().toString().slice(-8).padStart(8, "0");
+      lead.company.cnpj14 = `77${stamp}${String(leadIndex).padStart(4, "0")}`;
+    }
     for (const [contactIndex, contact] of (lead.contacts || []).entries()) {
       const local = contactIndex === 0 ? `confenge-ci-${leadIndex + 1}` : `confenge-ci-${leadIndex + 1}-${contactIndex + 1}`;
-      contact.email = `${local}@pilot.warmbly.com`;
-      contact.source_url = `https://pilot.warmbly.com/contacts/${local}`;
+      contact.email = `${local}@acmeobras.com.br`;
+      contact.source_url = `https://acmeobras.com.br/equipe/${local}`;
       contact.source_date = now.slice(0, 10);
-      contact.mailbox_purpose = contact.name ? "PERSONAL_WORK" : "GENERIC_CONTACT";
+      contact.mailbox_purpose = contact.name ? "COMERCIAL" : "GENERIC_CONTACT";
       contact.ownership_status = "COMPANY_OWNED";
       contact.recipient_commercial_suitability = contact.name ? "SUITABLE" : "SUITABLE_GENERIC";
       contact.provenance_chain_valid = true;
       contact.derived_from_fixture = false;
     }
   }
-  return JSON.stringify(feed);
+  cachedFeedPayload = JSON.stringify(feed);
+  return cachedFeedPayload;
 }
 
 type Touchpoint = {
@@ -283,7 +296,7 @@ async function preparePilotReviewTouchpoint(token: string): Promise<{
   accountId: string;
   touchpointId: string;
 }> {
-  const feed = JSON.parse(fs.readFileSync(FEED_PATH, "utf8")) as {
+  const feed = JSON.parse(feedPayloadForImport()) as {
     leads?: Array<{ company?: { cnpj14?: string } }>;
   };
   const importedCNPJs = new Set(
@@ -327,7 +340,20 @@ async function preparePilotReviewTouchpoint(token: string): Promise<{
       blocks.push(lastBlock);
       continue;
     }
-    const touchpoint = await getTouchpoint(token, result.touchpoint_id);
+    let touchpoint = await getTouchpoint(token, result.touchpoint_id);
+    if ((touchpoint.state || "").toUpperCase() !== "NEEDS_REVIEW") {
+      try {
+        const gen = await apiJSON<{ data: Touchpoint }>(
+          token,
+          "POST",
+          `/v1/confenge/touchpoints/${result.touchpoint_id}/generate`,
+          {},
+        );
+        touchpoint = gen.data;
+      } catch {
+        // generate is illegal on QUEUED/SENT; try the next imported account
+      }
+    }
     if ((touchpoint.state || "").toUpperCase() !== "NEEDS_REVIEW") {
       lastBlock = `account ${account.id}: prepared touchpoint is ${touchpoint.state || "unknown"}`;
       blocks.push(lastBlock);

@@ -1,8 +1,11 @@
 package confenge
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
+
+	"github.com/warmbly/warmbly/internal/models"
 )
 
 const (
@@ -87,6 +90,21 @@ func RecordHumanDecision(decision, draftID, actorID, beforeBody, afterBody, befo
 		return HumanCorrection{}, errHuman("edit_without_diff")
 	}
 	return hc, nil
+}
+
+func attachHumanCorrection(d *models.OutreachDraft, hc HumanCorrection) {
+	if d == nil {
+		return
+	}
+	var val ValidationResult
+	if len(d.ValidationJSON) > 0 {
+		_ = json.Unmarshal(d.ValidationJSON, &val)
+	}
+	hcCopy := hc
+	val.HumanCorrection = &hcCopy
+	if packed, err := json.Marshal(val); err == nil {
+		d.ValidationJSON = packed
+	}
 }
 
 func normalizeHumanReasons(in []string) []string {

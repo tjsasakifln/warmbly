@@ -352,6 +352,10 @@ func (s *service) ReviewDraft(ctx context.Context, orgID, userID, draftID uuid.U
 			SkipEmailRecipient: d.Channel == models.OutreachChannelWhatsApp,
 			Strategy:           &st, Playbook: pb,
 		})
+		if allCands, listErr := s.repo.ListCandidates(ctx, orgID, d.AccountID); listErr == nil {
+			rec := ResolveRecipient(acc, allCands, time.Now().UTC())
+			val.Recipient = &rec
+		}
 		risk, flags := ClassifyRisk(acc, cand, &out, val)
 		// Persist structural incompleteness flags so approve cannot ignore them.
 		for _, f := range st.RiskFlags {
@@ -501,15 +505,7 @@ func (s *service) ReviewDraft(ctx context.Context, orgID, userID, draftID uuid.U
 			reasons = []string{*edit.Reason}
 		}
 		if hc, herr := RecordHumanDecision(decision, d.ID.String(), userID.String(), beforeBody, d.BodyText, beforeSubj, d.Subject, reasons); herr == nil {
-			var val ValidationResult
-			if len(d.ValidationJSON) > 0 {
-				_ = json.Unmarshal(d.ValidationJSON, &val)
-			}
-			hcCopy := hc
-			val.HumanCorrection = &hcCopy
-			if packed, perr := json.Marshal(val); perr == nil {
-				d.ValidationJSON = packed
-			}
+			attachHumanCorrection(d, hc)
 		}
 	}
 	if err := s.repo.UpsertDraft(ctx, d); err != nil {

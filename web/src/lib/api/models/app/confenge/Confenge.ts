@@ -311,6 +311,8 @@ export type ConfengeTouchpoint = {
   doctrine_alerts?: string[];
   recipient_mailbox_purpose?: string;
   recipient_generic?: boolean;
+  recipient_state?: string;
+  recipient_reason?: string;
   draft?: ConfengeDraft;
   approved_by?: string;
   approved_at?: string | Date;

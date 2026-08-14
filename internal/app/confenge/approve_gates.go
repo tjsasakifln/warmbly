@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/warmbly/warmbly/internal/models"
@@ -107,6 +108,28 @@ func StructuralApproveBlockers(
 	}
 	if plan := messagePlanFromDraft(d); plan != nil && plan.Messageability != "" && plan.Messageability != MessageabilityReady {
 		add("not_messageable", "messageability is "+plan.Messageability+": "+firstNonEmpty(plan.Reason, "dossier cannot support a first contact"))
+	}
+	rec := recipientFromDraft(d)
+	if rec == nil && acc != nil {
+		var cands []models.OutreachContactCandidate
+		if cand != nil {
+			cands = []models.OutreachContactCandidate{*cand}
+		}
+		resolved := ResolveRecipient(acc, cands, time.Now().UTC())
+		rec = &resolved
+	}
+	if rec == nil || rec.State != RecipientValidated {
+		reason := "recipient identity is not VALIDATED"
+		if rec != nil {
+			reason = "recipient is " + rec.State
+			if rec.Reason != "" {
+				reason += ": " + rec.Reason
+			}
+		}
+		add("recipient_not_validated", reason)
+	}
+	if cand != nil && isGenericRecipient(cand) {
+		add("generic_mailbox", "generic mailbox cannot be approved")
 	}
 	if containsAnyFlag(flags, "incomplete_copy_context") {
 		add("incomplete_copy_context", "copy context is incomplete")
@@ -275,6 +298,17 @@ func messagePlanFromDraft(d *models.OutreachDraft) *OutboundMessagePlan {
 		return nil
 	}
 	return val.MessagePlan
+}
+
+func recipientFromDraft(d *models.OutreachDraft) *RecipientResolution {
+	if d == nil || len(d.ValidationJSON) == 0 {
+		return nil
+	}
+	var val ValidationResult
+	if err := json.Unmarshal(d.ValidationJSON, &val); err != nil {
+		return nil
+	}
+	return val.Recipient
 }
 
 // FormatApproveBlockers joins structural blockers for errx messages.

@@ -610,4 +610,6 @@ type OutreachTouchpoint struct {
 	DoctrineAlerts          []string       `json:"doctrine_alerts,omitempty"`
 	RecipientMailboxPurpose string         `json:"recipient_mailbox_purpose,omitempty"`
 	RecipientGeneric        bool           `json:"recipient_generic,omitempty"`
+	RecipientState          string         `json:"recipient_state,omitempty"`
+	RecipientReason         string         `json:"recipient_reason,omitempty"`
 }
