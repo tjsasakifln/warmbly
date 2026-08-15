@@ -298,17 +298,7 @@ func specificSubjectFromHook(hook string) string {
 }
 
 func stripLegalForm(s string) string {
-	repl := []string{
-		" - EM RECUPERACAO JUDICIAL", " - EM RECUPERAÇÃO JUDICIAL",
-		" EM RECUPERACAO JUDICIAL", " EM RECUPERAÇÃO JUDICIAL",
-		" LTDA", " EIRELI", " S/A", " S.A.", " SA",
-	}
-	out := s
-	for _, p := range repl {
-		out = strings.ReplaceAll(out, p, "")
-		out = strings.ReplaceAll(out, strings.ToLower(p), "")
-	}
-	return strings.TrimSpace(out)
+	return stripLegalVocative(s)
 }
 
 func ensureLowerStart(s string) string {

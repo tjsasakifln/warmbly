@@ -12,6 +12,12 @@ PII is not accepted on the query string. Send the body.
 
 Auth: `X-Warmbly-Signature: t=<unix>,v1=<hex(hmac_sha256(secret, "<unix>." + body))>`
 
+`GET /api/v1/webhooks/confenge/inbound/health` is a public, PII-free,
+secret-free probe. It always returns HTTP 200 with `status=READY|BLOCKED`,
+`auto_send_enabled`, and machine `reasons`. Timeout (process unreachable)
+stays distinct from POST `401` (HMAC) and POST `5xx` (persist). A lying
+READY when secret, dest org, or auto-send are wrong is a defect.
+
 | Setting | Purpose |
 | --- | --- |
 | `CONFENGE_INBOUND_WEBHOOK_SECRET` | HMAC shared secret |
@@ -84,10 +90,14 @@ never dispatches.
 ## Cockpit
 
 `GET /confenge/cockpit` includes `inbound_now`. Each row has `lead_id`,
-`receipt_id`, empresa, pessoa when known, origem, asset, contrato/contexto,
-por que agora, acao recomendada, canal, evidencias, owner or `UNKNOWN`,
-idade, status, enrichment, latency stamps, proxima acao. It is a human
-queue card, not a sendable message (`dispatchable=false`).
+`receipt_id`, empresa, pessoa when known, origem, asset, query, CTA,
+trigger, oferta, reachability, freshness, confidence, contrato/contexto,
+por que agora, acao humana recomendada, canal, evidencias, owner or
+`UNKNOWN`, idade, status, enrichment, latency stamps, copy sugerido
+sujeito a revisao. Missing facts stay `UNKNOWN`. It is a human queue
+card, not a sendable message (`dispatchable=false`). Email is not
+required. Synthetic, qa, and internal receipts persist but stay SKIPPED
+from the commercial queue.
 
 `POST /confenge/inbound/:leadId/outcome` records a human outcome.
 
@@ -138,8 +148,9 @@ Probed 2026-08-15 from the implementer host against origin/main
 - no `.env.confenge` with a real secret
 
 `make confenge-preflight` now surfaces `inbound_secret` / `inbound_org` /
-`inbound_ready`. `GET /confenge/status` `readiness.inbound` is `ready` only
-when secret + dest org are set. That is configuration, not a live POST.
+`inbound_ready`. `GET /confenge/status` `readiness.inbound` and the public
+health probe are READY only when secret + dest org are set and
+`CONFENGE_AUTO_SEND_ENABLED=false`. That is configuration, not a live POST.
 
 ## Human proof (remaining)
 

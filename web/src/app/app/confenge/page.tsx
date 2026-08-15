@@ -27,6 +27,7 @@ import {
   useConfengeSummary,
   useApplyConfengeManualAction,
   useConfengeCockpit,
+  useConfengeExecutiveIntel,
   useRecordConfengeActionOutcome,
   useRecordConfengeInboundOutcome,
   useConfengeWorkingOverview,
@@ -46,6 +47,7 @@ import type {
   ConfengeActionCard,
   ConfengeActionCopy,
   ConfengeInboundNowItem,
+  ConfengeExecutiveView,
   ConfengeAttentionFilter,
   ConfengeTouchpoint,
   ConfengeWorkingQueueItem,
@@ -67,6 +69,7 @@ export default function ConfengePage() {
   const summary = useConfengeSummary(enabled);
   const workingOverview = useConfengeWorkingOverview(enabled);
   const cockpit = useConfengeCockpit(enabled);
+  const executive = useConfengeExecutiveIntel(enabled);
   const manualAction = useApplyConfengeManualAction();
   const recordOutcome = useRecordConfengeActionOutcome();
   const recordInbound = useRecordConfengeInboundOutcome();
@@ -361,10 +364,14 @@ export default function ConfengePage() {
                 </li>
               ))}
               {!(cockpit.data?.inbound_now?.length) && (
-                <li className="px-3 py-8 text-center text-slate-400 text-[12.5px]">Nenhum lead inbound na fila.</li>
+                <li className="px-3 py-8 text-center text-slate-400 text-[12.5px]">Nenhum lead inbound real na fila. Synthetic/qa/internal ficam de fora.</li>
               )}
             </ul>
           </section>
+        )}
+
+        {executive.data && (
+          <ExecutiveIntelPanel view={executive.data} />
         )}
 
         {cockpit.data?.today && (
@@ -1349,11 +1356,26 @@ function InboundNowCard({
         Capturado: {item.latency?.lead_created_at || "UNKNOWN"} · Ingerido: {item.latency?.warmbly_ingested_at || "UNKNOWN"}
         {item.latency?.enrichment_completed_at ? ` · Enriquecido: ${item.latency.enrichment_completed_at}` : ""}
       </div>
-      <div>Origem: {item.origin}{item.asset ? ` · Asset: ${item.asset}` : ""}</div>
       {item.contract_context && <div>Contrato/contexto: {item.contract_context}</div>}
+      <div>Origem: {item.origin || "UNKNOWN"}{item.asset ? ` · Asset: ${item.asset}` : " · Asset: UNKNOWN"}</div>
+      <div data-testid="confenge-inbound-query">Query: {item.query || "UNKNOWN"} · CTA: {item.cta || "UNKNOWN"}</div>
+      <div data-testid="confenge-inbound-trigger">Trigger: {item.trigger || "UNKNOWN"} · Oferta: {item.offer || "UNKNOWN"}</div>
+      <div data-testid="confenge-inbound-ids">
+        Conta: {item.account_id || item.entity_id || "UNKNOWN"}
+        {item.person_id ? ` · person_id: ${item.person_id}` : " · person_id: UNKNOWN"}
+      </div>
       <div data-testid="confenge-inbound-why">Por que agora: {item.why_now}</div>
       <div data-testid="confenge-inbound-next">Ação recomendada: {item.recommended_action}</div>
-      {item.channel && <div>Canal: {item.channel}</div>}
+      <div>Canal: {item.channel || "UNKNOWN"} · Alcance: {item.reachability || "UNKNOWN"}</div>
+      <div data-testid="confenge-inbound-freshness">Freshness: {item.freshness || "UNKNOWN"} · Confiança: {item.confidence || "UNKNOWN"}</div>
+      {item.suggested_copy && (
+        <div data-testid="confenge-inbound-suggested" className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-[12px] text-slate-700">
+          <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">
+            Sugestão {item.suggested_copy_route || "UNKNOWN"} · revisão humana
+          </div>
+          <div className="mt-0.5 whitespace-pre-wrap">{item.suggested_copy}</div>
+        </div>
+      )}
       {item.evidence && item.evidence.length > 0 && <div className="text-[11px] text-slate-400">Evidências: {item.evidence.join(", ")}</div>}
       <div>Owner: {item.owner} · Idade: {item.lead_age} · Status: {stateLabel(item.status)}</div>
       <div>Próxima ação: {stateLabel(item.next_action)}</div>
@@ -1408,6 +1430,52 @@ const OUTCOME_OPTIONS = [
   "DNC",
   "SKIPPED",
 ];
+
+function ExecutiveIntelPanel({ view }: { view: ConfengeExecutiveView }) {
+  const unknownLabel = view.real_empty ? "UNKNOWN" : String(view.unknown);
+  return (
+    <section id="inteligencia-executiva" data-testid="confenge-executive-intel" className="rounded-md border border-slate-200 bg-white">
+      <div className="px-3 h-10 flex items-center border-b border-slate-200">
+        <span className="text-[12.5px] font-medium text-slate-900">Inteligência comercial</span>
+        <span className="ml-2 text-[10px] uppercase tracking-[0.14em] text-slate-500">{view.month}</span>
+      </div>
+      <p className="px-3 pt-2 text-[11.5px] text-slate-500">
+        Associação observada apenas. causal_proof={String(view.causal_proof)}. Families inbound/outbound/parceiro/expansão ficam separadas.
+        {view.real_empty ? " Sem evento real: zeros e UNKNOWN." : ""}
+      </p>
+      <div className="px-3 py-2 grid gap-2 sm:grid-cols-4 text-[12px]">
+        <Metric label="IQP/mês" value={view.inbound_qualified_pipeline} />
+        <Metric label="Leads válidos" value={view.denominators.leads} />
+        <Metric label="QCO" value={view.qco} />
+        <Metric label="Conversas" value={view.conversations} />
+        <Metric label="Reuniões" value={view.meetings} />
+        <Metric label="Propostas" value={view.proposals} />
+        <Metric label="Pipeline" value={view.pipeline} />
+        <Metric label="WON" value={view.won} />
+        <Metric label="LOST" value={view.lost} />
+        <Metric label="UNKNOWN" value={unknownLabel} />
+        <Metric label="Latência" value={view.latency.baseline || "insufficient_data"} />
+        <Metric label="Freshness stale" value={view.freshness?.stale_chains ?? 0} />
+      </div>
+      <div className="px-3 pb-3 flex flex-wrap gap-2 text-[11px] text-slate-500">
+        {(view.families ?? []).map((f) => (
+          <span key={f.route_family} className="rounded-md border border-slate-200 px-2 py-1">
+            {f.route_family}: QCO {f.qco} · WON {f.won} · LOST {f.lost} · UNKNOWN {f.unknown}
+          </span>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="rounded-md border border-slate-200 px-2 py-1.5">
+      <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">{label}</div>
+      <div className="text-slate-900 tabular-nums">{value}</div>
+    </div>
+  );
+}
 
 function founderFacingCopy(copy: ConfengeActionCopy): string {
   const body = (copy.body || "").trim();

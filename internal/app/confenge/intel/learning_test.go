@@ -64,8 +64,17 @@ func TestLearningCandidateFromCorrectionAndOutcome(t *testing.T) {
 	if len(got) < 2 {
 		t.Fatalf("learning rows=%d", len(got))
 	}
-	fmt.Printf("LEARNING correction_target=%s outcome_target=%s upstream_writes=%d unknown_stays=%s\n",
-		fromCorr.Target, fromOut.Target, len(fromCorr.UpstreamWrites)+len(fromOut.UpstreamWrites), unknown.Target)
+	if fromCorr.Recommendation != LearningChange {
+		t.Fatalf("correction rec=%s want change", fromCorr.Recommendation)
+	}
+	if fromOut.Recommendation != LearningRepeat {
+		t.Fatalf("qco rec=%s want repeat", fromOut.Recommendation)
+	}
+	if fromCorr.CausalProof || fromOut.CausalProof {
+		t.Fatal("causal_proof must stay false")
+	}
+	fmt.Printf("LEARNING correction_target=%s outcome_target=%s rec=%s/%s upstream_writes=%d unknown_stays=%s causal_proof=false\n",
+		fromCorr.Target, fromOut.Target, fromCorr.Recommendation, fromOut.Recommendation, len(fromCorr.UpstreamWrites)+len(fromOut.UpstreamWrites), unknown.Target)
 }
 
 func TestLearningDoesNotCallOtherRepos(t *testing.T) {

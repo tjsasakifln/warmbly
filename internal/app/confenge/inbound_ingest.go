@@ -303,7 +303,14 @@ func inboundRowFromParsed(orgID uuid.UUID, lead InboundLeadV1, raw []byte, now t
 	if len(consent) == 0 {
 		consent = []byte("{}")
 	}
-	utm, _ := json.Marshal(lead.UTM)
+	utmMap := lead.UTM
+	if utmMap == nil {
+		utmMap = map[string]string{}
+	}
+	if q := strings.TrimSpace(lead.Query); q != "" {
+		utmMap["query"] = q
+	}
+	utm, _ := json.Marshal(utmMap)
 	if len(utm) == 0 {
 		utm = []byte("{}")
 	}
@@ -319,7 +326,7 @@ func inboundRowFromParsed(orgID uuid.UUID, lead InboundLeadV1, raw []byte, now t
 		IdentityKey:       inboundIdentityKey(lead.CNPJ, lead.Email, lead.Phone),
 		LeadCreatedAt:     lead.CreatedAt,
 		WarmblyIngestedAt: now,
-		Source:            firstNonEmpty(lead.Source, "web-cfg"),
+		Source:            lead.Source,
 		RouteFamily:       lead.RouteFamily,
 		AssetID:           lead.AssetID,
 		CTAID:             lead.CTAID,

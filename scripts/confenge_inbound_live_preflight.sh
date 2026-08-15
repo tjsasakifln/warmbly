@@ -25,6 +25,20 @@ echo "SECRET_SET=$([ -n "$SECRET" ] && echo true || echo false)"
 echo "ORG=${ORG:-UNSET}"
 echo "CONFENGE_AUTO_SEND_ENABLED=${AUTO:-UNSET}"
 
+HEALTH_URL=""
+if [ -n "$URL" ]; then
+  HEALTH_URL="${URL%/}/health"
+  if [[ "$URL" == *"/inbound" ]]; then
+    HEALTH_URL="${URL}/health"
+  fi
+  echo "HEALTH_URL=$HEALTH_URL"
+  HEALTH_BODY="$(mktemp)"
+  HEALTH_CODE=$(curl -sS -o "$HEALTH_BODY" -w '%{http_code}' --connect-timeout 5 --max-time 10 "$HEALTH_URL" || echo 000)
+  echo "HEALTH_HTTP=$HEALTH_CODE"
+  echo "HEALTH_BODY=$(tr '\n' ' ' < "$HEALTH_BODY" | head -c 300)"
+  rm -f "$HEALTH_BODY"
+fi
+
 blocker=""
 if [ -z "$URL" ]; then blocker="${blocker}CONFENGE_INBOUND_WEBHOOK_URL unset. "; fi
 if [ -z "$SECRET" ]; then blocker="${blocker}CONFENGE_INBOUND_WEBHOOK_SECRET unset. "; fi
@@ -123,6 +137,7 @@ if [ "$CODE2" != "200" ]; then
 fi
 
 echo "VERDICT=LIVE_WEBHOOK"
-echo "NEXT=open INBOUND NOW and confirm lead_id=$LEAD_ID. Do not contact."
+echo "NOTE=synthetic/qa/internal persist but stay SKIPPED from commercial INBOUND NOW."
+echo "NEXT=confirm receipt persisted for lead_id=$LEAD_ID. Do not treat it as a commercial lead. Do not contact."
 echo "Cockpit: GET /confenge/cockpit (JWT) or dashboard #inbound-agora"
 exit 0

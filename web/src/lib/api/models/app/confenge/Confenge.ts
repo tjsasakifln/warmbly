@@ -209,10 +209,20 @@ export type ConfengeInboundNowItem = {
     person?: string;
     origin: string;
     asset?: string;
+    query?: string;
+    cta?: string;
+    trigger?: string;
+    offer?: string;
+    entity_id?: string;
+    person_id?: string;
+    correlation_id?: string;
     contract_context?: string;
     why_now: string;
     recommended_action: string;
     channel?: string;
+    reachability?: string;
+    freshness?: string;
+    confidence?: string;
     evidence?: string[];
     owner: string;
     lead_age_seconds: number;
@@ -225,7 +235,63 @@ export type ConfengeInboundNowItem = {
     dispatchable: boolean;
     enrichment_status: string;
     warnings?: string[];
+    suggested_copy?: string;
+    suggested_copy_route?: string;
+    suggested_copy_review?: string;
     latency: ConfengeInboundLatency;
+};
+
+export type ConfengeExecutiveFamily = {
+    route_family: string;
+    inbound_qualified_pipeline: number;
+    qco: number;
+    conversations: number;
+    meetings: number;
+    proposals: number;
+    pipeline: number;
+    won: number;
+    lost: number;
+    unknown: number;
+};
+
+export type ConfengeExecutiveView = {
+    month: string;
+    include_synthetic: boolean;
+    inbound_qualified_pipeline: number;
+    qco: number;
+    conversations: number;
+    meetings: number;
+    proposals: number;
+    pipeline: number;
+    won: number;
+    lost: number;
+    unknown: number;
+    families: ConfengeExecutiveFamily[];
+    denominators: {
+        leads: number;
+        actions: number;
+        outcomes: number;
+        qualified: number;
+        conversations: number;
+        meetings: number;
+        proposals: number;
+        closed: number;
+    };
+    latency: {
+        sampled_chains: number;
+        baseline: string;
+        lead_to_ingest_ms?: number;
+        ingest_to_enrichment_ms?: number;
+        enrichment_to_action_ms?: number;
+    };
+    freshness?: {
+        stale_chains?: number;
+        missing_version_chains?: number;
+    };
+    attribution_kind: string;
+    causal_proof: boolean;
+    real_empty: boolean;
+    chain_count: number;
 };
 
 export type ConfengeCockpit = {

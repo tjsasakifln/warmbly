@@ -13,6 +13,7 @@ import type {
     ConfengeToday,
     ConfengeWorkingQueueItem,
     ConfengeWorkingQueueSummary,
+    ConfengeExecutiveView,
 } from "@/lib/api/models/app/confenge/Confenge";
 import Request from "../../Request";
 
@@ -56,6 +57,22 @@ export async function listConfengeWorkingQueue(params?: {
         authorization: true,
     });
     return res.data ?? [];
+}
+
+export async function getConfengeExecutiveIntel(params?: {
+    month?: string;
+    includeSynthetic?: boolean;
+}): Promise<ConfengeExecutiveView> {
+    const sp = new URLSearchParams();
+    if (params?.month) sp.set("month", params.month);
+    sp.set("include_synthetic", params?.includeSynthetic ? "1" : "0");
+    const qs = sp.toString();
+    const res = await Request<{ data: ConfengeExecutiveView }>({
+        method: "GET",
+        url: `/confenge/intel/executive${qs ? `?${qs}` : ""}`,
+        authorization: true,
+    });
+    return res.data;
 }
 
 export async function getConfengeCockpit(): Promise<ConfengeCockpit> {

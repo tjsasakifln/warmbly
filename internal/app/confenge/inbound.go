@@ -42,6 +42,7 @@ type InboundLeadV1 struct {
 	Referrer       string
 	Message        string
 	CorrelationID  string
+	Query          string
 	Consent        InboundConsent
 	UTM            map[string]string
 	HighIntentHint bool
@@ -121,7 +122,11 @@ func ParseInboundLead(raw []byte, now time.Time) (InboundLeadV1, *errx.Error) {
 		Referrer:      sanitizeInboundURL(strAny(m, "referrer", "referer")),
 		Message:       SanitizeText(strAny(m, "message", "contexto", "notes", "context"), 4000),
 		CorrelationID: SanitizeText(strAny(m, "correlation_id", "attribution_correlation_id"), 160),
+		Query:         SanitizeText(strAny(m, "query", "search_query", "q"), 200),
 		UTM:           parseUTM(m),
+	}
+	if lead.Query == "" && lead.UTM != nil {
+		lead.Query = firstNonEmpty(lead.UTM["term"], lead.UTM["query"], lead.UTM["campaign"])
 	}
 	lead.CNPJ = NormalizeCNPJ14(strAny(m, "cnpj14", "cnpj"))
 	if ts := parseFlexibleTime(strAny(m, "created_at", "lead_created_at")); !ts.IsZero() {

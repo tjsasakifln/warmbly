@@ -18,6 +18,7 @@ import {
     getConfengeSummary,
     applyConfengeManualAction,
     getConfengeCockpit,
+    getConfengeExecutiveIntel,
     getConfengeToday,
     recordConfengeActionOutcome,
     recordConfengeInboundOutcome,
@@ -69,6 +70,15 @@ export function useConfengeWorkingOverview(enabled = true) {
     return useQuery({
         queryKey: [...KEY, "working-overview"],
         queryFn: getConfengeWorkingOverview,
+        enabled,
+        staleTime: 15_000,
+    });
+}
+
+export function useConfengeExecutiveIntel(enabled = true) {
+    return useQuery({
+        queryKey: [...KEY, "intel", "executive"],
+        queryFn: () => getConfengeExecutiveIntel({ includeSynthetic: false }),
         enabled,
         staleTime: 15_000,
     });

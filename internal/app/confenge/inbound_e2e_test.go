@@ -114,6 +114,12 @@ func TestInboundShippedPathIngestToOutcome(t *testing.T) {
 	if item.Dispatchable || item.EmailSendable {
 		t.Fatal("queue card must not be sendable")
 	}
+	if item.CTA == inboundUnknown || item.Asset == inboundUnknown {
+		t.Fatalf("observed cta/asset rendered UNKNOWN: cta=%s asset=%s", item.CTA, item.Asset)
+	}
+	if item.SuggestedCopyReview != "human_review_required" {
+		t.Fatalf("suggested copy must stay review-only")
+	}
 	fmt.Printf("INBOUND_NOW company=%s person=%s origin=%s asset=%s contract=%s why=%q action=%s channel=%s owner=%s age=%s status=%s next=%s\n",
 		item.Company, item.Person, item.Origin, item.Asset, item.ContractContext, item.WhyNow,
 		item.RecommendedAction, item.Channel, item.Owner, item.LeadAge, item.Status, item.NextAction)
@@ -241,13 +247,18 @@ func TestInboundHTTPContractConfengeWebOmittedOptionals(t *testing.T) {
 	if res.NextAction != models.InboundNextNeedsEnrichment {
 		t.Fatalf("insufficient identity next=%s want NEEDS_ENRICHMENT", res.NextAction)
 	}
+	if res.Lead == nil || res.Lead.LeadID != "synthetic-inbound-cfg" {
+		t.Fatalf("synthetic receipt must persist: %+v", res)
+	}
 	queue, xerr := svc.CollectInboundNow(context.Background(), org)
-	if xerr != nil || len(queue) != 1 || queue[0].LeadID != "synthetic-inbound-cfg" {
-		t.Fatalf("INBOUND NOW missing CONFENGE_WEB receipt: %+v %v", queue, xerr)
+	if xerr != nil {
+		t.Fatal(xerr)
 	}
-	if queue[0].Dispatchable || queue[0].EmailSendable {
-		t.Fatal("queue card is a message")
+	for _, item := range queue {
+		if item.LeadID == "synthetic-inbound-cfg" {
+			t.Fatal("synthetic receipt leaked into commercial INBOUND NOW")
+		}
 	}
-	fmt.Printf("CONFENGE_WEB inbound_now=1 lead_id=%s next=%s dispatch=false auto_send=%v\n",
-		queue[0].LeadID, queue[0].NextAction, svc.cfg.AutoSendEnabled)
+	fmt.Printf("CONFENGE_WEB persisted=true inbound_now_skip=synthetic lead_id=%s next=%s dispatch=false auto_send=%v\n",
+		res.Lead.LeadID, res.NextAction, svc.cfg.AutoSendEnabled)
 }

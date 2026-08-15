@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,4 +146,91 @@ func TestConfengeInboundWebhookRetryAfterPersist5xx(t *testing.T) {
 		t.Fatalf("replay: %+v", wrap.Data)
 	}
 	fmt.Printf("HTTP_RETRY persist_5xx=500 then_201=true replay_200=true dispatch=false calls=%d\n", calls)
+}
+
+func TestConfengeInboundWebhookInvalidHMACIs401(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	org := uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+	stub := &inboundHTTPStub{cfg: confenge.Config{
+		Enabled: true, InboundWebhookSecret: "inbound-http-secret", InboundOrgID: org, AutoSendEnabled: false,
+	}}
+	h := &Handler{ConfengeService: stub}
+	body := []byte(`{"lead_id":"http-401-1","source":"CONFENGE_WEB"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/confenge/inbound", bytes.NewReader(body))
+	req.Header.Set("X-Warmbly-Signature", "t=1,v1=deadbeef")
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	h.ConfengeInboundWebhook(c)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid HMAC status=%d body=%s", w.Code, w.Body.String())
+	}
+	fmt.Printf("HTTP_HMAC invalid=401 class=unauthorized\n")
+}
+
+func TestConfengeInboundWebhookUnavailableOrgIs503(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	stub := &inboundHTTPStub{cfg: confenge.Config{
+		Enabled: true, InboundWebhookSecret: "inbound-http-secret", AutoSendEnabled: false,
+	}}
+	h := &Handler{ConfengeService: stub}
+	body := []byte(`{"lead_id":"http-503-1","source":"CONFENGE_WEB"}`)
+	now := time.Now().UTC()
+	sig := confenge.SignOutcomeHMAC("inbound-http-secret", now, body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/confenge/inbound", bytes.NewReader(body))
+	req.Header.Set("X-Warmbly-Signature", sig)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	h.ConfengeInboundWebhook(c)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("missing org status=%d want 503 body=%s", w.Code, w.Body.String())
+	}
+	if w.Code == http.StatusUnauthorized {
+		t.Fatal("unavailable must stay distinct from 401")
+	}
+	fmt.Printf("HTTP_UNAVAILABLE class=503 distinct_from_401=true\n")
+}
+
+func TestConfengeInboundHealthReadyBlockedNoPII(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	org := uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+	readyStub := &inboundHTTPStub{cfg: confenge.Config{
+		Enabled: true, InboundWebhookSecret: "inbound-http-secret", InboundOrgID: org, AutoSendEnabled: false,
+	}}
+	h := &Handler{ConfengeService: readyStub}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/webhooks/confenge/inbound/health", nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	h.ConfengeInboundHealth(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("health status=%d body=%s", w.Code, w.Body.String())
+	}
+	var probe confenge.InboundReceiveProbe
+	if err := json.Unmarshal(w.Body.Bytes(), &probe); err != nil {
+		t.Fatal(err)
+	}
+	if probe.Status != confenge.InboundReceiveReady || probe.AutoSendEnabled {
+		t.Fatalf("health READY: %+v", probe)
+	}
+	if strings.Contains(w.Body.String(), "inbound-http-secret") || strings.Contains(w.Body.String(), org.String()) {
+		t.Fatalf("health leaked secret or org: %s", w.Body.String())
+	}
+	fmt.Printf("HTTP_HEALTH status=%s auto_send=%v http=%d\n", probe.Status, probe.AutoSendEnabled, w.Code)
+
+	blocked := &inboundHTTPStub{cfg: confenge.Config{Enabled: true, AutoSendEnabled: false}}
+	h2 := &Handler{ConfengeService: blocked}
+	w2 := httptest.NewRecorder()
+	c2, _ := gin.CreateTestContext(w2)
+	c2.Request = httptest.NewRequest(http.MethodGet, "/api/v1/webhooks/confenge/inbound/health", nil)
+	h2.ConfengeInboundHealth(c2)
+	var blockedProbe confenge.InboundReceiveProbe
+	if err := json.Unmarshal(w2.Body.Bytes(), &blockedProbe); err != nil {
+		t.Fatal(err)
+	}
+	if blockedProbe.Status != confenge.InboundReceiveBlocked {
+		t.Fatalf("unset config must BLOCK: %+v", blockedProbe)
+	}
+	fmt.Printf("HTTP_HEALTH_BLOCKED status=%s reasons=%v\n", blockedProbe.Status, blockedProbe.Reasons)
 }

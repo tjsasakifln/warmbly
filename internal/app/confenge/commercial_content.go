@@ -71,6 +71,14 @@ func ComposeActionContent(a models.OutreachCommercialAction) CommercialActionCon
 	default:
 		c = CommercialActionContent{Kind: "MANUAL", Body: strings.TrimSpace(a.RecommendedAction)}
 	}
+	c.Body = ApplyCopyHygiene(c.Body)
+	c.Opening = ApplyCopyHygiene(c.Opening)
+	c.ReasonForCall = ApplyCopyHygiene(c.ReasonForCall)
+	c.Ask = ApplyCopyHygiene(c.Ask)
+	c.Subject = ApplyCopyHygiene(c.Subject)
+	if c.Kind == "EMAIL" || c.Kind == "INFERRED_EMAIL" || c.Kind == "ROLE_EMAIL" {
+		c.Body = ensureEmailSender(c.Body)
+	}
 	c.PersonID = firstNonEmpty(a.PersonID, c.PersonID)
 	if len(a.Warnings) > 0 {
 		for _, w := range a.Warnings {

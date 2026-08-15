@@ -122,9 +122,13 @@ func BuildReadiness(cfg Config, in ReadinessInputs) Readiness {
 		InboundSecretConfigured: strings.TrimSpace(cfg.InboundWebhookSecret) != "",
 		InboundOrgConfigured:    cfg.InboundOrgID != uuid.Nil || cfg.OperatorOrgID != uuid.Nil,
 	}
-	if r.InboundSecretConfigured && r.InboundOrgConfigured {
+	probe := EvaluateInboundReceive(cfg)
+	switch {
+	case probe.Status == InboundReceiveReady:
 		r.Inbound = ReadyOK
-	} else {
+	case cfg.AutoSendEnabled:
+		r.Inbound = ReadyBlockedPolicy
+	default:
 		r.Inbound = ReadyNotConfigured
 	}
 	maxAge := cfg.FeedMaxAge

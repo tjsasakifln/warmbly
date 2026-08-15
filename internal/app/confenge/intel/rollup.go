@@ -174,7 +174,10 @@ func Rollup(chains []Chain, month string, includeSynthetic bool) ExecutiveView {
 			ConversationToProposal: latSum.ConversationToProposal / int64(latN),
 			ProposalToClose:        latSum.ProposalToClose / int64(latN),
 			SampledChains:          latN,
+			Baseline:               "observed",
 		}
+	} else {
+		view.Latency.Baseline = "insufficient_data"
 	}
 	view.BySource = mapBreakdown(bySource)
 	view.ByAsset = mapBreakdown(byAsset)

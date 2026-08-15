@@ -35,8 +35,11 @@ func TestRealEmptyStoreNotFilledFromFixtures(t *testing.T) {
 	if labeled.ChainCount == 0 || labeled.RealEmpty {
 		t.Fatal("synthetic include path empty")
 	}
-	fmt.Printf("REAL_EMPTY iqp=%d qco=%d won=%d lost=%d unknown=%d real_empty=%v synthetic_count=%d\n",
-		realOnly.InboundQualifiedPipeline, realOnly.QCO, realOnly.Won, realOnly.Lost, realOnly.Unknown, realOnly.RealEmpty, labeled.ChainCount)
+	if realOnly.Latency.Baseline != "insufficient_data" {
+		t.Fatalf("empty real latency baseline=%q", realOnly.Latency.Baseline)
+	}
+	fmt.Printf("REAL_EMPTY iqp=%d qco=%d won=%d lost=%d unknown=%d real_empty=%v synthetic_count=%d latency_baseline=%s\n",
+		realOnly.InboundQualifiedPipeline, realOnly.QCO, realOnly.Won, realOnly.Lost, realOnly.Unknown, realOnly.RealEmpty, labeled.ChainCount, realOnly.Latency.Baseline)
 }
 
 func mustList(st Store, org string) []Chain {

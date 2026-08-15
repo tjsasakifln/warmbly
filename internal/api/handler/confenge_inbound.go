@@ -15,6 +15,26 @@ import (
 
 const inboundHMACSkew = 5 * time.Minute
 
+// ConfengeInboundHealth — GET /api/v1/webhooks/confenge/inbound/health
+// Public, PII-free, secret-free READY/BLOCKED probe for web-cfg.
+// Always 200 so timeout (unreachable) stays distinct from 401/5xx on POST.
+func (h *Handler) ConfengeInboundHealth(c *gin.Context) {
+	cfg := confenge.Config{}
+	if h.ConfengeService != nil {
+		cfg = h.ConfengeService.Config()
+		if !h.ConfengeService.Enabled() {
+			cfg.Enabled = false
+		}
+	}
+	probe := confenge.EvaluateInboundReceive(cfg)
+	c.JSON(http.StatusOK, gin.H{
+		"status":             probe.Status,
+		"auto_send_enabled":  probe.AutoSendEnabled,
+		"reasons":            probe.Reasons,
+		"dispatch_attempted": probe.DispatchAttempted,
+	})
+}
+
 // ConfengeInboundWebhook — POST /api/v1/webhooks/confenge/inbound
 // HMAC body auth. PII on the query string is rejected.
 func (h *Handler) ConfengeInboundWebhook(c *gin.Context) {

@@ -70,6 +70,11 @@ func TestBuildReadinessInboundReadyWhenSecretAndOrgSet(t *testing.T) {
 	if r.AutoSendEnabled {
 		t.Fatal("auto_send must stay false")
 	}
+	cfg.AutoSendEnabled = true
+	blocked := BuildReadiness(cfg, ReadinessInputs{})
+	if blocked.Inbound == ReadyOK {
+		t.Fatal("auto-send on must not report inbound READY")
+	}
 }
 
 func TestKillSwitchBlocksSendingAllowed(t *testing.T) {

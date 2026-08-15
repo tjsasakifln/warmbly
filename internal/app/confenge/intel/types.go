@@ -55,6 +55,11 @@ const (
 	LearningFromOutcome    = "outcome"
 	LearningPending        = "PENDING"
 
+	LearningRepeat  = "repeat"
+	LearningChange  = "change"
+	LearningStop    = "stop"
+	LearningUnknown = "UNKNOWN"
+
 	AssociationObserved = "observed_association"
 )
 
@@ -231,6 +236,8 @@ type LearningCandidate struct {
 	CorrectionCodes []string  `json:"correction_codes,omitempty"`
 	OutcomeType     string    `json:"outcome_type,omitempty"`
 	UpstreamWrites  []string  `json:"upstream_writes"`
+	Recommendation  string    `json:"recommendation"`
+	CausalProof     bool      `json:"causal_proof"`
 	Synthetic       bool      `json:"synthetic,omitempty"`
 	At              time.Time `json:"at"`
 }
@@ -280,13 +287,14 @@ type Denominators struct {
 
 // LatencyMS is observed elapsed time between stamps. Missing stamps stay 0.
 type LatencyMS struct {
-	LeadToIngest           int64 `json:"lead_to_ingest_ms"`
-	IngestToEnrichment     int64 `json:"ingest_to_enrichment_ms"`
-	EnrichmentToAction     int64 `json:"enrichment_to_action_ms"`
-	ActionToConversation   int64 `json:"action_to_conversation_ms"`
-	ConversationToProposal int64 `json:"conversation_to_proposal_ms"`
-	ProposalToClose        int64 `json:"proposal_to_close_ms"`
-	SampledChains          int   `json:"sampled_chains"`
+	LeadToIngest           int64  `json:"lead_to_ingest_ms"`
+	IngestToEnrichment     int64  `json:"ingest_to_enrichment_ms"`
+	EnrichmentToAction     int64  `json:"enrichment_to_action_ms"`
+	ActionToConversation   int64  `json:"action_to_conversation_ms"`
+	ConversationToProposal int64  `json:"conversation_to_proposal_ms"`
+	ProposalToClose        int64  `json:"proposal_to_close_ms"`
+	SampledChains          int    `json:"sampled_chains"`
+	Baseline               string `json:"baseline"`
 }
 
 // Freshness is the version/watermark surface. Empty stays UNKNOWN.
