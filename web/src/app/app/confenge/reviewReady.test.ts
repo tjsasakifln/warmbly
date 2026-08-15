@@ -34,13 +34,14 @@ describe("isAuthorizeReady", () => {
     ).toBe(true);
   });
 
-  it("rejects leftover NEEDS_REVIEW body when pack says nao and validation is missing", () => {
+  it("rejects leftover NEEDS_REVIEW body when pack says nao even if stored validation_ok is true", () => {
     expect(
       isAuthorizeReady(
         tp({
           recipient_state: "VALIDATED",
+          strategy_explain: { messageability: "READY" },
           consultant_sendability: { send_without_editing: "nao" },
-          draft: { validation_ok: false } as ConfengeTouchpoint["draft"],
+          draft: { validation_ok: true } as ConfengeTouchpoint["draft"],
         }),
       ),
     ).toBe(false);

@@ -585,4 +585,7 @@ func TestLastMileReviewPackReRunsHardQA(t *testing.T) {
 	if v, _ := pack["send_without_editing"].(string); v == "sim" {
 		t.Fatalf("leftover v3 junk must not say sim: %+v", pack)
 	}
+	if listed[0].Draft == nil || listed[0].Draft.ValidationOK == nil || *listed[0].Draft.ValidationOK {
+		t.Fatalf("live QA must stamp validation_ok=false on leftover junk: %+v", listed[0].Draft)
+	}
 }

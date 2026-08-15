@@ -7,8 +7,8 @@ export function isAuthorizeReady(tp: ConfengeTouchpoint): boolean {
   if (!bodyOK) {
     return false;
   }
-  if (tp.consultant_sendability?.send_without_editing === "sim") {
-    return true;
+  if (tp.consultant_sendability) {
+    return tp.consultant_sendability.send_without_editing === "sim";
   }
   const recipientOK = (tp.recipient_state || "").toUpperCase() === "VALIDATED";
   const messageability = (tp.strategy_explain?.messageability || "").toUpperCase();

@@ -204,6 +204,11 @@ func (s *service) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, li
 			}
 			pack := BuildConsultantSendabilityPack(acc, cand, rec, plan, synth, val)
 			list[i].ConsultantSendability = pack.AsMap()
+			// Live QA wins over a leftover stored true so the API cannot lie.
+			if d := list[i].Draft; d != nil {
+				ok := val.OK && pack.SendWithoutEditing == "sim"
+				d.ValidationOK = &ok
+			}
 		}
 	}
 	return list, nil
