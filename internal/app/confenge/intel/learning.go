@@ -34,6 +34,8 @@ func EmitLearning(store Store, in LearningInput) LearningCandidate {
 		CorrectionCodes: append([]string{}, in.CorrectionCodes...),
 		OutcomeType:     strings.ToUpper(strings.TrimSpace(in.OutcomeType)),
 		UpstreamWrites:  []string{},
+		Recommendation:  inferLearningRecommendation(in),
+		CausalProof:     false,
 		Synthetic:       in.Synthetic,
 		At:              now,
 	}
@@ -60,6 +62,43 @@ func normalizeLearningFrom(v string) string {
 	default:
 		return Unknown
 	}
+}
+
+func inferLearningRecommendation(in LearningInput) string {
+	from := normalizeLearningFrom(in.From)
+	out := strings.ToUpper(strings.TrimSpace(in.OutcomeType))
+	codes := append([]string{}, in.CorrectionCodes...)
+	codes = append(codes, in.Reason)
+	for _, c := range codes {
+		switch strings.ToLower(strings.TrimSpace(c)) {
+		case "dnc", "not_interested", "stop", "do_not_contact":
+			return LearningStop
+		case "wrong_service", "wrong_offer", "wrong_person", "wrong_recipient",
+			"wrong_hook", "generic_copy", "weak_hook", "awkward_tone",
+			"unsupported_claim", "bad_cta", "invalid_route", "change":
+			return LearningChange
+		case "repeat", "person_confirmed", "route_confirmed":
+			return LearningRepeat
+		}
+	}
+	if from == LearningFromOutcome {
+		switch out {
+		case OutcomeDoNotContact, "DNC", "NOT_INTERESTED", OutcomeLost, OutcomeNoResponse:
+			if isLostType(out) && !in.HumanConfirmed {
+				return LearningUnknown
+			}
+			return LearningStop
+		case OutcomeWon, OutcomeClient, OutcomeQualifiedConversation, OutcomeMeeting, OutcomeReplied, OutcomeProposal:
+			if (isWonType(out) || isLostType(out)) && !in.HumanConfirmed {
+				return LearningUnknown
+			}
+			return LearningRepeat
+		}
+	}
+	if from == LearningFromCorrection {
+		return LearningChange
+	}
+	return LearningUnknown
 }
 
 func inferLearningTarget(in LearningInput) string {

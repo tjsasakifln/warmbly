@@ -178,5 +178,6 @@ func (s *service) ApplyManualAction(ctx context.Context, orgID, userID, accountI
 			map[string]string{"reason": reason},
 		)
 	}
+	s.emitCorrectionLearning(orgID, accountID, hc)
 	return &hc, nil
 }

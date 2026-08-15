@@ -71,6 +71,8 @@ func Run(
 	r.POST("/api/v1/webhooks/evolution/:instance", h.EvolutionWebhook)
 	// web-cfg inbound lead handoff. HMAC on the body. PII is not accepted on the query string.
 	r.POST("/api/v1/webhooks/confenge/inbound", h.ConfengeInboundWebhook)
+	// Public READY/BLOCKED probe. No PII, no secrets, not implicit consent.
+	r.GET("/api/v1/webhooks/confenge/inbound/health", h.ConfengeInboundHealth)
 
 	// OAuth 2.1 authorization-server discovery (RFC 8414): public + unversioned.
 	r.GET("/.well-known/oauth-authorization-server", h.OAuthServerMetadata)

@@ -104,10 +104,15 @@ func RunPreflight(cfg Config, deps PreflightDeps) PreflightReport {
 	} else {
 		add("inbound_org", CheckPass, "inbound dest org configured")
 	}
-	if strings.TrimSpace(cfg.InboundWebhookSecret) != "" && (cfg.InboundOrgID != uuid.Nil || cfg.OperatorOrgID != uuid.Nil) && !cfg.AutoSendEnabled {
-		add("inbound_ready", CheckPass, "inbound webhook can persist a receipt (auto_send stays false)")
+	probe := EvaluateInboundReceive(cfg)
+	if probe.Status == InboundReceiveReady {
+		add("inbound_ready", CheckPass, "inbound webhook READY (auto_send stays false)")
 	} else {
-		add("inbound_ready", CheckWarn, "inbound not live-ready (secret, dest org, or auto_send)")
+		sev := CheckWarn
+		if cfg.AutoSendEnabled {
+			sev = CheckFail
+		}
+		add("inbound_ready", sev, "inbound BLOCKED: "+strings.Join(probe.Reasons, ","))
 	}
 
 	// Primary governor: rolling-hour global cap (email + WhatsApp share it).

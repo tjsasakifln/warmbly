@@ -344,6 +344,11 @@ func mergeIntoChain(existing Chain, in ObservedFacts, closeBlocked, held bool) (
 		merged.Held = true
 		changed = true
 	}
+	if (in.Synthetic || in.Label == LabelSynthetic) && !merged.Synthetic {
+		merged.Synthetic = true
+		merged.Label = LabelSynthetic
+		changed = true
+	}
 
 	qualified := merged.Qualified || merged.OutcomeType == OutcomeQualifiedConversation
 	conversation := merged.Conversation || merged.ConversationAt != nil || qualified || merged.OutcomeType == OutcomeReplied

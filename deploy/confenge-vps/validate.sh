@@ -50,6 +50,7 @@ echo "== safety flags in env.example =="
 for pair in \
   "CONFENGE_GREEN_AUTORUN_ENABLED=false" \
   "CONFENGE_AUTO_SEND_ENABLED=false" \
+  "CONFENGE_INBOUND_WEBHOOK_SECRET=" \
   "CONFENGE_REQUIRE_HUMAN_APPROVAL=true" \
   "CONFENGE_OUTREACH_ENABLED=true" \
   "CONFENGE_OPERATOR_MODE=true" \

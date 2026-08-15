@@ -65,6 +65,7 @@ func founderSafeFact(raw string) string {
 	}
 	raw = sanitizeHookProse(raw)
 	raw = accentCommonPTBR(raw)
+	raw = ApplyCopyHygiene(raw)
 	raw = strings.TrimSpace(raw)
 	if raw == "" || looksLikeMetadataDump(raw) || containsDumpLabel(raw) || creditWordIn(raw) {
 		return ""

@@ -28,6 +28,20 @@ func (s *service) intelStore() intel.Store {
 	return s.intel
 }
 
+func (s *service) emitCorrectionLearning(orgID, accountID uuid.UUID, hc HumanCorrection) {
+	intel.EmitLearning(s.intelStore(), intel.LearningInput{
+		From:            intel.LearningFromCorrection,
+		Reason:          firstNonEmpty(hc.Reason, strings.Join(hc.ReasonCodes, ",")),
+		CorrectionCodes: append([]string{}, hc.ReasonCodes...),
+		HumanConfirmed:  true,
+		Keys: intel.JoinKeys{
+			OrganizationID: orgID.String(),
+			AccountID:      accountID.String(),
+			ActionID:       hc.DraftID,
+		},
+	})
+}
+
 // ReconcileCommercialIntel joins one observed ID record. Replay is a no-op.
 func (s *service) ReconcileCommercialIntel(_ context.Context, orgID uuid.UUID, in intel.ObservedFacts) (intel.JoinResult, *errx.Error) {
 	if xerr := s.requireEnabled(); xerr != nil {

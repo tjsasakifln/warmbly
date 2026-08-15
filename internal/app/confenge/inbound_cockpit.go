@@ -9,35 +9,50 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/warmbly/warmbly/internal/app/confenge/intel"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
 )
 
 // InboundNowItem is one Monday-queue row. Work, not ornament.
+// Missing facts render as UNKNOWN. Email is not required.
 type InboundNowItem struct {
-	LeadID            string         `json:"lead_id"`
-	ReceiptID         string         `json:"receipt_id"`
-	Company           string         `json:"company"`
-	Person            string         `json:"person,omitempty"`
-	Origin            string         `json:"origin"`
-	Asset             string         `json:"asset,omitempty"`
-	ContractContext   string         `json:"contract_context,omitempty"`
-	WhyNow            string         `json:"why_now"`
-	RecommendedAction string         `json:"recommended_action"`
-	Channel           string         `json:"channel,omitempty"`
-	Evidence          []string       `json:"evidence,omitempty"`
-	Owner             string         `json:"owner"`
-	LeadAgeSeconds    int64          `json:"lead_age_seconds"`
-	LeadAge           string         `json:"lead_age"`
-	Status            string         `json:"status"`
-	NextAction        string         `json:"next_action"`
-	ActionID          string         `json:"action_id,omitempty"`
-	AccountID         string         `json:"account_id,omitempty"`
-	EmailSendable     bool           `json:"email_sendable"`
-	Dispatchable      bool           `json:"dispatchable"`
-	EnrichmentStatus  string         `json:"enrichment_status"`
-	Warnings          []string       `json:"warnings,omitempty"`
-	Latency           InboundLatency `json:"latency"`
+	LeadID              string         `json:"lead_id"`
+	ReceiptID           string         `json:"receipt_id"`
+	Company             string         `json:"company"`
+	Person              string         `json:"person"`
+	Origin              string         `json:"origin"`
+	Asset               string         `json:"asset"`
+	Query               string         `json:"query"`
+	CTA                 string         `json:"cta"`
+	Trigger             string         `json:"trigger"`
+	Offer               string         `json:"offer"`
+	EntityID            string         `json:"entity_id"`
+	PersonID            string         `json:"person_id"`
+	CorrelationID       string         `json:"correlation_id"`
+	ContractContext     string         `json:"contract_context"`
+	WhyNow              string         `json:"why_now"`
+	RecommendedAction   string         `json:"recommended_action"`
+	Channel             string         `json:"channel"`
+	Reachability        string         `json:"reachability"`
+	Freshness           string         `json:"freshness"`
+	Confidence          string         `json:"confidence"`
+	Evidence            []string       `json:"evidence,omitempty"`
+	Owner               string         `json:"owner"`
+	LeadAgeSeconds      int64          `json:"lead_age_seconds"`
+	LeadAge             string         `json:"lead_age"`
+	Status              string         `json:"status"`
+	NextAction          string         `json:"next_action"`
+	ActionID            string         `json:"action_id,omitempty"`
+	AccountID           string         `json:"account_id,omitempty"`
+	EmailSendable       bool           `json:"email_sendable"`
+	Dispatchable        bool           `json:"dispatchable"`
+	EnrichmentStatus    string         `json:"enrichment_status"`
+	Warnings            []string       `json:"warnings,omitempty"`
+	SuggestedCopy       string         `json:"suggested_copy,omitempty"`
+	SuggestedCopyRoute  string         `json:"suggested_copy_route,omitempty"`
+	SuggestedCopyReview string         `json:"suggested_copy_review"`
+	Latency             InboundLatency `json:"latency"`
 }
 
 // InboundLatency is the commercial-latency baseline. No minute SLA.
@@ -68,15 +83,24 @@ func (s *service) CollectInboundNow(ctx context.Context, orgID uuid.UUID) ([]Inb
 	now := time.Now().UTC()
 	out := make([]InboundNowItem, 0, len(leads))
 	for i := range leads {
-		item := ProjectInboundNowItem(leads[i], now)
+		if reason := InboundCommercialSkipReason(leads[i]); reason != "" {
+			continue
+		}
+		var acc *models.OutreachAccount
+		var action *models.OutreachCommercialAction
+		if leads[i].AccountID != nil {
+			acc, _ = s.repo.GetAccount(ctx, orgID, *leads[i].AccountID)
+		}
 		if s.actionStore() != nil && leads[i].ActionID != nil {
-			if a, _ := s.actionStore().GetCommercialAction(ctx, orgID, *leads[i].ActionID); a != nil {
-				item.RecommendedAction = firstNonEmpty(a.RecommendedAction, item.RecommendedAction)
-				item.EmailSendable = a.EmailSendable
-				item.Dispatchable = false
-				if a.OutcomeCode != "" && item.NextAction == "" {
-					item.NextAction = a.NextActionType
-				}
+			action, _ = s.actionStore().GetCommercialAction(ctx, orgID, *leads[i].ActionID)
+		}
+		item := ProjectInboundNowItem(leads[i], acc, action, now)
+		if action != nil {
+			item.RecommendedAction = firstNonEmpty(action.RecommendedAction, item.RecommendedAction)
+			item.EmailSendable = false
+			item.Dispatchable = false
+			if action.OutcomeCode != "" && item.NextAction == "" {
+				item.NextAction = action.NextActionType
 			}
 		}
 		out = append(out, item)
@@ -85,7 +109,7 @@ func (s *service) CollectInboundNow(ctx context.Context, orgID uuid.UUID) ([]Inb
 }
 
 // ProjectInboundNowItem is the shipped projector used by tests and the cockpit.
-func ProjectInboundNowItem(lead models.OutreachInboundLead, now time.Time) InboundNowItem {
+func ProjectInboundNowItem(lead models.OutreachInboundLead, acc *models.OutreachAccount, action *models.OutreachCommercialAction, now time.Time) InboundNowItem {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
@@ -97,29 +121,48 @@ func ProjectInboundNowItem(lead models.OutreachInboundLead, now time.Time) Inbou
 	if age < 0 {
 		age = 0
 	}
-	company := firstNonEmpty(lead.CompanyName, lead.CNPJ14, "UNKNOWN")
+	query := inboundQueryOf(lead)
+	trigger, offer, freshness := inboundAccountFacts(acc)
+	reach := inboundUnknown
+	if action != nil {
+		reach = firstNonEmpty(action.ReachabilityClass, action.RouteType)
+		if offer == inboundUnknown {
+			offer = idOrUnknownLocal(action.ServiceCode)
+		}
+	}
 	item := InboundNowItem{
-		LeadID:            lead.LeadID,
-		ReceiptID:         firstNonEmpty(lead.ReceiptID, lead.LeadID),
-		Company:           company,
-		Person:            lead.PersonName,
-		Origin:            firstNonEmpty(lead.Source, "web-cfg"),
-		Asset:             lead.AssetID,
-		ContractContext:   firstNonEmpty(lead.ContractID, lead.EntityID, truncateRunes(lead.Message, 160)),
-		WhyNow:            firstNonEmpty(lead.WhyNow, "Lead inbound sem fato adicional."),
-		RecommendedAction: inboundRecommended(lead),
-		Channel:           lead.Channel,
-		Evidence:          append([]string{}, lead.Evidence...),
-		Owner:             firstNonEmpty(lead.Owner, models.InboundOwnerUnknown),
-		LeadAgeSeconds:    int64(age.Seconds()),
-		LeadAge:           formatLeadAge(age),
-		Status:            firstNonEmpty(lead.Status, models.InboundStatusOpen),
-		NextAction:        firstNonEmpty(lead.NextAction, models.InboundNextNeedsEnrichment),
-		EmailSendable:     false,
-		Dispatchable:      false,
-		EnrichmentStatus:  firstNonEmpty(lead.EnrichmentStatus, models.InboundEnrichmentUnknown),
-		Warnings:          append([]string{}, lead.Warnings...),
-		Latency:           projectInboundLatency(lead),
+		LeadID:              lead.LeadID,
+		ReceiptID:           firstNonEmpty(lead.ReceiptID, lead.LeadID),
+		Company:             firstNonEmpty(lead.CompanyName, lead.CNPJ14, inboundUnknown),
+		Person:              firstNonEmpty(lead.PersonName, inboundUnknown),
+		Origin:              firstNonEmpty(lead.Source, inboundUnknown),
+		Asset:               firstNonEmpty(lead.AssetID, inboundUnknown),
+		Query:               query,
+		CTA:                 firstNonEmpty(lead.CTAID, inboundUnknown),
+		Trigger:             trigger,
+		Offer:               offer,
+		EntityID:            firstNonEmpty(lead.EntityID, inboundUnknown),
+		PersonID:            firstNonEmpty(lead.PersonID, inboundUnknown),
+		CorrelationID:       firstNonEmpty(lead.CorrelationID, inboundUnknown),
+		ContractContext:     firstNonEmpty(lead.ContractID, lead.EntityID, truncateRunes(lead.Message, 160), inboundUnknown),
+		WhyNow:              firstNonEmpty(lead.WhyNow, "Lead inbound sem fato adicional."),
+		RecommendedAction:   inboundRecommended(lead),
+		Channel:             firstNonEmpty(lead.Channel, inboundUnknown),
+		Reachability:        firstNonEmpty(reach, inboundUnknown),
+		Freshness:           freshness,
+		Confidence:          inboundConfidence(lead, acc),
+		Evidence:            append([]string{}, lead.Evidence...),
+		Owner:               firstNonEmpty(lead.Owner, models.InboundOwnerUnknown),
+		LeadAgeSeconds:      int64(age.Seconds()),
+		LeadAge:             formatLeadAge(age),
+		Status:              firstNonEmpty(lead.Status, models.InboundStatusOpen),
+		NextAction:          firstNonEmpty(lead.NextAction, models.InboundNextNeedsEnrichment),
+		EmailSendable:       false,
+		Dispatchable:        false,
+		EnrichmentStatus:    firstNonEmpty(lead.EnrichmentStatus, models.InboundEnrichmentUnknown),
+		Warnings:            append([]string{}, lead.Warnings...),
+		SuggestedCopyReview: "human_review_required",
+		Latency:             projectInboundLatency(lead),
 	}
 	if lead.ActionID != nil {
 		item.ActionID = lead.ActionID.String()
@@ -127,7 +170,101 @@ func ProjectInboundNowItem(lead models.OutreachInboundLead, now time.Time) Inbou
 	if lead.AccountID != nil {
 		item.AccountID = lead.AccountID.String()
 	}
+	if action != nil {
+		copy := ComposeActionContent(*action)
+		item.SuggestedCopy = FounderFacingCopy(copy)
+		item.SuggestedCopyRoute = firstNonEmpty(copy.Kind, action.ActionType, lead.NextAction)
+	} else {
+		item.SuggestedCopy = inboundSuggestedWithoutAction(lead)
+		item.SuggestedCopyRoute = firstNonEmpty(lead.NextAction, inboundUnknown)
+	}
 	return item
+}
+
+const inboundUnknown = "UNKNOWN"
+
+func inboundQueryOf(lead models.OutreachInboundLead) string {
+	if q := strings.TrimSpace(utmField(lead.UTMJSON, "query", "search_query", "q", "utm_term", "term")); q != "" {
+		return q
+	}
+	return inboundUnknown
+}
+
+func utmField(raw []byte, keys ...string) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var m map[string]string
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return ""
+	}
+	for _, k := range keys {
+		if v := strings.TrimSpace(m[k]); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func inboundAccountFacts(acc *models.OutreachAccount) (trigger, offer, freshness string) {
+	if acc == nil {
+		return inboundUnknown, inboundUnknown, inboundUnknown
+	}
+	trigger = idOrUnknownLocal(acc.MomentCode)
+	offer = idOrUnknownLocal(firstNonEmpty(acc.EntryOffer, acc.ServiceName, acc.ServiceCode))
+	switch {
+	case acc.TargetFitFresh:
+		freshness = "fresh"
+	case strings.TrimSpace(acc.TargetFitFreshnessReason) != "":
+		freshness = "stale"
+	default:
+		freshness = inboundUnknown
+	}
+	return trigger, offer, freshness
+}
+
+func inboundConfidence(lead models.OutreachInboundLead, acc *models.OutreachAccount) string {
+	switch lead.EnrichmentStatus {
+	case models.InboundEnrichmentCompleted:
+		if acc != nil && (lead.PersonID != "" || lead.AccountID != nil) {
+			return "observed"
+		}
+		return "lead_supplied"
+	case models.InboundEnrichmentFailed, models.InboundEnrichmentUnavailable:
+		return lead.EnrichmentStatus
+	default:
+		if lead.CompanyName != "" || lead.LeadPhone != "" || lead.LeadEmail != "" {
+			return "lead_supplied"
+		}
+		return inboundUnknown
+	}
+}
+
+func inboundSuggestedWithoutAction(lead models.OutreachInboundLead) string {
+	switch lead.NextAction {
+	case models.InboundNextCall:
+		return "Ligar no numero observado. Confirmar quem acompanha o contrato. Nao inventar identidade."
+	case models.InboundNextWhatsApp:
+		return "WhatsApp manual no numero observado. Sujeito a revisao. O sistema nao envia."
+	case models.InboundNextRoutedCall:
+		return "Ligacao roteada. Pedir a quem acompanha o contrato. Sem canal direto publicado."
+	case models.InboundNextSendEmail:
+		return "Preparar e-mail em revisao humana. Nao auto-enviar."
+	case models.InboundNextSuppressed:
+		return "Nao contatar."
+	case models.InboundNextManualOutreach:
+		return "Abordagem manual com os fatos observados. Sem auto-envio."
+	default:
+		return "Enriquecer identidade. Nao contatar no escuro."
+	}
+}
+
+func idOrUnknownLocal(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return inboundUnknown
+	}
+	return v
 }
 
 func inboundRecommended(lead models.OutreachInboundLead) string {
@@ -250,7 +387,39 @@ func (s *service) RecordInboundOutcome(ctx context.Context, orgID, userID uuid.U
 	if row.ActionID == nil {
 		s.enqueueInboundHumanOutcome(ctx, orgID, row, code)
 	}
+	s.emitInboundLearning(ctx, orgID, row, code)
 	return &applied, nil
+}
+
+func (s *service) emitInboundLearning(ctx context.Context, orgID uuid.UUID, row *models.OutreachInboundLead, code string) {
+	_ = ctx
+	if s.intel == nil && s.intelStore() == nil {
+		return
+	}
+	in := intel.LearningInput{
+		From:           intel.LearningFromOutcome,
+		OutcomeType:    code,
+		HumanConfirmed: true,
+		Keys: intel.JoinKeys{
+			OrganizationID: orgID.String(),
+			LeadID:         row.LeadID,
+			ReceiptID:      row.ReceiptID,
+			AssetID:        row.AssetID,
+			CTAID:          row.CTAID,
+			CorrelationID:  row.CorrelationID,
+			Source:         row.Source,
+			PersonID:       row.PersonID,
+			RouteFamily:    firstNonEmpty(row.RouteFamily, intel.FamilyInbound),
+		},
+		Synthetic: InboundCommercialSkipReason(*row) != "",
+	}
+	if row.ActionID != nil {
+		in.Keys.ActionID = row.ActionID.String()
+	}
+	if row.AccountID != nil {
+		in.Keys.AccountID = row.AccountID.String()
+	}
+	intel.EmitLearning(s.intelStore(), in)
 }
 
 func stampInboundLatency(row *models.OutreachInboundLead, code string, now time.Time) {

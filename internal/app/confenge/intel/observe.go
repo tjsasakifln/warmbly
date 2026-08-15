@@ -1,6 +1,7 @@
 package intel
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/google/uuid"
@@ -34,6 +35,10 @@ func ObserveFromInbound(lead models.OutreachInboundLead, acc *models.OutreachAcc
 		ProposalAt:     lead.ProposalAt,
 		CloseAt:        lead.CloseAt,
 		Label:          LabelReal,
+	}
+	if InboundCommercialSkipReason(lead) != "" {
+		in.Synthetic = true
+		in.Label = LabelSynthetic
 	}
 	if acc != nil {
 		if in.Keys.AccountID == "" {
@@ -138,6 +143,13 @@ func ObserveFromAction(action models.OutreachCommercialAction, acc *models.Outre
 		Label:         LabelReal,
 		RequiresFresh: action.RequiresFresh || strings.TrimSpace(action.StaleWarning) != "",
 	}
+	if InboundCommercialSkipReason(models.OutreachInboundLead{
+		LeadID: action.SourceLeadID, ReceiptID: action.SourceLeadID,
+		Source: action.SourceLeadID,
+	}) != "" {
+		in.Synthetic = true
+		in.Label = LabelSynthetic
+	}
 	if !action.CreatedAt.IsZero() {
 		in.ActionOccurredAt = action.CreatedAt
 		in.LeadCreatedAt = action.CreatedAt
@@ -170,16 +182,14 @@ func utmQuery(raw []byte) string {
 	if len(raw) == 0 {
 		return ""
 	}
-	s := string(raw)
-	for _, key := range []string{`"query"`, `"utm_campaign"`, `"campaign"`, `"utm_source"`} {
-		if i := strings.Index(s, key); i >= 0 {
-			rest := s[i+len(key):]
-			if j := strings.Index(rest, `"`); j >= 0 {
-				rest = rest[j+1:]
-				if k := strings.Index(rest, `"`); k >= 0 {
-					return rest[:k]
-				}
-			}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return ""
+	}
+	// Query is never backfilled from campaign or utm_source.
+	for _, key := range []string{"query", "search_query", "q", "utm_term", "term"} {
+		if v := strings.TrimSpace(asString(m[key])); v != "" {
+			return v
 		}
 	}
 	return ""

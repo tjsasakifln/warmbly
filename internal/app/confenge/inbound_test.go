@@ -278,6 +278,68 @@ func TestCollectInboundNowKeepsStaleEnrichment(t *testing.T) {
 		queue[0].LeadID, queue[0].EnrichmentStatus, queue[0].NextAction)
 }
 
+func TestParseInboundLeadQueryVsCampaign(t *testing.T) {
+	now := time.Date(2026, 8, 15, 17, 0, 0, 0, time.UTC)
+	realQ, err := ParseInboundLead([]byte(`{"lead_id":"q1","source":"CONFENGE_WEB","query":"segunda leitura contrato","utm_campaign":"brand-aug"}`), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if realQ.Query != "segunda leitura contrato" {
+		t.Fatalf("real query=%q", realQ.Query)
+	}
+	if realQ.UTM["campaign"] != "brand-aug" {
+		t.Fatalf("campaign not preserved: %+v", realQ.UTM)
+	}
+
+	term, err := ParseInboundLead([]byte(`{"lead_id":"q2","source":"CONFENGE_WEB","utm_term":"segunda-leitura","utm_campaign":"brand-aug"}`), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if term.Query != "segunda-leitura" {
+		t.Fatalf("utm_term query=%q", term.Query)
+	}
+	if term.UTM["campaign"] != "brand-aug" {
+		t.Fatalf("campaign lost on utm_term: %+v", term.UTM)
+	}
+
+	onlyCamp, err := ParseInboundLead([]byte(`{"lead_id":"q3","source":"CONFENGE_WEB","utm_campaign":"brand-aug","utm_source":"google"}`), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onlyCamp.Query != "" {
+		t.Fatalf("utm_campaign must not fill query: %q", onlyCamp.Query)
+	}
+	if onlyCamp.UTM["campaign"] != "brand-aug" || onlyCamp.UTM["source"] != "google" {
+		t.Fatalf("campaign/source not preserved: %+v", onlyCamp.UTM)
+	}
+
+	row := inboundRowFromParsed(uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"), onlyCamp, []byte(`{"lead_id":"q3","utm_campaign":"brand-aug"}`), now)
+	item := ProjectInboundNowItem(*row, nil, nil, now)
+	if item.Query != inboundUnknown {
+		t.Fatalf("campaign-only projection query=%q want UNKNOWN", item.Query)
+	}
+	var utm map[string]string
+	if err := json.Unmarshal(row.UTMJSON, &utm); err != nil {
+		t.Fatal(err)
+	}
+	if utm["campaign"] != "brand-aug" {
+		t.Fatalf("persisted campaign=%v", utm)
+	}
+
+	realRow := inboundRowFromParsed(uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"), realQ, []byte(`{"lead_id":"q1","query":"segunda leitura contrato"}`), now)
+	realItem := ProjectInboundNowItem(*realRow, nil, nil, now)
+	if realItem.Query != "segunda leitura contrato" {
+		t.Fatalf("real query projection=%q", realItem.Query)
+	}
+	termRow := inboundRowFromParsed(uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"), term, []byte(`{"lead_id":"q2","utm_term":"segunda-leitura"}`), now)
+	termItem := ProjectInboundNowItem(*termRow, nil, nil, now)
+	if termItem.Query != "segunda-leitura" {
+		t.Fatalf("utm_term projection=%q", termItem.Query)
+	}
+	fmt.Printf("QUERY_VS_CAMPAIGN query=%q utm_term=%q campaign_only=%s campaign=%s\n",
+		realItem.Query, termItem.Query, item.Query, utm["campaign"])
+}
+
 func TestParseInboundLeadRequiresReceipt(t *testing.T) {
 	_, err := ParseInboundLead([]byte(`{"company":"X"}`), time.Now().UTC())
 	if err == nil {
