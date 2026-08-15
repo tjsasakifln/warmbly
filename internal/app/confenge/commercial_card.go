@@ -34,6 +34,7 @@ type ActionCard struct {
 	LastOutcome       string                  `json:"last_outcome,omitempty"`
 	NextAction        string                  `json:"next_action,omitempty"`
 	RouteEpistemology string                  `json:"route_epistemology,omitempty"`
+	MailboxLabel      string                  `json:"mailbox_label,omitempty"`
 	ActionType        string                  `json:"action_type"`
 	Lane              string                  `json:"lane"`
 	State             string                  `json:"state"`
@@ -107,7 +108,7 @@ func AssembleActionCard(a models.OutreachCommercialAction) ActionCard {
 	if len(a.ContentJSON) > 0 {
 		_ = json.Unmarshal(a.ContentJSON, &copy)
 	}
-	if copy.Kind == "" {
+	if copy.Kind == "" || isManualRoute(a.ActionType) {
 		copy = ComposeActionContent(a)
 	}
 	card := ActionCard{
@@ -131,6 +132,7 @@ func AssembleActionCard(a models.OutreachCommercialAction) ActionCard {
 		Evidence:          append([]string{}, a.EvidenceIDs...),
 		Warnings:          append([]string{}, a.Warnings...),
 		Copy:              copy,
+		MailboxLabel:      firstNonEmpty(copy.MailboxLabel, observedMailboxLabel(a.ChannelValue, a.TargetRole)),
 		LastOutcome:       a.OutcomeCode,
 		NextAction:        a.NextActionType,
 		ActionType:        a.ActionType,

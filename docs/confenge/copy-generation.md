@@ -29,6 +29,19 @@ Bump the constant when the system prompt schema or hard safety rules change. Sto
 
 WhatsApp generation **short-circuits** when consent/policy blocks the channel (`CONFENGE_WHATSAPP_ENABLED`, opt-in provenance, DNC). Free-text still never auto-sends without human approval.
 
+## Manual route composers (CALL / ROUTED_CALL / WhatsApp / caixa genérica)
+
+Founder-facing text on **Agir agora** and the fila manual is composed per route by `ComposeActionContent` (and `manualSuggestedText` / `BuildWhatsAppCopy` reuse that). None of those four routes reuse the email template (`Olá` + hook paragraph + email CTA).
+
+| Route | Shape |
+| --- | --- |
+| `DIRECT_CALL` | Short opening that identifies CONFENGE, one sanitized public fact, one diagnostic question. No pitch, no unproven legal or economic claim. |
+| `ROUTED_CALL` | Same, but asks reception to route. Never greets the switchboard as a personal line. |
+| `WHATSAPP` | Accented PT-BR, one contextual fact, one permission question. Well under the 70-word cap. No `objeto:`/`órgão:`/`UF:`/`R$` dump. |
+| Generic mailbox | Addresses the observed local-part (`comercial@`, `vendas@`) or "caixa da empresa". Never invents "área de contratos" or a named person. |
+
+Hooks are condensed before interpolation: metadata dumps, US-style amounts, evident OCR, legal-form suffixes, and evidence IDs stay off the copy. The operator card still shows route class, why now, evidence ids, and a **Revisar / copiar** control. There is no auto-send on these cards.
+
 ## Inputs (dossier only)
 
 - company (razao/nome/UF)

@@ -42,8 +42,14 @@ func TestConfengeUIAcceptanceAffordancesPresent(t *testing.T) {
 		`data-testid="confenge-today"`,
 		`data-testid="confenge-today-summary"`,
 		`data-testid="confenge-action-card"`,
+		`data-testid="confenge-today-route-class"`,
+		`data-testid="confenge-today-why"`,
+		`data-testid="confenge-today-copy"`,
+		`data-testid="confenge-today-copy-text"`,
+		`data-testid="confenge-today-evidence"`,
 		`data-testid="confenge-route-epistemology"`,
 		`data-testid="confenge-record-outcome"`,
+		"Revisar / copiar",
 		`confenge-stat-`, // template for Sent/Review/etc.
 		"Aprovar mensagem",
 		"Precisa de atenção",
@@ -88,6 +94,11 @@ func TestConfengeUIAcceptanceAffordancesPresent(t *testing.T) {
 	// Ephemeral goal-scratch paths must not be defaults.
 	if strings.Contains(string(specRaw), "/tmp/grok-goal-") {
 		t.Error("Playwright spec must not hardcode /tmp/grok-goal-* paths")
+	}
+	for _, banned := range []string{"Enviar automaticamente", "enviar automaticamente", "auto-send"} {
+		if strings.Contains(src, banned) {
+			t.Errorf("manual/today cards must not expose auto-send control %q", banned)
+		}
 	}
 }
 

@@ -219,47 +219,20 @@ func ExtractPhoneFacts(c FeedContact) ContactPhoneFacts {
 }
 
 // BuildWhatsAppCopy creates short WhatsApp body from commercial context (not email paste).
-// Target: ~25–70 words, 1 fact, 1 offer, 1 question. No em dash, no lists.
+// Target: one fact, one permission question. No dump, no invented offer, no auto-send.
 func BuildWhatsAppCopy(acc *models.OutreachAccount, cand *models.OutreachContactCandidate) string {
-	name := "tudo bem"
-	if cand != nil && strings.TrimSpace(cand.Name) != "" {
-		// first token only
-		parts := strings.Fields(strings.TrimSpace(cand.Name))
-		name = parts[0]
-	}
-	fact := ""
-	offer := ""
-	question := ""
+	a := models.OutreachCommercialAction{ActionType: models.ActionWhatsApp}
 	if acc != nil {
-		fact = strings.TrimSpace(acc.FactToMention)
-		if fact == "" {
-			fact = strings.TrimSpace(acc.MomentSummary)
-		}
-		offer = strings.TrimSpace(acc.EntryOffer)
-		if offer == "" {
-			offer = strings.TrimSpace(acc.ServiceName)
-		}
-		question = strings.TrimSpace(acc.QuestionToAsk)
+		a.CompanyName = firstNonEmpty(acc.NomeFantasia, acc.RazaoSocial)
+		a.FactualHook = firstNonEmpty(acc.FactToMention, acc.MomentSummary)
+		a.ServiceContext = firstNonEmpty(acc.EntryOffer, acc.ServiceName)
+		a.ServiceCode = acc.ServiceCode
+		a.RecommendedAction = acc.QuestionToAsk
 	}
-	if fact == "" {
-		fact = "um momento recente da empresa"
+	if cand != nil && provenPersonName(cand) {
+		a.PersonName = strings.TrimSpace(cand.Name)
 	}
-	if offer == "" {
-		offer = "revisão técnica consultiva"
-	}
-	if question == "" {
-		question = "Posso te explicar em duas linhas como fazemos essa revisão?"
-	}
-	// Strip em dashes if present in inputs.
-	fact = strings.ReplaceAll(fact, "—", ",")
-	fact = strings.ReplaceAll(fact, "–", ",")
-	offer = strings.ReplaceAll(offer, "—", ",")
-	question = strings.ReplaceAll(question, "—", ",")
-
-	body := "Olá, " + name + ". Aqui é o Tiago, da CONFENGE.\n\n" +
-		"Vi " + truncateRunes(fact, 120) + ". Trabalho especificamente com " + truncateRunes(offer, 80) + ".\n\n" +
-		truncateRunes(question, 140)
-	return strings.TrimSpace(body)
+	return FounderFacingCopy(ComposeActionContent(a))
 }
 
 func truncateRunes(s string, max int) string {
