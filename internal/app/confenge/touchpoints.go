@@ -151,12 +151,19 @@ func (s *service) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, li
 				list[i].RecipientState = rec.State
 				list[i].RecipientReason = rec.Reason
 			}
-			st := PlanOutreachStrategy(pb, acc, cand, nil, pos)
+			st, plan := BuildOutboundPlan(pb, acc, cand, nil, pos)
 			if list[i].FactUsed != "" {
 				st.ObservedFact = list[i].FactUsed
 			}
 			ex := ExplainStrategy(st, list[i].Recipient)
 			list[i].StrategyExplain = strategyExplainProjection(ex, "")
+			synth := DraftOutput{Subject: list[i].Subject, BodyText: list[i].BodyText, ServiceCode: list[i].ServiceCode, FactUsed: list[i].FactUsed}
+			val := ValidationResult{OK: list[i].State == models.TouchpointNeedsReview && strings.TrimSpace(list[i].BodyText) != ""}
+			if list[i].RecipientState != "" {
+				rec := RecipientResolution{State: list[i].RecipientState, Reason: list[i].RecipientReason, Company: accName(acc)}
+				pack := BuildConsultantSendabilityPack(acc, cand, rec, plan, synth, val)
+				list[i].ConsultantSendability = pack.AsMap()
+			}
 			if list[i].DraftID != nil {
 				if d, _ := s.repo.GetDraft(ctx, orgID, *list[i].DraftID); d != nil {
 					list[i].Draft = d
@@ -447,6 +454,11 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	}
 	if draftStatus == models.OutreachDraftNeedsReview {
 		_ = s.repo.SetAccountHumanFlags(ctx, orgID, tp.AccountID, acc.Blocked, acc.DoNotContact, acc.BlockReason, models.OutreachQueueNeedsReview)
+	}
+	pack := BuildConsultantSendabilityPack(acc, cand, rec, plan, *synth, val)
+	tp.ConsultantSendability = pack.AsMap()
+	if strings.TrimSpace(tp.BodyText) == "" {
+		tp.GenerationError = firstNonEmpty(rec.Reason, plan.Reason, strings.Join(val.Errors, "; "), "Gerar mensagem não produziu copy sendable.")
 	}
 	_ = userID
 	return tp, nil

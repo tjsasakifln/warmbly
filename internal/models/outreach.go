@@ -266,13 +266,19 @@ type OutreachContactCandidate struct {
 	LastImportRunID                *uuid.UUID `json:"last_import_run_id,omitempty"`
 	// Additive extra-cli reachability boundary. Empty means the current
 	// contact-tier contract applies; Warmbly never invents a class.
-	ReachabilityClass string    `json:"reachability_class,omitempty"`
-	RouteType         string    `json:"route_type,omitempty"`
-	RouteRelation     string    `json:"route_relation,omitempty"`
-	ChannelValue      string    `json:"channel_value,omitempty"`
-	ChannelDisplay    string    `json:"channel_display,omitempty"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ReachabilityClass string `json:"reachability_class,omitempty"`
+	RouteType         string `json:"route_type,omitempty"`
+	RouteRelation     string `json:"route_relation,omitempty"`
+	ChannelValue      string `json:"channel_value,omitempty"`
+	ChannelDisplay    string `json:"channel_display,omitempty"`
+	// Additive extra-cli discovery dimensions (domain/evidence live on account/evidence).
+	EmailDerivation  string    `json:"email_derivation,omitempty"`
+	ChannelEpistemic string    `json:"channel_epistemic_class,omitempty"`
+	RouteFreshness   string    `json:"route_freshness,omitempty"`
+	RouteSuppression string    `json:"route_suppression,omitempty"`
+	DiscoveryJSON    []byte    `json:"discovery_json,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // CanEnroll reports whether this candidate may be put into a campaign.
@@ -627,6 +633,9 @@ type OutreachTouchpoint struct {
 	RecipientGeneric        bool           `json:"recipient_generic,omitempty"`
 	RecipientState          string         `json:"recipient_state,omitempty"`
 	RecipientReason         string         `json:"recipient_reason,omitempty"`
+	// ConsultantSendability is operator-only: send without editing? yes/no.
+	ConsultantSendability map[string]any `json:"consultant_sendability,omitempty"`
+	GenerationError       string         `json:"generation_error,omitempty"`
 }
 
 // Commercial action types. Semantic differences are load-bearing.

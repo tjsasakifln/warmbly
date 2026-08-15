@@ -25,7 +25,7 @@ const (
 
 // ComposerVersion stamps the outbound-safe composer. Prior-version unsent
 // drafts are identifiable and must be regenerated.
-const ComposerVersion = "confenge.composer.v2"
+const ComposerVersion = "confenge.composer.v3"
 
 // Outbound hook classes from the service playbook.
 const (
@@ -156,8 +156,13 @@ func EvaluateMessageability(
 	case HookClassContractEvent:
 		// Mere publication of a public contract (value, órgão, UF) is not enough.
 		if !hasEvent {
-			add("missing_contract_event",
-				"Existe contrato público, mas nenhum evento contratual específico sustenta ainda uma primeira abordagem.")
+			if hasDatedPublicContract(rawFact, evidence) {
+				add("missing_contract_event",
+					"Há contrato público datado no dossiê, mas MONITORAMENTO exige evento (aditivo, medição, reajuste). A ação é enriquecimento, não e-mail.")
+			} else {
+				add("missing_contract_event",
+					"Existe contrato público, mas nenhum evento contratual específico sustenta ainda uma primeira abordagem.")
+			}
 		}
 	default:
 		if hook == "" || isGenericPublicFact(hook) || isGenericPublicFact(rawFact) {
@@ -175,8 +180,13 @@ func EvaluateMessageability(
 	// MONITORAMENTO_CONTRATUAL: publication of a contract of value R$ X is
 	// normally NEEDS_ENRICHMENT unless a verifiable contract event exists.
 	if strings.EqualFold(svc.Code, "MONITORAMENTO_CONTRATUAL") && !hasEvent {
-		add("missing_contract_event",
-			"Existe contrato público, mas nenhum evento contratual específico sustenta ainda uma primeira abordagem.")
+		if hasDatedPublicContract(rawFact, evidence) {
+			add("missing_contract_event",
+				"Há contrato público datado no dossiê, mas MONITORAMENTO exige evento (aditivo, medição, reajuste). A ação é enriquecimento, não e-mail.")
+		} else {
+			add("missing_contract_event",
+				"Existe contrato público, mas nenhum evento contratual específico sustenta ainda uma primeira abordagem.")
+		}
 	}
 
 	// --- Value unit + enumerable checkpoints ---
@@ -209,6 +219,9 @@ func EvaluateMessageability(
 	if containsStr(st.RiskFlags, "incomplete_strategy") || strings.TrimSpace(st.MicroOfferCode) == "" {
 		add("incomplete_strategy", "A estratégia comercial está incompleta para um primeiro contato.")
 	}
+	if hook != "" && !subjectFactIsSpecific(hook, svc.Code) {
+		add("subject_not_specific", "Não há fato diferenciador o bastante para um assunto específico. A mensagem não está READY.")
+	}
 
 	// Provenance / suppression style flags stay blocked.
 	for _, f := range st.RiskFlags {
@@ -236,6 +249,46 @@ func EvaluateMessageability(
 		plan.CTA = "Posso te mandar o recorte objetivo que eu conferiria?"
 	}
 	return plan
+}
+
+func hasDatedPublicContract(raw string, evidence []models.OutreachEvidence) bool {
+	blob := strings.ToLower(raw + " " + evidenceBlob(evidence))
+	if strings.Contains(blob, "pncp-contract") || strings.Contains(blob, "cf-contract") || strings.Contains(blob, "pncp:") {
+		return true
+	}
+	for _, e := range evidence {
+		id := strings.ToLower(e.SourceEvidenceID + " " + e.EvidenceType)
+		if strings.Contains(id, "pncp") || strings.Contains(id, "cf-contract") || strings.Contains(id, "contrato") {
+			if e.EvidenceDate != nil && !e.EvidenceDate.IsZero() {
+				return true
+			}
+		}
+	}
+	return contractDateRe.MatchString(blob)
+}
+
+var contractDateRe = regexp.MustCompile(`(?i)(20\d{2}-\d{2}-\d{2}|publica[cç][aã]o em 20\d{2})`)
+
+func subjectFactIsSpecific(hook, serviceCode string) bool {
+	hook = strings.TrimSpace(hook)
+	if hook == "" || isGenericPublicFact(hook) || looksLikeMetadataDump(hook) {
+		return false
+	}
+	if hasConcreteToken(hook) || hasConcreteContractEvent(strings.ToLower(hook)) {
+		return true
+	}
+	switch strings.ToUpper(strings.TrimSpace(serviceCode)) {
+	case "REAJUSTE", "MEDICOES", "ADITIVOS", "ENCERRAMENTO_CONTRATUAL", "APOIO_LICITACAO", "INTELIGENCIA_PNCP":
+		return true
+	}
+	// A human observation of obra/órgão is enough.
+	t := foldASCII(hook)
+	for _, tok := range []string{"obra", "orgao", "paviment", "edital", "aditivo", "reajuste", "medicao", "pncp", "der-", "prefeitura"} {
+		if strings.Contains(t, tok) {
+			return true
+		}
+	}
+	return countWords(hook) >= 6
 }
 
 func factFromEvidence(evidence []models.OutreachEvidence) string {
@@ -342,10 +395,7 @@ func condenseMetadataFact(raw string) string {
 	// Prefer the objeto / subject field when present.
 	if obj := extractLabeledField(raw, "objeto"); obj != "" {
 		obj = stripTruncation(obj)
-		obj = strings.TrimSpace(obj)
-		if utf8.RuneCountInString(obj) > 160 {
-			obj = string([]rune(obj)[:157]) + "..."
-		}
+		obj = cutAtWordBoundary(strings.TrimSpace(obj), 160)
 		if obj != "" {
 			return "contratação pública: " + ensureLowerStart(obj)
 		}
@@ -354,9 +404,7 @@ func condenseMetadataFact(raw string) string {
 	cleaned := metadataLabelRe.ReplaceAllString(raw, " ")
 	cleaned = strings.ReplaceAll(cleaned, ";", " ")
 	cleaned = strings.Join(strings.Fields(cleaned), " ")
-	if utf8.RuneCountInString(cleaned) > 160 {
-		cleaned = string([]rune(cleaned)[:157]) + "..."
-	}
+	cleaned = cutAtWordBoundary(cleaned, 160)
 	if looksLikeMetadataDump(cleaned) || countWords(cleaned) < 4 {
 		return ""
 	}
@@ -381,6 +429,24 @@ func stripTruncation(s string) string {
 	s = strings.TrimSuffix(s, "(...)")
 	s = strings.TrimSuffix(s, "...")
 	return strings.TrimSpace(s)
+}
+
+func cutAtWordBoundary(s string, maxRunes int) string {
+	s = strings.TrimSpace(s)
+	if s == "" || maxRunes <= 0 {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	cut := runes[:maxRunes]
+	for i := len(cut) - 1; i > maxRunes/2; i-- {
+		if cut[i] == ' ' || cut[i] == ',' || cut[i] == ';' {
+			return strings.TrimSpace(string(cut[:i]))
+		}
+	}
+	return strings.TrimSpace(string(cut))
 }
 
 func hasConcreteContractEvent(blob string) bool {
@@ -837,8 +903,14 @@ var internalReasoningPhrases = []string{
 	"evidence requires hypothesis language",
 	"momento comercial indicado pelo extra-cli",
 	"como segunda leitura pontual",
+	"segunda leitura pontual",
 	"segunda leitura / validação independente",
 	"segunda leitura / validacao independente",
+	"premissas de edital subavaliadas",
+	"critério de medição ambíguo em trecho crítico",
+	"criterio de medicao ambiguo em trecho critico",
+	"índice aplicável não formalizado no prazo esperado",
+	"indice aplicavel nao formalizado no prazo esperado",
 	"hipótese linguistically scoped",
 	"hipotese linguistically scoped",
 	"know a lot / say little",

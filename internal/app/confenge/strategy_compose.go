@@ -28,12 +28,9 @@ func ComposeFromPlan(plan OutboundMessagePlan, acc *models.OutreachAccount, cand
 		return FailClosedDraft(plan, channel)
 	}
 
-	greeting := planGreeting(cand)
-	hook := strings.TrimSpace(plan.Hook)
-	relevance := strings.TrimSpace(plan.Relevance)
-	cta := strings.TrimSpace(plan.CTA)
-	if cta == "" {
-		cta = "Posso te mandar o recorte objetivo que eu conferiria?"
+	facing := RecipientFacingFromPlan(plan, cand)
+	if facing.Observation == "" && facing.MicroOffer == "" {
+		return FailClosedDraft(plan, channel)
 	}
 
 	company := ""
@@ -44,69 +41,143 @@ func ComposeFromPlan(plan OutboundMessagePlan, acc *models.OutreachAccount, cand
 	var body string
 	switch {
 	case channel == ChannelEmailFollowup || sequenceFromChannel(channel) >= 2:
-		body = composeFollowup(greeting, hook, relevance, cta, plan, channel)
+		body = composeFollowup(facing.Greeting, facing.Observation, facing.Relevance, facing.CTA, plan, channel)
 	case channel == ChannelReplyDraft:
-		body = greeting + ",\n\nObrigado pela resposta. "
-		if hook != "" {
-			body += "Sobre " + ensureLowerStart(hook) + ", "
+		body = facing.Greeting + ",\n\nObrigado pela resposta. "
+		if facing.Observation != "" {
+			body += "Sobre " + ensureLowerStart(facing.Observation) + ", "
 		}
-		if relevance != "" {
-			body += ensureLowerStart(relevance) + " "
+		if facing.Relevance != "" {
+			body += ensureLowerStart(facing.Relevance) + " "
 		}
-		body += cta
+		body += facing.CTA
 	case IsWhatsAppChannel(channel):
-		body = composeWhatsApp(greeting, hook, cta)
+		body = composeWhatsApp(facing.Greeting, facing.Observation, facing.CTA)
 	default:
-		body = greeting + ",\n\n"
-		if hook != "" {
-			lead := strings.TrimSpace(plan.HookLead)
-			if lead == "" {
-				lead = hookLeadForService(plan.ServiceCode)
-			}
-			body += lead + ", " + ensureLowerStart(hook)
-			if !strings.HasSuffix(strings.TrimSpace(hook), ".") {
-				body += "."
-			}
-			body += "\n\n"
-		}
-		if relevance != "" {
-			body += relevance
-			if !strings.HasSuffix(strings.TrimSpace(relevance), ".") {
-				body += "."
-			}
-			body += "\n\n"
-		}
-		body += cta
+		body = composeInitialFromFacing(facing)
 	}
 
 	body = emDashRe.ReplaceAllString(body, ",")
-	subj := planSubject(plan, company, hook, channel)
+	subj := planSubject(plan, company, facing.Observation, channel)
+	if !IsWhatsAppChannel(channel) && (isContratoCompanySubject(subj, company) || subjectHasLegalForm(subj) || strings.TrimSpace(subj) == "") {
+		return FailClosedDraft(plan, channel)
+	}
 
 	return DraftOutput{
 		Channel:     channel,
 		Subject:     subj,
 		BodyText:    body,
-		FactUsed:    hook,
+		FactUsed:    facing.Observation,
 		EvidenceIDs: plan.EvidenceIDs,
-		Claims:      claimsFromFact(hook, plan.EvidenceIDs),
+		Claims:      claimsFromFact(facing.Observation, plan.EvidenceIDs),
 		ServiceCode: plan.ServiceCode,
-		Question:    cta,
-		CTA:         cta,
+		Question:    facing.CTA,
+		CTA:         facing.CTA,
 		RiskFlags:   []string{"strategy_compose", "messageability_ready"},
-		Rationale:   "composed from OutboundMessagePlan " + plan.ComposerVersion + " service=" + plan.ServiceCode,
+		Rationale:   "composed from RecipientFacingCopy " + plan.ComposerVersion + " service=" + plan.ServiceCode,
 	}
 }
 
+// RecipientFacingCopy is the only allowlist the renderer may interpolate.
+type RecipientFacingCopy struct {
+	Greeting    string
+	Observation string
+	Relevance   string
+	MicroOffer  string
+	CTA         string
+}
+
+// RecipientFacingFromPlan copies only recipient-safe fields. Strategy,
+// hypothesis, rationale, evidence IDs, and operator warnings stay out.
+func RecipientFacingFromPlan(plan OutboundMessagePlan, cand *models.OutreachContactCandidate) RecipientFacingCopy {
+	cta := strings.TrimSpace(plan.CTA)
+	if cta == "" {
+		cta = "Posso te mandar o recorte objetivo que eu conferiria?"
+	}
+	if !strings.Contains(cta, "?") {
+		cta = strings.TrimRight(cta, ". ") + "?"
+	}
+	obs := strings.TrimSpace(plan.Hook)
+	if lead := strings.TrimSpace(plan.HookLead); lead != "" && obs != "" {
+		obs = lead + ", " + ensureLowerStart(obs)
+	}
+	return RecipientFacingCopy{
+		Greeting:    planGreeting(cand),
+		Observation: obs,
+		Relevance:   strings.TrimSpace(plan.Relevance),
+		MicroOffer:  strings.TrimSpace(plan.ValueUnit),
+		CTA:         cta,
+	}
+}
+
+func composeInitialFromFacing(f RecipientFacingCopy) string {
+	body := f.Greeting + ",\n\n"
+	if f.Observation != "" {
+		body += f.Observation
+		if !strings.HasSuffix(strings.TrimSpace(f.Observation), ".") {
+			body += "."
+		}
+		body += "\n\n"
+	}
+	if f.Relevance != "" {
+		body += f.Relevance
+		if !strings.HasSuffix(strings.TrimSpace(f.Relevance), ".") {
+			body += "."
+		}
+		body += "\n\n"
+	} else if f.MicroOffer != "" {
+		body += "Se for útil, " + ensureLowerStart(f.MicroOffer)
+		if !strings.HasSuffix(strings.TrimSpace(f.MicroOffer), ".") {
+			body += "."
+		}
+		body += "\n\n"
+	}
+	body += f.CTA
+	return body
+}
+
 func planGreeting(cand *models.OutreachContactCandidate) string {
-	if isGenericRecipient(cand) {
+	if isGenericRecipient(cand) || localLooksLikeCompanyMailbox(cand) {
 		return "Olá, equipe"
 	}
 	if cand != nil {
-		if name := strings.TrimSpace(cand.Name); name != "" {
-			return "Olá, " + firstName(name)
+		if name := strings.TrimSpace(cand.Name); name != "" && provenPersonName(cand) {
+			return "Olá, " + titleFirstName(firstName(name))
 		}
 	}
 	return "Olá"
+}
+
+func localLooksLikeCompanyMailbox(cand *models.OutreachContactCandidate) bool {
+	if cand == nil {
+		return false
+	}
+	parts := strings.Split(canonicalPilotEmail(cand.Email), "@")
+	if len(parts) != 2 {
+		return false
+	}
+	local := foldASCII(strings.Trim(parts[0], "._-+"))
+	if local == "" {
+		return false
+	}
+	name := foldASCII(cand.Name + " " + cand.Role)
+	if local == name || strings.Contains(name, local) && len(local) >= 5 {
+		// name extracted from local-part is not a person
+		if !strings.Contains(local, ".") && !strings.Contains(local, " ") {
+			return true
+		}
+	}
+	return false
+}
+
+func titleFirstName(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+	r := []rune(strings.ToLower(s))
+	r[0] = []rune(strings.ToUpper(string(r[0])))[0]
+	return string(r)
 }
 
 func sequenceFromChannel(channel string) int {
@@ -181,32 +252,63 @@ func planSubject(plan OutboundMessagePlan, company, hook, channel string) string
 		return ""
 	}
 	if channel == ChannelEmailFollowup || channel == ChannelReplyDraft {
-		if company != "" {
-			return trimSubject("Re: " + company)
+		hookSubj := specificSubjectFromHook(hook)
+		if hookSubj != "" {
+			return trimSubject("Re: " + hookSubj)
 		}
 		return "Re: conversa anterior"
+	}
+	if subj := specificSubjectFromHook(hook); subj != "" {
+		return trimSubject(subj)
 	}
 	switch strings.ToUpper(canonicalServiceForSubject(plan.ServiceCode)) {
 	case "REAJUSTE":
 		return "Reajuste contratual"
 	case "MEDICOES":
-		return trimSubject("Medições " + firstNonEmpty(company, ""))
+		return "Medição contratual"
 	case "ADITIVOS":
-		return trimSubject("Aditivo " + firstNonEmpty(company, ""))
+		return "Aditivo publicado"
 	case "ENCERRAMENTO_CONTRATUAL":
 		return "Encerramento contratual"
 	case "APOIO_LICITACAO":
-		return trimSubject("Edital " + firstNonEmpty(company, ""))
+		return "Edital publicado"
 	case "INTELIGENCIA_PNCP":
-		return trimSubject("Recorte PNCP " + firstNonEmpty(company, ""))
+		return "Recorte PNCP"
 	}
-	if hook != "" && hasConcreteToken(hook) {
-		return trimSubject(firstWords(hook, 4))
+	_ = company
+	return ""
+}
+
+func specificSubjectFromHook(hook string) string {
+	hook = strings.TrimSpace(hook)
+	if hook == "" || looksLikeMetadataDump(hook) {
+		return ""
 	}
-	if company != "" {
-		return trimSubject("Contrato " + company)
+	hook = metadataLabelRe.ReplaceAllString(hook, " ")
+	hook = strings.Join(strings.Fields(hook), " ")
+	hook = stripLegalForm(hook)
+	if hook == "" || isContratoCompanySubject(hook, "") {
+		return ""
 	}
-	return "Contrato público"
+	words := strings.Fields(hook)
+	if len(words) > 6 {
+		hook = strings.Join(words[:6], " ")
+	}
+	return strings.TrimSpace(hook)
+}
+
+func stripLegalForm(s string) string {
+	repl := []string{
+		" - EM RECUPERACAO JUDICIAL", " - EM RECUPERAÇÃO JUDICIAL",
+		" EM RECUPERACAO JUDICIAL", " EM RECUPERAÇÃO JUDICIAL",
+		" LTDA", " EIRELI", " S/A", " S.A.", " SA",
+	}
+	out := s
+	for _, p := range repl {
+		out = strings.ReplaceAll(out, p, "")
+		out = strings.ReplaceAll(out, strings.ToLower(p), "")
+	}
+	return strings.TrimSpace(out)
 }
 
 func ensureLowerStart(s string) string {

@@ -1386,6 +1386,9 @@ const outreachCandidateSelect = `
 		COALESCE(ownership_status,''), COALESCE(recipient_commercial_suitability,''),
 		COALESCE(reachability_class,''), COALESCE(route_type,''), COALESCE(route_relation,''),
 		COALESCE(channel_value,''), COALESCE(channel_display,''),
+		COALESCE(email_derivation,''), COALESCE(channel_epistemic_class,''),
+		COALESCE(route_freshness,''), COALESCE(route_suppression,''),
+		discovery_json,
 		last_import_run_id, created_at, updated_at `
 
 func candidateScanDest(c *models.OutreachContactCandidate) []any {
@@ -1402,8 +1405,18 @@ func candidateScanDest(c *models.OutreachContactCandidate) []any {
 		&c.OwnershipStatus, &c.RecipientCommercialSuitability,
 		&c.ReachabilityClass, &c.RouteType, &c.RouteRelation,
 		&c.ChannelValue, &c.ChannelDisplay,
+		&c.EmailDerivation, &c.ChannelEpistemic,
+		&c.RouteFreshness, &c.RouteSuppression,
+		&c.DiscoveryJSON,
 		&c.LastImportRunID, &c.CreatedAt, &c.UpdatedAt,
 	}
+}
+
+func nullIfEmptyJSON(raw []byte) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	return raw
 }
 
 func scanCandidate(row scannable) (*models.OutreachContactCandidate, error) {
@@ -1452,6 +1465,8 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 				email_send_ready, mailbox_purpose, mailbox_purpose_send_blocked,
 				ownership_status, recipient_commercial_suitability,
 				reachability_class, route_type, route_relation, channel_value, channel_display,
+				email_derivation, channel_epistemic_class, route_freshness, route_suppression,
+				discovery_json,
 				last_import_run_id, created_at, updated_at
 			) VALUES (
 				$1,$2,$3,$4,$5,
@@ -1464,7 +1479,9 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 				$28,$29,$30,
 				$31,$32,
 				$33,$34,$35,$36,$37,
-				$38,$39,$40
+				$38,$39,$40,$41,
+				$42,
+				$43,$44,$45
 			)
 			ON CONFLICT (organization_id, account_id, source_contact_id) WHERE source_contact_id <> '' DO UPDATE SET
 				name = EXCLUDED.name,
@@ -1515,6 +1532,11 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 				route_relation = EXCLUDED.route_relation,
 				channel_value = EXCLUDED.channel_value,
 				channel_display = EXCLUDED.channel_display,
+				email_derivation = EXCLUDED.email_derivation,
+				channel_epistemic_class = EXCLUDED.channel_epistemic_class,
+				route_freshness = EXCLUDED.route_freshness,
+				route_suppression = EXCLUDED.route_suppression,
+				discovery_json = EXCLUDED.discovery_json,
 				person_id = EXCLUDED.person_id,
 				last_import_run_id = EXCLUDED.last_import_run_id,
 				updated_at = EXCLUDED.updated_at,
@@ -1530,6 +1552,8 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 			c.EmailSendReady, c.MailboxPurpose, c.MailboxPurposeSendBlocked,
 			c.OwnershipStatus, c.RecipientCommercialSuitability,
 			c.ReachabilityClass, c.RouteType, c.RouteRelation, c.ChannelValue, c.ChannelDisplay,
+			c.EmailDerivation, c.ChannelEpistemic, c.RouteFreshness, c.RouteSuppression,
+			nullIfEmptyJSON(c.DiscoveryJSON),
 			c.LastImportRunID, c.CreatedAt, c.UpdatedAt,
 		).Scan(&created, &c.ID)
 		return created, err
@@ -1547,9 +1571,11 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 			email_send_ready, mailbox_purpose, mailbox_purpose_send_blocked,
 			ownership_status, recipient_commercial_suitability,
 			reachability_class, route_type, route_relation, channel_value, channel_display,
+			email_derivation, channel_epistemic_class, route_freshness, route_suppression,
+			discovery_json,
 			last_import_run_id, created_at, updated_at
 		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45
 		)`,
 		c.ID, c.OrganizationID, c.AccountID, c.SourceContactID, c.PersonID,
 		c.Name, c.Role, c.Email, c.Phone,
@@ -1561,6 +1587,8 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 		c.EmailSendReady, c.MailboxPurpose, c.MailboxPurposeSendBlocked,
 		c.OwnershipStatus, c.RecipientCommercialSuitability,
 		c.ReachabilityClass, c.RouteType, c.RouteRelation, c.ChannelValue, c.ChannelDisplay,
+		c.EmailDerivation, c.ChannelEpistemic, c.RouteFreshness, c.RouteSuppression,
+		nullIfEmptyJSON(c.DiscoveryJSON),
 		c.LastImportRunID, c.CreatedAt, c.UpdatedAt,
 	)
 	return true, err

@@ -187,6 +187,12 @@ type FeedContact struct {
 	InferredEmail     *bool  `json:"inferred_email,omitempty"`
 	PersonID          string `json:"person_id,omitempty"`
 	ActionMode        string `json:"action_mode,omitempty"`
+	// Additive extra-cli #392 discovery dimensions. Visibility only; never send auth.
+	EmailDerivation  string `json:"email_derivation,omitempty"`
+	ChannelEpistemic string `json:"channel_epistemic_class,omitempty"`
+	RouteFreshness   string `json:"route_freshness,omitempty"`
+	RouteSuppression string `json:"route_suppression,omitempty"`
+	DiscoveryJSON    []byte `json:"discovery_json,omitempty"`
 }
 
 // FeedEvidence is one evidence item (text only; HTML stripped on import).

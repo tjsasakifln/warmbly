@@ -58,10 +58,14 @@ func TestOperatorProjectionPreservesVerificationDimensionsAndDomain(t *testing.T
 		"channel":                      "eduardo@qualidademineracao.com.br",
 		"verification_status":          models.OutreachVerifyCandidateUnverified,
 		"email_send_ready":             false,
+		"channel_epistemic_class":      "INFERRED",
+		"route_freshness":              "CURRENT",
+		"route_suppression":            "NONE",
 		"email_verification": map[string]any{
 			"dns": "RESOLVED", "mx": "MX_PRESENT",
 			"catch_all": "UNKNOWN_NOT_PROBED", "smtp": "SKIPPED_POLICY",
 			"final_classification": "UNVERIFIED_DIRECT_CANDIDATE",
+			"identity_proven":      false,
 		},
 		"email_verification_reports": []any{map[string]any{
 			"dns": "RESOLVED", "mx": "MX_PRESENT", "smtp": "SKIPPED_POLICY",
@@ -80,6 +84,9 @@ func TestOperatorProjectionPreservesVerificationDimensionsAndDomain(t *testing.T
 	if contact.EmailSendReady == nil || *contact.EmailSendReady {
 		t.Fatalf("passive verification must stay unsendable: %+v", contact)
 	}
+	if contact.EmailDerivation != "INFERRED" {
+		t.Fatalf("inferred derivation dropped: %+v", contact)
+	}
 	if lead.Company.Website != "https://qualidademineracao.com.br" {
 		t.Fatalf("resolved domain missing from projection: %+v", lead.Company)
 	}
@@ -91,6 +98,60 @@ func TestOperatorProjectionPreservesVerificationDimensionsAndDomain(t *testing.T
 	if aggregate := operatorVerificationNotice(card); !strings.Contains(aggregate, "candidatos=1") ||
 		!strings.Contains(aggregate, "identidade_provada=0") {
 		t.Fatalf("alternative-route verification summary missing: %q", aggregate)
+	}
+}
+
+func TestMXAndUnverifiedNeverBecomeValidatedOrSendReady(t *testing.T) {
+	mxOnly := map[string]any{
+		"cnpj": "11222333000181", "empresa": "ENCOPAV",
+		"primary_decision_unit_target": "Alguem",
+		"primary_route":                "DIRECT_EMAIL",
+		"route_class":                  models.ReachabilityR1Direct,
+		"channel":                      "alguem@encopav.com.br",
+		"email_send_ready":             true, // extra-cli must not be able to promote MX
+		"email_verification": map[string]any{
+			"dns": "RESOLVED", "mx": "MX_PRESENT", "final_classification": "UNVERIFIED_DIRECT_CANDIDATE",
+		},
+	}
+	lead := operatorCardToLead(mxOnly, nil, 1)
+	c := lead.Contacts[0]
+	if c.VerificationStatus == models.OutreachVerifyOfficialSource || c.VerificationStatus == models.OutreachVerifyVerified {
+		t.Fatalf("MX-only must not become official/verified: %s", c.VerificationStatus)
+	}
+	if c.EmailSendReady != nil && *c.EmailSendReady {
+		t.Fatal("CANDIDATE_UNVERIFIED must not be email_send_ready")
+	}
+
+	inferred := map[string]any{
+		"cnpj": "11222333000181", "empresa": "ENCOPAV",
+		"primary_decision_unit_target": "Alguem",
+		"primary_route":                "INFERRED_DIRECT_EMAIL",
+		"route_class":                  models.ReachabilityR2Inferred,
+		"channel":                      "alguem@encopav.com.br",
+		"inferred_email":               true,
+		"verification_status":          models.OutreachVerifyOfficialSource,
+		"email_send_ready":             true,
+	}
+	inf := operatorCardToLead(inferred, nil, 2).Contacts[0]
+	if inf.VerificationStatus != models.OutreachVerifyCandidateUnverified {
+		t.Fatalf("INFERRED must not stay OFFICIAL_SOURCE: %s", inf.VerificationStatus)
+	}
+	if inf.EmailSendReady != nil && *inf.EmailSendReady {
+		t.Fatal("INFERRED must not be send-ready")
+	}
+
+	generic := map[string]any{
+		"cnpj": "11222333000181", "empresa": "ENCOPAV",
+		"primary_route": "GENERIC_CORPORATE_EMAIL", "route_class": models.ReachabilityR5Corporate,
+		"channel":            "contato@encopav.com.br",
+		"email_verification": map[string]any{"final_classification": "GENERIC_MAILBOX", "mx": "MX_PRESENT"},
+	}
+	gen := operatorCardToLead(generic, nil, 3).Contacts[0]
+	if gen.VerificationStatus != models.OutreachVerifyInstitutionalGeneric {
+		t.Fatalf("generic mailbox: %s", gen.VerificationStatus)
+	}
+	if gen.EmailSendReady != nil && *gen.EmailSendReady {
+		t.Fatal("generic mailbox must not be send-ready")
 	}
 }
 
