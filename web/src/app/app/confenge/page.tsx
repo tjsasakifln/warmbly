@@ -483,6 +483,8 @@ export default function ConfengePage() {
             <div className="mt-2 flex flex-wrap gap-2 text-[11.5px]">
               <ReadinessItem label="E-mail" value={stateLabel(status.data.readiness.email)} />
               <ReadinessItem label="Feed de dados" value={status.data.readiness.feed_configured ? `Atualizado ${formatFeedAge(status.data.readiness.feed_age_seconds)}` : "Não configurado"} />
+              <ReadinessItem label="Inbound" value={stateLabel(status.data.readiness.inbound || "not_configured")} />
+              <ReadinessItem label="Auto-envio" value={status.data.readiness.auto_send_enabled ? "Ligado (proibido)" : "Desligado"} />
               <ReadinessItem label="Geração" value={stateLabel(status.data.readiness.ai)} />
               <ReadinessItem label="Envios" value={status.data.readiness.sending_allowed ? "Liberados" : "Pausados"} />
               <ReadinessItem label="Limite por hora" value={String(status.data.readiness.governor_cap)} />
@@ -1335,6 +1337,13 @@ function InboundNowCard({
         <div className="font-medium text-slate-900">{item.company}</div>
         {item.person ? <span className="text-slate-700">{item.person}</span> : <span className="text-slate-400">Pessoa UNKNOWN</span>}
         <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">{stateLabel(item.next_action)}</span>
+      </div>
+      <div data-testid="confenge-inbound-lead-id">lead_id: {item.lead_id}</div>
+      <div data-testid="confenge-inbound-receipt">receipt_id: {item.receipt_id || item.lead_id}</div>
+      <div data-testid="confenge-inbound-enrichment">Enrichment: {item.enrichment_status || "UNKNOWN"}</div>
+      <div data-testid="confenge-inbound-latency">
+        Capturado: {item.latency?.lead_created_at || "UNKNOWN"} · Ingerido: {item.latency?.warmbly_ingested_at || "UNKNOWN"}
+        {item.latency?.enrichment_completed_at ? ` · Enriquecido: ${item.latency.enrichment_completed_at}` : ""}
       </div>
       <div>Origem: {item.origin}{item.asset ? ` · Asset: ${item.asset}` : ""}</div>
       {item.contract_context && <div>Contrato/contexto: {item.contract_context}</div>}

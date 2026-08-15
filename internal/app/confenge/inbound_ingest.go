@@ -56,23 +56,29 @@ func (s *service) IngestInboundLead(ctx context.Context, orgID uuid.UUID, raw []
 	if err != nil {
 		return nil, errx.New(errx.Internal, "persist inbound receipt: "+err.Error())
 	}
+	resumed := false
 	if !created && existing != nil {
-		res := &InboundIngestResult{
-			Lead:              existing,
-			Duplicate:         true,
-			EnrichmentStatus:  existing.EnrichmentStatus,
-			NextAction:        existing.NextAction,
-			DispatchAttempted: false,
-		}
-		if existing.ActionID != nil && s.actionStore() != nil {
-			if a, _ := s.actionStore().GetCommercialAction(ctx, orgID, *existing.ActionID); a != nil {
-				res.Action = a
+		if inboundReceiptComplete(existing) {
+			res := &InboundIngestResult{
+				Lead:              existing,
+				Duplicate:         true,
+				EnrichmentStatus:  existing.EnrichmentStatus,
+				NextAction:        existing.NextAction,
+				DispatchAttempted: false,
 			}
+			if existing.ActionID != nil && s.actionStore() != nil {
+				if a, _ := s.actionStore().GetCommercialAction(ctx, orgID, *existing.ActionID); a != nil {
+					res.Action = a
+				}
+			}
+			return res, nil
 		}
-		return res, nil
+		// Persist landed, later step 5xx'd. Same lead_id retry completes the row.
+		row = existing
+		resumed = true
 	}
 
-	res := &InboundIngestResult{Lead: row, DispatchAttempted: false}
+	res := &InboundIngestResult{Lead: row, DispatchAttempted: false, Duplicate: resumed}
 	facts, class, enrichErr := s.enrichAndClassifyInbound(ctx, orgID, parsed, opts)
 	if enrichErr != nil {
 		row.EnrichmentStatus = models.InboundEnrichmentFailed
@@ -273,6 +279,23 @@ func (s *service) ensureInboundAccount(ctx context.Context, orgID uuid.UUID, lea
 		return acc, pickInboundCandidate(lead, cands)
 	}
 	return acc, cand
+}
+
+// inboundReceiptComplete is true when ingest finished classify (or failed closed).
+// An insert that never reached UpdateInboundLead stays retryable on the same lead_id.
+func inboundReceiptComplete(row *models.OutreachInboundLead) bool {
+	if row == nil {
+		return false
+	}
+	if strings.TrimSpace(row.NextAction) != "" || row.ActionID != nil {
+		return true
+	}
+	switch row.EnrichmentStatus {
+	case models.InboundEnrichmentFailed, models.InboundEnrichmentUnavailable, models.InboundEnrichmentCompleted:
+		return true
+	default:
+		return false
+	}
 }
 
 func inboundRowFromParsed(orgID uuid.UUID, lead InboundLeadV1, raw []byte, now time.Time) *models.OutreachInboundLead {

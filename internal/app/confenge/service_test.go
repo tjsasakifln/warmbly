@@ -36,6 +36,8 @@ type memRepo struct {
 	pilotSlots         map[string]string
 	listTouchpointsErr error
 	upsertDraftErr     error
+	inboundInsertErr   error
+	inboundUpdateErr   error
 	actions            map[uuid.UUID]*models.OutreachCommercialAction
 	actionByIdem       map[string]*models.OutreachCommercialAction
 	inbound            map[string]*models.OutreachInboundLead
@@ -1313,6 +1315,9 @@ func (m *memRepo) InsertInboundLead(_ context.Context, lead *models.OutreachInbo
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ensureInbound()
+	if m.inboundInsertErr != nil {
+		return false, nil, m.inboundInsertErr
+	}
 	k := inboundKey(lead.OrganizationID, lead.LeadID)
 	if existing := m.inbound[k]; existing != nil {
 		cp := *existing
@@ -1339,6 +1344,9 @@ func (m *memRepo) UpdateInboundLead(_ context.Context, lead *models.OutreachInbo
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ensureInbound()
+	if m.inboundUpdateErr != nil {
+		return m.inboundUpdateErr
+	}
 	k := inboundKey(lead.OrganizationID, lead.LeadID)
 	cp := *lead
 	if cp.Evidence != nil {

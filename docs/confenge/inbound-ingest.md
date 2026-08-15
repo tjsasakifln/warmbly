@@ -27,7 +27,7 @@ Auth: `X-Warmbly-Signature: t=<unix>,v1=<hex(hmac_sha256(secret, "<unix>." + bod
   "lead_id": "webcfg-...",
   "receipt_id": "rcpt-...",
   "created_at": "2026-08-14T14:55:00Z",
-  "source": "web-cfg",
+  "source": "CONFENGE_WEB",
   "route_family": "inbound",
   "asset_id": "landing-segunda-leitura",
   "cta_id": "segunda-leitura-contrato",
@@ -51,8 +51,10 @@ Auth: `X-Warmbly-Signature: t=<unix>,v1=<hex(hmac_sha256(secret, "<unix>." + bod
 }
 ```
 
-`lead_id` or `receipt_id` is required. Optional fields stay empty. Missing
-facts stay `UNKNOWN`. Warmbly does not invent a name, role, email, or phone.
+Shipped web-cfg (`mapLeadToInboundV1`) emits `source=CONFENGE_WEB` and omits
+empty optionals. `source=web-cfg` is still accepted (no allowlist). `lead_id`
+or `receipt_id` is required. Missing facts stay `UNKNOWN`. Warmbly does not
+invent a name, role, email, or phone.
 
 ## Dedupe
 
@@ -81,10 +83,11 @@ never dispatches.
 
 ## Cockpit
 
-`GET /confenge/cockpit` includes `inbound_now`. Each row has empresa, pessoa
-when known, origem, asset, contrato/contexto, por que agora, acao
-recomendada, canal, evidencias, owner or `UNKNOWN`, idade, status, proxima
-acao.
+`GET /confenge/cockpit` includes `inbound_now`. Each row has `lead_id`,
+`receipt_id`, empresa, pessoa when known, origem, asset, contrato/contexto,
+por que agora, acao recomendada, canal, evidencias, owner or `UNKNOWN`,
+idade, status, enrichment, latency stamps, proxima acao. It is a human
+queue card, not a sendable message (`dispatchable=false`).
 
 `POST /confenge/inbound/:leadId/outcome` records a human outcome.
 
@@ -105,10 +108,47 @@ inferred.
 
 ## Real blockers
 
-- web-cfg must POST this contract (`OPS_WEBHOOK_URL` today is a thinner
-  Slack-style payload). Until that pointer exists, Monday-queue arrival
-  of a live confenge.com.br lead stays ops work.
+- web-cfg PR #72 (merged) POSTs this contract from `CONFENGE_INBOUND_WEBHOOK_URL`
+  after persist. `OPS_WEBHOOK_URL` is a different Slack-style `confenge.lead`
+  HMAC. Do not retarget it. Until the two inbound env vars are set on both
+  Netlify and the Warmbly process, capture stays local and INBOUND NOW stays
+  empty.
 - extra-cli has no per-lead live lookup in this repo. Enrichment uses
-  already-imported material or stays `UNKNOWN`.
+  already-imported material or stays `UNKNOWN`. FAILED/UNAVAILABLE receipts
+  stay in the queue.
 - A staging/prod synthetic lead is safe only with send disabled and the
-  inbound secret configured.
+  inbound secret configured. POST the Warmbly webhook directly. web-cfg skips
+  `synthetic` / `qa` / `spam` / `internal` before the handoff.
+
+## Live verdict (this tree)
+
+**UNPROVEN.** Code and shipped-path tests exist. A production or VPS
+synthetic POST has not been observed from this environment.
+
+Probed 2026-08-15 from the implementer host against origin/main
+`dab3ea3446348d1adcd76c6d5c98eba9dade1498`:
+
+- `CONFENGE_INBOUND_WEBHOOK_SECRET` unset
+- `CONFENGE_INBOUND_ORG_ID` unset
+- `CONFENGE_INBOUND_WEBHOOK_URL` unset
+- `api.warmbly.com` does not resolve
+- `https://app.warmbly.com/api/v1/webhooks/confenge/inbound` OPTIONS 404
+- `https://warmbly.com/api/v1/webhooks/confenge/inbound` OPTIONS 405
+- `127.0.0.1:8080` connection refused
+- no `.env.confenge` with a real secret
+
+`make confenge-preflight` now surfaces `inbound_secret` / `inbound_org` /
+`inbound_ready`. `GET /confenge/status` `readiness.inbound` is `ready` only
+when secret + dest org are set. That is configuration, not a live POST.
+
+## Human proof (remaining)
+
+```bash
+# 1. Warmbly process: set secret + dest org, keep auto-send off, restart on this SHA.
+# 2. Caller: set CONFENGE_INBOUND_WEBHOOK_URL + the same secret.
+scripts/confenge_inbound_live_preflight.sh
+# 3. Open INBOUND NOW and confirm the printed lead_id. Do not contact.
+```
+
+A 201/200 from that script is a live webhook receipt. It is not a commercial
+send and not a web-cfg form proof.

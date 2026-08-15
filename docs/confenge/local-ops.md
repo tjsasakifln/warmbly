@@ -105,6 +105,12 @@ go run ./cmd/confenge resume-sending
 
 The dashboard CONFENGE page shows a discrete readiness card with these fields.
 
+Inbound handoff (`confenge.inbound.v1`) is separate from send. Preflight now
+prints `inbound_secret` / `inbound_org` / `inbound_ready`. Status readiness
+includes `inbound`. Live synthetic POST is **UNPROVEN** until
+`scripts/confenge_inbound_live_preflight.sh` exits 0. Contract:
+[inbound-ingest.md](./inbound-ingest.md).
+
 ## Offline demo fixture
 
 `internal/app/confenge/testdata/demo_3_companies.json` — three companies (two with
