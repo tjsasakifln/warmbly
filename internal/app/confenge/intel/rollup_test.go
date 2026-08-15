@@ -90,6 +90,27 @@ func TestExecutiveViewSyntheticSeparated(t *testing.T) {
 		view.Month, view.InboundQualifiedPipeline, view.QCO, view.Conversations, view.Meetings, view.Proposals, view.Pipeline, view.Won, view.Lost, view.Unknown, view.CausalProof)
 }
 
+func TestRollupUnconfirmedLostIsUnknown(t *testing.T) {
+	st := NewMemoryStore()
+	in := testFacts("org-lost", "lead-lost-r", "rcpt-lost-r", "acc-lost-r", "act-lost-r", "out-lost-r")
+	in.OutcomeType = OutcomeLost
+	in.HumanConfirmed = false
+	in.Synthetic = true
+	in.Label = LabelSynthetic
+	res := Reconcile(st, in)
+	if res.Chain.OutcomeType != OutcomeUnknown {
+		t.Fatalf("chain stored LOST without confirmation: %s", res.Chain.OutcomeType)
+	}
+	view := Rollup([]Chain{res.Chain}, "2026-08", true)
+	if view.Lost != 0 {
+		t.Fatalf("unconfirmed LOST counted as lost=%d", view.Lost)
+	}
+	if view.Unknown == 0 {
+		t.Fatal("unconfirmed LOST should land in UNKNOWN")
+	}
+	fmt.Printf("ROLLUP_UNCONFIRMED_LOST lost=%d unknown=%d\n", view.Lost, view.Unknown)
+}
+
 func containsJSONKey(body, key string) bool {
 	return len(body) > 0 && (stringIndex(body, `"`+key+`"`) >= 0)
 }

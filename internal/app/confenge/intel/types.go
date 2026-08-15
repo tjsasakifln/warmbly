@@ -29,6 +29,7 @@ const (
 	ExceptionStaleAttribution   = "stale_attribution"
 	ExceptionOutOfOrder         = "out_of_order"
 	ExceptionUnconfirmedWon     = "unconfirmed_won"
+	ExceptionUnconfirmedLost    = "unconfirmed_lost"
 	ExceptionUnavailable        = "ledger_unavailable"
 
 	OutcomeWon                   = "WON"

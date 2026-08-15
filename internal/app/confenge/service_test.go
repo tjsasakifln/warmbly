@@ -798,6 +798,30 @@ func (m *memRepo) GetLatestOutcomeForLead(ctx context.Context, orgID uuid.UUID, 
 	return best, nil
 }
 
+func (m *memRepo) GetOutcomeBySourceLeadID(_ context.Context, orgID uuid.UUID, sourceLeadID string) (*models.OutreachOutcome, error) {
+	sourceLeadID = strings.TrimSpace(sourceLeadID)
+	if sourceLeadID == "" {
+		return nil, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var best *models.OutreachOutcome
+	for i := range m.outcomes {
+		o := m.outcomes[i]
+		if o.OrganizationID != orgID {
+			continue
+		}
+		if strings.TrimSpace(o.SourceLeadID) != sourceLeadID {
+			continue
+		}
+		if best == nil || o.OccurredAt.After(best.OccurredAt) {
+			cp := o
+			best = &cp
+		}
+	}
+	return best, nil
+}
+
 func testSvc(repo repository.OutreachRepository) Service {
 	cfg := Config{
 		Enabled:              true,

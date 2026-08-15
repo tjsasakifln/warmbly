@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS outreach_intel_exceptions (
         'stale_attribution',
         'out_of_order',
         'unconfirmed_won',
+        'unconfirmed_lost',
         'ledger_unavailable'
     ))
 );

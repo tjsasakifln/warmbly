@@ -113,6 +113,24 @@ func TestUnconfirmedWonStaysUnknown(t *testing.T) {
 	fmt.Printf("UNCONFIRMED_WON chain_outcome=%s rejected=true\n", res.Chain.OutcomeType)
 }
 
+func TestUnconfirmedLostStaysUnknown(t *testing.T) {
+	st := NewMemoryStore()
+	in := testFacts("org", "lead-lost", "rcpt-lost", "acc-lost", "act-lost", "out-lost")
+	in.OutcomeType = OutcomeLost
+	in.HumanConfirmed = false
+	res := Reconcile(st, in)
+	if !hasCode(res.Exceptions, ExceptionUnconfirmedLost) {
+		t.Fatalf("unconfirmed LOST not classified: %+v", codesOf(res.Exceptions))
+	}
+	if res.Chain.OutcomeType == OutcomeLost {
+		t.Fatal("unconfirmed LOST must not land on the chain")
+	}
+	if res.Chain.OutcomeType != OutcomeUnknown {
+		t.Fatalf("outcome=%s want UNKNOWN", res.Chain.OutcomeType)
+	}
+	fmt.Printf("UNCONFIRMED_LOST chain_outcome=%s rejected=true\n", res.Chain.OutcomeType)
+}
+
 func hasCode(xs []Exception, code string) bool {
 	for _, ex := range xs {
 		if ex.Code == code {

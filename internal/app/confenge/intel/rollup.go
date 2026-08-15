@@ -141,7 +141,7 @@ func Rollup(chains []Chain, month string, includeSynthetic bool) ExecutiveView {
 			if fi >= 0 {
 				view.Families[fi].Won++
 			}
-		case isLostType(c.OutcomeType):
+		case isLostType(c.OutcomeType) && c.HumanConfirmed:
 			view.Lost++
 			view.Denominators.Closed++
 			if fi >= 0 {

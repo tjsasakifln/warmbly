@@ -37,8 +37,8 @@ func ClassifyExceptions(in ObservedFacts, existing *Chain) []Exception {
 		add(ExceptionOrphan, "no lead_id, receipt_id, action_id, or idempotency_key", "hold until a durable ID arrives", true)
 	}
 
-	hasOutcome := strings.TrimSpace(in.Keys.OutcomeID) != "" || strings.TrimSpace(in.OutcomeType) != ""
-	hasAction := strings.TrimSpace(in.Keys.ActionID) != ""
+	hasOutcome := knownID(in.Keys.OutcomeID) != "" || strings.TrimSpace(in.OutcomeType) != ""
+	hasAction := knownID(in.Keys.ActionID) != "" || chainHasAction(existing)
 	if hasOutcome && !hasAction {
 		add(ExceptionOrphan, "outcome without action", "hold on exception queue until action arrives", true)
 	}
@@ -47,9 +47,11 @@ func ClassifyExceptions(in ObservedFacts, existing *Chain) []Exception {
 	}
 
 	if existing != nil && identity != "" {
-		add(ExceptionDuplicate, "same join IDs already have a chain", "return the first chain; do not insert a second", false)
 		if conflictAccount(existing.Keys, in.Keys) {
 			add(ExceptionConflictingAccount, "incoming account_id disagrees with the first chain", "keep the first extra-cli account; do not overwrite", false)
+		}
+		if !additiveIDs(existing, in) {
+			add(ExceptionDuplicate, "same join IDs already have a chain", "return the first chain; do not insert a second", false)
 		}
 	}
 
@@ -73,8 +75,45 @@ func ClassifyExceptions(in ObservedFacts, existing *Chain) []Exception {
 	if isWonType(in.OutcomeType) && !in.HumanConfirmed {
 		add(ExceptionUnconfirmedWon, "WON cannot be inferred", "require human or document confirmation; keep UNKNOWN", true)
 	}
+	if isLostType(in.OutcomeType) && !in.HumanConfirmed {
+		add(ExceptionUnconfirmedLost, "LOST cannot be inferred", "require human or document confirmation; keep UNKNOWN", true)
+	}
 
 	return out
+}
+
+func chainHasAction(existing *Chain) bool {
+	if existing == nil {
+		return false
+	}
+	return knownID(existing.ActionID) != "" || knownID(existing.Keys.ActionID) != ""
+}
+
+func additiveIDs(existing *Chain, in ObservedFacts) bool {
+	if existing == nil {
+		return false
+	}
+	if inc := knownID(in.Keys.ActionID); inc != "" && knownID(existing.ActionID) == "" && knownID(existing.Keys.ActionID) == "" {
+		return true
+	}
+	if inc := knownID(in.Keys.OutcomeID); inc != "" && knownID(existing.OutcomeID) == "" && knownID(existing.Keys.OutcomeID) == "" {
+		return true
+	}
+	if inc := knownID(in.Keys.OutboxEventID); inc != "" && knownID(existing.OutboxEventID) == "" && knownID(existing.Keys.OutboxEventID) == "" {
+		return true
+	}
+	if inc := knownID(in.Keys.ReceiptID); inc != "" && knownID(existing.ReceiptID) == "" && knownID(existing.Keys.ReceiptID) == "" {
+		return true
+	}
+	return false
+}
+
+func knownID(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" || v == Unknown {
+		return ""
+	}
+	return v
 }
 
 func conflictAccount(a, b JoinKeys) bool {

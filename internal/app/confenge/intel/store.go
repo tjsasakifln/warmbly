@@ -13,6 +13,7 @@ import (
 type Store interface {
 	GetChain(orgID, identity string) (*Chain, error)
 	PutChain(c Chain) (Chain, bool, error)
+	UpdateChain(c Chain) error
 	ListChains(orgID string) ([]Chain, error)
 	PutException(ex Exception) error
 	ListExceptions(orgID string) ([]Exception, error)
@@ -72,6 +73,23 @@ func (m *MemoryStore) PutChain(c Chain) (Chain, bool, error) {
 	}
 	m.chains[key] = c
 	return c, true, nil
+}
+
+func (m *MemoryStore) UpdateChain(c Chain) error {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.chains == nil {
+		m.chains = map[string]Chain{}
+	}
+	key := chainKey(c.Keys.OrganizationID, c.Identity)
+	if _, ok := m.chains[key]; !ok {
+		return nil
+	}
+	m.chains[key] = c
+	return nil
 }
 
 func (m *MemoryStore) ListChains(orgID string) ([]Chain, error) {

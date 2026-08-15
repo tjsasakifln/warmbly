@@ -78,6 +78,24 @@ func (s *PGStore) PutChain(c Chain) (Chain, bool, error) {
 	return c, true, nil
 }
 
+func (s *PGStore) UpdateChain(c Chain) error {
+	if s == nil || s.db == nil {
+		return errors.New("intel pg store unavailable")
+	}
+	org := firstNonEmpty(c.Keys.OrganizationID, s.orgID)
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(context.Background(), `
+		UPDATE outreach_intel_chains
+		SET metric_key = $3, route_family = $4, payload = $5::jsonb
+		WHERE organization_id = $1::uuid AND identity = $2`,
+		org, c.Identity, c.MetricKey, c.RouteFamily, raw,
+	)
+	return err
+}
+
 func (s *PGStore) ListChains(orgID string) ([]Chain, error) {
 	if s == nil || s.db == nil {
 		return nil, nil

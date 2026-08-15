@@ -92,11 +92,11 @@ func Reconcile(store Store, in ObservedFacts) JoinResult {
 	existing, _ := store.GetChain(in.Keys.OrganizationID, identity)
 	exceptions := ClassifyExceptions(in, existing)
 
-	wonBlocked := false
+	closeBlocked := false
 	held := false
 	for _, ex := range exceptions {
-		if ex.Code == ExceptionUnconfirmedWon {
-			wonBlocked = true
+		if ex.Code == ExceptionUnconfirmedWon || ex.Code == ExceptionUnconfirmedLost {
+			closeBlocked = true
 		}
 		if ex.Held {
 			held = true
@@ -110,16 +110,41 @@ func Reconcile(store Store, in ObservedFacts) JoinResult {
 
 	if existing != nil {
 		persistExceptions(store, exceptions)
+		merged, changed := mergeIntoChain(*existing, in, closeBlocked, held)
+		if !changed {
+			return JoinResult{
+				Chain:      *existing,
+				Exceptions: exceptions,
+				Created:    false,
+				Replay:     true,
+				Held:       existing.Held || held,
+			}
+		}
+		if err := store.UpdateChain(merged); err != nil {
+			ex := Exception{
+				Code:       ExceptionUnavailable,
+				Reason:     "update chain failed: " + err.Error(),
+				NextAction: "retry with the same IDs",
+				Identity:   identity,
+				MetricKey:  metric,
+				At:         now,
+			}
+			return JoinResult{Chain: *existing, Exceptions: []Exception{ex}, Held: true}
+		}
+		saved, _ := store.GetChain(in.Keys.OrganizationID, identity)
+		if saved == nil {
+			saved = &merged
+		}
 		return JoinResult{
-			Chain:      *existing,
+			Chain:      *saved,
 			Exceptions: exceptions,
 			Created:    false,
-			Replay:     true,
-			Held:       existing.Held || held,
+			Replay:     false,
+			Held:       saved.Held,
 		}
 	}
 
-	chain := buildChain(in, identity, metric, now, wonBlocked, held)
+	chain := buildChain(in, identity, metric, now, closeBlocked, held)
 	saved, created, err := store.PutChain(chain)
 	if err != nil {
 		ex := Exception{
@@ -142,7 +167,7 @@ func Reconcile(store Store, in ObservedFacts) JoinResult {
 	}
 }
 
-func buildChain(in ObservedFacts, identity, metric string, now time.Time, wonBlocked, held bool) Chain {
+func buildChain(in ObservedFacts, identity, metric string, now time.Time, closeBlocked, held bool) Chain {
 	k := in.Keys
 	label := strings.TrimSpace(in.Label)
 	if in.Synthetic {
@@ -151,10 +176,10 @@ func buildChain(in ObservedFacts, identity, metric string, now time.Time, wonBlo
 		label = LabelReal
 	}
 	outcome := strings.ToUpper(strings.TrimSpace(in.OutcomeType))
-	if outcome == "" || wonBlocked {
+	if outcome == "" || closeBlocked {
 		outcome = OutcomeUnknown
 	}
-	if isWonType(outcome) && !in.HumanConfirmed {
+	if (isWonType(outcome) || isLostType(outcome)) && !in.HumanConfirmed {
 		outcome = OutcomeUnknown
 	}
 	qualified := in.Qualified || outcome == OutcomeQualifiedConversation
@@ -203,7 +228,7 @@ func buildChain(in ObservedFacts, identity, metric string, now time.Time, wonBlo
 		ProposalAt:      in.ProposalAt,
 		CloseAt:         in.CloseAt,
 		OutcomeType:     outcome,
-		HumanConfirmed:  in.HumanConfirmed && isWonType(strings.ToUpper(strings.TrimSpace(in.OutcomeType))),
+		HumanConfirmed:  in.HumanConfirmed && (isWonType(strings.ToUpper(strings.TrimSpace(in.OutcomeType))) || isLostType(strings.ToUpper(strings.TrimSpace(in.OutcomeType)))),
 		Qualified:       qualified,
 		Conversation:    conversation,
 		PipelineOpen:    pipeline,
@@ -214,6 +239,136 @@ func buildChain(in ObservedFacts, identity, metric string, now time.Time, wonBlo
 		Label:           label,
 		CreatedAt:       now,
 	}
+}
+
+func mergeIntoChain(existing Chain, in ObservedFacts, closeBlocked, held bool) (Chain, bool) {
+	merged := existing
+	changed := false
+	fill := func(dst *string, incoming string) {
+		inc := knownID(incoming)
+		if inc == "" {
+			return
+		}
+		if knownID(*dst) == "" {
+			*dst = inc
+			changed = true
+		}
+	}
+	fill(&merged.Keys.ActionID, in.Keys.ActionID)
+	fill(&merged.ActionID, in.Keys.ActionID)
+	fill(&merged.Keys.OutcomeID, in.Keys.OutcomeID)
+	fill(&merged.OutcomeID, in.Keys.OutcomeID)
+	fill(&merged.Keys.OutboxEventID, in.Keys.OutboxEventID)
+	fill(&merged.OutboxEventID, in.Keys.OutboxEventID)
+	fill(&merged.Keys.IdempotencyKey, in.Keys.IdempotencyKey)
+	fill(&merged.IdempotencyKey, in.Keys.IdempotencyKey)
+	fill(&merged.Keys.ReceiptID, in.Keys.ReceiptID)
+	fill(&merged.ReceiptID, in.Keys.ReceiptID)
+	fill(&merged.Keys.CorrelationID, in.Keys.CorrelationID)
+	fill(&merged.CorrelationID, in.Keys.CorrelationID)
+	fill(&merged.Keys.PersonID, in.Keys.PersonID)
+	fill(&merged.PersonID, in.Keys.PersonID)
+	fill(&merged.Keys.AssetID, in.Keys.AssetID)
+	fill(&merged.AssetID, in.Keys.AssetID)
+	fill(&merged.Keys.Query, in.Keys.Query)
+	fill(&merged.Query, in.Keys.Query)
+	fill(&merged.Keys.Trigger, in.Keys.Trigger)
+	fill(&merged.Trigger, in.Keys.Trigger)
+	fill(&merged.Keys.OfferID, in.Keys.OfferID)
+	fill(&merged.OfferID, in.Keys.OfferID)
+	fill(&merged.Keys.Route, in.Keys.Route)
+	fill(&merged.Route, in.Keys.Route)
+	if !conflictAccount(existing.Keys, in.Keys) {
+		fill(&merged.Keys.AccountID, in.Keys.AccountID)
+		fill(&merged.AccountID, in.Keys.AccountID)
+		fill(&merged.Keys.SourceLeadID, in.Keys.SourceLeadID)
+	}
+	for _, ev := range in.Keys.EventIDs {
+		if knownID(ev) == "" {
+			continue
+		}
+		found := false
+		for _, have := range merged.Keys.EventIDs {
+			if have == ev {
+				found = true
+				break
+			}
+		}
+		if !found {
+			merged.Keys.EventIDs = append(merged.Keys.EventIDs, ev)
+			changed = true
+		}
+	}
+
+	incoming := strings.ToUpper(strings.TrimSpace(in.OutcomeType))
+	if closeBlocked || ((isWonType(incoming) || isLostType(incoming)) && !in.HumanConfirmed) {
+		incoming = OutcomeUnknown
+	}
+	if (merged.OutcomeType == "" || merged.OutcomeType == OutcomeUnknown) && incoming != "" && incoming != OutcomeUnknown {
+		merged.OutcomeType = incoming
+		changed = true
+	}
+	if in.HumanConfirmed && (isWonType(in.OutcomeType) || isLostType(in.OutcomeType)) && !merged.HumanConfirmed {
+		merged.HumanConfirmed = true
+		changed = true
+	}
+	if in.Qualified && !merged.Qualified {
+		merged.Qualified = true
+		changed = true
+	}
+	if in.Conversation && !merged.Conversation {
+		merged.Conversation = true
+		changed = true
+	}
+	if in.FirstActionAt != nil && merged.FirstActionAt == nil {
+		merged.FirstActionAt = in.FirstActionAt
+		changed = true
+	}
+	if in.ConversationAt != nil && merged.ConversationAt == nil {
+		merged.ConversationAt = in.ConversationAt
+		changed = true
+	}
+	if in.ProposalAt != nil && merged.ProposalAt == nil {
+		merged.ProposalAt = in.ProposalAt
+		changed = true
+	}
+	if in.CloseAt != nil && merged.CloseAt == nil && merged.HumanConfirmed {
+		merged.CloseAt = in.CloseAt
+		changed = true
+	}
+	if in.EnrichmentAt != nil && merged.EnrichmentAt == nil {
+		merged.EnrichmentAt = in.EnrichmentAt
+		changed = true
+	}
+	if held && !merged.Held {
+		merged.Held = true
+		changed = true
+	}
+
+	qualified := merged.Qualified || merged.OutcomeType == OutcomeQualifiedConversation
+	conversation := merged.Conversation || merged.ConversationAt != nil || qualified || merged.OutcomeType == OutcomeReplied
+	pipeline := merged.PipelineOpen
+	if !isWonType(merged.OutcomeType) && !isLostType(merged.OutcomeType) && merged.OutcomeType != OutcomeDoNotContact {
+		if qualified || conversation || merged.OutcomeType == OutcomeMeeting || merged.OutcomeType == OutcomeProposal || merged.OutcomeType == OutcomeContacted {
+			pipeline = true
+		}
+	}
+	if isWonType(merged.OutcomeType) || isLostType(merged.OutcomeType) {
+		pipeline = false
+	}
+	if qualified != merged.Qualified || conversation != merged.Conversation || pipeline != merged.PipelineOpen {
+		merged.Qualified = qualified
+		merged.Conversation = conversation
+		merged.PipelineOpen = pipeline
+		changed = true
+	}
+
+	if changed {
+		merged.MetricKey = MetricKey(merged.Keys)
+		merged.AttributionKind = AssociationObserved
+		merged.CausalProof = false
+	}
+	return merged, changed
 }
 
 func persistExceptions(store Store, xs []Exception) {

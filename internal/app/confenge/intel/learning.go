@@ -37,9 +37,9 @@ func EmitLearning(store Store, in LearningInput) LearningCandidate {
 		Synthetic:       in.Synthetic,
 		At:              now,
 	}
-	if isWonType(in.OutcomeType) && !in.HumanConfirmed {
+	if (isWonType(in.OutcomeType) || isLostType(in.OutcomeType)) && !in.HumanConfirmed {
 		cand.OutcomeType = OutcomeUnknown
-		cand.Reason = "WON without human confirmation stays UNKNOWN"
+		cand.Reason = "WON/LOST without human confirmation stays UNKNOWN"
 		if cand.Target == TargetOffer {
 			cand.Target = Unknown
 		}

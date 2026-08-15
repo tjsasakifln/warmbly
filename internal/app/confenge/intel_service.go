@@ -95,7 +95,7 @@ func (s *service) observeExisting(ctx context.Context, orgID uuid.UUID) {
 						action, _ = ast.GetCommercialAction(ctx, orgID, *leads[i].ActionID)
 					}
 				}
-				outcome, _ = s.repo.GetLatestOutcomeForLead(ctx, orgID, leads[i].CNPJ14, leads[i].LeadID, leads[i].LeadEmail)
+				outcome = outcomeByJoinIDs(ctx, s.repo, orgID, leads[i], action)
 				facts := intel.ObserveFromInbound(leads[i], acc, action, outcome)
 				intel.Reconcile(st, facts)
 				if action != nil {
@@ -123,4 +123,39 @@ func (s *service) observeExisting(ctx context.Context, orgID uuid.UUID) {
 			}
 		}
 	}
+}
+
+// intelOutboxByID looks up outbox rows by durable IDs only. Email/CNPJ
+// must not be used as a join key.
+type intelOutboxByID interface {
+	GetOutcomeBySourceLeadID(ctx context.Context, orgID uuid.UUID, sourceLeadID string) (*models.OutreachOutcome, error)
+}
+
+func outcomeByJoinIDs(ctx context.Context, repo any, orgID uuid.UUID, lead models.OutreachInboundLead, action *models.OutreachCommercialAction) *models.OutreachOutcome {
+	st, ok := repo.(intelOutboxByID)
+	if !ok {
+		return nil
+	}
+	for _, id := range []string{strings.TrimSpace(lead.LeadID), strings.TrimSpace(lead.ReceiptID)} {
+		if id == "" {
+			continue
+		}
+		ev, err := st.GetOutcomeBySourceLeadID(ctx, orgID, id)
+		if err != nil || ev == nil {
+			continue
+		}
+		src := strings.TrimSpace(ev.SourceLeadID)
+		if src != "" && (src == strings.TrimSpace(lead.LeadID) || src == strings.TrimSpace(lead.ReceiptID)) {
+			return ev
+		}
+	}
+	if action != nil {
+		if id := strings.TrimSpace(action.SourceLeadID); id != "" && (id == strings.TrimSpace(lead.LeadID) || id == strings.TrimSpace(lead.ReceiptID)) {
+			ev, err := st.GetOutcomeBySourceLeadID(ctx, orgID, id)
+			if err == nil && ev != nil && strings.TrimSpace(ev.SourceLeadID) == id {
+				return ev
+			}
+		}
+	}
+	return nil
 }

@@ -36,7 +36,10 @@ never enter a metric key.
 
 `orphan`, `duplicate`, `conflicting_account`, `missing_version`,
 `stale_attribution`, plus `out_of_order` (held, not reordered) and
-`unconfirmed_won` (stays UNKNOWN). Store unavailable is fail-closed.
+`unconfirmed_won` / `unconfirmed_lost` (stay UNKNOWN). Store unavailable
+is fail-closed. Additive IDs (action, then outcome) merge onto the first
+chain. Outcomes join only by `lead_id` / `receipt_id` / `action_id` /
+`outcome_id`, never by email or CNPJ.
 
 ## Executive view
 

@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/warmbly/warmbly/internal/app/confenge/intel"
+	"github.com/warmbly/warmbly/internal/models"
 )
 
 func TestCommercialExecutiveViewEmptyReal(t *testing.T) {
@@ -95,6 +99,72 @@ func TestObserveFromInboundKeepsIDsOnly(t *testing.T) {
 	fmt.Printf("OBSERVE lead=%s receipt=%s asset=%s metric_pii=false\n",
 		facts.Keys.LeadID, facts.Keys.ReceiptID, facts.Keys.AssetID)
 	_ = repo
+}
+
+func TestObserveExistingJoinsOutcomeByLeadIDOnly(t *testing.T) {
+	svc, repo, org := inboundTestService(t)
+	now := time.Date(2026, 8, 14, 15, 0, 0, 0, time.UTC)
+	sharedEmail := "shared@empresa.com"
+	sharedCNPJ := "11222333000181"
+	leadA := &models.OutreachInboundLead{
+		OrganizationID: org, LeadID: "webcfg-join-a", ReceiptID: "rcpt-a",
+		LeadCreatedAt: now, WarmblyIngestedAt: now,
+		LeadEmail: sharedEmail, CNPJ14: sharedCNPJ,
+		RouteFamily: "inbound", Status: models.InboundStatusOpen,
+		EnrichmentStatus: models.InboundEnrichmentUnknown, Owner: models.InboundOwnerUnknown,
+	}
+	leadB := &models.OutreachInboundLead{
+		OrganizationID: org, LeadID: "webcfg-join-b", ReceiptID: "rcpt-b",
+		LeadCreatedAt: now, WarmblyIngestedAt: now,
+		LeadEmail: sharedEmail, CNPJ14: sharedCNPJ,
+		RouteFamily: "inbound", Status: models.InboundStatusOpen,
+		EnrichmentStatus: models.InboundEnrichmentUnknown, Owner: models.InboundOwnerUnknown,
+	}
+	if _, _, err := repo.InsertInboundLead(context.Background(), leadA); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repo.InsertInboundLead(context.Background(), leadB); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.EnqueueOutcome(context.Background(), &models.OutreachOutcome{
+		OrganizationID: org, SourceLeadID: "webcfg-join-a", EventType: intel.OutcomeQualifiedConversation,
+		ContactEmail: sharedEmail, CNPJ14: sharedCNPJ, OccurredAt: now, IdempotencyKey: "out-a",
+		EventID: uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.EnqueueOutcome(context.Background(), &models.OutreachOutcome{
+		OrganizationID: org, SourceLeadID: "webcfg-join-b", EventType: intel.OutcomeMeeting,
+		ContactEmail: sharedEmail, CNPJ14: sharedCNPJ, OccurredAt: now.Add(time.Hour), IdempotencyKey: "out-b",
+		EventID: uuid.MustParse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	svc.observeExisting(context.Background(), org)
+	chains, err := svc.intelStore().ListChains(org.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byLead := map[string]intel.Chain{}
+	for _, c := range chains {
+		byLead[c.LeadID] = c
+	}
+	a, okA := byLead["webcfg-join-a"]
+	b, okB := byLead["webcfg-join-b"]
+	if !okA || !okB {
+		t.Fatalf("missing chains a=%v b=%v have=%d", okA, okB, len(chains))
+	}
+	if a.OutcomeType == intel.OutcomeMeeting {
+		t.Fatal("lead A absorbed lead B meeting via email/cnpj")
+	}
+	if a.OutcomeType != intel.OutcomeQualifiedConversation {
+		t.Fatalf("lead A outcome=%s want QCO (old outbox filter would drop it)", a.OutcomeType)
+	}
+	if b.OutcomeType != intel.OutcomeMeeting {
+		t.Fatalf("lead B outcome=%s want MEETING", b.OutcomeType)
+	}
+	fmt.Printf("OBSERVE_EXISTING a=%s b=%s email_or_rejected=true qco_visible=true\n", a.OutcomeType, b.OutcomeType)
 }
 
 func containsAny(s string, parts ...string) bool {

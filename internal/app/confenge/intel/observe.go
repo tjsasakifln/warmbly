@@ -85,12 +85,15 @@ func ObserveFromInbound(lead models.OutreachInboundLead, acc *models.OutreachAcc
 		if action.CompletedAt != nil {
 			in.OutcomeOccurredAt = *action.CompletedAt
 		}
-		if isWonType(action.OutcomeCode) && strings.TrimSpace(action.HumanActor) != "" {
+		if (isWonType(action.OutcomeCode) || isLostType(action.OutcomeCode)) && strings.TrimSpace(action.HumanActor) != "" {
 			in.HumanConfirmed = true
 		}
 		if action.RequiresFresh || strings.TrimSpace(action.StaleWarning) != "" {
 			in.RequiresFresh = true
 		}
+	}
+	if outcome != nil && !outcomeMatchesJoinIDs(lead, action, outcome) {
+		outcome = nil
 	}
 	if outcome != nil {
 		if outcome.EventID != uuid.Nil {
@@ -144,7 +147,7 @@ func ObserveFromAction(action models.OutreachCommercialAction, acc *models.Outre
 	if action.CompletedAt != nil {
 		in.OutcomeOccurredAt = *action.CompletedAt
 	}
-	if isWonType(action.OutcomeCode) && strings.TrimSpace(action.HumanActor) != "" {
+	if (isWonType(action.OutcomeCode) || isLostType(action.OutcomeCode)) && strings.TrimSpace(action.HumanActor) != "" {
 		in.HumanConfirmed = true
 	}
 	if acc != nil {
@@ -180,4 +183,21 @@ func utmQuery(raw []byte) string {
 		}
 	}
 	return ""
+}
+
+func outcomeMatchesJoinIDs(lead models.OutreachInboundLead, action *models.OutreachCommercialAction, ev *models.OutreachOutcome) bool {
+	if ev == nil {
+		return false
+	}
+	src := strings.TrimSpace(ev.SourceLeadID)
+	if src == "" {
+		return false
+	}
+	if src == strings.TrimSpace(lead.LeadID) || src == strings.TrimSpace(lead.ReceiptID) {
+		return true
+	}
+	if action != nil && src == strings.TrimSpace(action.SourceLeadID) && (src == strings.TrimSpace(lead.LeadID) || src == strings.TrimSpace(lead.ReceiptID)) {
+		return true
+	}
+	return false
 }

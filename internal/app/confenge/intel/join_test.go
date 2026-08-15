@@ -121,6 +121,58 @@ func TestMissingVersionStaysUnknown(t *testing.T) {
 		res.Chain.Versions.TargetFit, res.Chain.Versions.ActivationPolicy)
 }
 
+func TestReconcileMergesAdditiveActionThenOutcome(t *testing.T) {
+	st := NewMemoryStore()
+	org := "44444444-4444-4444-8444-444444444444"
+	lead := testFacts(org, "webcfg-merge-1", "rcpt-merge-1", "acc-merge", "act-merge-1", "")
+	lead.Keys.OutcomeID = ""
+	lead.Keys.OutboxEventID = ""
+	lead.OutcomeType = ""
+	lead.Qualified = false
+	first := Reconcile(st, lead)
+	if !first.Created {
+		t.Fatal("lead+action should create")
+	}
+	if first.Chain.ActionID != "act-merge-1" {
+		t.Fatalf("action_id=%s", first.Chain.ActionID)
+	}
+	if knownID(first.Chain.OutcomeID) != "" {
+		t.Fatalf("outcome invented on first write: %s", first.Chain.OutcomeID)
+	}
+
+	secondIn := lead
+	secondIn.Keys.ActionID = ""
+	secondIn.Keys.OutcomeID = "out-merge-1"
+	secondIn.Keys.OutboxEventID = "evt-merge-1"
+	secondIn.OutcomeType = OutcomeQualifiedConversation
+	secondIn.Qualified = true
+	second := Reconcile(st, secondIn)
+	if second.Created {
+		t.Fatal("second reconcile opened another chain")
+	}
+	if second.Chain.ActionID != "act-merge-1" {
+		t.Fatalf("merged action_id lost: %s", second.Chain.ActionID)
+	}
+	if second.Chain.OutcomeID != "out-merge-1" {
+		t.Fatalf("outcome_id not merged: %s", second.Chain.OutcomeID)
+	}
+	if second.Chain.OutboxEventID != "evt-merge-1" {
+		t.Fatalf("outbox event_id not merged: %s", second.Chain.OutboxEventID)
+	}
+	if second.Chain.OutcomeType != OutcomeQualifiedConversation {
+		t.Fatalf("outcome type=%s", second.Chain.OutcomeType)
+	}
+	chains, _ := st.ListChains(org)
+	if len(chains) != 1 {
+		t.Fatalf("chains=%d want 1", len(chains))
+	}
+	if hasCode(second.Exceptions, ExceptionDuplicate) {
+		t.Fatal("additive merge must not be classified as duplicate")
+	}
+	fmt.Printf("JOIN_MERGE identity=%s action=%s outcome=%s chains=1\n",
+		second.Chain.Identity, second.Chain.ActionID, second.Chain.OutcomeID)
+}
+
 func TestNilStoreFailClosed(t *testing.T) {
 	res := Reconcile(nil, testFacts("org", "l", "r", "a", "act", "out"))
 	if len(res.Exceptions) == 0 || res.Exceptions[0].Code != ExceptionUnavailable {
