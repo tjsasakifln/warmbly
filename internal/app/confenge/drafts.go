@@ -569,26 +569,32 @@ func recentDraftBodies(ctx context.Context, s *service, orgID, accountID uuid.UU
 	if s == nil || s.repo == nil {
 		return nil
 	}
-	list, err := s.repo.ListDrafts(ctx, orgID, "", 40, 0)
+	// Org-wide: REAJUSTE/service clones were generated across accounts.
+	list, err := s.repo.ListDrafts(ctx, orgID, "", 80, 0)
 	if err != nil || len(list) == 0 {
 		return nil
 	}
-	var bodies []string
+	var others, same []string
 	for _, d := range list {
-		if d.AccountID != accountID {
-			continue
-		}
 		if channel != "" && d.Channel != "" && d.Channel != channel {
 			continue
 		}
-		if b := strings.TrimSpace(d.BodyText); b != "" {
-			bodies = append(bodies, b)
+		b := strings.TrimSpace(d.BodyText)
+		if b == "" {
+			continue
 		}
-		if len(bodies) >= 8 {
-			break
+		if d.AccountID == accountID {
+			same = append(same, b)
+		} else {
+			others = append(others, b)
 		}
 	}
-	return bodies
+	// Other accounts first so cross-account clones are compared.
+	out := append(others, same...)
+	if len(out) > 24 {
+		out = out[:24]
+	}
+	return out
 }
 
 func channelKindFromDraft(d *models.OutreachDraft) string {

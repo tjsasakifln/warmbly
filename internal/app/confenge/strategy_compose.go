@@ -111,7 +111,7 @@ func RecipientFacingFromPlan(plan OutboundMessagePlan, cand *models.OutreachCont
 }
 
 func composeInitialFromFacing(f RecipientFacingCopy) string {
-	body := f.Greeting + ",\n\n"
+	body := f.Greeting + ",\n\nSou da CONFENGE.\n\n"
 	if f.Observation != "" {
 		body += f.Observation
 		if !strings.HasSuffix(strings.TrimSpace(f.Observation), ".") {
@@ -226,7 +226,7 @@ func composeFollowup(greeting, hook, relevance, cta string, plan OutboundMessage
 }
 
 func composeWhatsApp(greeting, hook, cta string) string {
-	body := greeting + ", "
+	body := greeting + ", sou da CONFENGE. "
 	if hook != "" {
 		body += ensureLowerStart(hook)
 		if !strings.HasSuffix(strings.TrimSpace(hook), ".") {

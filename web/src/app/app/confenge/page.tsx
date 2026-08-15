@@ -52,6 +52,7 @@ import type {
 import type { AppError } from "@/lib/api/client/normalizeError";
 import { channelLabel, formatFeedAge, formatPtBrDate, intentLabel, purposeLabel, reasonLabel, stateLabel } from "./labels";
 import { buildPilotGate, type PilotGate } from "./pilotGate";
+import { isAuthorizeReady } from "./reviewReady";
 
 const ATTENTION_FILTERS: { id: ConfengeAttentionFilter; label: string }[] = [
   { id: "needs_attention", label: "Precisa de atenção" },
@@ -91,13 +92,6 @@ export default function ConfengePage() {
   const [idx, setIdx] = useState(0);
   const [reviewLane, setReviewLane] = useState<"ready" | "exception">("ready");
   const allReview = review.data ?? [];
-  const isAuthorizeReady = (tp: ConfengeTouchpoint) => {
-    const recipientOK = (tp.recipient_state || "").toUpperCase() === "VALIDATED";
-    const messageability = (tp.strategy_explain?.messageability || "").toUpperCase();
-    const messageOK = !messageability || messageability === "READY";
-    const sendable = !!(tp.body_text && tp.body_text.trim());
-    return recipientOK && messageOK && sendable;
-  };
   const autorizaveis = allReview.filter(isAuthorizeReady);
   const queue = allReview.filter((tp) => {
     const ready = isAuthorizeReady(tp);

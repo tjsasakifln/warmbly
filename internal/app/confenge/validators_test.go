@@ -127,4 +127,9 @@ func TestNearDuplicateJaccard(t *testing.T) {
 	if _, hit := NearDuplicate(a, []string{a}); !hit {
 		t.Fatal("identical bodies must near-dup")
 	}
+	aditivoA := "Olá, Ana,\n\nSou da CONFENGE.\n\nPelo contrato publicado, termo aditivo 2 ao contrato 1149/2022 no DER-RS.\n\nDepois de um aditivo, o que costuma ficar para trás é a revisão de planilha, prazo e efeitos.\n\nPosso te mostrar o que eu checaria depois desse aditivo?"
+	aditivoB := "Olá, Ana,\n\nSou da CONFENGE.\n\nPelo contrato publicado, termo aditivo 8 ao contrato 2201/2024 na prefeitura de Caxias do Sul na ERS-122.\n\nDepois de um aditivo, o que costuma ficar para trás é a revisão de planilha, prazo e efeitos.\n\nPosso te mostrar o que eu checaria depois desse aditivo?"
+	if _, hit := NearDuplicate(aditivoA, []string{aditivoB}); hit {
+		t.Fatal("different contracts must not be treated as clones just because they share the CONFENGE wrapper")
+	}
 }

@@ -160,13 +160,18 @@ func LintCopy(channel, subject, body, companyName string) LintResult {
 }
 
 func NearDuplicate(body string, recent []string) (maxScore float64, hit bool) {
-	body = strings.TrimSpace(body)
+	body = distinctiveNearDupText(body)
 	if body == "" || len(recent) == 0 {
 		return 0, false
 	}
+	bodyNums := numberTokenSet(body)
 	for _, r := range recent {
-		r = strings.TrimSpace(r)
+		r = distinctiveNearDupText(r)
 		if r == "" {
+			continue
+		}
+		// Different published contract/date numbers are not the v3/REAJUSTE clone.
+		if !sameNumberTokens(bodyNums, numberTokenSet(r)) {
 			continue
 		}
 		s := JaccardNgramSimilarity(body, r, NgramSize)
@@ -175,6 +180,78 @@ func NearDuplicate(body string, recent []string) (maxScore float64, hit bool) {
 		}
 	}
 	return maxScore, maxScore >= NearDupThreshold
+}
+
+func distinctiveNearDupText(s string) string {
+	return stripSharedComposerFrame(s)
+}
+
+func numberTokenSet(s string) map[string]bool {
+	out := map[string]bool{}
+	var cur []rune
+	flush := func() {
+		if len(cur) >= 2 {
+			out[string(cur)] = true
+		}
+		cur = cur[:0]
+	}
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			cur = append(cur, r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return out
+}
+
+func sameNumberTokens(a, b map[string]bool) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return true
+	}
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if !b[k] {
+			return false
+		}
+	}
+	return true
+}
+
+// stripSharedComposerFrame drops greeting, CONFENGE identity, and the trailing
+// CTA so Jaccard compares the account-specific observation, not the wrapper.
+func stripSharedComposerFrame(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	s = strings.ReplaceAll(s, "Sou da CONFENGE.", " ")
+	s = strings.ReplaceAll(s, "Escrevo da CONFENGE.", " ")
+	s = strings.ReplaceAll(s, "Falo da CONFENGE.", " ")
+	s = strings.ReplaceAll(s, "sou da CONFENGE.", " ")
+	paras := strings.Split(s, "\n\n")
+	var keep []string
+	for i, p := range paras {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		low := foldASCII(p)
+		if strings.HasPrefix(low, "ola") && !strings.Contains(p, " ") || strings.HasPrefix(low, "ola,") || strings.HasPrefix(low, "bom dia") {
+			continue
+		}
+		if i == len(paras)-1 && strings.Contains(p, "?") && (strings.HasPrefix(low, "posso") || strings.HasPrefix(low, "quer ")) {
+			continue
+		}
+		keep = append(keep, p)
+	}
+	if len(keep) == 0 {
+		return strings.TrimSpace(s)
+	}
+	return strings.Join(keep, " ")
 }
 
 func JaccardNgramSimilarity(a, b string, n int) float64 {

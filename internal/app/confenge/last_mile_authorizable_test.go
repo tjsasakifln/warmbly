@@ -82,6 +82,9 @@ func TestLastMileRecipientSafeFixtureIsAuthorizable(t *testing.T) {
 	if !strings.Contains(out.BodyText, "?") {
 		t.Fatalf("initial CTA must be a question: %s", out.BodyText)
 	}
+	if !strings.Contains(out.BodyText, "CONFENGE") {
+		t.Fatalf("first email must identify the sender as CONFENGE: %s", out.BodyText)
+	}
 	val := ValidateDraft(&out, acc, cand, ValidateOpts{
 		MaxWords: 140, Evidence: ev, Channel: ChannelEmailInitial, Strategy: &st, Playbook: pb,
 	})
@@ -454,4 +457,132 @@ func TestLastMileZeroLiveValidatedCohortHonesty(t *testing.T) {
 		t.Fatal("no invented live cohort")
 	}
 	_ = blocked
+}
+
+func seedLastMileSendable(t *testing.T, repo *memRepo, org uuid.UUID, cnpj, email string) (*models.OutreachAccount, *models.OutreachContactCandidate) {
+	t.Helper()
+	acc := lastMileReadyAccount()
+	acc.OrganizationID = org
+	acc.CNPJ14 = cnpj
+	acc.QueueState = models.OutreachQueueReadyToGenerate
+	acc.SourceLeadID = "lead-" + cnpj
+	if _, err := repo.UpsertAccount(context.Background(), acc); err != nil {
+		t.Fatal(err)
+	}
+	c := lastMileNamedCand()
+	applyValidatedIdentity(c)
+	c.OrganizationID = org
+	c.AccountID = acc.ID
+	c.Email = email
+	c.SourceURL = "https://" + emailDomain(email) + "/equipe"
+	c.SourceContactID = "src-" + cnpj
+	if _, err := repo.UpsertCandidate(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range lastMileReadyEvidence() {
+		ev.OrganizationID = org
+		ev.AccountID = acc.ID
+		if _, err := repo.UpsertEvidence(context.Background(), &ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return acc, c
+}
+
+func TestLastMileGenerateTouchpointBlocksCrossAccountNearDup(t *testing.T) {
+	repo := newMemRepo()
+	svc := testSvc(repo).(*service)
+	org, user := uuid.New(), uuid.New()
+	accA, candA := seedLastMileSendable(t, repo, org, "99888777000166", "ana.souza@exemplo-a.com.br")
+	accB, candB := seedLastMileSendable(t, repo, org, "99888777000167", "ana.souza@exemplo-b.com.br")
+
+	listA, xerr := svc.PlanAccountCadence(context.Background(), org, user, accA.ID, &candA.ID, models.OutreachChannelEmail)
+	if xerr != nil || len(listA) == 0 {
+		t.Fatalf("plan A: %v", xerr)
+	}
+	first, xerr := svc.GenerateTouchpointDraft(context.Background(), org, user, listA[0].ID)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if first.State != models.TouchpointNeedsReview || strings.TrimSpace(first.BodyText) == "" {
+		t.Fatalf("first sendable generate must land in NEEDS_REVIEW: state=%s body=%q err=%q", first.State, first.BodyText, first.GenerationError)
+	}
+	if !strings.Contains(first.BodyText, "CONFENGE") {
+		t.Fatalf("cockpit generate must identify CONFENGE: %s", first.BodyText)
+	}
+
+	got := recentDraftBodies(context.Background(), svc, org, accB.ID, models.OutreachChannelEmail)
+	if len(got) == 0 {
+		t.Fatal("recentDraftBodies must see the other account")
+	}
+	foundOther := false
+	for _, b := range got {
+		if b == first.BodyText {
+			foundOther = true
+		}
+	}
+	if !foundOther {
+		t.Fatalf("org-wide recent bodies must include the other account: %#v", got)
+	}
+
+	listB, xerr := svc.PlanAccountCadence(context.Background(), org, user, accB.ID, &candB.ID, models.OutreachChannelEmail)
+	if xerr != nil || len(listB) == 0 {
+		t.Fatalf("plan B: %v", xerr)
+	}
+	clone, xerr := svc.GenerateTouchpointDraft(context.Background(), org, user, listB[0].ID)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if clone.State == models.TouchpointNeedsReview {
+		t.Fatalf("cross-account near-dup must not enter NEEDS_REVIEW: %+v body=%q", clone, clone.BodyText)
+	}
+	if clone.DraftID == nil {
+		t.Fatal("fail-closed draft must still persist")
+	}
+	draft, err := repo.GetDraft(context.Background(), org, *clone.DraftID)
+	if err != nil || draft == nil {
+		t.Fatalf("draft: %v", err)
+	}
+	if draft.Status == models.OutreachDraftNeedsReview || (draft.ValidationOK != nil && *draft.ValidationOK) {
+		t.Fatalf("clone draft must not be sendable: status=%s ok=%v body=%q", draft.Status, draft.ValidationOK, draft.BodyText)
+	}
+}
+
+func TestLastMileReviewPackReRunsHardQA(t *testing.T) {
+	repo := newMemRepo()
+	svc := testSvc(repo).(*service)
+	org := uuid.New()
+	acc, cand := seedLastMileSendable(t, repo, org, "11222333000181", "ana.souza@exemplo.com.br")
+	lie := true
+	junk := "Pelo que está público, objeto: Contratação (C.B;\n\nIsso não prova crédito sozinho, mas eventos públicos relevantes sem triagem. Como segunda leitura pontual, Posso te mandar os pontos?"
+	draft := &models.OutreachDraft{
+		OrganizationID: org, AccountID: acc.ID, ContactCandidateID: &cand.ID,
+		Channel: models.OutreachChannelEmail, Subject: "Contrato ROSA IMOVEIS LTDA",
+		BodyText: junk, Status: models.OutreachDraftNeedsReview,
+		PromptVersion: "confenge.draft.v3", ValidationOK: &lie,
+		RiskFlags: []string{"composer_version_stale", "requires_regeneration"},
+	}
+	if err := repo.UpsertDraft(context.Background(), draft); err != nil {
+		t.Fatal(err)
+	}
+	tp := &models.OutreachTouchpoint{
+		OrganizationID: org, AccountID: acc.ID, ContactCandidateID: &cand.ID,
+		Channel: models.OutreachChannelEmail, State: models.TouchpointNeedsReview,
+		Subject: draft.Subject, BodyText: junk, DraftID: &draft.ID,
+		Ordinal: 1, Purpose: "SIGNAL", ServiceCode: acc.ServiceCode,
+	}
+	if err := repo.InsertTouchpoint(context.Background(), tp); err != nil {
+		t.Fatal(err)
+	}
+	listed, xerr := svc.ListReviewTouchpoints(context.Background(), org, 20, 0)
+	if xerr != nil || len(listed) == 0 {
+		t.Fatalf("list: %v n=%d", xerr, len(listed))
+	}
+	pack := listed[0].ConsultantSendability
+	if pack == nil {
+		t.Fatal("pack missing")
+	}
+	if v, _ := pack["send_without_editing"].(string); v == "sim" {
+		t.Fatalf("leftover v3 junk must not say sim: %+v", pack)
+	}
 }
