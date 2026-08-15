@@ -44,6 +44,28 @@ func TestInboundCommercialSkipKeepsRealInQueue(t *testing.T) {
 		t.Fatalf("origin=%q", queue[0].Origin)
 	}
 	fmt.Printf("INBOUND_NOW_SKIP synthetic=skipped qa=skipped internal=skipped real=%s dispatch=false\n", queue[0].LeadID)
+
+	qaCo := []byte(`{"lead_id":"webcfg-obra-norte-1","receipt_id":"rcpt-obra-norte-1","source":"CONFENGE_WEB","company":"QA Engenharia","phone":"41990001111","message":"equipe de QA na obra"}`)
+	if _, xerr := svc.IngestInboundLead(context.Background(), org, qaCo, IngestOptions{Now: now.Add(time.Minute)}); xerr != nil {
+		t.Fatal(xerr)
+	}
+	queue, xerr = svc.CollectInboundNow(context.Background(), org)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	found := false
+	for _, item := range queue {
+		if item.LeadID == "webcfg-obra-norte-1" {
+			found = true
+		}
+		if item.LeadID == "synthetic-inbound-cfg" || item.LeadID == "qa-lead-1" || item.LeadID == "internal-probe" {
+			t.Fatalf("skipped receipt leaked after QA Engenharia ingest: %s", item.LeadID)
+		}
+	}
+	if !found {
+		t.Fatal("real QA Engenharia lead was dropped from commercial INBOUND NOW")
+	}
+	fmt.Printf("INBOUND_NOW_KEEP company=QA Engenharia lead_id=webcfg-obra-norte-1\n")
 }
 
 func TestInboundCommercialSkipReasonTokens(t *testing.T) {
@@ -55,6 +77,8 @@ func TestInboundCommercialSkipReasonTokens(t *testing.T) {
 		{models.OutreachInboundLead{LeadID: "qa-lead-1", Source: "qa"}, InboundSkipQA},
 		{models.OutreachInboundLead{LeadID: "x", RawPayload: []byte(`{"label":"internal"}`)}, InboundSkipInternal},
 		{models.OutreachInboundLead{LeadID: "webcfg-real-1", Source: "CONFENGE_WEB", CompanyName: "Norte"}, ""},
+		{models.OutreachInboundLead{LeadID: "webcfg-obra-norte-1", Source: "CONFENGE_WEB", CompanyName: "QA Engenharia", Message: "equipe de QA na obra"}, ""},
+		{models.OutreachInboundLead{LeadID: "webcfg-real-2", Source: "CONFENGE_WEB", CompanyName: "SYNTHETIC-INBOUND"}, InboundSkipSynthetic},
 	}
 	for _, tc := range cases {
 		got := InboundCommercialSkipReason(tc.lead)

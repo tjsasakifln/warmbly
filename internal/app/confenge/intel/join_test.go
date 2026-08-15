@@ -121,6 +121,26 @@ func TestMissingVersionStaysUnknown(t *testing.T) {
 		res.Chain.Versions.TargetFit, res.Chain.Versions.ActivationPolicy)
 }
 
+func TestReconcilePromotesSyntheticOnMerge(t *testing.T) {
+	st := NewMemoryStore()
+	org := "55555555-5555-4555-8555-555555555555"
+	first := testFacts(org, "SYNTHETIC-INBOUND-merge", "SYNTHETIC-INBOUND-merge", "acc-s", "", "")
+	first.Synthetic = false
+	first.Label = LabelReal
+	created := Reconcile(st, first)
+	if !created.Created || created.Chain.Synthetic {
+		t.Fatalf("seed REAL chain: %+v", created.Chain)
+	}
+	second := first
+	second.Synthetic = true
+	second.Label = LabelSynthetic
+	merged := Reconcile(st, second)
+	if merged.Created || !merged.Chain.Synthetic || merged.Chain.Label != LabelSynthetic {
+		t.Fatalf("incoming synthetic must promote REAL chain: %+v", merged.Chain)
+	}
+	fmt.Printf("JOIN_PROMOTE_SYNTHETIC identity=%s synthetic=%v label=%s\n", merged.Chain.Identity, merged.Chain.Synthetic, merged.Chain.Label)
+}
+
 func TestReconcileMergesAdditiveActionThenOutcome(t *testing.T) {
 	st := NewMemoryStore()
 	org := "44444444-4444-4444-8444-444444444444"

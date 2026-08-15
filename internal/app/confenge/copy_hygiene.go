@@ -18,9 +18,8 @@ var (
 	midTokenBreakRe  = regexp.MustCompile(`([A-Za-zÁ-ÿ]{3,})\n([A-Za-zÁ-ÿ]{3,})`)
 )
 
-// ApplyCopyHygiene is the shipped #69 transform. It does not rewrite
-// architecture; it only sanitizes currency, OCR, CAPS, vocative legal
-// forms, and double punctuation.
+// ApplyCopyHygiene only normalizes currency, OCR, CAPS, and legal vocative.
+// It must not invent facts or rewrite the compose path.
 func ApplyCopyHygiene(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {

@@ -126,7 +126,7 @@ func ParseInboundLead(raw []byte, now time.Time) (InboundLeadV1, *errx.Error) {
 		UTM:           parseUTM(m),
 	}
 	if lead.Query == "" && lead.UTM != nil {
-		lead.Query = firstNonEmpty(lead.UTM["term"], lead.UTM["query"], lead.UTM["campaign"])
+		lead.Query = firstNonEmpty(lead.UTM["term"], lead.UTM["query"])
 	}
 	lead.CNPJ = NormalizeCNPJ14(strAny(m, "cnpj14", "cnpj"))
 	if ts := parseFlexibleTime(strAny(m, "created_at", "lead_created_at")); !ts.IsZero() {

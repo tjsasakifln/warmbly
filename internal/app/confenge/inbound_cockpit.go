@@ -184,7 +184,7 @@ func ProjectInboundNowItem(lead models.OutreachInboundLead, acc *models.Outreach
 const inboundUnknown = "UNKNOWN"
 
 func inboundQueryOf(lead models.OutreachInboundLead) string {
-	if q := strings.TrimSpace(utmField(lead.UTMJSON, "query", "term", "campaign")); q != "" {
+	if q := strings.TrimSpace(utmField(lead.UTMJSON, "query", "term")); q != "" {
 		return q
 	}
 	return inboundUnknown

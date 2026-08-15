@@ -18,6 +18,8 @@ const (
 // still persist. A non-empty reason means the row is SYNTHETIC/qa/internal
 // and must not enter real INBOUND NOW or include_synthetic=0 rollups.
 func InboundCommercialSkipReason(lead models.OutreachInboundLead) string {
+	// Identity fields and explicit payload flags only. Company/name/message
+	// may contain "QA" or "internal" in real commercial Portuguese.
 	if reason := skipTokenIn(lead.Source); reason != "" {
 		return reason
 	}
@@ -27,20 +29,22 @@ func InboundCommercialSkipReason(lead models.OutreachInboundLead) string {
 	if reason := skipTokenIn(lead.ReceiptID); reason != "" {
 		return reason
 	}
-	if reason := skipTokenIn(lead.CompanyName); reason != "" {
-		return reason
-	}
-	if reason := skipTokenIn(lead.LeadEmail); reason != "" {
-		return reason
-	}
-	if reason := skipTokenIn(lead.LeadName); reason != "" {
-		return reason
-	}
-	if reason := skipTokenIn(lead.Message); reason != "" {
-		return reason
-	}
 	if reason := skipFromPayload(lead.RawPayload); reason != "" {
 		return reason
+	}
+	if reason := skipOfficialMarker(lead.CompanyName, lead.LeadEmail, lead.LeadName, lead.Message); reason != "" {
+		return reason
+	}
+	return ""
+}
+
+func skipOfficialMarker(parts ...string) string {
+	for _, p := range parts {
+		for _, tok := range splitSkipTokens(strings.ToLower(strings.TrimSpace(p))) {
+			if tok == InboundSkipSynthetic {
+				return InboundSkipSynthetic
+			}
+		}
 	}
 	return ""
 }
