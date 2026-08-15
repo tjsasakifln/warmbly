@@ -3,6 +3,7 @@ package confenge
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,6 +34,9 @@ func (s *service) persistPlannedAction(ctx context.Context, planned PlannedActio
 	}
 	a := planned.Action
 	st := s.actionStore()
+	if inboundOwnsAccount(ctx, st, a.OrganizationID, a.AccountID) {
+		return
+	}
 	if existing, _ := st.GetCommercialActionByIdempotency(ctx, a.OrganizationID, a.IdempotencyKey); existing != nil {
 		if !CanReplanPerson(*existing, a.PersonFingerprint) || !CanReplanRoute(*existing, a.RouteFingerprint) {
 			return
@@ -56,6 +60,22 @@ func (s *service) persistPlannedAction(ctx context.Context, planned PlannedActio
 		a.BlockedRoute = existing.BlockedRoute
 	}
 	_ = st.UpsertCommercialAction(ctx, &a)
+}
+
+func inboundOwnsAccount(ctx context.Context, st commercialActionStore, orgID, accountID uuid.UUID) bool {
+	if st == nil || accountID == uuid.Nil {
+		return false
+	}
+	open, err := st.ListCommercialActions(ctx, orgID, accountID, true, 20)
+	if err != nil {
+		return false
+	}
+	for _, a := range open {
+		if strings.HasPrefix(a.IdempotencyKey, "inbound:") {
+			return true
+		}
+	}
+	return false
 }
 
 func keepPersistedCommercialAction(existing models.OutreachCommercialAction) bool {
@@ -108,7 +128,29 @@ func (s *service) RecordCommercialOutcome(ctx context.Context, orgID, userID, ac
 		)
 	}
 	s.enqueueActionOutcome(ctx, orgID, res)
+	s.stampInboundFromAction(ctx, orgID, res.Action)
 	return &res, nil
+}
+
+func (s *service) stampInboundFromAction(ctx context.Context, orgID uuid.UUID, a models.OutreachCommercialAction) {
+	st := s.inboundStore()
+	if st == nil || a.SourceLeadID == "" {
+		return
+	}
+	row, err := st.GetInboundLeadByLeadID(ctx, orgID, a.SourceLeadID)
+	if err != nil || row == nil {
+		return
+	}
+	stampInboundLatency(row, a.OutcomeCode, time.Now().UTC())
+	if terminalInboundOutcome(a.OutcomeCode) {
+		row.Status = models.InboundStatusClosed
+	}
+	if a.OutcomeCode == models.OutcomeDNCCode {
+		row.Status = models.InboundStatusSuppressed
+		row.SuppressReason = firstNonEmpty(row.SuppressReason, "DNC")
+	}
+	row.UpdatedAt = time.Now().UTC()
+	_ = st.UpdateInboundLead(ctx, row)
 }
 
 func (s *service) StartCommercialWork(ctx context.Context, orgID, userID, actionID uuid.UUID) (*models.OutreachCommercialAction, *errx.Error) {
@@ -174,16 +216,25 @@ func (s *service) enqueueActionOutcome(ctx context.Context, orgID uuid.UUID, res
 
 func mapOutcomeEventType(code string) string {
 	switch code {
-	case models.OutcomeRepliedCode:
+	case models.OutcomeRepliedCode, models.OutcomeQualifiedConversation:
+		if code == models.OutcomeQualifiedConversation {
+			return OutcomeQualifiedConversation
+		}
 		return OutcomeReplied
 	case models.OutcomeMeetingScheduled:
 		return OutcomeMeeting
+	case models.OutcomeProposalCode:
+		return OutcomeProposal
+	case models.OutcomeWonCode, models.OutcomeClientCode:
+		return OutcomeWon
+	case models.OutcomeLostCode, models.OutcomeNotInterested:
+		return OutcomeLost
 	case models.OutcomeDNCCode:
 		return OutcomeDoNotContact
 	case models.OutcomeBouncedCode:
 		return OutcomeBounced
-	case models.OutcomeNotInterested:
-		return OutcomeLost
+	case models.OutcomeNoResponse:
+		return OutcomeNoResponse
 	default:
 		return OutcomeContacted
 	}

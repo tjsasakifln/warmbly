@@ -84,6 +84,23 @@ export async function startConfengeAction(actionId: string): Promise<void> {
     });
 }
 
+export async function recordConfengeInboundOutcome(
+    leadId: string,
+    payload: {
+        outcome_code: string;
+        notes?: string;
+        next_action_type?: string;
+        next_action_at?: string;
+    },
+): Promise<void> {
+    await Request({
+        method: "POST",
+        url: `/confenge/inbound/${leadId}/outcome`,
+        authorization: true,
+        data: payload,
+    });
+}
+
 export async function recordConfengeActionOutcome(
     actionId: string,
     payload: {

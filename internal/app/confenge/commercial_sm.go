@@ -61,6 +61,9 @@ var allowedOutcomeCodes = map[string]bool{
 	models.OutcomeSkippedCode: true, models.OutcomeBlockedCode: true,
 	models.OutcomeWrongChannel: true, models.OutcomeInvalidRoute: true,
 	models.OutcomeAttempted: true, models.OutcomeContactedCode: true, models.OutcomeFollowUp: true,
+	models.OutcomeQualifiedConversation: true, models.OutcomeProposalCode: true,
+	models.OutcomeWonCode: true, models.OutcomeClientCode: true, models.OutcomeLostCode: true,
+	models.OutcomeNoResponse: true,
 }
 
 var terminalOutcomes = map[string]bool{
@@ -103,9 +106,7 @@ func ApplyCommercialOutcome(a models.OutreachCommercialAction, req OutcomeReques
 	if !allowedOutcomeCodes[code] {
 		return OutcomeApply{}, errHuman("unknown_outcome")
 	}
-	if code == "WON" {
-		return OutcomeApply{}, errHuman("won_never_inferred")
-	}
+	// WON/CLIENT are human-recorded only. Classifier never emits them.
 	now := req.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -140,6 +141,35 @@ func ApplyCommercialOutcome(a models.OutreachCommercialAction, req OutcomeReques
 		t := true
 		a.TargetReached = &t
 		a.ConversationStarted = true
+	case models.OutcomeQualifiedConversation:
+		a.State = models.ActionStateNeedsFollowup
+		t := true
+		a.TargetReached = &t
+		a.ConversationStarted = true
+		a.InterestState = models.OutcomeQualifiedConversation
+	case models.OutcomeProposalCode:
+		a.State = models.ActionStateNeedsFollowup
+		a.ConversationStarted = true
+		t := true
+		a.TargetReached = &t
+		a.InterestState = models.OutcomeProposalCode
+	case models.OutcomeNoResponse:
+		a.State = models.ActionStateNeedsFollowup
+		if a.StartedAt == nil {
+			a.StartedAt = &now
+		}
+	case models.OutcomeWonCode, models.OutcomeClientCode:
+		// Human receipt only. Never inferred from meeting or interest.
+		a.State = models.ActionStateCompleted
+		a.CompletedAt = &now
+		a.ConversationStarted = true
+		t := true
+		a.TargetReached = &t
+		a.InterestState = code
+	case models.OutcomeLostCode:
+		a.State = models.ActionStateCompleted
+		a.CompletedAt = &now
+		a.InterestState = models.OutcomeLostCode
 	case models.OutcomeFollowUp:
 		a.State = models.ActionStateNeedsFollowup
 		if a.NextActionType == "" {

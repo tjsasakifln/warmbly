@@ -25,7 +25,11 @@ HMAC webhook**. Warmbly never writes the datalake database.
 ## Event types
 
 `LEAD_IMPORTED`, `LEAD_REVIEWED`, `CONTACT_APPROVED`, `CONTACTED`, `REPLIED`,
-`MEETING`, `PROPOSAL`, `WON`, `LOST`, `DO_NOT_CONTACT`, `BOUNCED`.
+`MEETING`, `PROPOSAL`, `WON`, `LOST`, `DO_NOT_CONTACT`, `BOUNCED`,
+`QUALIFIED_CONVERSATION`, `NO_RESPONSE`, `CLIENT`.
+
+`WON` / `CLIENT` are human-recorded only. Inbound interest, a meeting, or a
+machine class never infers them.
 
 Additive commercial-action fields (optional, ignored by older consumers):
 `action_id`, `action_type`, `reachability_class`, `outcome_code`,

@@ -33,6 +33,8 @@ func TestConfengeUIAcceptanceAffordancesPresent(t *testing.T) {
 		`data-testid="confenge-manual-next"`,
 		`data-testid="confenge-manual-confidence"`,
 		`data-testid="confenge-manual-copy-text"`,
+		`data-testid="confenge-inbound-now"`,
+		`data-testid="confenge-inbound-card"`,
 		`data-testid="confenge-today"`,
 		`data-testid="confenge-today-summary"`,
 		`data-testid="confenge-action-card"`,

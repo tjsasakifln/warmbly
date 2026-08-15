@@ -19,17 +19,20 @@ import (
 
 // Outcome event types for confenge.outcome.v1.
 const (
-	OutcomeLeadImported    = "LEAD_IMPORTED"
-	OutcomeLeadReviewed    = "LEAD_REVIEWED"
-	OutcomeContactApproved = "CONTACT_APPROVED"
-	OutcomeContacted       = "CONTACTED"
-	OutcomeReplied         = "REPLIED"
-	OutcomeMeeting         = "MEETING"
-	OutcomeProposal        = "PROPOSAL"
-	OutcomeWon             = "WON"
-	OutcomeLost            = "LOST"
-	OutcomeDoNotContact    = "DO_NOT_CONTACT"
-	OutcomeBounced         = "BOUNCED"
+	OutcomeLeadImported          = "LEAD_IMPORTED"
+	OutcomeLeadReviewed          = "LEAD_REVIEWED"
+	OutcomeContactApproved       = "CONTACT_APPROVED"
+	OutcomeContacted             = "CONTACTED"
+	OutcomeReplied               = "REPLIED"
+	OutcomeMeeting               = "MEETING"
+	OutcomeProposal              = "PROPOSAL"
+	OutcomeWon                   = "WON"
+	OutcomeLost                  = "LOST"
+	OutcomeDoNotContact          = "DO_NOT_CONTACT"
+	OutcomeBounced               = "BOUNCED"
+	OutcomeQualifiedConversation = "QUALIFIED_CONVERSATION"
+	OutcomeNoResponse            = "NO_RESPONSE"
+	OutcomeClient                = "CLIENT"
 )
 
 // OutcomeEnvelope is the payload posted to extra-cli.

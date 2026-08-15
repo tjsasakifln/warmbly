@@ -48,13 +48,15 @@ const (
 	// GREEN autorun under campaign policy authorization (fail-closed default).
 	EnvGreenAutorun = "CONFENGE_GREEN_AUTORUN_ENABLED"
 	// Adaptive rate (single capacity authority with dispatch governor).
-	EnvRateMode         = "CONFENGE_RATE_MODE"
-	EnvRateStartPerHour = "CONFENGE_RATE_START_PER_HOUR"
-	EnvRateMaxPerHour   = "CONFENGE_RATE_MAX_PER_HOUR"
-	EnvAllowEnrollMint  = "CONFENGE_ALLOW_ENROLL_MINT" // dev/Mailpit only; ignored in production
-	EnvOperatorMode     = "CONFENGE_OPERATOR_MODE"
-	EnvOperatorUserID   = "CONFENGE_OPERATOR_USER_ID"
-	EnvOperatorOrgID    = "CONFENGE_OPERATOR_ORG_ID"
+	EnvRateMode          = "CONFENGE_RATE_MODE"
+	EnvRateStartPerHour  = "CONFENGE_RATE_START_PER_HOUR"
+	EnvRateMaxPerHour    = "CONFENGE_RATE_MAX_PER_HOUR"
+	EnvAllowEnrollMint   = "CONFENGE_ALLOW_ENROLL_MINT" // dev/Mailpit only; ignored in production
+	EnvOperatorMode      = "CONFENGE_OPERATOR_MODE"
+	EnvOperatorUserID    = "CONFENGE_OPERATOR_USER_ID"
+	EnvOperatorOrgID     = "CONFENGE_OPERATOR_ORG_ID"
+	EnvInboundWebhookSec = "CONFENGE_INBOUND_WEBHOOK_SECRET"
+	EnvInboundOrgID      = "CONFENGE_INBOUND_ORG_ID"
 )
 
 // Defaults for conservative cold outreach.
@@ -114,6 +116,9 @@ type Config struct {
 	OperatorMode   bool
 	OperatorUserID uuid.UUID
 	OperatorOrgID  uuid.UUID
+	// InboundWebhookSecret authenticates POST /api/v1/webhooks/confenge/inbound.
+	InboundWebhookSecret string
+	InboundOrgID         uuid.UUID
 }
 
 // SendWindowHours returns whole hours in [start, end) for HH:MM window strings.
@@ -184,6 +189,11 @@ func LoadConfig() Config {
 		OperatorMode:           envBool(EnvOperatorMode, false),
 		OperatorUserID:         parseUUIDEnv(EnvOperatorUserID),
 		OperatorOrgID:          parseUUIDEnv(EnvOperatorOrgID),
+		InboundWebhookSecret:   strings.TrimSpace(os.Getenv(EnvInboundWebhookSec)),
+		InboundOrgID:           parseUUIDEnv(EnvInboundOrgID),
+	}
+	if cfg.InboundOrgID == uuid.Nil {
+		cfg.InboundOrgID = cfg.OperatorOrgID
 	}
 	if cfg.RateMode == "" {
 		cfg.RateMode = "adaptive"

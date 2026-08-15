@@ -50,6 +50,8 @@ Warmbly **must not**:
 | `CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT` | `100` | Campaign-shell daily ceiling (secondary; primary pace is CONFENGE_GLOBAL_SENDS_PER_HOUR=10) |
 | `CONFENGE_MAX_INITIAL_EMAIL_WORDS` | `120` | Future copy validators |
 | `CONFENGE_MAX_FEED_PAYLOAD_BYTES` | `33554432` | Import payload cap |
+| `CONFENGE_INBOUND_WEBHOOK_SECRET` | empty | HMAC for web-cfg inbound (`docs/confenge/inbound-ingest.md`) |
+| `CONFENGE_INBOUND_ORG_ID` | empty | Org that receives inbound leads |
 
 In production, feed and outcome URLs must be `https://`, and the feed host
 must be on the allowlist. Fetch uses the SSRF-hardened HTTP client.

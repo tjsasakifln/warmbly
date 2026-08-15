@@ -28,6 +28,7 @@ import {
   useApplyConfengeManualAction,
   useConfengeCockpit,
   useRecordConfengeActionOutcome,
+  useRecordConfengeInboundOutcome,
   useConfengeWorkingOverview,
   useConfengeWorkingQueue,
   useDncConfengeAccount,
@@ -43,6 +44,7 @@ import {
 } from "@/lib/api/hooks/app/confenge/useConfenge";
 import type {
   ConfengeActionCard,
+  ConfengeInboundNowItem,
   ConfengeAttentionFilter,
   ConfengeTouchpoint,
   ConfengeWorkingQueueItem,
@@ -65,6 +67,7 @@ export default function ConfengePage() {
   const cockpit = useConfengeCockpit(enabled);
   const manualAction = useApplyConfengeManualAction();
   const recordOutcome = useRecordConfengeActionOutcome();
+  const recordInbound = useRecordConfengeInboundOutcome();
   const agoraQueue = useConfengeWorkingQueue("agora", enabled);
   const needsContactQueue = useConfengeWorkingQueue("needs_contact", enabled);
   const ready = useConfengeAccounts("READY_TO_GENERATE", enabled);
@@ -341,6 +344,32 @@ export default function ConfengePage() {
             <span><strong className="text-slate-800">3. Aprove</strong> o conteúdo exato e mantenha o dispatch pausado até o GO/NO-GO.</span>
           </div>
         </section>
+
+        {cockpit.data && (
+          <section id="inbound-agora" data-testid="confenge-inbound-now" className="rounded-md border border-sky-200 bg-white">
+            <div className="px-3 h-10 flex items-center border-b border-slate-200">
+              <span className="text-[12.5px] font-medium text-slate-900">INBOUND NOW</span>
+              <span className="ml-2 text-[12.5px] text-slate-500 tabular-nums">{cockpit.data?.inbound_now?.length ?? 0}</span>
+            </div>
+            <p className="px-3 pt-2 text-[11.5px] text-slate-500">
+              Leads inbound do web-cfg. Sem copiar dados. Sem auto-envio.
+            </p>
+            <ul className="divide-y divide-slate-100">
+              {(cockpit.data?.inbound_now ?? []).map((item) => (
+                <li key={item.lead_id}>
+                  <InboundNowCard
+                    item={item}
+                    submitting={recordInbound.isPending}
+                    onOutcome={(payload) => recordInbound.mutate({ leadId: item.lead_id, ...payload })}
+                  />
+                </li>
+              ))}
+              {!(cockpit.data?.inbound_now?.length) && (
+                <li className="px-3 py-8 text-center text-slate-400 text-[12.5px]">Nenhum lead inbound na fila.</li>
+              )}
+            </ul>
+          </section>
+        )}
 
         {cockpit.data?.today && (
           <section id="hoje" data-testid="confenge-today" className="rounded-md border border-slate-200 bg-white">
@@ -1254,6 +1283,76 @@ function WorkingLaneList({
         );
       })}
     </ul>
+  );
+}
+
+const INBOUND_OUTCOME_OPTIONS = [
+  "CONTACTED",
+  "QUALIFIED_CONVERSATION",
+  "FOLLOW_UP",
+  "MEETING_SCHEDULED",
+  "PROPOSAL",
+  "NO_RESPONSE",
+  "DNC",
+  "LOST",
+  "WON",
+  "CLIENT",
+];
+
+function InboundNowCard({
+  item,
+  submitting,
+  onOutcome,
+}: {
+  item: ConfengeInboundNowItem;
+  submitting: boolean;
+  onOutcome: (payload: { outcome_code: string; notes?: string }) => void;
+}) {
+  const [outcome, setOutcome] = useState("");
+  return (
+    <article data-testid="confenge-inbound-card" className="px-3 py-3 text-[12.5px] space-y-1.5">
+      <div className="flex flex-wrap items-baseline gap-2">
+        <div className="font-medium text-slate-900">{item.company}</div>
+        {item.person ? <span className="text-slate-700">{item.person}</span> : <span className="text-slate-400">Pessoa UNKNOWN</span>}
+        <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">{stateLabel(item.next_action)}</span>
+      </div>
+      <div>Origem: {item.origin}{item.asset ? ` · Asset: ${item.asset}` : ""}</div>
+      {item.contract_context && <div>Contrato/contexto: {item.contract_context}</div>}
+      <div data-testid="confenge-inbound-why">Por que agora: {item.why_now}</div>
+      <div data-testid="confenge-inbound-next">Ação recomendada: {item.recommended_action}</div>
+      {item.channel && <div>Canal: {item.channel}</div>}
+      {item.evidence && item.evidence.length > 0 && <div className="text-[11px] text-slate-400">Evidências: {item.evidence.join(", ")}</div>}
+      <div>Owner: {item.owner} · Idade: {item.lead_age} · Status: {stateLabel(item.status)}</div>
+      <div>Próxima ação: {stateLabel(item.next_action)}</div>
+      {item.warnings?.map((w) => (
+        <div key={w} className="text-amber-800">{w}</div>
+      ))}
+      <div className="flex flex-wrap items-end gap-1.5 pt-1">
+        <label className="text-[11px] text-slate-500">
+          Outcome
+          <select
+            data-testid="confenge-inbound-outcome"
+            className="mt-0.5 h-7 block min-w-[180px] rounded-md border border-slate-200 bg-white px-2 text-[12.5px]"
+            value={outcome}
+            onChange={(e) => setOutcome(e.target.value)}
+          >
+            <option value="">Registrar resultado</option>
+            {INBOUND_OUTCOME_OPTIONS.map((code) => (
+              <option key={code} value={code}>{stateLabel(code)}</option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          data-testid="confenge-inbound-record-outcome"
+          disabled={!outcome || submitting}
+          className="h-7 px-2.5 rounded-md bg-sky-600 text-white text-[12.5px] disabled:opacity-50"
+          onClick={() => onOutcome({ outcome_code: outcome })}
+        >
+          Registrar
+        </button>
+      </div>
+    </article>
   );
 }
 

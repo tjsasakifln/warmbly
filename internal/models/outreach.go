@@ -693,6 +693,12 @@ const (
 	OutcomeAttempted             = "ATTEMPTED"
 	OutcomeContactedCode         = "CONTACTED"
 	OutcomeFollowUp              = "FOLLOW_UP"
+	OutcomeQualifiedConversation = "QUALIFIED_CONVERSATION"
+	OutcomeProposalCode          = "PROPOSAL"
+	OutcomeWonCode               = "WON"
+	OutcomeClientCode            = "CLIENT"
+	OutcomeLostCode              = "LOST"
+	OutcomeNoResponse            = "NO_RESPONSE"
 )
 
 // Operational lanes for the commercial-action cockpit.
@@ -707,6 +713,7 @@ const (
 	LaneContactFormQueue        = "CONTACT_FORM_QUEUE"
 	LaneLowConfidenceManual     = "LOW_CONFIDENCE_MANUAL"
 	LaneNeedsEnrichment         = "NEEDS_ENRICHMENT"
+	LaneInboundNow              = "INBOUND_NOW"
 	LaneBlockedAction           = "BLOCKED"
 	LaneDone                    = "DONE"
 )
