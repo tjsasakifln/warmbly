@@ -20,6 +20,7 @@ import {
     getConfengeCockpit,
     getConfengeToday,
     recordConfengeActionOutcome,
+    recordConfengeInboundOutcome,
     startConfengeAction,
     getConfengeWorkingOverview,
     listConfengeAccountTouchpoints,
@@ -128,6 +129,31 @@ export function useRecordConfengeActionOutcome() {
             toast.success("Outcome registrado");
         },
         onError: (error) => toast.error(confengeError(error, "Nao foi possivel registrar o outcome")),
+    });
+}
+
+export function useRecordConfengeInboundOutcome() {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({
+            leadId,
+            outcome_code,
+            notes,
+            next_action_type,
+            next_action_at,
+        }: {
+            leadId: string;
+            outcome_code: string;
+            notes?: string;
+            next_action_type?: string;
+            next_action_at?: string;
+        }) => recordConfengeInboundOutcome(leadId, { outcome_code, notes, next_action_type, next_action_at }),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: [...KEY, "cockpit"] });
+            qc.invalidateQueries({ queryKey: [...KEY, "today"] });
+            toast.success("Outcome inbound registrado");
+        },
+        onError: (error) => toast.error(confengeError(error, "Nao foi possivel registrar o outcome inbound")),
     });
 }
 

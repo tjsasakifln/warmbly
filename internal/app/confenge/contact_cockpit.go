@@ -13,11 +13,12 @@ import (
 )
 
 type ContactCockpit struct {
-	Funnel  ContactFunnel     `json:"funnel"`
-	Manual  []ManualQueueItem `json:"manual"`
-	Ready   []ManualQueueItem `json:"needs_review"`
-	Today   TodayView         `json:"today"`
-	Metrics ActionMetrics     `json:"metrics"`
+	Funnel     ContactFunnel     `json:"funnel"`
+	Manual     []ManualQueueItem `json:"manual"`
+	Ready      []ManualQueueItem `json:"needs_review"`
+	Today      TodayView         `json:"today"`
+	Metrics    ActionMetrics     `json:"metrics"`
+	InboundNow []InboundNowItem  `json:"inbound_now"`
 }
 
 func humanQueueStates() []string {
@@ -117,7 +118,11 @@ func (s *service) CollectContactCockpit(ctx context.Context, orgID uuid.UUID) (*
 	funnel.TargetReached = metrics.TargetReachedCount
 	funnel.Conversation = metrics.ConversationCount
 	funnel.Interested = metrics.InterestCount
-	return &ContactCockpit{Funnel: funnel, Manual: manual, Ready: ready, Today: today, Metrics: metrics}, nil
+	inboundNow, _ := s.CollectInboundNow(ctx, orgID)
+	if inboundNow == nil {
+		inboundNow = []InboundNowItem{}
+	}
+	return &ContactCockpit{Funnel: funnel, Manual: manual, Ready: ready, Today: today, Metrics: metrics, InboundNow: inboundNow}, nil
 }
 
 func (s *service) ApplyManualAction(ctx context.Context, orgID, userID, accountID uuid.UUID, action, reason string) (*HumanCorrection, *errx.Error) {

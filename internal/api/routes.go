@@ -69,6 +69,8 @@ func Run(
 	// Evolution API WhatsApp webhooks (provider gateway → Warmbly). Auth is the
 	// per-instance webhook secret (Bearer or X-Webhook-Secret).
 	r.POST("/api/v1/webhooks/evolution/:instance", h.EvolutionWebhook)
+	// web-cfg inbound lead handoff. HMAC on the body. PII is not accepted on the query string.
+	r.POST("/api/v1/webhooks/confenge/inbound", h.ConfengeInboundWebhook)
 
 	// OAuth 2.1 authorization-server discovery (RFC 8414): public + unversioned.
 	r.GET("/.well-known/oauth-authorization-server", h.OAuthServerMetadata)
@@ -519,6 +521,7 @@ func Run(
 				confengeGroup.GET("/working-queue", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeWorkingQueue)
 				confengeGroup.GET("/cockpit", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeContactCockpit)
 				confengeGroup.GET("/today", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeToday)
+				confengeGroup.GET("/inbound", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeInboundNow)
 				confengeGroup.GET("/attention", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeAttention)
 				confengeGroup.GET("/attention/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeAttention)
 				confengeGroup.GET("/accounts", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeAccounts)
@@ -565,6 +568,7 @@ func Run(
 					confengeWrite.POST("/manual-queue/:id/action", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ApplyConfengeManualAction)
 					confengeWrite.POST("/actions/:id/start", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.StartConfengeCommercialAction)
 					confengeWrite.POST("/actions/:id/outcome", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.RecordConfengeCommercialOutcome)
+					confengeWrite.POST("/inbound/:leadId/outcome", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.RecordConfengeInboundOutcome)
 					confengeWrite.POST("/dispatch/pause", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.PauseConfengeDispatch)
 					confengeWrite.POST("/dispatch/resume", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ResumeConfengeDispatch)
 				}

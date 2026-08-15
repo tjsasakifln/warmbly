@@ -203,10 +203,14 @@ func TestCommercialOutcomeFollowupAndGuards(t *testing.T) {
 	if mt.Action.InterestState != models.OutcomeMeetingScheduled || mt.Action.OutcomeCode == "WON" {
 		t.Fatalf("meeting must not infer WON: %+v", mt.Action)
 	}
-	if _, err := ApplyCommercialOutcome(mt.Action, OutcomeRequest{OutcomeCode: "WON", Actor: "op-1"}); err == nil {
-		t.Fatal("WON must be rejected")
+	won, err := ApplyCommercialOutcome(mt.Action, OutcomeRequest{OutcomeCode: "WON", Actor: "op-1"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	fmt.Printf("OUTCOME CALL -> TARGET_REACHED -> INTERESTED -> %s won_inferred=false\n", mt.Action.OutcomeCode)
+	if won.Action.OutcomeCode != models.OutcomeWonCode {
+		t.Fatalf("explicit human WON must persist: %s", won.Action.OutcomeCode)
+	}
+	fmt.Printf("OUTCOME CALL -> TARGET_REACHED -> INTERESTED -> %s won_inferred=false human_won=%s\n", mt.Action.OutcomeCode, won.Action.OutcomeCode)
 
 	wrong, err := ApplyCommercialOutcome(routed, OutcomeRequest{OutcomeCode: models.OutcomeWrongPerson, Actor: "op-1"})
 	if err != nil {

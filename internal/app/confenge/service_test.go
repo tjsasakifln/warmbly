@@ -38,6 +38,7 @@ type memRepo struct {
 	upsertDraftErr     error
 	actions            map[uuid.UUID]*models.OutreachCommercialAction
 	actionByIdem       map[string]*models.OutreachCommercialAction
+	inbound            map[string]*models.OutreachInboundLead
 }
 
 func newMemRepo() *memRepo {
@@ -53,6 +54,7 @@ func newMemRepo() *memRepo {
 		pilotSlots:       map[string]string{},
 		actions:          map[uuid.UUID]*models.OutreachCommercialAction{},
 		actionByIdem:     map[string]*models.OutreachCommercialAction{},
+		inbound:          map[string]*models.OutreachInboundLead{},
 	}
 }
 
@@ -1297,4 +1299,109 @@ func (m *memRepo) ListCommercialActions(_ context.Context, orgID, accountID uuid
 		}
 	}
 	return out, nil
+}
+
+func inboundKey(org uuid.UUID, leadID string) string { return org.String() + "|" + leadID }
+
+func (m *memRepo) ensureInbound() {
+	if m.inbound == nil {
+		m.inbound = map[string]*models.OutreachInboundLead{}
+	}
+}
+
+func (m *memRepo) InsertInboundLead(_ context.Context, lead *models.OutreachInboundLead) (bool, *models.OutreachInboundLead, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureInbound()
+	k := inboundKey(lead.OrganizationID, lead.LeadID)
+	if existing := m.inbound[k]; existing != nil {
+		cp := *existing
+		return false, &cp, nil
+	}
+	if lead.ID == uuid.Nil {
+		lead.ID = uuid.New()
+	}
+	cp := *lead
+	if cp.Evidence != nil {
+		cp.Evidence = append([]string{}, lead.Evidence...)
+	}
+	if cp.Provenance != nil {
+		cp.Provenance = append([]string{}, lead.Provenance...)
+	}
+	if cp.Warnings != nil {
+		cp.Warnings = append([]string{}, lead.Warnings...)
+	}
+	m.inbound[k] = &cp
+	return true, lead, nil
+}
+
+func (m *memRepo) UpdateInboundLead(_ context.Context, lead *models.OutreachInboundLead) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureInbound()
+	k := inboundKey(lead.OrganizationID, lead.LeadID)
+	cp := *lead
+	if cp.Evidence != nil {
+		cp.Evidence = append([]string{}, lead.Evidence...)
+	}
+	if cp.Provenance != nil {
+		cp.Provenance = append([]string{}, lead.Provenance...)
+	}
+	if cp.Warnings != nil {
+		cp.Warnings = append([]string{}, lead.Warnings...)
+	}
+	m.inbound[k] = &cp
+	return nil
+}
+
+func (m *memRepo) GetInboundLeadByLeadID(_ context.Context, orgID uuid.UUID, leadID string) (*models.OutreachInboundLead, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureInbound()
+	a := m.inbound[inboundKey(orgID, leadID)]
+	if a == nil {
+		return nil, nil
+	}
+	cp := *a
+	return &cp, nil
+}
+
+func (m *memRepo) ListInboundLeads(_ context.Context, orgID uuid.UUID, openOnly bool, limit int) ([]models.OutreachInboundLead, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureInbound()
+	var out []models.OutreachInboundLead
+	for _, a := range m.inbound {
+		if a.OrganizationID != orgID {
+			continue
+		}
+		if openOnly && a.Status != models.InboundStatusOpen {
+			continue
+		}
+		out = append(out, *a)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (m *memRepo) FindRecentInboundByIdentity(_ context.Context, orgID uuid.UUID, identityKey string, since time.Time, excludeLeadID string) (*models.OutreachInboundLead, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureInbound()
+	var best *models.OutreachInboundLead
+	for _, a := range m.inbound {
+		if a.OrganizationID != orgID || a.IdentityKey != identityKey || a.LeadID == excludeLeadID {
+			continue
+		}
+		if a.WarmblyIngestedAt.Before(since) {
+			continue
+		}
+		if best == nil || a.WarmblyIngestedAt.After(best.WarmblyIngestedAt) {
+			cp := *a
+			best = &cp
+		}
+	}
+	return best, nil
 }

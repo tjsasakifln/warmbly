@@ -184,12 +184,50 @@ export type ConfengeActionMetrics = {
     bounce: number;
 };
 
+export type ConfengeInboundLatency = {
+    lead_created_at: string;
+    warmbly_ingested_at: string;
+    enrichment_completed_at?: string;
+    owner_assigned_at?: string;
+    first_action_at?: string;
+    conversation_at?: string;
+    proposal_at?: string;
+    close_at?: string;
+};
+
+export type ConfengeInboundNowItem = {
+    lead_id: string;
+    receipt_id: string;
+    company: string;
+    person?: string;
+    origin: string;
+    asset?: string;
+    contract_context?: string;
+    why_now: string;
+    recommended_action: string;
+    channel?: string;
+    evidence?: string[];
+    owner: string;
+    lead_age_seconds: number;
+    lead_age: string;
+    status: string;
+    next_action: string;
+    action_id?: string;
+    account_id?: string;
+    email_sendable: boolean;
+    dispatchable: boolean;
+    enrichment_status: string;
+    warnings?: string[];
+    latency: ConfengeInboundLatency;
+};
+
 export type ConfengeCockpit = {
     funnel: ConfengeContactFunnel;
     manual: ConfengeManualItem[];
     needs_review: ConfengeManualItem[];
     today?: ConfengeToday;
     metrics?: ConfengeActionMetrics;
+    inbound_now?: ConfengeInboundNowItem[];
 };
 
 export type ConfengeAccount = {
