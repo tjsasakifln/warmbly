@@ -201,8 +201,14 @@ func operatorCardToLead(card, dui map[string]any, rank int) FeedLead {
 	if len(doNot) == 0 && dui != nil {
 		doNot = stringSlice(dui["warnings"])
 	}
+	if notice := operatorVerificationNotice(card); notice != "" {
+		doNot = appendUnique(doNot, notice)
+	}
 	evidenceIDs := collectOperatorEvidenceIDs(card, dui)
 	email, phone, site := splitChannel(channel, channelType)
+	if site == "" {
+		site = operatorDomainURL(card, dui)
+	}
 	// Operator projection is WHO/WHY NOW. Generic/role mailboxes stay unsendable.
 	sendReady := false
 	if class == models.ReachabilityR1Direct && email != "" && personName != "" {
@@ -221,7 +227,7 @@ func operatorCardToLead(card, dui map[string]any, rank int) FeedLead {
 		Email:              email,
 		Phone:              phone,
 		SourceURL:          firstNonEmpty(strField(card, "channel_source_url"), site),
-		VerificationStatus: "OFFICIAL_SOURCE",
+		VerificationStatus: operatorVerificationStatus(card, email),
 		Confidence:         firstNonEmpty(confidence, "MEDIUM"),
 		Recommended:        true,
 		EmailSendReady:     sendPtr,
@@ -273,6 +279,84 @@ func operatorCardToLead(card, dui map[string]any, rank int) FeedLead {
 		lead.CommercialState = "NEEDS_CONTACT"
 	}
 	return lead
+}
+
+func operatorVerificationStatus(card map[string]any, email string) string {
+	if strings.TrimSpace(email) == "" {
+		return models.OutreachVerifyOfficialSource
+	}
+	if explicit := strings.ToUpper(strField(card, "verification_status")); explicit != "" {
+		switch explicit {
+		case models.OutreachVerifyInstitutionalGeneric, models.OutreachVerifyCandidateUnverified,
+			models.OutreachVerifyNotFound:
+			return explicit
+		}
+	}
+	report, _ := card["email_verification"].(map[string]any)
+	switch strings.ToUpper(strField(report, "final_classification")) {
+	case "GENERIC_MAILBOX", "GENERIC_ROLE_MAILBOX":
+		return models.OutreachVerifyInstitutionalGeneric
+	case "UNVERIFIED_DIRECT_CANDIDATE", "UNVERIFIED":
+		return models.OutreachVerifyCandidateUnverified
+	}
+	// Legacy operator packs predate passive verification. Preserve their
+	// source-provenance label; readiness remains an independent, fail-closed gate.
+	return models.OutreachVerifyOfficialSource
+}
+
+func operatorVerificationNotice(card map[string]any) string {
+	report, _ := card["email_verification"].(map[string]any)
+	if report != nil {
+		return fmt.Sprintf(
+			"Verificacao tecnica do e-mail: DNS=%s; MX=%s; catch-all=%s; SMTP=%s. Isso nao prova caixa nem identidade.",
+			firstNonEmpty(strField(report, "dns"), "UNKNOWN"),
+			firstNonEmpty(strField(report, "mx"), "UNKNOWN"),
+			firstNonEmpty(strField(report, "catch_all"), "UNKNOWN_NOT_PROBED"),
+			firstNonEmpty(strField(report, "smtp"), "SKIPPED_POLICY"),
+		)
+	}
+	reports, err := asMapSlice(card["email_verification_reports"])
+	if err != nil || len(reports) == 0 {
+		return ""
+	}
+	mxPresent, smtpSkipped, identityProven := 0, 0, 0
+	for _, item := range reports {
+		if strings.EqualFold(strField(item, "mx"), "MX_PRESENT") {
+			mxPresent++
+		}
+		if strings.EqualFold(strField(item, "smtp"), "SKIPPED_POLICY") {
+			smtpSkipped++
+		}
+		if proven, ok := item["identity_proven"].(bool); ok && proven {
+			identityProven++
+		}
+	}
+	return fmt.Sprintf(
+		"Verificacao passiva de rotas de e-mail: candidatos=%d; MX_PRESENT=%d; SMTP_SKIPPED_POLICY=%d; identidade_provada=%d. MX nao prova caixa nem identidade.",
+		len(reports), mxPresent, smtpSkipped, identityProven,
+	)
+}
+
+func operatorDomainURL(card, dui map[string]any) string {
+	domain := ""
+	if resolution, ok := card["domain_resolution"].(map[string]any); ok {
+		domain = strField(resolution, "canonical_domain")
+	}
+	if domain == "" && dui != nil {
+		if extra, ok := dui["extra"].(map[string]any); ok {
+			if resolution, ok := extra["domain_resolution"].(map[string]any); ok {
+				domain = strField(resolution, "canonical_domain")
+			}
+		}
+	}
+	domain = strings.TrimSpace(strings.TrimSuffix(domain, "/"))
+	if domain == "" {
+		return ""
+	}
+	if strings.HasPrefix(domain, "http://") || strings.HasPrefix(domain, "https://") {
+		return domain
+	}
+	return "https://" + domain
 }
 
 func recString(dui map[string]any, key string) string {

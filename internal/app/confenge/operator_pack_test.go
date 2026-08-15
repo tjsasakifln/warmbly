@@ -48,6 +48,52 @@ func TestMapActionModeTokens(t *testing.T) {
 	}
 }
 
+func TestOperatorProjectionPreservesVerificationDimensionsAndDomain(t *testing.T) {
+	card := map[string]any{
+		"cnpj":                         "00820854000114",
+		"empresa":                      "QUALIDADE MINERACAO LTDA",
+		"primary_decision_unit_target": "EDUARDO ESPINDOLA",
+		"primary_route":                "DIRECT_EMAIL",
+		"route_class":                  models.ReachabilityR1Direct,
+		"channel":                      "eduardo@qualidademineracao.com.br",
+		"verification_status":          models.OutreachVerifyCandidateUnverified,
+		"email_send_ready":             false,
+		"email_verification": map[string]any{
+			"dns": "RESOLVED", "mx": "MX_PRESENT",
+			"catch_all": "UNKNOWN_NOT_PROBED", "smtp": "SKIPPED_POLICY",
+			"final_classification": "UNVERIFIED_DIRECT_CANDIDATE",
+		},
+		"email_verification_reports": []any{map[string]any{
+			"dns": "RESOLVED", "mx": "MX_PRESENT", "smtp": "SKIPPED_POLICY",
+		}},
+		"domain_resolution": map[string]any{
+			"canonical_domain": "qualidademineracao.com.br",
+			"confidence":       "HIGH",
+		},
+	}
+
+	lead := operatorCardToLead(card, nil, 1)
+	contact := lead.Contacts[0]
+	if contact.VerificationStatus != models.OutreachVerifyCandidateUnverified {
+		t.Fatalf("MX must not verify mailbox or identity: %+v", contact)
+	}
+	if contact.EmailSendReady == nil || *contact.EmailSendReady {
+		t.Fatalf("passive verification must stay unsendable: %+v", contact)
+	}
+	if lead.Company.Website != "https://qualidademineracao.com.br" {
+		t.Fatalf("resolved domain missing from projection: %+v", lead.Company)
+	}
+	joined := strings.Join(lead.MessagingContext.ClaimsToAvoid, " ")
+	if !strings.Contains(joined, "MX=MX_PRESENT") || !strings.Contains(joined, "nao prova caixa nem identidade") {
+		t.Fatalf("operator verification notice missing: %q", joined)
+	}
+	delete(card, "email_verification")
+	if aggregate := operatorVerificationNotice(card); !strings.Contains(aggregate, "candidatos=1") ||
+		!strings.Contains(aggregate, "identidade_provada=0") {
+		t.Fatalf("alternative-route verification summary missing: %q", aggregate)
+	}
+}
+
 func TestActionModePlansWithoutEmailReadiness(t *testing.T) {
 	now := time.Date(2026, 8, 14, 16, 0, 0, 0, time.UTC)
 	acc := &models.OutreachAccount{

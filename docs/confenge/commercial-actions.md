@@ -54,8 +54,11 @@ A named person plus a company phone without `BELONGS_TO_NAMED_PERSON` is
 `confenge import` also accepts the extra-cli operator pack (`cards.json`) and
 `confenge.decision_unit_account.v1` accounts. Re-import is idempotent. Warmbly
 keeps extra-cli account id, person id, evidence ids, why-now, route class,
-confidence, recommended action, and service. It does not invent a person,
-role, email, or phone.
+confidence, recommended action, resolved company domain, and service. Passive
+email-verification reports are rendered as operator warnings with DNS, MX,
+catch-all, SMTP, and identity-proof dimensions kept separate. `MX_PRESENT`
+never becomes mailbox/identity proof, `VERIFIED`, or `email_send_ready=true`.
+It does not invent a person, role, email, or phone.
 
 After import the CLI prints an operator summary: actionable accounts, route
 distribution, manual-call count, email-safe count, unresolved blockers, and
@@ -78,10 +81,17 @@ Keep shipping `confenge.outreach.v1`. Optionally add, per lead or contact:
     "route_relation": "ROUTES_TO_NAMED_PERSON",
     "channel_value": "+554132220000",
     "channel_display": "telefone oficial da empresa",
-    "inferred_email": false
+    "inferred_email": false,
+    "verification_status": "CANDIDATE_UNVERIFIED",
+    "email_send_ready": false
   }]
 }
 ```
+
+Operator cards may also publish `domain_resolution`, `email_verification`, and
+`email_verification_reports`. These are visibility/provenance fields, not a
+send authorization. Legacy cards remain compatible and continue through the
+same recipient, messageability, approval, and transport gates.
 
 Do not invent a person when only a role is known. Warmbly will target the
 function, not a fabricated name.
