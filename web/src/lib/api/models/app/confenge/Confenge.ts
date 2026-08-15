@@ -23,6 +23,9 @@ export type ConfengeReadiness = {
     auto_send_enabled: boolean;
     whatsapp_enabled: boolean;
     whatsapp_provider?: string;
+    inbound?: string;
+    inbound_secret_configured?: boolean;
+    inbound_org_configured?: boolean;
     pilot_cohort_state?: "ready" | "unavailable";
     pilot_cohort_prepared?: number;
     pilot_cohort_needs_review?: number;

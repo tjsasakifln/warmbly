@@ -52,6 +52,24 @@ func TestBuildReadinessPanelFields(t *testing.T) {
 	if r.QueueCount != 4 {
 		t.Fatalf("queue=%d", r.QueueCount)
 	}
+	if r.Inbound != ReadyNotConfigured {
+		t.Fatalf("inbound=%s want not_configured", r.Inbound)
+	}
+}
+
+func TestBuildReadinessInboundReadyWhenSecretAndOrgSet(t *testing.T) {
+	org := uuid.MustParse("22222222-0000-0000-0000-000000000001")
+	cfg := Config{
+		Enabled: true, RequireHumanApproval: true, DefaultDailyLimit: 10,
+		InboundWebhookSecret: "inbound-secret", InboundOrgID: org, AutoSendEnabled: false,
+	}
+	r := BuildReadiness(cfg, ReadinessInputs{})
+	if r.Inbound != ReadyOK || !r.InboundSecretConfigured || !r.InboundOrgConfigured {
+		t.Fatalf("inbound ready: %+v", r)
+	}
+	if r.AutoSendEnabled {
+		t.Fatal("auto_send must stay false")
+	}
 }
 
 func TestKillSwitchBlocksSendingAllowed(t *testing.T) {
@@ -171,6 +189,44 @@ func TestRunPreflightAIOptionalWarn(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected AI soft warn")
+	}
+}
+
+func TestRunPreflightInboundBlockers(t *testing.T) {
+	cfg := Config{Enabled: true, RequireHumanApproval: true, DefaultDailyLimit: 10, AutoSendEnabled: false}
+	rep := RunPreflight(cfg, PreflightDeps{})
+	if !rep.OK {
+		t.Fatalf("missing inbound secret is a warn, not a fail: %+v", rep)
+	}
+	var secret, org, ready Check
+	for _, c := range rep.Checks {
+		switch c.Name {
+		case "inbound_secret":
+			secret = c
+		case "inbound_org":
+			org = c
+		case "inbound_ready":
+			ready = c
+		}
+	}
+	if secret.Severity != CheckWarn || org.Severity != CheckWarn || ready.Severity != CheckWarn {
+		t.Fatalf("inbound blockers not visible: secret=%+v org=%+v ready=%+v", secret, org, ready)
+	}
+	out := FormatPreflight(rep)
+	if !strings.Contains(out, "inbound_secret") || !strings.Contains(out, "inbound_org") {
+		t.Fatalf("preflight missing inbound rows:\n%s", out)
+	}
+
+	cfg.InboundWebhookSecret = "inbound-secret"
+	cfg.InboundOrgID = uuid.MustParse("22222222-0000-0000-0000-000000000001")
+	rep = RunPreflight(cfg, PreflightDeps{})
+	for _, c := range rep.Checks {
+		if c.Name == "inbound_ready" && c.Severity != CheckPass {
+			t.Fatalf("expected inbound_ready pass: %+v", c)
+		}
+		if c.Name == "auto_send" && c.Severity != CheckPass {
+			t.Fatalf("auto_send=%+v", c)
+		}
 	}
 }
 

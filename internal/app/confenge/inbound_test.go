@@ -3,6 +3,7 @@ package confenge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
 )
 
@@ -161,6 +163,119 @@ func TestIngestKeepsLeadWhenEnrichmentUnavailable(t *testing.T) {
 		// no extra-cli person was supplied
 	}
 	fmt.Printf("ENRICH_FAIL persisted=%t status=%s next=%s\n", res.Lead != nil, res.Lead.EnrichmentStatus, res.NextAction)
+}
+
+func TestIngestInboundRetryAfterPersist5xx(t *testing.T) {
+	svc, repo, org := inboundTestService(t)
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	body := []byte(`{"lead_id":"retry-5xx-1","receipt_id":"retry-5xx-1","source":"CONFENGE_WEB","company":"Obra Sul","phone":"41991112222","contract_public_id":"CTR-RETRY"}`)
+
+	repo.inboundInsertErr = errors.New("postgres unavailable")
+	first, xerr := svc.IngestInboundLead(context.Background(), org, body, IngestOptions{Now: now})
+	if xerr == nil || first != nil {
+		t.Fatalf("persist failure must 5xx, got res=%+v err=%v", first, xerr)
+	}
+	if xerr.Code != errx.Internal {
+		t.Fatalf("persist failure code=%v want internal", xerr.Code)
+	}
+	leads, _ := repo.ListInboundLeads(context.Background(), org, false, 20)
+	if len(leads) != 0 {
+		t.Fatalf("failed persist must leave zero receipts: %d", len(leads))
+	}
+	fmt.Printf("RETRY_5XX persist_fail http=500 receipts=0 lead_id=retry-5xx-1\n")
+
+	repo.inboundInsertErr = nil
+	second, xerr := svc.IngestInboundLead(context.Background(), org, body, IngestOptions{Now: now.Add(time.Minute)})
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if second.Duplicate || second.Lead == nil || second.Lead.LeadID != "retry-5xx-1" {
+		t.Fatalf("retry after persist 5xx must create: %+v", second)
+	}
+	if second.DispatchAttempted || (second.Action != nil && second.Action.Dispatchable) {
+		t.Fatal("retry must not dispatch")
+	}
+	fmt.Printf("RETRY_5XX persist_ok lead_id=%s next=%s dispatch=%v\n", second.Lead.LeadID, second.NextAction, second.DispatchAttempted)
+
+	repo.inboundUpdateErr = errors.New("update after persist failed")
+	incompleteBody := []byte(`{"lead_id":"retry-5xx-2","receipt_id":"retry-5xx-2","source":"CONFENGE_WEB","phone":"41990001111"}`)
+	partial, xerr := svc.IngestInboundLead(context.Background(), org, incompleteBody, IngestOptions{Now: now.Add(2 * time.Minute)})
+	if xerr == nil || partial != nil {
+		t.Fatalf("update failure after persist must 5xx, got res=%+v err=%v", partial, xerr)
+	}
+	stored, _ := repo.GetInboundLeadByLeadID(context.Background(), org, "retry-5xx-2")
+	if stored == nil {
+		t.Fatal("persist-first must keep the receipt when update 5xxs")
+	}
+	if inboundReceiptComplete(stored) {
+		t.Fatalf("incomplete receipt should stay retryable: %+v", stored)
+	}
+	repo.inboundUpdateErr = nil
+	resumed, xerr := svc.IngestInboundLead(context.Background(), org, incompleteBody, IngestOptions{Now: now.Add(3 * time.Minute)})
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if !resumed.Duplicate || resumed.NextAction == "" {
+		t.Fatalf("same lead_id after 5xx must complete the receipt: %+v", resumed)
+	}
+	if resumed.DispatchAttempted {
+		t.Fatal("resumed ingest dispatched")
+	}
+	leads, _ = repo.ListInboundLeads(context.Background(), org, false, 20)
+	var count int
+	for _, l := range leads {
+		if l.LeadID == "retry-5xx-2" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("resume minted extra receipt: %d", count)
+	}
+	fmt.Printf("RETRY_5XX resume lead_id=retry-5xx-2 duplicate=true next=%s receipts=1 dispatch=false\n", resumed.NextAction)
+}
+
+func TestParseInboundLeadAcceptsConfengeWebOmittedOptionals(t *testing.T) {
+	now := time.Date(2026, 8, 15, 16, 51, 13, 0, time.UTC)
+	body := []byte(`{"lead_id":"887430130a84da4769fc0c19","receipt_id":"887430130a84da4769fc0c19","created_at":"2026-08-15T16:51:13Z","source":"CONFENGE_WEB"}`)
+	lead, err := ParseInboundLead(body, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lead.LeadID != "887430130a84da4769fc0c19" || lead.ReceiptID != lead.LeadID {
+		t.Fatalf("join ids: %+v", lead)
+	}
+	if lead.Source != "CONFENGE_WEB" {
+		t.Fatalf("source=%q want CONFENGE_WEB", lead.Source)
+	}
+	if lead.Email != "" || lead.Phone != "" || lead.Name != "" || lead.CNPJ != "" || lead.EntityID != "" {
+		t.Fatalf("omitted fields invented: %+v", lead)
+	}
+	fmt.Printf("CONTRACT source=CONFENGE_WEB lead_id=%s omitted_ok=true\n", lead.LeadID)
+}
+
+func TestCollectInboundNowKeepsStaleEnrichment(t *testing.T) {
+	svc, _, org := inboundTestService(t)
+	now := time.Date(2026, 8, 15, 14, 0, 0, 0, time.UTC)
+	body := []byte(`{"lead_id":"stale-enrich-1","source":"CONFENGE_WEB","company":"Obra Sul","cnpj":"55444333000122","phone":"41991112222"}`)
+	res, xerr := svc.IngestInboundLead(context.Background(), org, body, IngestOptions{Now: now, EnrichmentUnavailable: true})
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if res.Lead.EnrichmentStatus != models.InboundEnrichmentUnavailable && res.Lead.EnrichmentStatus != models.InboundEnrichmentFailed {
+		t.Fatalf("status=%s", res.Lead.EnrichmentStatus)
+	}
+	queue, xerr := svc.CollectInboundNow(context.Background(), org)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if len(queue) != 1 || queue[0].LeadID != "stale-enrich-1" {
+		t.Fatalf("stale enrichment dropped from INBOUND NOW: %+v", queue)
+	}
+	if queue[0].Dispatchable || queue[0].EmailSendable {
+		t.Fatal("stale card must stay a human queue row")
+	}
+	fmt.Printf("STALE_ENRICH inbound_now=1 lead_id=%s enrich=%s next=%s dispatch=false\n",
+		queue[0].LeadID, queue[0].EnrichmentStatus, queue[0].NextAction)
 }
 
 func TestParseInboundLeadRequiresReceipt(t *testing.T) {

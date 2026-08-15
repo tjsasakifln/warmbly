@@ -218,3 +218,36 @@ func TestInboundHTTPContractHMACAndNoSend(t *testing.T) {
 	}
 	fmt.Printf("HTTP_CONTRACT lead_id=%s next_action=%s hmac=ok send=false\n", res.Lead.LeadID, res.NextAction)
 }
+
+func TestInboundHTTPContractConfengeWebOmittedOptionals(t *testing.T) {
+	svc, _, org := inboundTestService(t)
+	svc.cfg.AutoSendEnabled = false
+	now := time.Date(2026, 8, 15, 16, 51, 13, 0, time.UTC)
+	body := []byte(`{"lead_id":"synthetic-inbound-cfg","receipt_id":"synthetic-inbound-cfg","created_at":"2026-08-15T16:51:13Z","source":"CONFENGE_WEB"}`)
+	sig := SignOutcomeHMAC("inbound-secret-test", now, body)
+	if !VerifyOutcomeHMAC("inbound-secret-test", sig, body, now, 5*time.Minute) {
+		t.Fatal("HMAC on CONFENGE_WEB body failed")
+	}
+	res, xerr := svc.IngestInboundLead(context.Background(), org, body, IngestOptions{Now: now})
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if res.Lead.Source != "CONFENGE_WEB" {
+		t.Fatalf("source=%s", res.Lead.Source)
+	}
+	if res.DispatchAttempted || (res.Action != nil && res.Action.Dispatchable) {
+		t.Fatal("CONFENGE_WEB ingest dispatched")
+	}
+	if res.NextAction != models.InboundNextNeedsEnrichment {
+		t.Fatalf("insufficient identity next=%s want NEEDS_ENRICHMENT", res.NextAction)
+	}
+	queue, xerr := svc.CollectInboundNow(context.Background(), org)
+	if xerr != nil || len(queue) != 1 || queue[0].LeadID != "synthetic-inbound-cfg" {
+		t.Fatalf("INBOUND NOW missing CONFENGE_WEB receipt: %+v %v", queue, xerr)
+	}
+	if queue[0].Dispatchable || queue[0].EmailSendable {
+		t.Fatal("queue card is a message")
+	}
+	fmt.Printf("CONFENGE_WEB inbound_now=1 lead_id=%s next=%s dispatch=false auto_send=%v\n",
+		queue[0].LeadID, queue[0].NextAction, svc.cfg.AutoSendEnabled)
+}

@@ -94,6 +94,22 @@ func RunPreflight(cfg Config, deps PreflightDeps) PreflightReport {
 		add("auto_send", CheckPass, EnvAutoSend+"=false (global auto-send off)")
 	}
 
+	if strings.TrimSpace(cfg.InboundWebhookSecret) == "" {
+		add("inbound_secret", CheckWarn, EnvInboundWebhookSec+" unset; POST /api/v1/webhooks/confenge/inbound returns 401")
+	} else {
+		add("inbound_secret", CheckPass, EnvInboundWebhookSec+" configured (HMAC "+RedactSecret(cfg.InboundWebhookSecret)+")")
+	}
+	if cfg.InboundOrgID == uuid.Nil && cfg.OperatorOrgID == uuid.Nil {
+		add("inbound_org", CheckWarn, EnvInboundOrgID+" and "+EnvOperatorOrgID+" unset; inbound webhook returns 503")
+	} else {
+		add("inbound_org", CheckPass, "inbound dest org configured")
+	}
+	if strings.TrimSpace(cfg.InboundWebhookSecret) != "" && (cfg.InboundOrgID != uuid.Nil || cfg.OperatorOrgID != uuid.Nil) && !cfg.AutoSendEnabled {
+		add("inbound_ready", CheckPass, "inbound webhook can persist a receipt (auto_send stays false)")
+	} else {
+		add("inbound_ready", CheckWarn, "inbound not live-ready (secret, dest org, or auto_send)")
+	}
+
 	// Primary governor: rolling-hour global cap (email + WhatsApp share it).
 	dcfg := dispatch.LoadConfig()
 	hourly := dcfg.SendsPerHour

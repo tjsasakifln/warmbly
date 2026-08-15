@@ -57,6 +57,10 @@ type Readiness struct {
 	PilotNeedsReview  int    `json:"pilot_cohort_needs_review"`
 	PilotApproved     int    `json:"pilot_cohort_approved"`
 	PilotSent         int    `json:"pilot_cohort_sent"`
+	// Inbound is ready only when HMAC secret + dest org are set. Never implies live POST.
+	Inbound                 string `json:"inbound"`
+	InboundSecretConfigured bool   `json:"inbound_secret_configured"`
+	InboundOrgConfigured    bool   `json:"inbound_org_configured"`
 }
 
 // ReadinessInputs are optional live signals for BuildReadiness.
@@ -104,17 +108,24 @@ func BuildReadiness(cfg Config, in ReadinessInputs) Readiness {
 	}
 
 	r := Readiness{
-		OutreachEnabled:    cfg.Enabled,
-		RequireHuman:       cfg.RequireHumanApproval,
-		AutoSendEnabled:    cfg.AutoSendEnabled,
-		GovernorCap:        hourly,
-		CampaignDailyLimit: daily,
-		EffectiveDailyCap:  effective,
-		FeedConfigured:     strings.TrimSpace(cfg.FeedURL) != "" || strings.TrimSpace(cfg.ManifestURL) != "",
-		KillSwitch:         !cfg.SendingAllowed(),
-		SendingAllowed:     cfg.SendingAllowed(),
-		WhatsAppEnabled:    cfg.WhatsAppEnabled || waCfg.Enabled,
-		WhatsAppProvider:   waCfg.Provider,
+		OutreachEnabled:         cfg.Enabled,
+		RequireHuman:            cfg.RequireHumanApproval,
+		AutoSendEnabled:         cfg.AutoSendEnabled,
+		GovernorCap:             hourly,
+		CampaignDailyLimit:      daily,
+		EffectiveDailyCap:       effective,
+		FeedConfigured:          strings.TrimSpace(cfg.FeedURL) != "" || strings.TrimSpace(cfg.ManifestURL) != "",
+		KillSwitch:              !cfg.SendingAllowed(),
+		SendingAllowed:          cfg.SendingAllowed(),
+		WhatsAppEnabled:         cfg.WhatsAppEnabled || waCfg.Enabled,
+		WhatsAppProvider:        waCfg.Provider,
+		InboundSecretConfigured: strings.TrimSpace(cfg.InboundWebhookSecret) != "",
+		InboundOrgConfigured:    cfg.InboundOrgID != uuid.Nil || cfg.OperatorOrgID != uuid.Nil,
+	}
+	if r.InboundSecretConfigured && r.InboundOrgConfigured {
+		r.Inbound = ReadyOK
+	} else {
+		r.Inbound = ReadyNotConfigured
 	}
 	maxAge := cfg.FeedMaxAge
 	if maxAge <= 0 {

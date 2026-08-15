@@ -21,6 +21,7 @@ type inboundHTTPStub struct {
 	confenge.Service
 	cfg    confenge.Config
 	gotRaw []byte
+	ingest func(raw []byte, opts confenge.IngestOptions) (*confenge.InboundIngestResult, *errx.Error)
 }
 
 func (s *inboundHTTPStub) Enabled() bool           { return true }
@@ -30,6 +31,9 @@ func (s *inboundHTTPStub) IngestInboundLead(_ context.Context, _ uuid.UUID, raw 
 		return nil, xerr
 	}
 	s.gotRaw = append([]byte(nil), raw...)
+	if s.ingest != nil {
+		return s.ingest(raw, opts)
+	}
 	return &confenge.InboundIngestResult{
 		NextAction:        "CALL",
 		DispatchAttempted: false,
@@ -84,4 +88,61 @@ func TestConfengeInboundWebhookRejectsQueryPIIAndAcceptsSignedBody(t *testing.T)
 		t.Fatalf("handler did not pass body to ingest: %s", stub.gotRaw)
 	}
 	fmt.Printf("HTTP_HANDLER lead_id=http-live-1 next_action=%s send=false status=%d\n", wrap.Data.NextAction, w2.Code)
+}
+
+func TestConfengeInboundWebhookRetryAfterPersist5xx(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	org := uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+	secret := "inbound-http-secret"
+	calls := 0
+	stub := &inboundHTTPStub{cfg: confenge.Config{
+		Enabled: true, InboundWebhookSecret: secret, InboundOrgID: org, AutoSendEnabled: false,
+	}}
+	stub.ingest = func(raw []byte, _ confenge.IngestOptions) (*confenge.InboundIngestResult, *errx.Error) {
+		calls++
+		if calls == 1 {
+			return nil, errx.New(errx.Internal, "persist inbound receipt: postgres unavailable")
+		}
+		if calls == 2 {
+			return &confenge.InboundIngestResult{NextAction: "CALL", DispatchAttempted: false}, nil
+		}
+		return &confenge.InboundIngestResult{NextAction: "CALL", Duplicate: true, DispatchAttempted: false}, nil
+	}
+	h := &Handler{ConfengeService: stub}
+	now := time.Now().UTC()
+	body := []byte(`{"lead_id":"retry-http-1","receipt_id":"retry-http-1","source":"CONFENGE_WEB"}`)
+	sig := confenge.SignOutcomeHMAC(secret, now, body)
+
+	post := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/confenge/inbound", bytes.NewReader(body))
+		req.Header.Set("X-Warmbly-Signature", sig)
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = req
+		h.ConfengeInboundWebhook(c)
+		return w
+	}
+
+	w1 := post()
+	if w1.Code != http.StatusInternalServerError {
+		t.Fatalf("persist 5xx status=%d body=%s", w1.Code, w1.Body.String())
+	}
+	w2 := post()
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("retry create status=%d body=%s", w2.Code, w2.Body.String())
+	}
+	w3 := post()
+	if w3.Code != http.StatusOK {
+		t.Fatalf("same lead_id replay status=%d body=%s", w3.Code, w3.Body.String())
+	}
+	var wrap struct {
+		Data confenge.InboundIngestResult `json:"data"`
+	}
+	if err := json.Unmarshal(w3.Body.Bytes(), &wrap); err != nil {
+		t.Fatal(err)
+	}
+	if !wrap.Data.Duplicate || wrap.Data.DispatchAttempted {
+		t.Fatalf("replay: %+v", wrap.Data)
+	}
+	fmt.Printf("HTTP_RETRY persist_5xx=500 then_201=true replay_200=true dispatch=false calls=%d\n", calls)
 }

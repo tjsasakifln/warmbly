@@ -52,6 +52,7 @@ Warmbly **must not**:
 | `CONFENGE_MAX_FEED_PAYLOAD_BYTES` | `33554432` | Import payload cap |
 | `CONFENGE_INBOUND_WEBHOOK_SECRET` | empty | HMAC for web-cfg inbound (`docs/confenge/inbound-ingest.md`) |
 | `CONFENGE_INBOUND_ORG_ID` | empty | Org that receives inbound leads |
+| `CONFENGE_INBOUND_WEBHOOK_URL` | empty | Caller-only (preflight script). Not read by the API |
 
 In production, feed and outcome URLs must be `https://`, and the feed host
 must be on the allowlist. Fetch uses the SSRF-hardened HTTP client.
