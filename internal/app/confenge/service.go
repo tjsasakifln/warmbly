@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
+	"github.com/warmbly/warmbly/internal/app/confenge/intel"
 	"github.com/warmbly/warmbly/internal/app/whatsapp"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
@@ -115,6 +116,13 @@ type Service interface {
 	GetActiveCampaignPolicy(ctx context.Context, orgID, campaignID uuid.UUID) (*models.CampaignPolicyAuthorization, *errx.Error)
 	TryGreenAutorun(ctx context.Context, orgID, actorID, touchpointID uuid.UUID) (*models.OutreachTouchpoint, GreenAutorunDecision, *errx.Error)
 	RunGreenAutorunBatch(ctx context.Context, orgID, actorID uuid.UUID, limit int) (queued, skipped int, details []map[string]any, xerr *errx.Error)
+
+	// Commercial intelligence (join / exception queue / executive view).
+	WireIntel(db *pgxpool.Pool)
+	ReconcileCommercialIntel(ctx context.Context, orgID uuid.UUID, in intel.ObservedFacts) (intel.JoinResult, *errx.Error)
+	CommercialExecutiveView(ctx context.Context, orgID uuid.UUID, month string, includeSynthetic bool) (*intel.ExecutiveView, *errx.Error)
+	RecordIntelLearning(ctx context.Context, orgID uuid.UUID, in intel.LearningInput) (intel.LearningCandidate, *errx.Error)
+	ListIntelExceptions(ctx context.Context, orgID uuid.UUID) ([]intel.Exception, *errx.Error)
 }
 
 // ImportOptions controls dry-run, idempotency, and source tracking.
@@ -141,6 +149,7 @@ type service struct {
 	waStore     WhatsAppStateStore
 	governor    *dispatch.Governor
 	policyStore repository.ConfengePolicyRepository
+	intel       intel.Store
 }
 
 // NewService wires confenge outreach. When cfg.Enabled is false, mutators return 404-style disabled errors.

@@ -254,3 +254,33 @@ func (r *outreachRepository) GetLatestOutcomeForLead(ctx context.Context, orgID 
 	}
 	return &ev, nil
 }
+
+// GetOutcomeBySourceLeadID returns the newest outbox row whose
+// source_lead_id equals the inbound lead/receipt id. Empty IDs never match.
+func (r *outreachRepository) GetOutcomeBySourceLeadID(ctx context.Context, orgID uuid.UUID, sourceLeadID string) (*models.OutreachOutcome, error) {
+	sourceLeadID = strings.TrimSpace(sourceLeadID)
+	if sourceLeadID == "" {
+		return nil, nil
+	}
+	row := r.db.QueryRow(ctx, `
+		SELECT id, organization_id, event_id, idempotency_key, COALESCE(source_lead_id,''), COALESCE(cnpj14,''),
+			COALESCE(contact_email,''), event_type, payload, occurred_at, attempts, next_attempt_at,
+			delivered_at, COALESCE(last_error,''), dead_letter, created_at, updated_at
+		FROM outreach_outcome_outbox
+		WHERE organization_id=$1 AND source_lead_id=$2
+		ORDER BY occurred_at DESC
+		LIMIT 1`, orgID, sourceLeadID)
+	var ev models.OutreachOutcome
+	err := row.Scan(
+		&ev.ID, &ev.OrganizationID, &ev.EventID, &ev.IdempotencyKey, &ev.SourceLeadID, &ev.CNPJ14,
+		&ev.ContactEmail, &ev.EventType, &ev.Payload, &ev.OccurredAt, &ev.Attempts, &ev.NextAttemptAt,
+		&ev.DeliveredAt, &ev.LastError, &ev.DeadLetter, &ev.CreatedAt, &ev.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ev, nil
+}

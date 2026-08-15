@@ -83,9 +83,14 @@ All paths below are relative to the versioned base URL `https://api.warmbly.com/
 | GET | `/confenge/cockpit` | `READ_CONTACTS` |
 | GET | `/confenge/inbound` | `READ_CONTACTS` |
 | POST | `/confenge/inbound/:leadId/outcome` | `WRITE_CONTACTS` |
+| GET | `/confenge/intel/executive` | `READ_CONTACTS` |
+| GET | `/confenge/intel/exceptions` | `READ_CONTACTS` |
+| POST | `/confenge/intel/learning` | `WRITE_CONTACTS` |
 | POST | `/confenge/manual-queue/:id/action` | `WRITE_CONTACTS` |
 
 `GET /contacts/custom-fields` lists the distinct custom-field keys used across your contacts (frequency-ranked), for building personalization pickers. It returns a flat string array under `data`, capped at 200 keys.
+
+`GET /confenge/intel/executive` is the monthly commercial-intelligence query (not a CRM board). Families stay separate. Real counts stay empty or `UNKNOWN` until a human-approved action exists. `include_synthetic=1` is the labeled fixture path. WON is never inferred.
 
 AI contact research charges credits (2 per run, billable even when it finds nothing) and only saves cited findings. See the [AI contact research](/guides/ai-contact-research/) guide. The batch endpoint accepts up to 500 contact ids and drains in the background.
 

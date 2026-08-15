@@ -522,6 +522,8 @@ func Run(
 				confengeGroup.GET("/cockpit", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeContactCockpit)
 				confengeGroup.GET("/today", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeToday)
 				confengeGroup.GET("/inbound", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeInboundNow)
+				confengeGroup.GET("/intel/executive", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeExecutiveIntel)
+				confengeGroup.GET("/intel/exceptions", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeIntelExceptions)
 				confengeGroup.GET("/attention", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeAttention)
 				confengeGroup.GET("/attention/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeAttention)
 				confengeGroup.GET("/accounts", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeAccounts)
@@ -569,6 +571,7 @@ func Run(
 					confengeWrite.POST("/actions/:id/start", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.StartConfengeCommercialAction)
 					confengeWrite.POST("/actions/:id/outcome", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.RecordConfengeCommercialOutcome)
 					confengeWrite.POST("/inbound/:leadId/outcome", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.RecordConfengeInboundOutcome)
+					confengeWrite.POST("/intel/learning", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.RecordConfengeIntelLearning)
 					confengeWrite.POST("/dispatch/pause", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.PauseConfengeDispatch)
 					confengeWrite.POST("/dispatch/resume", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ResumeConfengeDispatch)
 				}
