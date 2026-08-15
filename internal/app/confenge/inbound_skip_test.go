@@ -70,20 +70,72 @@ func TestInboundCommercialSkipKeepsRealInQueue(t *testing.T) {
 
 func TestInboundCommercialSkipReasonTokens(t *testing.T) {
 	cases := []struct {
+		name string
 		lead models.OutreachInboundLead
 		want string
 	}{
-		{models.OutreachInboundLead{LeadID: "synthetic-inbound-cfg"}, InboundSkipSynthetic},
-		{models.OutreachInboundLead{LeadID: "qa-lead-1", Source: "qa"}, InboundSkipQA},
-		{models.OutreachInboundLead{LeadID: "x", RawPayload: []byte(`{"label":"internal"}`)}, InboundSkipInternal},
-		{models.OutreachInboundLead{LeadID: "webcfg-real-1", Source: "CONFENGE_WEB", CompanyName: "Norte"}, ""},
-		{models.OutreachInboundLead{LeadID: "webcfg-obra-norte-1", Source: "CONFENGE_WEB", CompanyName: "QA Engenharia", Message: "equipe de QA na obra"}, ""},
-		{models.OutreachInboundLead{LeadID: "webcfg-real-2", Source: "CONFENGE_WEB", CompanyName: "SYNTHETIC-INBOUND"}, InboundSkipSynthetic},
+		{"official lead_id", models.OutreachInboundLead{LeadID: "synthetic-inbound-cfg"}, InboundSkipSynthetic},
+		{"official SYNTHETIC-INBOUND lead_id", models.OutreachInboundLead{LeadID: "SYNTHETIC-INBOUND-20260815T214505Z", Source: "CONFENGE_WEB"}, InboundSkipSynthetic},
+		{"source qa", models.OutreachInboundLead{LeadID: "qa-lead-1", Source: "qa"}, InboundSkipQA},
+		{"label internal", models.OutreachInboundLead{LeadID: "x", RawPayload: []byte(`{"label":"internal"}`)}, InboundSkipInternal},
+		{"env qa flag", models.OutreachInboundLead{LeadID: "flag-qa", RawPayload: []byte(`{"environment":"qa"}`)}, InboundSkipQA},
+		{"fixture internal", models.OutreachInboundLead{LeadID: "flag-fix", RawPayload: []byte(`{"fixture":"internal"}`)}, InboundSkipInternal},
+		{"explicit synthetic flag", models.OutreachInboundLead{LeadID: "flag-syn", RawPayload: []byte(`{"synthetic":true}`)}, InboundSkipSynthetic},
+		{"explicit is_synthetic", models.OutreachInboundLead{LeadID: "flag-is", RawPayload: []byte(`{"is_synthetic":"true"}`)}, InboundSkipSynthetic},
+		{"real company", models.OutreachInboundLead{LeadID: "webcfg-real-1", Source: "CONFENGE_WEB", CompanyName: "Norte"}, ""},
+		{"QA Engenharia", models.OutreachInboundLead{LeadID: "webcfg-obra-norte-1", Source: "CONFENGE_WEB", CompanyName: "QA Engenharia", Message: "equipe de QA na obra"}, ""},
+		{"name substring qa", models.OutreachInboundLead{LeadID: "webcfg-nome-1", Source: "CONFENGE_WEB", LeadName: "Joaquim"}, ""},
+		{"email substring qa", models.OutreachInboundLead{LeadID: "webcfg-email-1", Source: "CONFENGE_WEB", LeadEmail: "joaquim.qa@norte.example"}, ""},
+		{"message QA real", models.OutreachInboundLead{LeadID: "webcfg-msg-1", Source: "CONFENGE_WEB", Message: "preciso da equipe de QA na obra amanha"}, ""},
+		{"internal no contrato", models.OutreachInboundLead{LeadID: "webcfg-msg-int", Source: "CONFENGE_WEB", CompanyName: "Interna Engenharia", Message: "reuniao interna da obra"}, ""},
+		{"official company marker", models.OutreachInboundLead{LeadID: "webcfg-real-2", Source: "CONFENGE_WEB", CompanyName: "SYNTHETIC-INBOUND"}, InboundSkipSynthetic},
+		{"official email marker", models.OutreachInboundLead{LeadID: "webcfg-real-3", Source: "CONFENGE_WEB", LeadEmail: "synthetic-inbound@example.com"}, InboundSkipSynthetic},
 	}
 	for _, tc := range cases {
 		got := InboundCommercialSkipReason(tc.lead)
 		if got != tc.want {
-			t.Fatalf("lead=%s skip=%q want=%q", tc.lead.LeadID, got, tc.want)
+			t.Fatalf("%s lead=%s skip=%q want=%q", tc.name, tc.lead.LeadID, got, tc.want)
 		}
 	}
+}
+
+func TestInboundCommercialSkipKeepsFreeTextQANameEmail(t *testing.T) {
+	svc, _, org := inboundTestService(t)
+	now := time.Date(2026, 8, 15, 18, 20, 0, 0, time.UTC)
+	bodies := [][]byte{
+		[]byte(`{"lead_id":"webcfg-nome-1","receipt_id":"rcpt-nome-1","source":"CONFENGE_WEB","name":"Joaquim","company":"Norte","phone":"41990002222"}`),
+		[]byte(`{"lead_id":"webcfg-email-1","receipt_id":"rcpt-email-1","source":"CONFENGE_WEB","email":"joaquim.qa@norte.example","company":"Norte","phone":"41990003333"}`),
+		[]byte(`{"lead_id":"SYNTHETIC-INBOUND-20260815T182000Z","receipt_id":"SYNTHETIC-INBOUND-20260815T182000Z","source":"CONFENGE_WEB","company":"SYNTHETIC-INBOUND","email":"synthetic-inbound@example.com","message":"SYNTHETIC-INBOUND do not contact"}`),
+		[]byte(`{"lead_id":"flag-synth-1","receipt_id":"flag-synth-1","source":"CONFENGE_WEB","company":"Norte","synthetic":true}`),
+	}
+	for _, body := range bodies {
+		if _, xerr := svc.IngestInboundLead(context.Background(), org, body, IngestOptions{Now: now}); xerr != nil {
+			t.Fatal(xerr)
+		}
+	}
+	queue, xerr := svc.CollectInboundNow(context.Background(), org)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	got := map[string]bool{}
+	for _, item := range queue {
+		got[item.LeadID] = true
+		if item.Dispatchable || item.EmailSendable {
+			t.Fatalf("queue row must stay human-only: %s", item.LeadID)
+		}
+	}
+	if !got["webcfg-nome-1"] || !got["webcfg-email-1"] {
+		t.Fatalf("real name/email qa substring dropped: %+v", queue)
+	}
+	if got["SYNTHETIC-INBOUND-20260815T182000Z"] || got["flag-synth-1"] {
+		t.Fatalf("official synthetic leaked into INBOUND NOW: %+v", queue)
+	}
+	view, xerr := svc.CommercialExecutiveView(context.Background(), org, "2026-08", false)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if view.Denominators.Leads < 2 {
+		t.Fatalf("include_synthetic=0 lost real leads: %+v", view)
+	}
+	fmt.Printf("INBOUND_NOW_KEEP name=Joaquim email=joaquim.qa@norte.example official=skipped include_synthetic=0 leads=%d\n", view.Denominators.Leads)
 }

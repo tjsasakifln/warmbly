@@ -75,7 +75,7 @@ type JoinKeys struct {
 	CTAID         string `json:"cta_id,omitempty"`
 	CorrelationID string `json:"correlation_id,omitempty"`
 
-	// Inbound durable receipt (PR #71).
+	// Inbound durable receipt identity.
 	LeadID    string `json:"lead_id,omitempty"`
 	ReceiptID string `json:"receipt_id,omitempty"`
 

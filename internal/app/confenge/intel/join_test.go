@@ -125,11 +125,17 @@ func TestReconcilePromotesSyntheticOnMerge(t *testing.T) {
 	st := NewMemoryStore()
 	org := "55555555-5555-4555-8555-555555555555"
 	first := testFacts(org, "SYNTHETIC-INBOUND-merge", "SYNTHETIC-INBOUND-merge", "acc-s", "", "")
+	first.LeadCreatedAt = time.Date(2026, 8, 15, 10, 0, 0, 0, time.UTC)
+	first.IngestedAt = first.LeadCreatedAt
 	first.Synthetic = false
 	first.Label = LabelReal
 	created := Reconcile(st, first)
 	if !created.Created || created.Chain.Synthetic {
 		t.Fatalf("seed REAL chain: %+v", created.Chain)
+	}
+	leaked := Rollup(mustList(st, org), "2026-08", false)
+	if leaked.ChainCount == 0 {
+		t.Fatal("legacy REAL synthetic identity must contaminate include_synthetic=0 before promote")
 	}
 	second := first
 	second.Synthetic = true
@@ -138,7 +144,44 @@ func TestReconcilePromotesSyntheticOnMerge(t *testing.T) {
 	if merged.Created || !merged.Chain.Synthetic || merged.Chain.Label != LabelSynthetic {
 		t.Fatalf("incoming synthetic must promote REAL chain: %+v", merged.Chain)
 	}
-	fmt.Printf("JOIN_PROMOTE_SYNTHETIC identity=%s synthetic=%v label=%s\n", merged.Chain.Identity, merged.Chain.Synthetic, merged.Chain.Label)
+	realOnly := Rollup(mustList(st, org), "2026-08", false)
+	if realOnly.ChainCount != 0 || !realOnly.RealEmpty {
+		t.Fatalf("promoted synthetic leaked into include_synthetic=0: %+v", realOnly)
+	}
+	labeled := Rollup(mustList(st, org), "2026-08", true)
+	if labeled.ChainCount != 1 {
+		t.Fatalf("labeled path lost the promoted chain: %+v", labeled)
+	}
+	fmt.Printf("JOIN_PROMOTE_SYNTHETIC identity=%s synthetic=%v label=%s include_synthetic=0 empty=%v\n",
+		merged.Chain.Identity, merged.Chain.Synthetic, merged.Chain.Label, realOnly.RealEmpty)
+}
+
+func TestReconcileNeverDemotesSynthetic(t *testing.T) {
+	st := NewMemoryStore()
+	org := "66666666-6666-4666-8666-666666666666"
+	first := testFacts(org, "SYNTHETIC-INBOUND-keep", "SYNTHETIC-INBOUND-keep", "acc-k", "", "")
+	first.Synthetic = true
+	first.Label = LabelSynthetic
+	created := Reconcile(st, first)
+	if !created.Created || !created.Chain.Synthetic {
+		t.Fatalf("seed synthetic chain: %+v", created.Chain)
+	}
+	second := first
+	second.Synthetic = false
+	second.Label = LabelReal
+	second.Keys.ActionID = "act-later"
+	kept := Reconcile(st, second)
+	if !kept.Chain.Synthetic || kept.Chain.Label != LabelSynthetic {
+		t.Fatalf("later unmarked evidence must not demote synthetic: %+v", kept.Chain)
+	}
+	if knownID(kept.Chain.ActionID) != "act-later" {
+		t.Fatalf("additive merge lost action: %s", kept.Chain.ActionID)
+	}
+	realOnly := Rollup(mustList(st, org), "2026-08", false)
+	if realOnly.ChainCount != 0 {
+		t.Fatalf("never-demoted synthetic leaked: %+v", realOnly)
+	}
+	fmt.Printf("JOIN_KEEP_SYNTHETIC identity=%s synthetic=%v demoted=false\n", kept.Chain.Identity, kept.Chain.Synthetic)
 }
 
 func TestReconcileMergesAdditiveActionThenOutcome(t *testing.T) {

@@ -12,14 +12,18 @@ const (
 	InboundSkipSynthetic = "synthetic"
 	InboundSkipQA        = "qa"
 	InboundSkipInternal  = "internal"
+
+	// officialSyntheticMarker is the only free-text skip in company/name/email/message.
+	// Tokens "qa" or "internal" in those fields are real commercial Portuguese.
+	officialSyntheticMarker = "synthetic-inbound"
 )
 
 // InboundCommercialSkipReason is the commercial-queue skip gate. Receipts
 // still persist. A non-empty reason means the row is SYNTHETIC/qa/internal
 // and must not enter real INBOUND NOW or include_synthetic=0 rollups.
 func InboundCommercialSkipReason(lead models.OutreachInboundLead) string {
-	// Identity fields and explicit payload flags only. Company/name/message
-	// may contain "QA" or "internal" in real commercial Portuguese.
+	// Identity, source, and explicit flags only. Company/name/email/message
+	// skip solely on the official SYNTHETIC-INBOUND marker.
 	if reason := skipTokenIn(lead.Source); reason != "" {
 		return reason
 	}
@@ -32,21 +36,19 @@ func InboundCommercialSkipReason(lead models.OutreachInboundLead) string {
 	if reason := skipFromPayload(lead.RawPayload); reason != "" {
 		return reason
 	}
-	if reason := skipOfficialMarker(lead.CompanyName, lead.LeadEmail, lead.LeadName, lead.Message); reason != "" {
-		return reason
+	if skipOfficialMarker(lead.CompanyName, lead.LeadEmail, lead.LeadName, lead.Message) {
+		return InboundSkipSynthetic
 	}
 	return ""
 }
 
-func skipOfficialMarker(parts ...string) string {
+func skipOfficialMarker(parts ...string) bool {
 	for _, p := range parts {
-		for _, tok := range splitSkipTokens(strings.ToLower(strings.TrimSpace(p))) {
-			if tok == InboundSkipSynthetic {
-				return InboundSkipSynthetic
-			}
+		if strings.Contains(strings.ToLower(p), officialSyntheticMarker) {
+			return true
 		}
 	}
-	return ""
+	return false
 }
 
 func skipTokenIn(s string) string {
@@ -80,7 +82,10 @@ func skipFromPayload(raw []byte) string {
 	}
 	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err != nil {
-		return skipTokenIn(string(raw))
+		if skipOfficialMarker(string(raw)) {
+			return InboundSkipSynthetic
+		}
+		return ""
 	}
 	if truthy(m["synthetic"]) || truthy(m["is_synthetic"]) {
 		return InboundSkipSynthetic

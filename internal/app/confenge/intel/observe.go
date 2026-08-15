@@ -1,6 +1,7 @@
 package intel
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/google/uuid"
@@ -181,16 +182,14 @@ func utmQuery(raw []byte) string {
 	if len(raw) == 0 {
 		return ""
 	}
-	s := string(raw)
-	for _, key := range []string{`"query"`, `"utm_campaign"`, `"campaign"`, `"utm_source"`} {
-		if i := strings.Index(s, key); i >= 0 {
-			rest := s[i+len(key):]
-			if j := strings.Index(rest, `"`); j >= 0 {
-				rest = rest[j+1:]
-				if k := strings.Index(rest, `"`); k >= 0 {
-					return rest[:k]
-				}
-			}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return ""
+	}
+	// Query is never backfilled from campaign or utm_source.
+	for _, key := range []string{"query", "search_query", "q", "utm_term", "term"} {
+		if v := strings.TrimSpace(asString(m[key])); v != "" {
+			return v
 		}
 	}
 	return ""

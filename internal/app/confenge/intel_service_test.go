@@ -64,6 +64,67 @@ func TestCommercialExecutiveViewExcludesIngestedSyntheticQAInternal(t *testing.T
 		view.RealEmpty, view.InboundQualifiedPipeline, view.Denominators.Leads, labeled.ChainCount, svc.cfg.AutoSendEnabled)
 }
 
+func TestCommercialExecutiveViewPromotesLegacySyntheticChain(t *testing.T) {
+	svc, repo, org := inboundTestService(t)
+	now := time.Date(2026, 8, 15, 21, 30, 0, 0, time.UTC)
+	leadID := "SYNTHETIC-INBOUND-legacy-1"
+	legacy := intel.ObservedFacts{
+		Keys: intel.JoinKeys{
+			OrganizationID: org.String(),
+			Source:         "CONFENGE_WEB",
+			LeadID:         leadID,
+			ReceiptID:      leadID,
+			RouteFamily:    intel.FamilyInbound,
+		},
+		LeadCreatedAt: now,
+		IngestedAt:    now,
+		Synthetic:     false,
+		Label:         intel.LabelReal,
+	}
+	seed, xerr := svc.ReconcileCommercialIntel(context.Background(), org, legacy)
+	if xerr != nil || !seed.Created || seed.Chain.Synthetic {
+		t.Fatalf("seed legacy REAL: %+v %v", seed, xerr)
+	}
+	contaminated, xerr := svc.CommercialExecutiveView(context.Background(), org, "2026-08", false)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if contaminated.ChainCount == 0 {
+		t.Fatal("legacy REAL identity should contaminate include_synthetic=0 before receipt observe")
+	}
+
+	body := []byte(`{"lead_id":"SYNTHETIC-INBOUND-legacy-1","receipt_id":"SYNTHETIC-INBOUND-legacy-1","source":"CONFENGE_WEB","company":"SYNTHETIC-INBOUND","email":"synthetic-inbound@example.com","message":"SYNTHETIC-INBOUND do not contact"}`)
+	if _, xerr := svc.IngestInboundLead(context.Background(), org, body, IngestOptions{Now: now}); xerr != nil {
+		t.Fatal(xerr)
+	}
+	queue, xerr := svc.CollectInboundNow(context.Background(), org)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	for _, item := range queue {
+		if item.LeadID == leadID {
+			t.Fatal("official synthetic receipt entered INBOUND NOW")
+		}
+	}
+	cleaned, xerr := svc.CommercialExecutiveView(context.Background(), org, "2026-08", false)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if !cleaned.RealEmpty || cleaned.ChainCount != 0 {
+		t.Fatalf("observeExisting must promote legacy chain out of include_synthetic=0: %+v", cleaned)
+	}
+	labeled, xerr := svc.CommercialExecutiveView(context.Background(), org, "2026-08", true)
+	if xerr != nil || labeled.ChainCount == 0 {
+		t.Fatalf("labeled path must keep promoted chain: %+v %v", labeled, xerr)
+	}
+	stored, _ := svc.intelStore().GetChain(org.String(), "lead:"+leadID)
+	if stored == nil || !stored.Synthetic || stored.Label != intel.LabelSynthetic {
+		t.Fatalf("legacy chain not promoted: %+v", stored)
+	}
+	fmt.Printf("LEGACY_PROMOTE identity=lead:%s synthetic=%v include_synthetic=0 empty=%v\n", leadID, stored.Synthetic, cleaned.RealEmpty)
+	_ = repo
+}
+
 func TestCommercialIntelJoinAndLearningViaService(t *testing.T) {
 	svc, _, org := inboundTestService(t)
 	facts := intel.SyntheticFacts(org.String())[1]
