@@ -51,6 +51,12 @@ tokens fail closed to `UNMAPPED`.
 A named person plus a company phone without `BELONGS_TO_NAMED_PERSON` is
 `ROUTED_CALL`, never a direct phone.
 
+Suggested copy on CALL, ROUTED_CALL, WhatsApp, and generic/role mailboxes is
+route-specific. The founder sees route class, why now, evidence, and a
+Revisar / copiar control. Mailbox labels follow the observed local-part
+(`comercial@`) or say "caixa da empresa". They never invent "área de contratos".
+These cards do not auto-send.
+
 `confenge import` also accepts the extra-cli operator pack (`cards.json`) and
 `confenge.decision_unit_account.v1` accounts. Re-import is idempotent. Warmbly
 keeps extra-cli account id, person id, evidence ids, why-now, route class,

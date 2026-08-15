@@ -53,6 +53,8 @@ type ManualQueueItem struct {
 	ContactTier       string   `json:"contact_tier"`
 	Lane              string   `json:"lane"`
 	Channel           string   `json:"channel,omitempty"`
+	ChannelValue      string   `json:"channel_value,omitempty"`
+	MailboxLabel      string   `json:"mailbox_label,omitempty"`
 	Source            string   `json:"source,omitempty"`
 	Service           string   `json:"service,omitempty"`
 	WhyNow            string   `json:"why_now,omitempty"`
@@ -181,6 +183,7 @@ func BuildManualItem(acc *models.OutreachAccount, c *models.OutreachContactCandi
 	}
 	if c != nil {
 		item.Source = firstNonEmpty(c.SourceURL, c.SourceDocument)
+		item.ChannelValue = firstNonEmpty(c.ChannelValue, c.Email, firstNonEmpty(c.PhoneE164, c.Phone))
 		if item.Confidence == "" {
 			item.Confidence = c.Confidence
 		}
@@ -188,6 +191,7 @@ func BuildManualItem(acc *models.OutreachAccount, c *models.OutreachContactCandi
 			item.Channel = channelFromCandidate(c)
 		}
 	}
+	item.MailboxLabel = observedMailboxLabel(item.ChannelValue, item.Role)
 	if acc != nil {
 		item.WhyNow = firstNonEmpty(acc.MomentSummary, item.WhyNow)
 	}
@@ -235,29 +239,31 @@ func manualActionsFor(tier string) []string {
 }
 
 func manualSuggestedText(cls ContactClass, item ManualQueueItem) string {
-	company := strings.TrimSpace(item.Company)
-	hook := strings.TrimSpace(item.FactualHook)
-	switch cls.Tier {
-	case ContactTierB:
-		name := strings.TrimSpace(strings.Split(item.Person, " ")[0])
-		greet := "Ola"
-		if name != "" {
-			greet = "Ola, " + name
-		}
-		if hook == "" {
-			return greet + ". Posso te mandar um recorte curto do que conferiria neste contrato?"
-		}
-		return greet + ". Pelo que esta publico, " + hook + ". Posso te mandar o recorte do que eu conferiria?"
-	case ContactTierC:
-		if hook == "" {
-			return "Ola. Escrevo para a area responsavel pelos contratos de " + firstNonEmpty(company, "voces") + ". Posso enviar um recorte objetivo para a equipe?"
-		}
-		return "Ola. Escrevo para a caixa da area de contratos de " + firstNonEmpty(company, "voces") + ". Pelo que esta publico, " + hook + ". Posso enviar um recorte para a equipe?"
-	case ContactTierD:
-		return "Nao abordar como pessoa. Se for o caso, use o canal geral sem fingir destinatario nominal."
-	default:
-		return ""
+	a := models.OutreachCommercialAction{
+		CompanyName:       item.Company,
+		PersonName:        item.Person,
+		TargetRole:        item.Role,
+		FactualHook:       item.FactualHook,
+		ChannelValue:      firstNonEmpty(item.ChannelValue, item.Source),
+		ServiceContext:    item.Service,
+		RecommendedAction: item.RecommendedAction,
 	}
+	ch := strings.ToLower(strings.TrimSpace(firstNonEmpty(item.Channel, cls.Channel)))
+	switch {
+	case ch == "whatsapp":
+		a.ActionType = models.ActionWhatsApp
+	case ch == "phone" && strings.TrimSpace(item.Person) != "" && cls.Tier == ContactTierB:
+		a.ActionType = models.ActionDirectCall
+	case ch == "phone":
+		a.ActionType = models.ActionRoutedCall
+	case cls.Tier == ContactTierC:
+		a.ActionType = models.ActionRoleEmail
+	case cls.Tier == ContactTierD:
+		a.ActionType = models.ActionGenericEmail
+	default:
+		a.ActionType = models.ActionOtherManual
+	}
+	return FounderFacingCopy(ComposeActionContent(a))
 }
 
 func isRoleMailbox(c *models.OutreachContactCandidate) bool {

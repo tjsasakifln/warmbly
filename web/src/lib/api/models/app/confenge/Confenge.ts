@@ -91,6 +91,8 @@ export type ConfengeManualItem = {
     contact_tier: string;
     lane: string;
     channel?: string;
+    channel_value?: string;
+    mailbox_label?: string;
     source?: string;
     service?: string;
     why_now?: string;
@@ -115,6 +117,7 @@ export type ConfengeActionCopy = {
     objection_notes?: string;
     do_not_claim?: string[];
     person_id?: string;
+    mailbox_label?: string;
 };
 
 export type ConfengeActionCard = {
@@ -142,6 +145,7 @@ export type ConfengeActionCard = {
     last_outcome?: string;
     next_action?: string;
     route_epistemology?: string;
+    mailbox_label?: string;
     action_type: string;
     lane: string;
     state: string;

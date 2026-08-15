@@ -44,6 +44,7 @@ import {
 } from "@/lib/api/hooks/app/confenge/useConfenge";
 import type {
   ConfengeActionCard,
+  ConfengeActionCopy,
   ConfengeInboundNowItem,
   ConfengeAttentionFilter,
   ConfengeTouchpoint,
@@ -442,6 +443,9 @@ export default function ConfengePage() {
             {(cockpit.data?.manual ?? []).map((item) => (
               <li key={`${item.canonical_target_id}-${item.lane}`} className="px-3 py-2.5 text-[12.5px] space-y-1">
                 <div className="font-medium text-slate-900">{item.company} <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">{stateLabel(item.contact_tier)}</span></div>
+                <div data-testid="confenge-manual-route-class" className="text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                  {[item.channel, item.mailbox_label || item.channel_value].filter(Boolean).join(" · ") || stateLabel(item.lane)}
+                </div>
                 <div className="text-slate-600">{[item.person, item.role, item.channel, item.service].filter(Boolean).join(" · ") || "Sem pessoa nomeada"}</div>
                 {item.why_now && <div data-testid="confenge-manual-why-now" className="text-slate-500">Por que agora: {item.why_now}</div>}
                 {item.factual_hook && <div data-testid="confenge-manual-hook" className="text-slate-500">Gancho: {item.factual_hook}</div>}
@@ -459,7 +463,7 @@ export default function ConfengePage() {
                       className="h-7 px-2.5 rounded-md border border-slate-200 text-[12.5px]"
                       onClick={() => { void navigator.clipboard.writeText(item.suggested_text || ""); }}
                     >
-                      {stateLabel("COPY_TEXT")}
+                      Revisar / copiar
                     </button>
                   )}
                   {(item.actions || []).filter((a) => a !== "OPEN_SOURCE" && a !== "APPROVE").map((action) => (
@@ -1405,6 +1409,12 @@ const OUTCOME_OPTIONS = [
   "SKIPPED",
 ];
 
+function founderFacingCopy(copy: ConfengeActionCopy): string {
+  const body = (copy.body || "").trim();
+  if (body) return body;
+  return [copy.opening, copy.reason_for_call, copy.ask].filter((part) => !!part && part.trim()).join(" ").trim();
+}
+
 function TodayActionCard({
   card,
   submitting,
@@ -1424,8 +1434,11 @@ function TodayActionCard({
     <article data-testid="confenge-action-card" className="px-3 py-3 text-[12.5px] space-y-1.5">
       <div className="flex flex-wrap items-baseline gap-2">
         <div className="font-medium text-slate-900">{card.company}</div>
-        <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">{stateLabel(card.action_type)}</span>
-        {card.reachability_class && <span className="text-[10px] uppercase tracking-[0.14em] text-slate-400">{stateLabel(card.reachability_class)}</span>}
+        <span data-testid="confenge-today-route-class" className="text-[10px] uppercase tracking-[0.14em] text-slate-500">
+          {stateLabel(card.action_type)}
+          {card.reachability_class ? ` · ${stateLabel(card.reachability_class)}` : ""}
+          {card.mailbox_label || copy.mailbox_label ? ` · ${card.mailbox_label || copy.mailbox_label}` : ""}
+        </span>
       </div>
       <div className="text-slate-700">
         {card.person ? (
@@ -1460,19 +1473,35 @@ function TodayActionCard({
         </div>
       )}
       {(copy.opening || copy.body) && (
-        <div className="rounded border border-slate-100 bg-slate-50 px-2 py-1.5 space-y-0.5 whitespace-pre-wrap">
+        <div data-testid="confenge-today-copy" className="rounded border border-slate-100 bg-slate-50 px-2 py-1.5 space-y-0.5 whitespace-pre-wrap">
           {copy.subject && <div>Assunto: {copy.subject}</div>}
-          {copy.opening && <div>Abertura: {copy.opening}</div>}
-          {copy.reason_for_call && <div>Motivo: {copy.reason_for_call}</div>}
-          {copy.value_proposition && <div>Valor: {copy.value_proposition}</div>}
-          {copy.ask && <div>Pedido: {copy.ask}</div>}
-          {copy.body && <div>{copy.body}</div>}
+          {copy.opening ? (
+            <>
+              <div>Abertura: {copy.opening}</div>
+              {copy.reason_for_call && <div>Motivo: {copy.reason_for_call}</div>}
+              {copy.ask && <div>Pedido: {copy.ask}</div>}
+            </>
+          ) : (
+            copy.body && <div>{copy.body}</div>
+          )}
           {copy.do_not_claim?.map((line) => (
-            <div key={line} className="text-amber-800">Nao alegar: {line}</div>
+            <div key={line} className="text-amber-800">Não alegar: {line}</div>
           ))}
         </div>
       )}
-      {card.evidence && card.evidence.length > 0 && <div className="text-[11px] text-slate-400">Evidencia: {card.evidence.join(", ")}</div>}
+      {founderFacingCopy(copy) && (
+        <button
+          type="button"
+          data-testid="confenge-today-copy-text"
+          className="h-7 px-2.5 rounded-md border border-slate-200 text-[12.5px]"
+          onClick={() => { void navigator.clipboard.writeText(founderFacingCopy(copy)); }}
+        >
+          Revisar / copiar
+        </button>
+      )}
+      {card.evidence && card.evidence.length > 0 && (
+        <div data-testid="confenge-today-evidence" className="text-[11px] text-slate-400">Evidência: {card.evidence.join(", ")}</div>
+      )}
       {card.warnings?.map((w) => (
         <div key={w} className="text-amber-800">{w}</div>
       ))}

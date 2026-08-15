@@ -21,12 +21,29 @@ type CommercialActionContent struct {
 	ObjectionNotes   string   `json:"objection_notes,omitempty"`
 	DoNotClaim       []string `json:"do_not_claim,omitempty"`
 	PersonID         string   `json:"person_id,omitempty"`
+	MailboxLabel     string   `json:"mailbox_label,omitempty"`
+}
+
+// FounderFacingCopy is the single string the founder revises and copies.
+// CALL uses opening + reason + ask; other routes use Body.
+func FounderFacingCopy(c CommercialActionContent) string {
+	if body := strings.TrimSpace(c.Body); body != "" {
+		return body
+	}
+	var parts []string
+	for _, p := range []string{c.Opening, c.ReasonForCall, c.Ask} {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, " "))
 }
 
 // ComposeActionContent builds executable copy from the planned action.
 func ComposeActionContent(a models.OutreachCommercialAction) CommercialActionContent {
-	company := firstNonEmpty(a.CompanyName, "a empresa")
-	hook := strings.TrimSpace(a.FactualHook)
+	company := founderCompanyName(firstNonEmpty(a.CompanyName, "a empresa"))
+	hook := founderSafeFact(a.FactualHook)
 	offer := firstNonEmpty(a.ServiceContext, a.ServiceCode)
 	ask := firstNonEmpty(a.RecommendedAction, "Posso enviar um recorte objetivo?")
 	var c CommercialActionContent
@@ -38,20 +55,13 @@ func ComposeActionContent(a models.OutreachCommercialAction) CommercialActionCon
 		c.Kind = "INFERRED_EMAIL"
 		c.DoNotClaim = append(c.DoNotClaim, "Nao tratar este endereco como e-mail validado para envio.")
 	case models.ActionRoleEmail:
-		c = composeRoleEmail(a, company, hook, offer)
+		c = composeRoleEmail(a, company, hook)
 	case models.ActionGenericEmail, models.ActionOtherManual:
-		c = CommercialActionContent{
-			Kind: "MANUAL",
-			Body: "Nao abordar como pessoa. Se for o caso, use o canal geral sem fingir destinatario nominal.",
-			DoNotClaim: []string{
-				"Nao inventar um nome.",
-				"Nao tratar contato generico como destinatario pessoal.",
-			},
-		}
+		c = composeGenericMailbox(a, company, hook)
 	case models.ActionDirectCall:
-		c = composeCall(a, company, hook, offer, ask, false)
+		c = composeCall(a, company, hook, ask, false)
 	case models.ActionRoutedCall:
-		c = composeCall(a, company, hook, offer, ask, true)
+		c = composeCall(a, company, hook, ask, true)
 	case models.ActionWhatsApp:
 		c = composeWhatsAppAction(a, hook)
 	case models.ActionProfessionalSocial:
@@ -98,76 +108,100 @@ func composeDirectEmail(a models.OutreachCommercialAction, company, hook, offer 
 	}
 }
 
-func composeRoleEmail(a models.OutreachCommercialAction, company, hook, offer string) CommercialActionContent {
-	team := firstNonEmpty(a.TargetRole, "a equipe responsavel")
-	body := "Ola. Escrevo para " + team + " de " + company + "."
+func composeRoleEmail(a models.OutreachCommercialAction, company, hook string) CommercialActionContent {
+	label := observedMailboxLabel(a.ChannelValue, a.TargetRole)
+	body := "Olá. Escrevo para " + label + " de " + company + "."
 	if hook != "" {
-		body += " Pelo que esta publico, " + hook + "."
+		body += " Vi " + ensureLowerStart(hook) + "."
 	}
-	cta := "Posso enviar um recorte objetivo para a equipe?"
+	cta := "Posso enviar um recorte para a equipe?"
 	body += " " + cta
 	return CommercialActionContent{
-		Kind:       "ROLE_EMAIL",
-		Subject:    firstNonEmpty(offer, "Contrato publicado") + ": " + company,
-		Body:       body,
-		CTA:        cta,
-		DoNotClaim: []string{"Nao tratar esta caixa como o e-mail pessoal de uma pessoa inventada."},
+		Kind:         "ROLE_EMAIL",
+		Subject:      "Contrato publicado: " + company,
+		Body:         body,
+		CTA:          cta,
+		MailboxLabel: label,
+		DoNotClaim:   []string{"Não tratar esta caixa como o e-mail pessoal de uma pessoa inventada."},
 	}
 }
 
-func composeCall(a models.OutreachCommercialAction, company, hook, offer string, ask string, routed bool) CommercialActionContent {
-	person := firstNonEmpty(a.PersonName, firstNonEmpty(a.TargetRole, "quem trata do contrato"))
-	opening := "Ola, aqui e da CONFENGE. Eu liguei para falar com " + person + "."
-	reason := "Vi um fato publico de " + company
+func composeGenericMailbox(a models.OutreachCommercialAction, company, hook string) CommercialActionContent {
+	label := observedMailboxLabel(a.ChannelValue, "")
+	if guessedContractsArea(label) {
+		label = "caixa da empresa"
+	}
+	body := "Olá. Escrevo para a " + label + " de " + company + "."
+	if strings.HasSuffix(label, "@") {
+		body = "Olá. Escrevo para " + label + " de " + company + "."
+	}
 	if hook != "" {
-		reason += ": " + hook
+		body += " Vi " + ensureLowerStart(hook) + "."
 	}
-	reason += "."
-	value := "Consigo mandar um recorte curto"
-	if offer != "" {
-		value += " sobre " + offer
+	body += " Este é o canal certo para um recorte objetivo?"
+	return CommercialActionContent{
+		Kind:         "MANUAL",
+		Body:         body,
+		Ask:          "Este é o canal certo para um recorte objetivo?",
+		MailboxLabel: label,
+		DoNotClaim: []string{
+			"Não inventar um nome.",
+			"Não tratar contato genérico como destinatário pessoal.",
+		},
 	}
-	value += " para a pessoa certa."
-	callAsk := "Consegue me passar para " + person + "?"
-	if !routed && a.PersonName != "" {
-		opening = "Ola, " + givenName(a.PersonName) + ". Aqui e da CONFENGE."
-		callAsk = firstNonEmpty(ask, "Faz sentido um recorte de um minuto?")
-	}
+}
+
+func composeCall(a models.OutreachCommercialAction, company, hook, ask string, routed bool) CommercialActionContent {
+	opening := "Olá, aqui é da CONFENGE."
+	reason := founderCallReason(company, hook)
+	callAsk := "Quem acompanha esse contrato aí?"
 	doNot := []string{}
 	if routed {
+		opening = "Olá, aqui é da CONFENGE. Ligação para " + company + "."
+		if name := givenName(a.PersonName); name != "" {
+			callAsk = "Poderia me encaminhar para " + name + " ou a quem acompanha esse contrato?"
+		} else {
+			callAsk = "Poderia me encaminhar a quem acompanha esse contrato?"
+		}
 		doNot = append(doNot,
-			"Nao alegar que este telefone pertence diretamente a "+person+".",
-			"Este e o telefone oficial da empresa (switchboard), nao o ramal pessoal.",
+			"Não alegar que este telefone pertence diretamente a "+firstNonEmpty(a.PersonName, "a pessoa alvo")+".",
+			"Este é o telefone oficial da empresa (switchboard), não o ramal pessoal.",
 		)
+	} else if name := givenName(a.PersonName); name != "" {
+		opening = "Olá, " + name + ". Aqui é da CONFENGE."
+		callAsk = diagnosticAsk(ask, "Você é quem acompanha esse contrato?")
 	}
+	body := strings.TrimSpace(opening + " " + reason + " " + callAsk)
 	return CommercialActionContent{
-		Kind:             "CALL",
-		Opening:          opening,
-		ReasonForCall:    reason,
-		ValueProposition: value,
-		Ask:              callAsk,
-		ObjectionNotes:   "Se a recepcao pedir assunto: contrato publico / " + firstNonEmpty(a.ServiceCode, "conferencia contratual") + ".",
-		DoNotClaim:       doNot,
+		Kind:          "CALL",
+		Body:          body,
+		Opening:       opening,
+		ReasonForCall: reason,
+		Ask:           callAsk,
+		MailboxLabel:  observedMailboxLabel(a.ChannelValue, a.TargetRole),
+		DoNotClaim:    doNot,
 	}
 }
 
 func composeWhatsAppAction(a models.OutreachCommercialAction, hook string) CommercialActionContent {
 	name := givenName(a.PersonName)
-	greet := "Ola"
+	greet := "Olá"
 	if name != "" {
-		greet = "Ola, " + name
+		greet = "Olá, " + name
 	}
-	body := greet + ". Posso te mandar um recorte curto do que eu conferiria?"
+	body := greet + ". Aqui é da CONFENGE."
 	if hook != "" {
-		body = greet + ". Pelo que esta publico, " + hook + ". Posso te mandar o recorte?"
+		body += " Vi " + ensureLowerStart(clipRunes(hook, 80)) + "."
 	}
+	body += " Posso te mandar um recorte curto?"
 	return CommercialActionContent{
-		Kind: "WHATSAPP",
-		Body: body,
-		Ask:  "Posso te mandar o recorte?",
+		Kind:         "WHATSAPP",
+		Body:         body,
+		Ask:          "Posso te mandar um recorte curto?",
+		MailboxLabel: observedMailboxLabel(a.ChannelValue, a.TargetRole),
 		DoNotClaim: []string{
-			"Nao enviar automaticamente.",
-			"So executar se o numero publicado tiver consentimento.",
+			"Não enviar automaticamente.",
+			"Só executar se o número publicado tiver consentimento.",
 		},
 	}
 }
