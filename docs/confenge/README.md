@@ -18,8 +18,9 @@ Product acceptance matrix (email + WhatsApp sum, human approval, governor,
 outcomes): [PRODUCT-ACCEPTANCE.md](./PRODUCT-ACCEPTANCE.md).
 
 This tree also covers feed contract, import, staging models, review, WhatsApp
-orchestration, per-touch approval, dispatch governor, reply cockpit, and
-local-first ops.
+orchestration, per-touch approval, dispatch governor, reply cockpit,
+commercial intelligence (join / exception queue / executive view), and
+local-first ops. See [commercial-intelligence.md](./commercial-intelligence.md).
 
 ## Separation of concerns
 
