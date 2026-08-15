@@ -209,14 +209,11 @@ func operatorCardToLead(card, dui map[string]any, rank int) FeedLead {
 	if site == "" {
 		site = operatorDomainURL(card, dui)
 	}
-	// Operator projection is WHO/WHY NOW. Generic/role mailboxes stay unsendable.
-	sendReady := false
-	if class == models.ReachabilityR1Direct && email != "" && personName != "" {
-		// Still not VALIDATED here. EmailSendReady stays false unless extra-cli said so.
-		if b, ok := card["email_send_ready"].(bool); ok {
-			sendReady = b
-		}
-	}
+	verifyStatus := operatorVerificationStatus(card, email, class)
+	inferred := operatorEmailInferred(card, class, verifyStatus)
+	discovery := operatorDiscoveryFacts(card, dui, verifyStatus, inferred)
+	// Operator projection is WHO/WHY NOW. MX/DNS never authorizes send.
+	sendReady := operatorEmailSendReady(card, class, email, personName, verifyStatus, inferred)
 	sendPtr := boolPtr(sendReady)
 
 	contact := FeedContact{
@@ -227,7 +224,8 @@ func operatorCardToLead(card, dui map[string]any, rank int) FeedLead {
 		Email:              email,
 		Phone:              phone,
 		SourceURL:          firstNonEmpty(strField(card, "channel_source_url"), site),
-		VerificationStatus: operatorVerificationStatus(card, email),
+		SourceDate:         operatorRouteDate(card),
+		VerificationStatus: verifyStatus,
 		Confidence:         firstNonEmpty(confidence, "MEDIUM"),
 		Recommended:        true,
 		EmailSendReady:     sendPtr,
@@ -242,6 +240,12 @@ func operatorCardToLead(card, dui map[string]any, rank int) FeedLead {
 		ChannelDisplay:     firstNonEmpty(strField(card, "channel_display"), channel),
 		RecommendedAction:  next,
 		ActionMode:         actionMode,
+		InferredEmail:      boolPtr(inferred),
+		EmailDerivation:    discovery.Derivation,
+		ChannelEpistemic:   discovery.EpistemicClass,
+		RouteFreshness:     discovery.Freshness,
+		RouteSuppression:   discovery.Suppression,
+		DiscoveryJSON:      discovery.JSON,
 	}
 
 	lead := FeedLead{
@@ -281,22 +285,41 @@ func operatorCardToLead(card, dui map[string]any, rank int) FeedLead {
 	return lead
 }
 
-func operatorVerificationStatus(card map[string]any, email string) string {
-	if strings.TrimSpace(email) == "" {
+func operatorVerificationStatus(card map[string]any, email, class string) string {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		if looksLikeEmailRoute(card, class) {
+			return models.OutreachVerifyNotFound
+		}
+		// Phone / routed cards keep source-provenance, not mailbox identity.
 		return models.OutreachVerifyOfficialSource
+	}
+	if operatorEmailInferred(card, class, "") {
+		return models.OutreachVerifyCandidateUnverified
 	}
 	if explicit := strings.ToUpper(strField(card, "verification_status")); explicit != "" {
 		switch explicit {
 		case models.OutreachVerifyInstitutionalGeneric, models.OutreachVerifyCandidateUnverified,
-			models.OutreachVerifyNotFound:
+			models.OutreachVerifyNotFound, models.OutreachVerifyInvalid,
+			models.OutreachVerifyBounced, models.OutreachVerifyDoNotContact:
+			return explicit
+		case models.OutreachVerifyOfficialSource, models.OutreachVerifyPublicDocumentRecent,
+			models.OutreachVerifyMultipleSources, models.OutreachVerifyHumanConfirmed,
+			models.OutreachVerifyVerified:
+			// Extra-cli may echo a legacy label. Passive MX/DNS still wins.
+			if mapped := classificationToVerification(card); mapped != "" {
+				return mapped
+			}
+			if operatorHasPassiveVerification(card) {
+				return models.OutreachVerifyCandidateUnverified
+			}
 			return explicit
 		}
 	}
-	report, _ := card["email_verification"].(map[string]any)
-	switch strings.ToUpper(strField(report, "final_classification")) {
-	case "GENERIC_MAILBOX", "GENERIC_ROLE_MAILBOX":
-		return models.OutreachVerifyInstitutionalGeneric
-	case "UNVERIFIED_DIRECT_CANDIDATE", "UNVERIFIED":
+	if mapped := classificationToVerification(card); mapped != "" {
+		return mapped
+	}
+	if operatorHasPassiveVerification(card) {
 		return models.OutreachVerifyCandidateUnverified
 	}
 	// Legacy operator packs predate passive verification. Preserve their
@@ -304,15 +327,74 @@ func operatorVerificationStatus(card map[string]any, email string) string {
 	return models.OutreachVerifyOfficialSource
 }
 
+func classificationToVerification(card map[string]any) string {
+	report, _ := card["email_verification"].(map[string]any)
+	switch strings.ToUpper(strField(report, "final_classification")) {
+	case "GENERIC_MAILBOX", "GENERIC_ROLE_MAILBOX":
+		return models.OutreachVerifyInstitutionalGeneric
+	case "UNVERIFIED_DIRECT_CANDIDATE", "UNVERIFIED", "INFERRED", "CANDIDATE_UNVERIFIED":
+		return models.OutreachVerifyCandidateUnverified
+	}
+	return ""
+}
+
+func operatorHasPassiveVerification(card map[string]any) bool {
+	if _, ok := card["email_verification"].(map[string]any); ok {
+		return true
+	}
+	reports, err := asMapSlice(card["email_verification_reports"])
+	return err == nil && len(reports) > 0
+}
+
+func operatorEmailInferred(card map[string]any, class, verifyStatus string) bool {
+	if b, ok := card["inferred_email"].(bool); ok && b {
+		return true
+	}
+	ep := strings.ToUpper(strField(card, "channel_epistemic_class"))
+	if ep == "INFERRED" || strings.Contains(ep, "INFERRED") {
+		return true
+	}
+	route := strings.ToUpper(firstNonEmpty(strField(card, "primary_route", "route_type", "channel_type"), class))
+	if strings.Contains(route, "INFERRED") {
+		return true
+	}
+	if class == models.ReachabilityR2Inferred {
+		return true
+	}
+	if verifyStatus == models.OutreachVerifyCandidateUnverified && strings.Contains(route, "INFERRED") {
+		return true
+	}
+	return false
+}
+
+func operatorEmailSendReady(card map[string]any, class, email, personName, verifyStatus string, inferred bool) bool {
+	if strings.TrimSpace(email) == "" || strings.TrimSpace(personName) == "" {
+		return false
+	}
+	if inferred || class == models.ReachabilityR2Inferred || class == models.ReachabilityR4Role || class == models.ReachabilityR5Corporate {
+		return false
+	}
+	if models.OutreachUnenrollableVerification[verifyStatus] || verifyStatus == models.OutreachVerifyInstitutionalGeneric {
+		return false
+	}
+	if class != models.ReachabilityR1Direct {
+		return false
+	}
+	// extra-cli is the only authority. Absence or false stays false.
+	ready, ok := card["email_send_ready"].(bool)
+	return ok && ready
+}
+
 func operatorVerificationNotice(card map[string]any) string {
 	report, _ := card["email_verification"].(map[string]any)
 	if report != nil {
 		return fmt.Sprintf(
-			"Verificacao tecnica do e-mail: DNS=%s; MX=%s; catch-all=%s; SMTP=%s. Isso nao prova caixa nem identidade.",
+			"Verificacao tecnica do e-mail: DNS=%s; MX=%s; catch-all=%s; SMTP=%s; identidade_provada=%s. Isso nao prova caixa nem identidade.",
 			firstNonEmpty(strField(report, "dns"), "UNKNOWN"),
 			firstNonEmpty(strField(report, "mx"), "UNKNOWN"),
 			firstNonEmpty(strField(report, "catch_all"), "UNKNOWN_NOT_PROBED"),
 			firstNonEmpty(strField(report, "smtp"), "SKIPPED_POLICY"),
+			yesNo(boolField(report, "identity_proven", false)),
 		)
 	}
 	reports, err := asMapSlice(card["email_verification_reports"])
@@ -357,6 +439,77 @@ func operatorDomainURL(card, dui map[string]any) string {
 		return domain
 	}
 	return "https://" + domain
+}
+
+type operatorDiscovery struct {
+	Derivation     string
+	EpistemicClass string
+	Freshness      string
+	Suppression    string
+	JSON           []byte
+}
+
+func operatorDiscoveryFacts(card, dui map[string]any, verifyStatus string, inferred bool) operatorDiscovery {
+	ep := firstNonEmpty(strField(card, "channel_epistemic_class"), recString(dui, "epistemic_class"))
+	fresh := firstNonEmpty(strField(card, "route_freshness"), recString(dui, "freshness"))
+	supp := firstNonEmpty(strField(card, "route_suppression"), recString(dui, "suppression"))
+	deriv := "OBSERVED"
+	if inferred {
+		deriv = "INFERRED"
+	} else if strings.EqualFold(ep, "INFERRED") {
+		deriv = "INFERRED"
+	} else if strings.EqualFold(ep, "OBSERVED") {
+		deriv = "OBSERVED"
+	}
+	report, _ := card["email_verification"].(map[string]any)
+	payload := map[string]any{
+		"derivation":           deriv,
+		"epistemic_class":      firstNonEmpty(ep, deriv),
+		"freshness":            fresh,
+		"suppression":          supp,
+		"verification_status":  verifyStatus,
+		"email_verification":   report,
+		"identity_proven":      false,
+		"email_send_ready":     false,
+		"mx_is_not_identity":   true,
+		"official_source_from": "never_mx_or_unobserved",
+	}
+	if report != nil {
+		if proven, ok := report["identity_proven"].(bool); ok {
+			payload["identity_proven"] = proven
+		}
+	}
+	raw, _ := json.Marshal(payload)
+	return operatorDiscovery{
+		Derivation:     deriv,
+		EpistemicClass: firstNonEmpty(ep, deriv),
+		Freshness:      fresh,
+		Suppression:    supp,
+		JSON:           raw,
+	}
+}
+
+func operatorRouteDate(card map[string]any) string {
+	return firstNonEmpty(strField(card, "route_observed_at", "source_date", "channel_source_date"))
+}
+
+func looksLikeEmailRoute(card map[string]any, class string) bool {
+	route := strings.ToUpper(strField(card, "primary_route", "route_type", "channel_type"))
+	if strings.Contains(route, "EMAIL") {
+		return true
+	}
+	switch class {
+	case models.ReachabilityR1Direct, models.ReachabilityR2Inferred, models.ReachabilityR4Role, models.ReachabilityR5Corporate:
+		return true
+	}
+	return false
+}
+
+func yesNo(v bool) string {
+	if v {
+		return "sim"
+	}
+	return "nao"
 }
 
 func recString(dui map[string]any, key string) string {

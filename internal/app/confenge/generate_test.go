@@ -379,14 +379,14 @@ func TestDraftUserPromptContainsNoResearchInstruction(t *testing.T) {
 	}
 }
 
-func TestPromptVersionV4(t *testing.T) {
-	if PromptVersion != "confenge.draft.v4" {
+func TestPromptVersionV5(t *testing.T) {
+	if PromptVersion != "confenge.draft.v5" {
 		t.Fatalf("PromptVersion=%s", PromptVersion)
 	}
 	if OutreachDoctrineVersion != "confenge-outreach-v2" {
 		t.Fatalf("doctrine=%s", OutreachDoctrineVersion)
 	}
-	if ComposerVersion != "confenge.composer.v2" {
+	if ComposerVersion != "confenge.composer.v3" {
 		t.Fatalf("composer=%s", ComposerVersion)
 	}
 }

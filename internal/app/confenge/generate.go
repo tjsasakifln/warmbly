@@ -152,6 +152,9 @@ func (TemplateGenerator) Generate(ctx context.Context, in GenerateInput) (DraftO
 		if _, hit := NearDuplicate(out.BodyText, in.RecentBodies); hit {
 			out.BodyText = varyTemplateHook(out.BodyText)
 			out.RiskFlags = append(out.RiskFlags, "near_dup_regenerated")
+			if _, still := NearDuplicate(out.BodyText, in.RecentBodies); still {
+				out.RiskFlags = append(out.RiskFlags, "near_dup_hard_fail")
+			}
 		}
 	}
 	return out, "template", "deterministic", nil

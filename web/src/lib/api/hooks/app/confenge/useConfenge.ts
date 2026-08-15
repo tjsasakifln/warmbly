@@ -365,8 +365,13 @@ export function useGenerateConfengeTouchpoint() {
     const qc = useQueryClient();
     return useMutation({
         mutationFn: (id: string) => generateConfengeTouchpoint(id),
-        onSuccess: () => {
+        onSuccess: (tp) => {
             void qc.invalidateQueries({ queryKey: KEY });
+            const err = tp.generation_error?.trim();
+            if (err || !tp.body_text?.trim()) {
+                toast.error(err || "A mensagem não ficou autorizável. Veja o motivo no card.");
+                return;
+            }
             toast.success("Mensagem gerada");
         },
         onError: (e) => toast.error(confengeError(e, "Não foi possível gerar a mensagem.")),

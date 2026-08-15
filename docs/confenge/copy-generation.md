@@ -11,6 +11,7 @@ There is **no research** in this path: the model receives structured JSON and re
 | `confenge.draft.v2` | Channel-aware modes, `claims[]`, internal `rationale`, anti-template linter, near-dup single regen |
 | `confenge.draft.v3` | Strategy-first composition (`OutreachStrategy`), doctrine `confenge-outreach-v1`, micro-offers, doctrine QA |
 | `confenge.draft.v4` | Messageability gate + outbound-safe plan (`confenge.composer.v2`, doctrine `confenge-outreach-v2`). Internal strategy fields are never interpolated. Unsent prior-version drafts must be regenerated. |
+| `confenge.draft.v5` | Authorizable NEEDS_REVIEW. Renderer reads only `RecipientFacingCopy`. `validation_ok` means only human authorization remains. P0 hard QA: leak phrases, crédito frame, near-dup, stale composer, dumps, empty copy, missing CTA `?`. |
 
 Constant: `internal/app/confenge/validators.go` → `PromptVersion`.
 Doctrine: `OutreachDoctrineVersion` + `internal/app/confenge/outreach_playbook/`.
@@ -78,9 +79,12 @@ Hard fails include:
 
 Near-duplicate (character n-gram Jaccard, threshold `0.72`):
 
-- marks risk / warning
-- allows **one** structure/hook-oriented regeneration
+- one structure/hook-oriented regeneration is allowed
+- if still above the threshold, hard-fail (`validation_ok=false`, never `NEEDS_REVIEW`)
 - never loops
+
+`validation_ok=true` means the message is already technically and commercially
+sendable. Only human authorization remains. It is not "text a human must rewrite".
 
 ## Provider abstraction
 

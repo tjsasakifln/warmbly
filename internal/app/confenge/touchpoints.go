@@ -146,37 +146,86 @@ func (s *service) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, li
 					list[i].RecipientGeneric = isGenericRecipient(cand)
 				}
 			}
+			rec := RecipientResolution{Company: accName(acc)}
 			if allCands, listErr := s.repo.ListCandidates(ctx, orgID, list[i].AccountID); listErr == nil {
-				rec := ResolveRecipient(acc, allCands, time.Now().UTC())
+				rec = ResolveRecipient(acc, allCands, time.Now().UTC())
 				list[i].RecipientState = rec.State
 				list[i].RecipientReason = rec.Reason
 			}
-			st := PlanOutreachStrategy(pb, acc, cand, nil, pos)
+			evidence, _ := s.repo.ListEvidence(ctx, orgID, list[i].AccountID)
+			st, plan := BuildOutboundPlan(pb, acc, cand, evidence, pos)
 			if list[i].FactUsed != "" {
 				st.ObservedFact = list[i].FactUsed
 			}
 			ex := ExplainStrategy(st, list[i].Recipient)
 			list[i].StrategyExplain = strategyExplainProjection(ex, "")
+			promptVer := ""
 			if list[i].DraftID != nil {
 				if d, _ := s.repo.GetDraft(ctx, orgID, *list[i].DraftID); d != nil {
 					list[i].Draft = d
-					var val ValidationResult
+					promptVer = d.PromptVersion
 					if len(d.ValidationJSON) > 0 {
-						_ = json.Unmarshal(d.ValidationJSON, &val)
-						list[i].DoctrineAlerts = val.DoctrineAlerts
-						if val.StrategyExplain != nil {
-							list[i].StrategyExplain = strategyExplainProjection(*val.StrategyExplain, ex.WhyThisAccount)
+						var stored ValidationResult
+						_ = json.Unmarshal(d.ValidationJSON, &stored)
+						list[i].DoctrineAlerts = stored.DoctrineAlerts
+						if stored.StrategyExplain != nil {
+							list[i].StrategyExplain = strategyExplainProjection(*stored.StrategyExplain, ex.WhyThisAccount)
 						}
-						if val.Recipient != nil && val.Recipient.State != "" {
-							list[i].RecipientState = val.Recipient.State
-							list[i].RecipientReason = val.Recipient.Reason
+						if stored.Recipient != nil && stored.Recipient.State != "" {
+							list[i].RecipientState = stored.Recipient.State
+							list[i].RecipientReason = stored.Recipient.Reason
+							rec = *stored.Recipient
 						}
 					}
 				}
 			}
+			synth := DraftOutput{
+				Subject:     firstNonEmpty(draftSubject(list[i]), list[i].Subject),
+				BodyText:    firstNonEmpty(draftBody(list[i]), list[i].BodyText),
+				ServiceCode: firstNonEmpty(list[i].ServiceCode, acc.ServiceCode),
+				FactUsed:    list[i].FactUsed, Channel: ChannelEmailInitial,
+			}
+			if d := list[i].Draft; d != nil {
+				synth.RiskFlags = d.RiskFlags
+				synth.EvidenceIDs = d.EvidenceIDs
+			}
+			val := ValidationResult{OK: false}
+			if strings.TrimSpace(synth.BodyText) != "" {
+				val = ValidateDraft(&synth, acc, cand, ValidateOpts{
+					Evidence: evidence, Channel: ChannelEmailInitial,
+					Strategy: &st, Playbook: pb, PromptVersion: promptVer,
+				})
+			}
+			if rec.State != RecipientValidated || plan.Messageability != MessageabilityReady {
+				val.OK = false
+			}
+			if d := list[i].Draft; d != nil && d.ValidationOK != nil && !*d.ValidationOK {
+				val.OK = false
+			}
+			pack := BuildConsultantSendabilityPack(acc, cand, rec, plan, synth, val)
+			list[i].ConsultantSendability = pack.AsMap()
+			// Live QA wins over a leftover stored true so the API cannot lie.
+			if d := list[i].Draft; d != nil {
+				ok := val.OK && pack.SendWithoutEditing == "sim"
+				d.ValidationOK = &ok
+			}
 		}
 	}
 	return list, nil
+}
+
+func draftSubject(tp models.OutreachTouchpoint) string {
+	if tp.Draft != nil {
+		return tp.Draft.Subject
+	}
+	return ""
+}
+
+func draftBody(tp models.OutreachTouchpoint) string {
+	if tp.Draft != nil {
+		return tp.Draft.BodyText
+	}
+	return ""
 }
 
 func strategyExplainProjection(ex StrategyExplain, fallbackWhyThisAccount string) map[string]any {
@@ -298,11 +347,17 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	if factUsed != "" && plan.Messageability == MessageabilityReady && plan.Hook != "" {
 		st.ObservedFact = factUsed
 	}
+	recent := recentDraftBodies(ctx, s, orgID, tp.AccountID, tp.Channel)
+	var composed DraftOutput
 	if plan.Messageability != MessageabilityReady || rec.State != RecipientValidated {
 		subject, body = "", ""
 		factUsed = ""
 	} else {
-		composed := ComposeFromPlan(plan, acc, cand, genCh)
+		composed = ComposeFromPlan(plan, acc, cand, genCh)
+		if _, hit := NearDuplicate(composed.BodyText, recent); hit {
+			composed.BodyText = varyTemplateHook(composed.BodyText)
+			composed.RiskFlags = appendUnique(composed.RiskFlags, "near_dup_regenerated")
+		}
 		subject, body = composed.Subject, composed.BodyText
 		factUsed = composed.FactUsed
 	}
@@ -313,11 +368,11 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 		Subject: subject, BodyText: body, ServiceCode: firstNonEmpty(plan.ServiceCode, acc.ServiceCode),
 		FactUsed: factUsed, EvidenceIDs: firstNonEmptyIDs(plan.EvidenceIDs, evidIDs), Claims: claimsFromFact(factUsed, evidIDs),
 		Channel: genCh, Rationale: "touchpoint strategy compose",
-		CTA: plan.CTA, Question: plan.CTA,
+		CTA: plan.CTA, Question: plan.CTA, RiskFlags: composed.RiskFlags,
 	}
 	val := ValidateDraft(synth, acc, cand, ValidateOpts{
 		MaxWords: s.cfg.MaxInitialEmailWords, Evidence: evidence, Channel: genCh,
-		Strategy: &st, Playbook: pb,
+		Strategy: &st, Playbook: pb, RecentBodies: recent,
 	})
 	recipient := tp.Recipient
 	if cand != nil && recipient == "" {
@@ -447,6 +502,11 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	}
 	if draftStatus == models.OutreachDraftNeedsReview {
 		_ = s.repo.SetAccountHumanFlags(ctx, orgID, tp.AccountID, acc.Blocked, acc.DoNotContact, acc.BlockReason, models.OutreachQueueNeedsReview)
+	}
+	pack := BuildConsultantSendabilityPack(acc, cand, rec, plan, *synth, val)
+	tp.ConsultantSendability = pack.AsMap()
+	if strings.TrimSpace(tp.BodyText) == "" {
+		tp.GenerationError = firstNonEmpty(rec.Reason, plan.Reason, strings.Join(val.Errors, "; "), "Gerar mensagem não produziu copy sendable.")
 	}
 	_ = userID
 	return tp, nil

@@ -52,18 +52,33 @@ func newPilotFixture(t *testing.T) *pilotFixture {
 	return &pilotFixture{service: service, repo: repo, orgID: orgID, userID: uuid.New(), now: now}
 }
 
+func distinctPilotOffer(index int) (service, fact string) {
+	n, contrato, dia, via := index, 1100+index, 1+(index%28), 100+index
+	switch index % 4 {
+	case 0:
+		return "ADITIVOS", fmt.Sprintf("Termo aditivo %d ao contrato %d/2022 publicado em 2026-05-%02d no DER-RS para obra na rodovia RSC-%03d.", n, contrato, dia, via)
+	case 1:
+		return "MEDICOES", fmt.Sprintf("Medição %d do contrato %d/2023 da prefeitura de Caxias do Sul publicada em 2026-04-%02d no trecho da ERS-%03d.", n, contrato, dia, via)
+	case 2:
+		return "REAJUSTE", fmt.Sprintf("Aniversário de reajuste do contrato %d/2021 da SES/SC em 2026-03-%02d, índice e memória ainda não conferidos (ciclo %d).", contrato, dia, n)
+	default:
+		return "ENCERRAMENTO_CONTRATUAL", fmt.Sprintf("Vigência encerra em 2026-12-%02d no contrato %d/2020 da COPASA; close-out da estação %03d ainda em aberto.", dia, contrato, via)
+	}
+}
+
 func (fixture *pilotFixture) addReadyAccount(t *testing.T, index int) uuid.UUID {
 	t.Helper()
 	cnpj := fmt.Sprintf("%014d", index+10000000000000)
 	observedAt := fixture.now.Add(-2 * time.Hour)
 	expiresAt := fixture.now.Add(7 * 24 * time.Hour)
+	service, fact := distinctPilotOffer(index)
 	account := &models.OutreachAccount{
 		OrganizationID: fixture.orgID, CNPJ14: cnpj, RazaoSocial: fmt.Sprintf("Construtora %02d LTDA", index),
 		QueueState: models.OutreachQueueReadyToGenerate, CommercialState: "NEW",
-		MomentCode: "ADITIVO_RECENTE", MomentSummary: "Aditivo ao contrato público recente observado em fonte oficial.",
+		MomentCode: "EVENTO_CONTRATUAL", MomentSummary: fact,
 		MomentObservedAt: &observedAt, MomentEvidenceIDs: []string{"evidence-" + cnpj},
-		ServiceCode: "gestao_monitoramento_contratual", EntryOffer: "PUBLIC_DATA_SNAPSHOT",
-		FactToMention:      "Aditivo ao contrato público de engenharia publicado recentemente em fonte oficial.",
+		ServiceCode: service, EntryOffer: "PUBLIC_DATA_SNAPSHOT",
+		FactToMention:      fact,
 		QuestionToAsk:      "Posso compartilhar três pontos documentais para conferência?",
 		CTA:                "Posso compartilhar três pontos documentais para conferência?",
 		MessageContextHash: "context-" + cnpj,

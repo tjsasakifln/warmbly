@@ -591,9 +591,29 @@ func leadToCandidate(orgID, accountID, runID uuid.UUID, fc FeedContact) *models.
 		RouteRelation:                  SanitizeText(fc.RouteRelation, 80),
 		ChannelValue:                   SanitizeText(fc.ChannelValue, 300),
 		ChannelDisplay:                 SanitizeText(fc.ChannelDisplay, 300),
+		EmailDerivation:                SanitizeText(fc.EmailDerivation, 40),
+		ChannelEpistemic:               SanitizeText(fc.ChannelEpistemic, 40),
+		RouteFreshness:                 SanitizeText(fc.RouteFreshness, 40),
+		RouteSuppression:               SanitizeText(fc.RouteSuppression, 40),
+		DiscoveryJSON:                  append([]byte(nil), fc.DiscoveryJSON...),
 	}
 	if fc.EmailSendReady != nil {
 		cand.EmailSendReady = *fc.EmailSendReady
+	}
+	if fc.InferredEmail != nil && *fc.InferredEmail {
+		cand.EmailDerivation = firstNonEmpty(cand.EmailDerivation, "INFERRED")
+		if cand.EmailSendReady {
+			cand.EmailSendReady = false
+		}
+	}
+	if models.OutreachUnenrollableVerification[cand.VerificationStatus] || cand.VerificationStatus == models.OutreachVerifyInstitutionalGeneric {
+		cand.EmailSendReady = false
+	}
+	if supp := strings.ToUpper(strings.TrimSpace(cand.RouteSuppression)); supp == "SUPPRESSED" || supp == "DO_NOT_CONTACT" || supp == "DNC" {
+		cand.DoNotContact = true
+		if cand.BlockReason == "" {
+			cand.BlockReason = "route_suppression:" + supp
+		}
 	}
 	if fc.MailboxPurposeSendBlocked != nil {
 		cand.MailboxPurposeSendBlocked = *fc.MailboxPurposeSendBlocked

@@ -263,6 +263,11 @@ func isGenericRecipient(candidate *models.OutreachContactCandidate) bool {
 	case "contato", "contact", "info", "comercial", "sales", "vendas", "atendimento", "sac", "financeiro", "administrativo", "licitacao", "licitacoes":
 		return true
 	}
+	domain := parts[1]
+	host := strings.Split(domain, ".")[0]
+	if local != "" && foldASCII(local) == foldASCII(host) {
+		return true
+	}
 	return false
 }
 

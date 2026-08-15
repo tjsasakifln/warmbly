@@ -459,6 +459,29 @@ export type ConfengeStrategyExplain = {
   messageability_reason?: string;
 };
 
+export type ConfengeConsultantSendability = {
+  company?: string;
+  person?: string;
+  why_this_person?: string;
+  email?: string;
+  email_evidence?: string;
+  derivation?: string;
+  verification_status?: string;
+  epistemic_class?: string;
+  freshness?: string;
+  suppression?: string;
+  service_code?: string;
+  supporting_fact?: string;
+  subject?: string;
+  body?: string;
+  warnings?: string[];
+  hard_gates?: Record<string, boolean>;
+  send_without_editing?: string;
+  recipient_state?: string;
+  messageability?: string;
+  lane?: string;
+};
+
 export type ConfengeTouchpoint = {
   id: string;
   organization_id: string;
@@ -484,6 +507,8 @@ export type ConfengeTouchpoint = {
   recipient_generic?: boolean;
   recipient_state?: string;
   recipient_reason?: string;
+  consultant_sendability?: ConfengeConsultantSendability;
+  generation_error?: string;
   draft?: ConfengeDraft;
   approved_by?: string;
   approved_at?: string | Date;

@@ -10,8 +10,8 @@ import (
 )
 
 // PromptVersion tags generation prompt revisions (see docs/confenge/copy-generation.md).
-// v4: messageability gate + outbound-safe plan (doctrine confenge-outreach-v2).
-const PromptVersion = "confenge.draft.v4"
+// v5: authorizable NEEDS_REVIEW — recipient-safe plan only; P0 hard QA catalog.
+const PromptVersion = "confenge.draft.v5"
 
 // DraftClaim is one auditable fact/phrase anchored to evidence ids.
 type DraftClaim struct {
@@ -78,6 +78,7 @@ type ValidateOpts struct {
 	SkipEmailRecipient     bool
 	Strategy               *OutreachStrategy
 	Playbook               *Playbook
+	PromptVersion          string
 }
 
 var bannedPhrases = []string{
@@ -286,23 +287,26 @@ func ValidateDraft(out *DraftOutput, acc *models.OutreachAccount, cand *models.O
 	}
 
 	qMarks := strings.Count(body, "?")
-	if channel == ChannelEmailInitial {
+	if channel == ChannelEmailInitial && body != "" {
 		if qMarks == 0 {
-			res.Warnings = append(res.Warnings, "email initial has no question mark")
+			res.OK = false
+			res.Errors = append(res.Errors, "email initial has no question mark")
 		}
 		if qMarks > 2 {
 			res.Warnings = append(res.Warnings, "body has multiple question marks")
 		}
 	}
-	if isWA && qMarks == 0 {
+	if isWA && qMarks == 0 && body != "" {
 		res.Warnings = append(res.Warnings, "whatsapp body has no question")
 	}
 	if score, hit := NearDuplicate(body, opts.RecentBodies); hit {
 		res.NearDupScore = score
-		res.Warnings = append(res.Warnings, fmt.Sprintf("near-duplicate of recent draft (jaccard=%.2f)", score))
+		res.OK = false
+		res.Errors = append(res.Errors, fmt.Sprintf("near-duplicate of recent draft (jaccard=%.2f)", score))
 	} else if score > 0 {
 		res.NearDupScore = score
 	}
+	ApplyAuthorizableHardQA(&res, out, acc, cand, opts, channel, body)
 	if r := strings.TrimSpace(out.Rationale); r != "" && len(r) > 20 {
 		sample := r
 		if utf8.RuneCountInString(sample) > 24 {
@@ -447,7 +451,7 @@ func ClassifyRisk(acc *models.OutreachAccount, cand *models.OutreachContactCandi
 		raise("RED", "validation_failed")
 	}
 	if val.NearDupScore >= NearDupThreshold {
-		raise("YELLOW", "near_duplicate_draft")
+		raise("RED", "near_duplicate_draft")
 	}
 	if cand != nil {
 		switch cand.VerificationStatus {

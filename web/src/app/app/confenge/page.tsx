@@ -52,6 +52,7 @@ import type {
 import type { AppError } from "@/lib/api/client/normalizeError";
 import { channelLabel, formatFeedAge, formatPtBrDate, intentLabel, purposeLabel, reasonLabel, stateLabel } from "./labels";
 import { buildPilotGate, type PilotGate } from "./pilotGate";
+import { isAuthorizeReady } from "./reviewReady";
 
 const ATTENTION_FILTERS: { id: ConfengeAttentionFilter; label: string }[] = [
   { id: "needs_attention", label: "Precisa de atenção" },
@@ -91,13 +92,7 @@ export default function ConfengePage() {
   const [idx, setIdx] = useState(0);
   const [reviewLane, setReviewLane] = useState<"ready" | "exception">("ready");
   const allReview = review.data ?? [];
-  const isAuthorizeReady = (tp: ConfengeTouchpoint) => {
-    const recipientOK = (tp.recipient_state || "").toUpperCase() === "VALIDATED";
-    const messageability = (tp.strategy_explain?.messageability || "").toUpperCase();
-    const messageOK = !messageability || messageability === "READY";
-    const sendable = !!(tp.body_text && tp.body_text.trim());
-    return recipientOK && messageOK && sendable;
-  };
+  const autorizaveis = allReview.filter(isAuthorizeReady);
   const queue = allReview.filter((tp) => {
     const ready = isAuthorizeReady(tp);
     return reviewLane === "ready" ? ready : !ready;
@@ -664,7 +659,7 @@ export default function ConfengePage() {
             <div>
               <div className="text-[12.5px] font-medium text-slate-900">Cohort manual do piloto</div>
               <div className="text-[10.5px] text-slate-500">
-                {(cohortResult?.cohort_prepared ?? pilotGate.prepared)}/{pilotGate.target} preparadas · {cohortCandidates.length} elegíveis
+                {(cohortResult?.cohort_prepared ?? pilotGate.prepared)}/{pilotGate.target} no cohort · {autorizaveis.length} autorizáveis
               </div>
             </div>
             {cohortCandidates.length > 0 && cohortRemaining > 0 && (
@@ -803,7 +798,7 @@ export default function ConfengePage() {
                 className={`relative h-10 px-2.5 inline-flex items-center text-[12.5px] ${reviewLane === "ready" ? "text-slate-900 font-medium" : "text-slate-500"}`}
                 onClick={() => { setReviewLane("ready"); setIdx(0); }}
               >
-                Prontas para autorizar
+                Prontas para autorizar ({autorizaveis.length})
                 {reviewLane === "ready" && <span className="absolute inset-x-2 -bottom-px h-0.5 bg-sky-600" />}
               </button>
               <button
@@ -936,6 +931,31 @@ export default function ConfengePage() {
                   <div>{stateLabel(current.state)} · criada {formatPtBrDate(current.created_at) || "sem data"} · atualizada {formatPtBrDate(current.updated_at) || "sem data"}</div>
                   {(current.draft?.risk_flags?.length ?? 0) > 0 && (
                     <div className="mt-1 text-amber-700">Avisos: {current.draft!.risk_flags!.map(reasonLabel).join(", ")}</div>
+                  )}
+                  {current.consultant_sendability && (
+                    <div className="mt-2 rounded-md border border-slate-200 bg-white p-2 space-y-1" data-testid="confenge-sendability-pack">
+                      <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Envio sem editar?</div>
+                      <div className="font-medium text-slate-900">
+                        {current.consultant_sendability.send_without_editing === "sim" ? "Sim, só autorizar" : "Não"}
+                      </div>
+                      <StrategyRow label="Pessoa" value={current.consultant_sendability.person} />
+                      <StrategyRow label="Por que esta pessoa" value={current.consultant_sendability.why_this_person} />
+                      <StrategyRow label="E-mail" value={current.consultant_sendability.email} />
+                      <StrategyRow label="Derivação" value={current.consultant_sendability.derivation} />
+                      <StrategyRow label="Verificação" value={current.consultant_sendability.verification_status} />
+                      <StrategyRow label="Frescor" value={current.consultant_sendability.freshness} />
+                      <StrategyRow label="Supressão" value={current.consultant_sendability.suppression} />
+                      <StrategyRow label="Serviço" value={current.consultant_sendability.service_code} />
+                      <StrategyRow label="Fato" value={current.consultant_sendability.supporting_fact} />
+                      {current.consultant_sendability.warnings && current.consultant_sendability.warnings.length > 0 && (
+                        <div className="text-[11px] text-amber-800">{current.consultant_sendability.warnings.join(" · ")}</div>
+                      )}
+                    </div>
+                  )}
+                  {current.generation_error && (
+                    <div className="mt-2 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-[11.5px] text-rose-800" data-testid="confenge-generate-error">
+                      {current.generation_error}
+                    </div>
                   )}
                 </div>
                 <div>

@@ -90,8 +90,10 @@ Keep shipping `confenge.outreach.v1`. Optionally add, per lead or contact:
 
 Operator cards may also publish `domain_resolution`, `email_verification`, and
 `email_verification_reports`. These are visibility/provenance fields, not a
-send authorization. Legacy cards remain compatible and continue through the
-same recipient, messageability, approval, and transport gates.
+send authorization. `CANDIDATE_UNVERIFIED` and `INFERRED` stay on
+`HUMAN_REVIEW_EMAIL` / `NEEDS_ENRICHMENT`. They never enter send `NEEDS_REVIEW`.
+Legacy cards remain compatible and continue through the same recipient,
+messageability, approval, and transport gates.
 
 Do not invent a person when only a role is known. Warmbly will target the
 function, not a fabricated name.
