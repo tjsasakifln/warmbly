@@ -37,3 +37,24 @@ func TestObserveFromInboundRejectsEmailCNPJOutcome(t *testing.T) {
 	}
 	fmt.Printf("OBSERVE_JOIN own_outcome=%s foreign_rejected=true\n", ownFacts.Keys.OutcomeID)
 }
+
+func TestObserveFromInboundMarksOfficialSyntheticPreflight(t *testing.T) {
+	lead := models.OutreachInboundLead{
+		LeadID: "SYNTHETIC-INBOUND-20260815T214505Z", ReceiptID: "SYNTHETIC-INBOUND-20260815T214505Z",
+		Source: "CONFENGE_WEB", CompanyName: "SYNTHETIC-INBOUND",
+		LeadEmail:  "synthetic-inbound@example.com",
+		RawPayload: []byte(`{"lead_id":"SYNTHETIC-INBOUND-20260815T214505Z","company":"SYNTHETIC-INBOUND","email":"synthetic-inbound@example.com","message":"SYNTHETIC-INBOUND do not contact"}`),
+		Status:     models.InboundStatusOpen,
+	}
+	facts := ObserveFromInbound(lead, nil, nil, nil)
+	if !facts.Synthetic || facts.Label != LabelSynthetic {
+		t.Fatalf("official preflight POST must not be REAL: synthetic=%v label=%s", facts.Synthetic, facts.Label)
+	}
+	real := ObserveFromInbound(models.OutreachInboundLead{
+		LeadID: "webcfg-real-1", ReceiptID: "rcpt-real-1", Source: "CONFENGE_WEB", CompanyName: "Construtora Norte",
+	}, nil, nil, nil)
+	if real.Synthetic || real.Label == LabelSynthetic {
+		t.Fatalf("real lead marked synthetic: %+v", real)
+	}
+	fmt.Printf("OBSERVE_SYNTHETIC official_preflight=SYNTHETIC real_label=%s\n", real.Label)
+}

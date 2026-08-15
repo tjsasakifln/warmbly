@@ -35,6 +35,10 @@ func ObserveFromInbound(lead models.OutreachInboundLead, acc *models.OutreachAcc
 		CloseAt:        lead.CloseAt,
 		Label:          LabelReal,
 	}
+	if InboundCommercialSkipReason(lead) != "" {
+		in.Synthetic = true
+		in.Label = LabelSynthetic
+	}
 	if acc != nil {
 		if in.Keys.AccountID == "" {
 			in.Keys.AccountID = strings.TrimSpace(acc.SourceLeadID)
@@ -137,6 +141,13 @@ func ObserveFromAction(action models.OutreachCommercialAction, acc *models.Outre
 		Conversation:  action.ConversationStarted,
 		Label:         LabelReal,
 		RequiresFresh: action.RequiresFresh || strings.TrimSpace(action.StaleWarning) != "",
+	}
+	if InboundCommercialSkipReason(models.OutreachInboundLead{
+		LeadID: action.SourceLeadID, ReceiptID: action.SourceLeadID,
+		Source: action.SourceLeadID,
+	}) != "" {
+		in.Synthetic = true
+		in.Label = LabelSynthetic
 	}
 	if !action.CreatedAt.IsZero() {
 		in.ActionOccurredAt = action.CreatedAt

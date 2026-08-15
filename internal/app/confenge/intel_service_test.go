@@ -25,6 +25,45 @@ func TestCommercialExecutiveViewEmptyReal(t *testing.T) {
 	fmt.Printf("SERVICE_REAL_EMPTY iqp=%d qco=%d real_empty=%v\n", view.InboundQualifiedPipeline, view.QCO, view.RealEmpty)
 }
 
+func TestCommercialExecutiveViewExcludesIngestedSyntheticQAInternal(t *testing.T) {
+	svc, _, org := inboundTestService(t)
+	now := time.Date(2026, 8, 15, 21, 0, 0, 0, time.UTC)
+	month := "2026-08"
+	bodies := [][]byte{
+		[]byte(`{"lead_id":"SYNTHETIC-INBOUND-20260815T210000Z","receipt_id":"SYNTHETIC-INBOUND-20260815T210000Z","source":"CONFENGE_WEB","company":"SYNTHETIC-INBOUND","email":"synthetic-inbound@example.com","message":"SYNTHETIC-INBOUND do not contact"}`),
+		[]byte(`{"lead_id":"qa-lead-exec-1","receipt_id":"qa-lead-exec-1","source":"qa","company":"QA Fixture"}`),
+		[]byte(`{"lead_id":"internal-probe-exec","receipt_id":"internal-probe-exec","label":"internal","company":"Ops"}`),
+	}
+	for _, body := range bodies {
+		if _, xerr := svc.IngestInboundLead(context.Background(), org, body, IngestOptions{Now: now}); xerr != nil {
+			t.Fatal(xerr)
+		}
+	}
+	queue, xerr := svc.CollectInboundNow(context.Background(), org)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if len(queue) != 0 {
+		t.Fatalf("commercial INBOUND NOW leaked skipped receipts: %+v", queue)
+	}
+	view, xerr := svc.CommercialExecutiveView(context.Background(), org, month, false)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if !view.RealEmpty || view.ChainCount != 0 || view.InboundQualifiedPipeline != 0 || view.QCO != 0 || view.Conversations != 0 || view.Meetings != 0 || view.Proposals != 0 || view.Pipeline != 0 || view.Won != 0 || view.Lost != 0 || view.Denominators.Leads != 0 {
+		t.Fatalf("synthetic/qa/internal leaked into include_synthetic=0: %+v", view)
+	}
+	labeled, xerr := svc.CommercialExecutiveView(context.Background(), org, month, true)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if labeled.ChainCount == 0 {
+		t.Fatal("include_synthetic=1 must still see the labeled receipts")
+	}
+	fmt.Printf("EXEC_SKIP_SYNTHETIC real_empty=%v iqp=%d leads=%d labeled_chains=%d auto_send=%v\n",
+		view.RealEmpty, view.InboundQualifiedPipeline, view.Denominators.Leads, labeled.ChainCount, svc.cfg.AutoSendEnabled)
+}
+
 func TestCommercialIntelJoinAndLearningViaService(t *testing.T) {
 	svc, _, org := inboundTestService(t)
 	facts := intel.SyntheticFacts(org.String())[1]
