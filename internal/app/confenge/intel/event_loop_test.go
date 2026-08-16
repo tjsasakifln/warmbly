@@ -254,7 +254,27 @@ func TestImpossibleTransitionHeld(t *testing.T) {
 	if !hasCode(res.Exceptions, ExceptionImpossibleTransition) {
 		t.Fatalf("revenue without pipeline/won not held: %+v", codesOf(res.Exceptions))
 	}
-	fmt.Printf("IMPOSSIBLE_TRANSITION codes=%v held=%v\n", codesOf(res.Exceptions), res.Held)
+	if !res.Held {
+		t.Fatal("impossible revenue must be held")
+	}
+	if res.Chain.RevenueEvidenced || res.Chain.RevenueCents != 0 {
+		t.Fatalf("held revenue_evidenced wrote revenue onto the chain: evidenced=%v cents=%d", res.Chain.RevenueEvidenced, res.Chain.RevenueCents)
+	}
+	if isWonType(res.Chain.OutcomeType) || isLostType(res.Chain.OutcomeType) {
+		t.Fatalf("held revenue invented close: %s", res.Chain.OutcomeType)
+	}
+	saved, _ := st.GetChain(loopOrg, res.Chain.Identity)
+	if saved == nil || saved.RevenueEvidenced || saved.RevenueCents != 0 {
+		t.Fatalf("store kept held revenue: %+v", saved)
+	}
+	view := Rollup(mustList(st, loopOrg), SyntheticMonth, true)
+	if view.RevenueCents != 0 || view.RevenueStatus == "evidenced" {
+		t.Fatalf("held revenue counted: status=%s cents=%d", view.RevenueStatus, view.RevenueCents)
+	}
+	if view.Won != 0 || view.Pipeline != 0 {
+		t.Fatalf("held revenue counted won=%d pipe=%d", view.Won, view.Pipeline)
+	}
+	fmt.Printf("IMPOSSIBLE_TRANSITION codes=%v held=%v revenue_cents=%d evidenced=%v\n", codesOf(res.Exceptions), res.Held, res.Chain.RevenueCents, res.Chain.RevenueEvidenced)
 }
 
 func TestNegativeDurationFailsReconcile(t *testing.T) {
@@ -456,7 +476,45 @@ func TestOrderingOutOfOrderHeld(t *testing.T) {
 	if !hasCode(ooo.Exceptions, ExceptionOutOfOrder) && !hasCode(ooo.Exceptions, ExceptionNegativeLatency) {
 		t.Fatalf("out-of-order not held: %+v", codesOf(ooo.Exceptions))
 	}
-	fmt.Printf("OUT_OF_ORDER codes=%v held=%v\n", codesOf(ooo.Exceptions), ooo.Held)
+	if !ooo.Held {
+		t.Fatal("out-of-order won must be held")
+	}
+	if ooo.Chain.OutcomeType == OutcomeWon || (isWonType(ooo.Chain.OutcomeType) && ooo.Chain.HumanConfirmed) {
+		t.Fatalf("held out-of-order WON landed on the chain: %s confirmed=%v", ooo.Chain.OutcomeType, ooo.Chain.HumanConfirmed)
+	}
+	saved, _ := st.GetChain(loopOrg, ooo.Chain.Identity)
+	if saved == nil || saved.OutcomeType == OutcomeWon || saved.HumanConfirmed {
+		t.Fatalf("store kept held WON: %+v", saved)
+	}
+	view := Rollup(mustList(st, loopOrg), SyntheticMonth, true)
+	if view.Won != 0 {
+		t.Fatalf("held out-of-order WON counted as won=%d", view.Won)
+	}
+	fmt.Printf("OUT_OF_ORDER codes=%v held=%v outcome=%s won=%d\n", codesOf(ooo.Exceptions), ooo.Held, ooo.Chain.OutcomeType, view.Won)
+}
+
+func TestOmittedClocksStayCensored(t *testing.T) {
+	ev := fixtureByName(t, FixturePipelineWithoutRevenue).Events[0]
+	ev.PublishedAt = nil
+	ev.DetectedAt = nil
+	facts := EventToFacts(ev)
+	if facts.PublishedAt != nil || facts.DetectedAt != nil {
+		t.Fatalf("EventToFacts invented clocks published=%v detected=%v", facts.PublishedAt, facts.DetectedAt)
+	}
+	st := NewMemoryStore()
+	res := IngestEvent(st, ev)
+	if res.Chain.PublishedAt != nil || res.Chain.DetectedAt != nil {
+		t.Fatalf("ingest invented clocks published=%v detected=%v", res.Chain.PublishedAt, res.Chain.DetectedAt)
+	}
+	sample := latencySample(res.Chain)
+	if sample.PublishedToDetected != 0 || sample.DetectedToLead != 0 {
+		t.Fatalf("omitted clocks measured as durations pub=%d det=%d", sample.PublishedToDetected, sample.DetectedToLead)
+	}
+	if sample.CensoredCycles < 2 {
+		t.Fatalf("omitted clocks were not censored: %+v", sample)
+	}
+	fmt.Printf("OMITTED_CLOCKS published=%v detected=%v censored=%d pub_ms=%d det_ms=%d\n",
+		res.Chain.PublishedAt, res.Chain.DetectedAt, sample.CensoredCycles, sample.PublishedToDetected, sample.DetectedToLead)
 }
 
 func TestAssetAttributionSlices(t *testing.T) {

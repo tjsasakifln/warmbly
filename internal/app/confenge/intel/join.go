@@ -185,23 +185,36 @@ func buildChain(in ObservedFacts, identity, metric string, now time.Time, closeB
 		label = LabelReal
 	}
 	outcome := strings.ToUpper(strings.TrimSpace(in.OutcomeType))
-	if outcome == "" || closeBlocked {
-		outcome = OutcomeUnknown
+	if outcome == "" || closeBlocked || held {
+		if held && (isWonType(outcome) || isLostType(outcome) || in.PipelineOpen || in.RevenueEvidenced) {
+			outcome = OutcomeUnknown
+		} else if outcome == "" || closeBlocked {
+			outcome = OutcomeUnknown
+		}
 	}
 	if (isWonType(outcome) || isLostType(outcome)) && !in.HumanConfirmed {
+		outcome = OutcomeUnknown
+	}
+	if held && (isWonType(outcome) || isLostType(outcome)) {
 		outcome = OutcomeUnknown
 	}
 	qualified := in.Qualified || outcome == OutcomeQualifiedConversation
 	conversation := in.Conversation || in.ConversationAt != nil || outcome == OutcomeReplied
 	// Pipeline is only opened by an explicit pipeline event. Lead,
 	// conversation, meeting, and X-Ray completion never become pipeline.
-	pipeline := in.PipelineOpen && !in.NotALead
+	// Held exceptions do not open pipeline or evidence revenue.
+	pipeline := in.PipelineOpen && !in.NotALead && !held
 	if isWonType(outcome) || isLostType(outcome) {
 		pipeline = false
 	}
 	if in.NotALead {
 		qualified = false
 		pipeline = false
+	}
+	closeOK := in.HumanConfirmed && !held && !closeBlocked && (isWonType(strings.ToUpper(strings.TrimSpace(in.OutcomeType))) || isLostType(strings.ToUpper(strings.TrimSpace(in.OutcomeType))))
+	var closeAt *time.Time
+	if !held {
+		closeAt = in.CloseAt
 	}
 	return Chain{
 		SchemaVersion:     SchemaV1,
@@ -244,18 +257,18 @@ func buildChain(in ObservedFacts, identity, metric string, now time.Time, closeB
 		FirstActionAt:     in.FirstActionAt,
 		ConversationAt:    in.ConversationAt,
 		ProposalAt:        in.ProposalAt,
-		CloseAt:           in.CloseAt,
+		CloseAt:           closeAt,
 		PublishedAt:       in.PublishedAt,
 		DetectedAt:        in.DetectedAt,
 		OutcomeType:       outcome,
-		HumanConfirmed:    in.HumanConfirmed && (isWonType(strings.ToUpper(strings.TrimSpace(in.OutcomeType))) || isLostType(strings.ToUpper(strings.TrimSpace(in.OutcomeType)))),
+		HumanConfirmed:    closeOK,
 		Qualified:         qualified,
 		Conversation:      conversation,
 		PipelineOpen:      pipeline,
 		Held:              held,
 		NotALead:          in.NotALead,
-		RevenueEvidenced:  in.RevenueEvidenced && strings.TrimSpace(k.RevenueDocumentID) != "" && in.RevenueCents > 0,
-		RevenueCents:      revenueCents(in),
+		RevenueEvidenced:  !held && in.RevenueEvidenced && strings.TrimSpace(k.RevenueDocumentID) != "" && in.RevenueCents > 0,
+		RevenueCents:      heldRevenueCents(held, in),
 		CorrectionApplied: in.Correction,
 		EventType:         in.EventType,
 		Timezone:          firstNonEmpty(in.Timezone, "UTC"),
@@ -265,6 +278,13 @@ func buildChain(in ObservedFacts, identity, metric string, now time.Time, closeB
 		Label:             label,
 		CreatedAt:         now,
 	}
+}
+
+func heldRevenueCents(held bool, in ObservedFacts) int64 {
+	if held {
+		return 0
+	}
+	return revenueCents(in)
 }
 
 func revenueCents(in ObservedFacts) int64 {
@@ -324,7 +344,9 @@ func mergeIntoChain(existing Chain, in ObservedFacts, closeBlocked, held bool) (
 	fill(&merged.IntentClass, in.Keys.IntentClass)
 	fill(&merged.Keys.CTAID, in.Keys.CTAID)
 	fill(&merged.CTAID, in.Keys.CTAID)
-	fill(&merged.Keys.RevenueDocumentID, in.Keys.RevenueDocumentID)
+	if !held {
+		fill(&merged.Keys.RevenueDocumentID, in.Keys.RevenueDocumentID)
+	}
 	if !conflictAccount(existing.Keys, in.Keys) {
 		fill(&merged.Keys.AccountID, in.Keys.AccountID)
 		fill(&merged.AccountID, in.Keys.AccountID)
@@ -348,10 +370,10 @@ func mergeIntoChain(existing Chain, in ObservedFacts, closeBlocked, held bool) (
 	}
 
 	incoming := strings.ToUpper(strings.TrimSpace(in.OutcomeType))
-	if closeBlocked || ((isWonType(incoming) || isLostType(incoming)) && !in.HumanConfirmed) {
+	if closeBlocked || held || ((isWonType(incoming) || isLostType(incoming)) && !in.HumanConfirmed) {
 		incoming = OutcomeUnknown
 	}
-	if incoming != "" && incoming != OutcomeUnknown {
+	if !held && incoming != "" && incoming != OutcomeUnknown {
 		if merged.OutcomeType == "" || merged.OutcomeType == OutcomeUnknown {
 			merged.OutcomeType = incoming
 			changed = true
@@ -360,7 +382,7 @@ func mergeIntoChain(existing Chain, in ObservedFacts, closeBlocked, held bool) (
 			changed = true
 		}
 	}
-	if in.Correction && incoming != "" && incoming != OutcomeUnknown && !contradictsConfirmed(merged, incoming) {
+	if !held && in.Correction && incoming != "" && incoming != OutcomeUnknown && !contradictsConfirmed(merged, incoming) {
 		if merged.OutcomeType != incoming {
 			merged.OutcomeType = incoming
 			changed = true
@@ -370,7 +392,7 @@ func mergeIntoChain(existing Chain, in ObservedFacts, closeBlocked, held bool) (
 			changed = true
 		}
 	}
-	if in.HumanConfirmed && (isWonType(in.OutcomeType) || isLostType(in.OutcomeType)) && !merged.HumanConfirmed {
+	if !held && in.HumanConfirmed && (isWonType(in.OutcomeType) || isLostType(in.OutcomeType)) && !merged.HumanConfirmed {
 		merged.HumanConfirmed = true
 		changed = true
 	}
@@ -394,7 +416,7 @@ func mergeIntoChain(existing Chain, in ObservedFacts, closeBlocked, held bool) (
 		merged.ProposalAt = in.ProposalAt
 		changed = true
 	}
-	if in.CloseAt != nil && merged.CloseAt == nil && merged.HumanConfirmed {
+	if !held && in.CloseAt != nil && merged.CloseAt == nil && merged.HumanConfirmed {
 		merged.CloseAt = in.CloseAt
 		changed = true
 	}
@@ -410,11 +432,11 @@ func mergeIntoChain(existing Chain, in ObservedFacts, closeBlocked, held bool) (
 		merged.DetectedAt = in.DetectedAt
 		changed = true
 	}
-	if in.PipelineOpen && !merged.PipelineOpen && !in.NotALead && !isWonType(merged.OutcomeType) && !isLostType(merged.OutcomeType) {
+	if !held && in.PipelineOpen && !merged.PipelineOpen && !in.NotALead && !isWonType(merged.OutcomeType) && !isLostType(merged.OutcomeType) {
 		merged.PipelineOpen = true
 		changed = true
 	}
-	if in.RevenueEvidenced && strings.TrimSpace(in.Keys.RevenueDocumentID) != "" && in.RevenueCents > 0 && !merged.RevenueEvidenced {
+	if !held && in.RevenueEvidenced && strings.TrimSpace(in.Keys.RevenueDocumentID) != "" && in.RevenueCents > 0 && !merged.RevenueEvidenced {
 		merged.RevenueEvidenced = true
 		merged.RevenueCents = in.RevenueCents
 		changed = true

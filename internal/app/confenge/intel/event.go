@@ -119,17 +119,6 @@ func EventToFacts(ev CommercialEvent) ObservedFacts {
 	if ev.Synthetic {
 		in.Label = LabelSynthetic
 	}
-	if ev.PublishedAt == nil && (typ == EventLeadReceived || typ == EventPageView || typ == EventCitation || typ == EventXRayCompleted) {
-		t := occurred
-		in.PublishedAt = &t
-	}
-	if ev.DetectedAt == nil && (typ == EventLeadReceived || typ == EventLeadValidated) {
-		t := occurred
-		if !ingested.IsZero() && !ingested.Before(occurred) {
-			t = occurred
-		}
-		in.DetectedAt = &t
-	}
 
 	switch typ {
 	case EventLeadReceived:

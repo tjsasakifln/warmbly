@@ -75,7 +75,7 @@ func Rollup(chains []Chain, month string, includeSynthetic bool) ExecutiveView {
 		if c.Keys.CustomerProofLane && !c.NotALead {
 			view.CustomerProof++
 		}
-		if c.RevenueEvidenced && c.RevenueCents > 0 {
+		if !c.Held && c.RevenueEvidenced && c.RevenueCents > 0 {
 			view.RevenueCents += c.RevenueCents
 			view.RevenueStatus = "evidenced"
 		}
@@ -147,7 +147,7 @@ func Rollup(chains []Chain, month string, includeSynthetic bool) ExecutiveView {
 				view.Families[fi].Proposals++
 			}
 		}
-		if c.PipelineOpen {
+		if !c.Held && c.PipelineOpen {
 			view.Pipeline++
 			if fi >= 0 {
 				view.Families[fi].Pipeline++
@@ -155,13 +155,13 @@ func Rollup(chains []Chain, month string, includeSynthetic bool) ExecutiveView {
 		}
 
 		switch {
-		case isWonType(c.OutcomeType) && c.HumanConfirmed:
+		case !c.Held && isWonType(c.OutcomeType) && c.HumanConfirmed:
 			view.Won++
 			view.Denominators.Closed++
 			if fi >= 0 {
 				view.Families[fi].Won++
 			}
-		case isLostType(c.OutcomeType) && c.HumanConfirmed:
+		case !c.Held && isLostType(c.OutcomeType) && c.HumanConfirmed:
 			view.Lost++
 			view.Denominators.Closed++
 			if fi >= 0 {
@@ -412,18 +412,18 @@ func addAssetSlice(s *AssetSlice, c Chain) {
 	if c.OutcomeType == OutcomeProposal || c.ProposalAt != nil {
 		s.Proposals++
 	}
-	if c.PipelineOpen {
+	if !c.Held && c.PipelineOpen {
 		s.Pipeline++
 	}
 	switch {
-	case isWonType(c.OutcomeType) && c.HumanConfirmed:
+	case !c.Held && isWonType(c.OutcomeType) && c.HumanConfirmed:
 		s.Won++
-	case isLostType(c.OutcomeType) && c.HumanConfirmed:
+	case !c.Held && isLostType(c.OutcomeType) && c.HumanConfirmed:
 		s.Lost++
 	default:
 		s.Unknown++
 	}
-	if c.RevenueEvidenced && c.RevenueCents > 0 {
+	if !c.Held && c.RevenueEvidenced && c.RevenueCents > 0 {
 		s.RevenueCents += c.RevenueCents
 		s.RevenueStatus = "evidenced"
 	}
