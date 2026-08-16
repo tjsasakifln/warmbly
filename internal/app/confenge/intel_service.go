@@ -3,6 +3,7 @@ package confenge
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -100,16 +101,49 @@ func (s *service) CommercialIntelReport(_ context.Context, orgID uuid.UUID, mont
 	return &rep, nil
 }
 
-// ListIntelExceptions returns the durable exception queue.
-func (s *service) ListIntelExceptions(_ context.Context, orgID uuid.UUID) ([]intel.Exception, *errx.Error) {
+// ListIntelExceptions returns the durable exception queue with operator filters.
+func (s *service) ListIntelExceptions(_ context.Context, orgID uuid.UUID, filter intel.ExceptionFilter) ([]intel.Exception, *errx.Error) {
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, xerr
 	}
-	xs, err := s.intelStore().ListExceptions(orgID.String())
+	xs, err := intel.ListQueue(s.intelStore(), orgID.String(), filter, time.Now().UTC())
 	if err != nil {
 		return nil, errx.New(errx.Internal, "commercial intel exceptions: "+err.Error())
 	}
 	return xs, nil
+}
+
+// GetIntelException returns one presented queue item.
+func (s *service) GetIntelException(_ context.Context, orgID uuid.UUID, id string) (*intel.Exception, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return nil, xerr
+	}
+	ex, err := intel.GetQueueItem(s.intelStore(), orgID.String(), id, time.Now().UTC())
+	if err != nil {
+		return nil, errx.New(errx.Internal, "commercial intel exception: "+err.Error())
+	}
+	if ex == nil {
+		return nil, errx.New(errx.NotFound, "intel exception not found")
+	}
+	return ex, nil
+}
+
+// ResolveIntelException applies one legal operator action. Replay is a no-op.
+func (s *service) ResolveIntelException(_ context.Context, orgID uuid.UUID, id string, req intel.ResolveRequest) (intel.ResolveResult, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return intel.ResolveResult{}, xerr
+	}
+	res, err := intel.Resolve(s.intelStore(), orgID.String(), id, req, time.Now().UTC())
+	if err != nil {
+		return intel.ResolveResult{}, errx.New(errx.Internal, "commercial intel resolve: "+err.Error())
+	}
+	if res.Refused && res.Reason == "exception not found" {
+		return res, errx.New(errx.NotFound, res.Reason)
+	}
+	if res.Refused {
+		return res, errx.New(errx.Unprocessable, res.Reason)
+	}
+	return res, nil
 }
 
 func (s *service) observeExisting(ctx context.Context, orgID uuid.UUID) {

@@ -14,6 +14,9 @@ import type {
     ConfengeWorkingQueueItem,
     ConfengeWorkingQueueSummary,
     ConfengeExecutiveView,
+    ConfengeIntelException,
+    ConfengeIntelExceptionFilter,
+    ConfengeIntelResolveResult,
 } from "@/lib/api/models/app/confenge/Confenge";
 import Request from "../../Request";
 
@@ -71,6 +74,55 @@ export async function getConfengeExecutiveIntel(params?: {
         method: "GET",
         url: `/confenge/intel/executive${qs ? `?${qs}` : ""}`,
         authorization: true,
+    });
+    return res.data;
+}
+
+export async function listConfengeIntelExceptions(
+    filter?: ConfengeIntelExceptionFilter,
+): Promise<ConfengeIntelException[]> {
+    const sp = new URLSearchParams();
+    if (filter?.type) sp.set("type", filter.type);
+    if (filter?.lane) sp.set("lane", filter.lane);
+    if (filter?.source) sp.set("source", filter.source);
+    if (filter?.severity) sp.set("severity", filter.severity);
+    if (filter?.status) sp.set("status", filter.status);
+    if (filter?.ageMinSeconds) sp.set("age_min_seconds", String(filter.ageMinSeconds));
+    const qs = sp.toString();
+    const res = await Request<{ data: ConfengeIntelException[] }>({
+        method: "GET",
+        url: `/confenge/intel/exceptions${qs ? `?${qs}` : ""}`,
+        authorization: true,
+    });
+    return res.data ?? [];
+}
+
+export async function getConfengeIntelException(id: string): Promise<ConfengeIntelException> {
+    const res = await Request<{ data: ConfengeIntelException }>({
+        method: "GET",
+        url: `/confenge/intel/exceptions/${id}`,
+        authorization: true,
+    });
+    return res.data;
+}
+
+export async function resolveConfengeIntelException(
+    id: string,
+    payload: {
+        action: "link" | "defer" | "reject" | "mark_external_evidence_required";
+        reason: string;
+        link_identity?: string;
+        link_lead_id?: string;
+        link_action_id?: string;
+        link_account_id?: string;
+    },
+): Promise<ConfengeIntelResolveResult> {
+    const res = await Request<{ data: ConfengeIntelResolveResult }>({
+        method: "POST",
+        url: `/confenge/intel/exceptions/${id}/resolve`,
+        authorization: true,
+        data: payload,
+        headers: { "Idempotency-Key": `intel-ex-${id}-${payload.action}-${payload.reason}` },
     });
     return res.data;
 }

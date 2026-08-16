@@ -87,7 +87,15 @@ go run ./cmd/confenge reconcile-target-fit --dry-run --org-id <uuid>
 go run ./cmd/confenge reconcile-target-fit --org-id <uuid>
 go run ./cmd/confenge stop-sending
 go run ./cmd/confenge resume-sending
+go run ./cmd/confenge intel-exceptions list --fixture --format json
+go run ./cmd/confenge intel-exceptions show <id> --fixture --format json
+go run ./cmd/confenge intel-exceptions resolve <id> --action defer --actor op --reason "wait" --fixture
 ```
+
+`intel-exceptions` without `--fixture` requires `PRIMARY_DB`. Missing env
+prints `BLOCKED` and the next command. The fixture path is labeled
+SYNTHETIC and is not live inbound/action/outcome proof.
+
 
 ## Readiness panel
 

@@ -1,6 +1,9 @@
 package intel
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // SyntheticMonth is the fixture window used by tests and the labeled demo.
 const SyntheticMonth = "2026-08"
@@ -122,4 +125,73 @@ func LoadSynthetic(store Store, orgID string) []JoinResult {
 		out = append(out, Reconcile(store, f))
 	}
 	return out
+}
+
+// LoadOperatorQueue loads labeled SYNTHETIC chains plus a representative
+// exception set with stable IDs and ages. CLI --fixture uses this path.
+func LoadOperatorQueue(store Store, orgID string) {
+	if strings.TrimSpace(orgID) == "" {
+		orgID = OperatorQueueOrgID
+	}
+	LoadSynthetic(store, orgID)
+	for _, ex := range OperatorQueueFixtures(orgID) {
+		_ = store.PutException(ex)
+	}
+}
+
+// OperatorQueueFixtures is the labeled operator-queue sample. Not live.
+func OperatorQueueFixtures(orgID string) []Exception {
+	now := OperatorQueueNow
+	item := func(code, reason, next, lane, source, identity, lead, action, outcome string, held bool, age time.Duration, extra ObservedFacts) Exception {
+		in := extra
+		in.Keys.OrganizationID = orgID
+		in.Keys.RouteFamily = lane
+		in.Keys.Source = source
+		in.Synthetic = true
+		in.Label = LabelSynthetic
+		ex := Exception{
+			ID:             StableExceptionID(orgID, code, identity, lead, action, outcome),
+			OrganizationID: orgID,
+			Code:           code,
+			Reason:         reason,
+			NextAction:     next,
+			Identity:       identity,
+			ActionID:       action,
+			OutcomeID:      outcome,
+			LeadID:         lead,
+			Held:           held,
+			Synthetic:      true,
+			At:             now.Add(-age),
+			Lane:           lane,
+			Source:         source,
+		}
+		enrichException(&ex, in)
+		ex.At = now.Add(-age)
+		return ex
+	}
+	return []Exception{
+		item(ExceptionOrphan, "outcome without action", "hold on exception queue until action arrives",
+			FamilyInbound, "web-cfg", "", "", "", "out-orphan-1", true, 2*time.Hour, ObservedFacts{}),
+		item(ExceptionConflictingAccount, "incoming account_id disagrees with the first chain",
+			"keep the first extra-cli account; do not overwrite", FamilyInbound, "web-cfg",
+			"lead:webcfg-syn-in-1", "webcfg-syn-in-1", "act-syn-in-1", "out-syn-in-1", false, 26*time.Hour, ObservedFacts{}),
+		item(ExceptionOutOfOrder, "outcome timestamp precedes action or inbound; order is not invented",
+			"hold; do not reorder into a fake chain", FamilyInbound, "web-cfg",
+			"lead:oo-1", "lead-oo-1", "act-oo-1", "out-oo-1", true, 8*24*time.Hour, ObservedFacts{}),
+		item(ExceptionUnconfirmedWon, "WON cannot be inferred",
+			"require human or document confirmation; keep UNKNOWN", FamilyInbound, "web-cfg",
+			"lead:won-1", "lead-won-1", "act-won-1", "out-won-1", true, 3*time.Hour, ObservedFacts{}),
+		item(ExceptionUnconfirmedLost, "LOST cannot be inferred",
+			"require human or document confirmation; keep UNKNOWN", FamilyOutbound, "extra-cli",
+			"action:act-lost-1", "", "act-lost-1", "out-lost-1", true, 5*time.Hour, ObservedFacts{}),
+		item(ExceptionMissingVersion, "no extra-cli version on the observed path",
+			"leave version UNKNOWN", FamilyPartner, "partner",
+			"lead:mv-1", "lead-mv-1", "act-mv-1", "", false, 30*time.Minute, ObservedFacts{}),
+		item(ExceptionStaleAttribution, "attribution or target-fit freshness is stale",
+			"keep the observed IDs; do not invent a newer source/asset", FamilyExpansion, "expansion",
+			"lead:stale-1", "lead-stale-1", "act-stale-1", "", false, 4*24*time.Hour, ObservedFacts{}),
+		item(ExceptionDuplicate, "same join IDs already have a chain",
+			"return the first chain; do not insert a second", FamilyInbound, "web-cfg",
+			"lead:webcfg-syn-in-2", "webcfg-syn-in-2", "act-syn-in-2", "out-syn-in-2", false, 10*time.Minute, ObservedFacts{}),
+	}
 }

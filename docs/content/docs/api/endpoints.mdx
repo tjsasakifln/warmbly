@@ -86,6 +86,8 @@ All paths below are relative to the versioned base URL `https://api.warmbly.com/
 | GET | `/confenge/intel/executive` | `READ_CONTACTS` |
 | GET | `/confenge/intel/report` | `READ_CONTACTS` |
 | GET | `/confenge/intel/exceptions` | `READ_CONTACTS` |
+| GET | `/confenge/intel/exceptions/:id` | `READ_CONTACTS` |
+| POST | `/confenge/intel/exceptions/:id/resolve` | `WRITE_CONTACTS` |
 | POST | `/confenge/intel/learning` | `WRITE_CONTACTS` |
 | POST | `/confenge/intel/events` | `WRITE_CONTACTS` |
 | POST | `/confenge/manual-queue/:id/action` | `WRITE_CONTACTS` |
@@ -97,6 +99,8 @@ All paths below are relative to the versioned base URL `https://api.warmbly.com/
 `POST /confenge/intel/events` ingests one versioned commercial event (`confenge.commercial_event.v1`). Same `event_id` or idempotency key is a replay. Lead, page view, citation, and X-Ray completion never become pipeline. Pipeline never becomes revenue.
 
 `GET /confenge/intel/report` is the inbound learning observability payload (IQP, lanes, exceptions, latency baseline, learning candidates, `READY_FOR_REAL_EVENTS` / `ADJUST` / `NO_GO`). It is not a CRM and not a forecast.
+
+`GET /confenge/intel/exceptions` is the operator queue. Filter with `type`, `lane`, `source`, `severity`, `status`, `age_min_seconds`, and `age_max_seconds`. Each row includes evidence, history, `next_action` or an explicit open status, and only the legal actions `link`, `defer`, `reject`, and `mark_external_evidence_required`. `GET /confenge/intel/exceptions/:id` is the detail. `POST /confenge/intel/exceptions/:id/resolve` records before/after, actor, and reason. Send `Idempotency-Key`. The same command replays the first result. Illegal lifecycle moves and any attempt to invent WON, LOST, revenue, or identity are refused and the exception stays open.
 
 AI contact research charges credits (2 per run, billable even when it finds nothing) and only saves cited findings. See the [AI contact research](/guides/ai-contact-research/) guide. The batch endpoint accepts up to 500 contact ids and drains in the background.
 

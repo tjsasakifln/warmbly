@@ -17,6 +17,8 @@ type Store interface {
 	UpdateChain(c Chain) error
 	ListChains(orgID string) ([]Chain, error)
 	PutException(ex Exception) error
+	GetException(orgID, id string) (*Exception, error)
+	UpdateException(ex Exception) error
 	ListExceptions(orgID string) ([]Exception, error)
 	PutLearning(c LearningCandidate) (LearningCandidate, error)
 	ListLearning(orgID string) ([]LearningCandidate, error)
@@ -121,13 +123,61 @@ func (m *MemoryStore) PutException(ex Exception) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if strings.TrimSpace(ex.ID) == "" {
-		ex.ID = uuid.NewString()
-	}
+	ex = assignExceptionID(ex)
 	if ex.At.IsZero() {
 		ex.At = time.Now().UTC()
 	}
+	for _, existing := range m.exceptions {
+		if existing.ID == ex.ID {
+			return nil
+		}
+	}
 	m.exceptions = append(m.exceptions, ex)
+	return nil
+}
+
+func (m *MemoryStore) GetException(orgID, id string) (*Exception, error) {
+	if m == nil {
+		return nil, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	orgID = strings.TrimSpace(orgID)
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, nil
+	}
+	for i := range m.exceptions {
+		ex := m.exceptions[i]
+		if ex.ID != id {
+			continue
+		}
+		if orgID != "" && ex.OrganizationID != orgID {
+			continue
+		}
+		cp := ex
+		return &cp, nil
+	}
+	return nil, nil
+}
+
+func (m *MemoryStore) UpdateException(ex Exception) error {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ex = assignExceptionID(ex)
+	for i := range m.exceptions {
+		if m.exceptions[i].ID != ex.ID {
+			continue
+		}
+		if org := strings.TrimSpace(ex.OrganizationID); org != "" && m.exceptions[i].OrganizationID != org {
+			continue
+		}
+		m.exceptions[i] = ex
+		return nil
+	}
 	return nil
 }
 
@@ -137,8 +187,13 @@ func (m *MemoryStore) ListExceptions(orgID string) ([]Exception, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]Exception, len(m.exceptions))
-	copy(out, m.exceptions)
+	orgID = strings.TrimSpace(orgID)
+	out := make([]Exception, 0, len(m.exceptions))
+	for _, ex := range m.exceptions {
+		if orgID == "" || ex.OrganizationID == orgID {
+			out = append(out, ex)
+		}
+	}
 	return out, nil
 }
 

@@ -44,6 +44,8 @@ func main() {
 		os.Exit(cmdResumeSending())
 	case "intel-report":
 		os.Exit(cmdIntelReport(os.Args[2:]))
+	case "intel-exceptions":
+		os.Exit(cmdIntelExceptions(os.Args[2:]))
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -64,6 +66,7 @@ Usage:
   confenge stop-sending
   confenge resume-sending
   confenge intel-report [--month YYYY-MM] [--include-synthetic] [--json PATH] [--md PATH]
+  confenge intel-exceptions list|show|resolve [flags]
 
 Env: PRIMARY_DB, CONFENGE_*, REDIS, NATS_URL (see .env.confenge.example).
 `)

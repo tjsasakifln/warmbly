@@ -126,9 +126,7 @@ func (s *PGStore) PutException(ex Exception) error {
 	if s == nil || s.db == nil {
 		return errors.New("intel pg store unavailable")
 	}
-	if strings.TrimSpace(ex.ID) == "" {
-		ex.ID = uuid.NewString()
-	}
+	ex = assignExceptionID(ex)
 	if ex.At.IsZero() {
 		ex.At = time.Now().UTC()
 	}
@@ -140,8 +138,54 @@ func (s *PGStore) PutException(ex Exception) error {
 	_, err = s.db.Exec(context.Background(), `
 		INSERT INTO outreach_intel_exceptions (
 			id, organization_id, code, identity, metric_key, held, payload, created_at
-		) VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8)`,
+		) VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8)
+		ON CONFLICT (id) DO NOTHING`,
 		ex.ID, org, ex.Code, ex.Identity, ex.MetricKey, ex.Held, raw, ex.At,
+	)
+	return err
+}
+
+func (s *PGStore) GetException(orgID, id string) (*Exception, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("intel pg store unavailable")
+	}
+	org := firstNonEmpty(orgID, s.orgID)
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, nil
+	}
+	var raw []byte
+	err := s.db.QueryRow(context.Background(), `
+		SELECT payload FROM outreach_intel_exceptions
+		WHERE organization_id = $1::uuid AND id = $2::uuid`, org, id).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var ex Exception
+	if err := json.Unmarshal(raw, &ex); err != nil {
+		return nil, err
+	}
+	return &ex, nil
+}
+
+func (s *PGStore) UpdateException(ex Exception) error {
+	if s == nil || s.db == nil {
+		return errors.New("intel pg store unavailable")
+	}
+	ex = assignExceptionID(ex)
+	org := firstNonEmpty(ex.OrganizationID, s.orgID)
+	raw, err := json.Marshal(ex)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(context.Background(), `
+		UPDATE outreach_intel_exceptions
+		SET held = $3, payload = $4::jsonb
+		WHERE organization_id = $1::uuid AND id = $2::uuid`,
+		org, ex.ID, ex.Held, raw,
 	)
 	return err
 }

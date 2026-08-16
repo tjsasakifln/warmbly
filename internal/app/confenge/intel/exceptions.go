@@ -23,6 +23,8 @@ func ClassifyExceptions(in ObservedFacts, existing *Chain) []Exception {
 		At:             now,
 	}
 
+	base.ReceiptID = strings.TrimSpace(in.Keys.ReceiptID)
+
 	var out []Exception
 	add := func(code, reason, next string, held bool) {
 		ex := base
@@ -30,6 +32,7 @@ func ClassifyExceptions(in ObservedFacts, existing *Chain) []Exception {
 		ex.Reason = reason
 		ex.NextAction = next
 		ex.Held = held
+		enrichException(&ex, in)
 		out = append(out, ex)
 	}
 

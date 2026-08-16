@@ -267,6 +267,48 @@ func TestObserveExistingJoinsOutcomeByLeadIDOnly(t *testing.T) {
 	fmt.Printf("OBSERVE_EXISTING a=%s b=%s email_or_rejected=true qco_visible=true\n", a.OutcomeType, b.OutcomeType)
 }
 
+func TestIntelExceptionQueueListAndResolve(t *testing.T) {
+	svc, _, org := inboundTestService(t)
+	intel.LoadOperatorQueue(svc.intelStore(), org.String())
+	ctx := context.Background()
+	orphans, xerr := svc.ListIntelExceptions(ctx, org, intel.ExceptionFilter{Type: intel.ExceptionOrphan})
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if len(orphans) == 0 {
+		t.Fatal("service list missed orphans")
+	}
+	got, xerr := svc.GetIntelException(ctx, org, orphans[0].ID)
+	if xerr != nil || got == nil {
+		t.Fatalf("get: %v", xerr)
+	}
+	if got.NextAction == "" || len(got.Evidence) == 0 {
+		t.Fatalf("detail incomplete: %+v", got)
+	}
+	res, xerr := svc.ResolveIntelException(ctx, org, orphans[0].ID, intel.ResolveRequest{
+		Action: intel.ResolveDefer, Actor: "svc-test", Reason: "wait for action id",
+	})
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if res.After.Status != intel.StatusDeferred {
+		t.Fatalf("defer status=%s", res.After.Status)
+	}
+	replay, xerr := svc.ResolveIntelException(ctx, org, orphans[0].ID, intel.ResolveRequest{
+		Action: intel.ResolveDefer, Actor: "svc-test", Reason: "wait for action id",
+	})
+	if xerr != nil || !replay.Replay {
+		t.Fatalf("replay: %v %+v", xerr, replay)
+	}
+	_, xerr = svc.ResolveIntelException(ctx, org, orphans[0].ID, intel.ResolveRequest{
+		Action: intel.ResolveReject, Actor: "svc-test", Reason: "force", OutcomeType: intel.OutcomeWon,
+	})
+	if xerr == nil {
+		t.Fatal("invent WON must fail closed")
+	}
+	fmt.Printf("SERVICE_QUEUE orphan=%s deferred=%s replay=%v\n", orphans[0].ID, res.After.Status, replay.Replay)
+}
+
 func containsAny(s string, parts ...string) bool {
 	for _, p := range parts {
 		if len(p) > 0 && indexOfStr(s, p) >= 0 {

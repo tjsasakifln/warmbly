@@ -254,6 +254,77 @@ export type ConfengeExecutiveFamily = {
     unknown: number;
 };
 
+export type ConfengeIntelEvidence = {
+    kind: string;
+    key: string;
+    value: string;
+};
+
+export type ConfengeIntelQueueEvent = {
+    at: string;
+    kind: string;
+    actor?: string;
+    action?: string;
+    reason?: string;
+    detail?: string;
+};
+
+export type ConfengeIntelResolution = {
+    action: string;
+    actor: string;
+    reason: string;
+    at: string;
+    before_status: string;
+    after_status: string;
+    link_identity?: string;
+};
+
+export type ConfengeIntelException = {
+    id: string;
+    organization_id?: string;
+    code: string;
+    reason: string;
+    next_action: string;
+    identity?: string;
+    action_id?: string;
+    outcome_id?: string;
+    account_id?: string;
+    lead_id?: string;
+    held: boolean;
+    synthetic?: boolean;
+    at: string;
+    lane?: string;
+    source?: string;
+    severity?: string;
+    status?: string;
+    age_seconds: number;
+    evidence?: ConfengeIntelEvidence[];
+    history?: ConfengeIntelQueueEvent[];
+    allowed_actions?: string[];
+    resolution?: ConfengeIntelResolution;
+    linked_identity?: string;
+};
+
+export type ConfengeIntelResolveResult = {
+    exception: ConfengeIntelException;
+    replay: boolean;
+    refused: boolean;
+    reason?: string;
+    before: { id: string; status: string; code: string; held: boolean; next_action: string };
+    after: { id: string; status: string; code: string; held: boolean; next_action: string };
+    actor?: string;
+    action?: string;
+};
+
+export type ConfengeIntelExceptionFilter = {
+    type?: string;
+    lane?: string;
+    source?: string;
+    severity?: string;
+    status?: string;
+    ageMinSeconds?: number;
+};
+
 export type ConfengeExecutiveView = {
     month: string;
     include_synthetic: boolean;
