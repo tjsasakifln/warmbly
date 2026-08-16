@@ -328,7 +328,10 @@ External MCP servers whose tools the assistant can use (see [Connect MCP tools](
 
 ## Public
 
-- `GET /health`
+- `GET /health` (process-up only; HTTP 200 does not mean the platform is ready)
+- `GET /live` (process-up liveness)
+- `GET /ready` (dependency readiness; 503 when any required plane is down, stale, timed out, or unobserved)
+- `GET /health/deps` (same matrix as `/ready`, for operators)
 - `POST /auth/confenge-operator/session` (dedicated loopback CONFENGE deployment only; returns `404` when operator mode is disabled)
 - `POST /webhooks/github/releases` (HMAC-SHA256 signature)
 - `POST /webhooks/confenge/inbound` (HMAC `X-Warmbly-Signature`; web-cfg inbound lead; PII is not accepted on the query string)
