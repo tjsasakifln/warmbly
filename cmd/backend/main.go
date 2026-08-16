@@ -1101,7 +1101,7 @@ func main() {
 			// Global dispatch governor: ~10 outbound/hour shared email+WhatsApp.
 			confengeServiceForHandler.WireDispatch(primaryDB.Pool)
 			confengeServiceForHandler.WireIntel(primaryDB.Pool)
-			// CAMPAIGN_POLICY_AUTHORIZATION store for GREEN autorun (no fake approved_by).
+			// CAMPAIGN_POLICY_AUTHORIZATION store is persist-only. It cannot transport.
 			confengeServiceForHandler.WirePolicyAuth(repository.NewConfengePolicyRepository(primaryDB.Pool))
 		}
 		if confengeServiceForHandler != nil && aiProvider != nil {

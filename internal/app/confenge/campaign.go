@@ -124,8 +124,8 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, xerr
 	}
-	if s.cfg.AutoSendEnabled && !s.cfg.RequireHumanApproval {
-		return nil, errx.New(errx.BadRequest, "refusing enroll: auto-send without human approval is not allowed")
+	if s.cfg.AutoSendEnabled || s.cfg.GreenAutorunEnabled {
+		return nil, errx.New(errx.BadRequest, "refusing enroll: auto-send and green autorun cannot create send jobs")
 	}
 	if !s.cfg.SendingAllowed() {
 		return nil, errx.New(errx.BadRequest, "sending paused (kill switch); run make confenge-resume-sending when safe")

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -29,6 +30,13 @@ func CadencePolicyV1() []CadenceStepSpec {
 }
 
 func ContentHash(channel, recipient, subject, body, purpose string) string {
+	return ContentBindingHash(channel, recipient, subject, body, purpose, nil, "")
+}
+
+// ContentBindingHash binds recipient, content, and evidence/context versions.
+// A later evidence or context drift produces a different hash and cannot ride
+// an earlier individual approval.
+func ContentBindingHash(channel, recipient, subject, body, purpose string, evidenceIDs []string, contextHash string) string {
 	var b strings.Builder
 	b.WriteString(strings.ToUpper(strings.TrimSpace(channel)))
 	b.WriteByte(0)
@@ -39,15 +47,29 @@ func ContentHash(channel, recipient, subject, body, purpose string) string {
 	b.WriteString(strings.TrimSpace(body))
 	b.WriteByte(0)
 	b.WriteString(strings.ToUpper(strings.TrimSpace(purpose)))
+	b.WriteByte(0)
+	ev := append([]string(nil), evidenceIDs...)
+	sort.Strings(ev)
+	b.WriteString(strings.Join(ev, ","))
+	b.WriteByte(0)
+	b.WriteString(strings.TrimSpace(contextHash))
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:])
+}
+
+// TouchpointBindingHash is the live recipient/content/evidence version stamp.
+func TouchpointBindingHash(tp *models.OutreachTouchpoint) string {
+	if tp == nil {
+		return ""
+	}
+	return ContentBindingHash(tp.Channel, tp.Recipient, tp.Subject, tp.BodyText, tp.Purpose, tp.EvidenceIDs, tp.GeneratedContextHash)
 }
 
 func RecomputeContentHash(tp *models.OutreachTouchpoint) {
 	if tp == nil {
 		return
 	}
-	tp.ContentHash = ContentHash(tp.Channel, tp.Recipient, tp.Subject, tp.BodyText, tp.Purpose)
+	tp.ContentHash = TouchpointBindingHash(tp)
 }
 
 // ClearApproval is the single canonical invalidation of any authorization
@@ -75,9 +97,7 @@ func ApplyHumanApproval(tp *models.OutreachTouchpoint, humanUserID uuid.UUID, no
 	if humanUserID == uuid.Nil {
 		return fmt.Errorf("approved_by requires a human user id")
 	}
-	if tp.ContentHash == "" {
-		RecomputeContentHash(tp)
-	}
+	RecomputeContentHash(tp)
 	if tp.ContentHash == "" || tp.BodyText == "" {
 		return fmt.Errorf("cannot approve empty content")
 	}
@@ -153,24 +173,18 @@ func CanTransport(tp *models.OutreachTouchpoint) error {
 	if tp.ContentHash == "" || tp.ApprovedContentHash == "" {
 		return fmt.Errorf("missing content hash")
 	}
-	if tp.ApprovedContentHash != tp.ContentHash {
-		return fmt.Errorf("approved_content_hash does not match content_hash")
+	// Recompute from the live recipient, copy, evidence ids, and context
+	// version so a stale approval cannot ride mutated fields.
+	want := TouchpointBindingHash(tp)
+	if want == "" || tp.ContentHash != want || tp.ApprovedContentHash != want {
+		return fmt.Errorf("approved_content_hash does not match live recipient/content/evidence versions")
 	}
 	mode := strings.TrimSpace(tp.AuthorizationMode)
 	if mode == AuthorizationModeCampaignPolicy {
-		// Policy path: must not invent a human reviewer; must bind grant.
-		if tp.ApprovedBy != nil && *tp.ApprovedBy != uuid.Nil {
-			return fmt.Errorf("campaign_policy must not set approved_by")
-		}
-		if tp.CampaignPolicyAuthorizationID == nil || *tp.CampaignPolicyAuthorizationID == uuid.Nil {
-			return fmt.Errorf("campaign_policy missing authorization binding")
-		}
-		if strings.TrimSpace(tp.AuthorizationPolicyHash) == "" {
-			return fmt.Errorf("campaign_policy missing authorization_policy_hash")
-		}
-		return nil
+		// CAMPAIGN_POLICY is not an individual approval record. Isolated env
+		// cannot reactivate bulk/green autorun as a transport authority.
+		return fmt.Errorf("campaign_policy cannot transport; individual approval required")
 	}
-	// Human (or legacy empty mode) requires a real human approver.
 	if tp.ApprovedBy == nil || *tp.ApprovedBy == uuid.Nil {
 		return fmt.Errorf("missing human approved_by")
 	}

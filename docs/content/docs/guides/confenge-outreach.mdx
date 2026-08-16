@@ -15,7 +15,7 @@ Set on the backend:
 CONFENGE_OUTREACH_ENABLED=true
 ```
 
-Leave `CONFENGE_AUTO_SEND_ENABLED=false` unless you have an explicit operational policy. Human approval remains the default (`CONFENGE_REQUIRE_HUMAN_APPROVAL=true`).
+`CONFENGE_AUTO_SEND_ENABLED`, `CONFENGE_GREEN_AUTORUN_ENABLED`, and `CONFENGE_REQUIRE_HUMAN_APPROVAL=false` cannot be activated. Startup, enroll, queue, and the worker transport boundary fail closed. Bulk green-autorun endpoints create zero send jobs. Human approval of the exact recipient, copy, and evidence versions remains required (`CONFENGE_REQUIRE_HUMAN_APPROVAL=true`).
 
 Optional feed source:
 

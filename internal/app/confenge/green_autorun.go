@@ -114,192 +114,51 @@ func (s *service) RevokeCampaignPolicy(ctx context.Context, orgID, campaignID, a
 	return ok, nil
 }
 
-// TryGreenAutorun evaluates GREEN predicates and, when all pass, marks the
-// touchpoint APPROVED with authorization_mode=CAMPAIGN_POLICY (no approved_by)
-// and queues it for transport. YELLOW/RED never enter this path.
+// TryGreenAutorun never approves or queues. AUTO_SEND and bulk/green autorun
+// are forbidden on the CONFENGE profile even if isolated env flips the flag.
+// The predicate engine remains for audit/explain only.
 func (s *service) TryGreenAutorun(ctx context.Context, orgID, actorID, touchpointID uuid.UUID) (*models.OutreachTouchpoint, GreenAutorunDecision, *errx.Error) {
-	dec := GreenAutorunDecision{Allow: false, Reasons: []string{"not_evaluated"}}
+	_ = actorID
+	dec := GreenAutorunDecision{Allow: false, Reasons: []string{"individual_approval_required"}}
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, dec, xerr
-	}
-	if !s.cfg.GreenAutorunEnabled {
-		dec = GreenAutorunDecision{Allow: false, Reasons: []string{"green_autorun_disabled"}}
-		return nil, dec, nil
 	}
 	tp, err := s.repo.GetTouchpoint(ctx, orgID, touchpointID)
 	if err != nil || tp == nil {
 		return nil, dec, errx.New(errx.NotFound, "touchpoint not found")
 	}
-	if tp.State != models.TouchpointNeedsReview && tp.State != models.TouchpointDrafted && tp.State != models.TouchpointApproved {
-		dec = GreenAutorunDecision{Allow: false, Reasons: []string{"state_" + tp.State}}
-		return tp, dec, nil
-	}
-
-	campaignID := uuid.Nil
-	if settings, _ := s.repo.GetOrgSettings(ctx, orgID); settings != nil && settings.CampaignID != nil {
-		campaignID = *settings.CampaignID
-	}
-	if campaignID == uuid.Nil {
-		dec = GreenAutorunDecision{Allow: false, Reasons: []string{"no_campaign_id"}}
-		return tp, dec, nil
-	}
-
-	var auth *models.CampaignPolicyAuthorization
-	if s.policyStore != nil {
-		auth, err = s.policyStore.GetActiveCampaignPolicy(ctx, orgID, campaignID, time.Now().UTC())
-		if err != nil {
-			return tp, dec, errx.New(errx.Internal, "load policy: "+err.Error())
-		}
-	}
-	in := s.buildGreenAutorunInput(ctx, orgID, tp, auth)
-	now := time.Now().UTC()
-	dec = EvaluateGreenAutorun(s.cfg.GreenAutorunEnabled, auth, in, now)
-	if !dec.Allow {
-		return tp, dec, nil
-	}
-
-	if err := ApplyCampaignPolicyAuthorization(tp, auth, now); err != nil {
-		return tp, dec, errx.New(errx.BadRequest, err.Error())
-	}
-	if err := s.repo.UpdateTouchpoint(ctx, tp); err != nil {
-		return tp, dec, errx.New(errx.Internal, "persist policy approval: "+err.Error())
-	}
-	// Queue without requiring human approved_by. actorID is used for enrollment audit only.
-	queued, xerr := s.QueueTouchpoint(ctx, orgID, actorID, tp.ID)
-	if xerr != nil {
-		return tp, dec, xerr
-	}
-	return queued, dec, nil
+	return tp, dec, nil
 }
 
-// RunGreenAutorunBatch generates (if needed) then tries policy autoqueue for up
-// to limit EMAIL touchpoints that are due for review. Ready-to-generate accounts
-// without open touchpoints are planned+generated first so GREEN stock can form.
+// RunGreenAutorunBatch never queues. Isolated env that flips
+// CONFENGE_GREEN_AUTORUN_ENABLED cannot birth send jobs.
 func (s *service) RunGreenAutorunBatch(ctx context.Context, orgID, actorID uuid.UUID, limit int) (queued, skipped int, details []map[string]any, xerr *errx.Error) {
 	if xerr = s.requireEnabled(); xerr != nil {
 		return 0, 0, nil, xerr
 	}
-	if !s.cfg.GreenAutorunEnabled {
-		return 0, 0, nil, nil
-	}
+	_ = actorID
 	if limit <= 0 || limit > 100 {
 		limit = 25
 	}
-	// Seed GREEN-eligible drafts: plan READY accounts and promote due/planned
-	// ordinal-1 touches into NEEDS_REVIEW with policy-approved templates.
-	seeded := 0
-	if ready, err := s.repo.ListAccounts(ctx, orgID, repository.OutreachAccountFilter{
-		QueueState: models.OutreachQueueReadyToGenerate, Limit: limit * 2,
-	}); err == nil {
-		for i := range ready {
-			if seeded >= limit {
-				break
-			}
-			acc := ready[i]
-			if acc.DoNotContact || acc.Blocked {
-				continue
-			}
-			// Activation is not send tier. Still only seed actionable accounts.
-			if acc.ActivationState != "" && acc.ActivationState != "ACTIONABLE_NOW" {
-				continue
-			}
-			// Legacy / missing send-fit: may generate for human review, not seed autorun stock.
-			if !ImportedSendTierEligible(acc.TargetFitSendTier) {
-				continue
-			}
-			existing, _ := s.repo.ListTouchpoints(ctx, orgID, acc.ID, "", 20, 0)
-			var due *models.OutreachTouchpoint
-			for j := range existing {
-				t := existing[j]
-				if t.Ordinal == 1 && (t.State == models.TouchpointDue || t.State == models.TouchpointPlanned ||
-					t.State == models.TouchpointNeedsReview || t.State == models.TouchpointDrafted) {
-					due = &existing[j]
-					break
-				}
-			}
-			if due == nil {
-				var contactID *uuid.UUID
-				if cands, _ := s.repo.ListCandidates(ctx, orgID, acc.ID); len(cands) > 0 {
-					for j := range cands {
-						// Autorun stock only from candidates with imported email_send_ready.
-						if !cands[j].EmailSendReady {
-							continue
-						}
-						if cands[j].CanEnroll() && strings.Contains(cands[j].Email, "@") && MailboxPurposeAllowed(cands[j].Email) {
-							if cands[j].MailboxPurposeSendBlocked {
-								continue
-							}
-							id := cands[j].ID
-							contactID = &id
-							break
-						}
-					}
-				}
-				if contactID == nil {
-					continue
-				}
-				tps, px := s.PlanAccountCadence(ctx, orgID, actorID, acc.ID, contactID, models.OutreachChannelEmail)
-				if px != nil || len(tps) == 0 {
-					continue
-				}
-				due = &tps[0]
-			}
-			if due.State == models.TouchpointPlanned {
-				due.State = models.TouchpointDue
-				_ = s.repo.UpdateTouchpoint(ctx, due)
-			}
-			if gen, gx := s.GenerateTouchpointDraft(ctx, orgID, actorID, due.ID); gx == nil && gen != nil {
-				seeded++
-			}
-		}
-	}
-
 	list, err := s.repo.ListReviewTouchpoints(ctx, orgID, limit, 0)
 	if err != nil {
 		return 0, 0, nil, errx.New(errx.Internal, "list review: "+err.Error())
 	}
 	details = make([]map[string]any, 0, len(list))
 	for i := range list {
-		tp := list[i]
-		if strings.ToUpper(tp.Channel) != "EMAIL" {
-			skipped++
-			details = append(details, map[string]any{"id": tp.ID.String(), "allow": false, "reasons": []string{"channel_not_email"}})
-			continue
-		}
-		// Re-generate stale YELLOW jit drafts under active policy so they can become policy GREEN.
-		if tp.DraftID != nil {
-			if d, _ := s.repo.GetDraft(ctx, orgID, *tp.DraftID); d != nil && d.RiskClass != "GREEN" {
-				_, _ = s.GenerateTouchpointDraft(ctx, orgID, actorID, tp.ID)
-			}
-		} else if tp.State == models.TouchpointDue || tp.State == models.TouchpointNeedsReview {
-			_, _ = s.GenerateTouchpointDraft(ctx, orgID, actorID, tp.ID)
-		}
-		out, dec, x := s.TryGreenAutorun(ctx, orgID, actorID, tp.ID)
+		_, dec, x := s.TryGreenAutorun(ctx, orgID, actorID, list[i].ID)
 		row := map[string]any{
-			"id":                 tp.ID.String(),
-			"allow":              dec.Allow,
-			"reasons":            dec.Reasons,
-			"authorization_mode": dec.AuthorizationMode,
-		}
-		if out != nil {
-			row["state"] = out.State
-			row["authorization_mode_stored"] = out.AuthorizationMode
-			row["approved_by"] = out.ApprovedBy
-			if out.CampaignPolicyAuthorizationID != nil {
-				row["campaign_policy_authorization_id"] = out.CampaignPolicyAuthorizationID.String()
-			}
+			"id":      list[i].ID.String(),
+			"allow":   false,
+			"reasons": dec.Reasons,
 		}
 		if x != nil {
 			row["error"] = x.Message
 		}
 		details = append(details, row)
-		if x != nil || !dec.Allow {
-			skipped++
-			continue
-		}
-		queued++
+		skipped++
 	}
-	return queued, skipped, details, nil
+	return 0, skipped, details, nil
 }
 
 // ImportedSendTierEligible reports whether an imported target_fit_send_tier may

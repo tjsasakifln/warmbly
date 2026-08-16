@@ -234,10 +234,12 @@ func bindTransportableEnrollment(t *testing.T, repo *memRepo, orgID, accountID, 
 		OrganizationID: orgID, AccountID: accountID, ContactCandidateID: &candidateID,
 		DraftID: &draft.ID, Ordinal: 1, Channel: models.OutreachChannelEmail,
 		State: models.TouchpointQueued, Recipient: email, Subject: "Approved subject",
-		BodyText: "Approved body with enough detail", ContentHash: "hash", ApprovedContentHash: "hash",
+		BodyText:   "Approved body with enough detail",
 		ApprovedBy: &approver, AuthorizationMode: AuthorizationModeHumanTouchpoint,
 		GeneratedContextHash: account.MessageContextHash,
 	}
+	RecomputeContentHash(touchpoint)
+	touchpoint.ApprovedContentHash = touchpoint.ContentHash
 	if err := repo.InsertTouchpoint(ctx, touchpoint); err != nil {
 		t.Fatal(err)
 	}
