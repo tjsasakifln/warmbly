@@ -236,6 +236,45 @@ func TestReconcileMergesAdditiveActionThenOutcome(t *testing.T) {
 		second.Chain.Identity, second.Chain.ActionID, second.Chain.OutcomeID)
 }
 
+func TestHeldOrphanKeepsObservedQCOOffPipeline(t *testing.T) {
+	st := NewMemoryStore()
+	in := testFacts("org-held-qco", "lead-held-qco", "rcpt-held-qco", "", "", "out-held-qco")
+	in.Keys.ActionID = ""
+	in.Keys.AccountID = ""
+	in.Keys.SourceLeadID = ""
+	in.OutcomeType = OutcomeQualifiedConversation
+	in.Qualified = true
+	in.PipelineOpen = true
+	in.RevenueEvidenced = true
+	in.RevenueCents = 99900
+	in.Keys.RevenueDocumentID = "doc-must-not-count"
+	res := Reconcile(st, in)
+	if !hasCode(res.Exceptions, ExceptionOrphan) {
+		t.Fatalf("outcome without action not held: %+v", codesOf(res.Exceptions))
+	}
+	if !res.Held && !res.Chain.Held {
+		t.Fatal("orphan QCO must be held")
+	}
+	if res.Chain.OutcomeType != OutcomeQualifiedConversation {
+		t.Fatalf("held+PipelineOpen wiped observed QCO to %s", res.Chain.OutcomeType)
+	}
+	if res.Chain.PipelineOpen {
+		t.Fatal("held orphan must not open pipeline")
+	}
+	if res.Chain.RevenueEvidenced || res.Chain.RevenueCents != 0 {
+		t.Fatalf("held orphan evidenced revenue: evidenced=%v cents=%d", res.Chain.RevenueEvidenced, res.Chain.RevenueCents)
+	}
+	view := Rollup(mustList(st, "org-held-qco"), "2026-08", true)
+	if view.InboundQualifiedPipeline != 0 {
+		t.Fatalf("held QCO counted as IQP: %d", view.InboundQualifiedPipeline)
+	}
+	if view.Pipeline != 0 || view.RevenueCents != 0 || view.RevenueStatus == "evidenced" {
+		t.Fatalf("held orphan counted pipe/revenue: pipe=%d cents=%d status=%s", view.Pipeline, view.RevenueCents, view.RevenueStatus)
+	}
+	fmt.Printf("HELD_ORPHAN_QCO outcome=%s held=%v pipe=%v iqp=%d revenue=%d\n",
+		res.Chain.OutcomeType, res.Chain.Held, res.Chain.PipelineOpen, view.InboundQualifiedPipeline, view.RevenueCents)
+}
+
 func TestNilStoreFailClosed(t *testing.T) {
 	res := Reconcile(nil, testFacts("org", "l", "r", "a", "act", "out"))
 	if len(res.Exceptions) == 0 || res.Exceptions[0].Code != ExceptionUnavailable {

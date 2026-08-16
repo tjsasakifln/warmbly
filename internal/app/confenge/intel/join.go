@@ -185,17 +185,8 @@ func buildChain(in ObservedFacts, identity, metric string, now time.Time, closeB
 		label = LabelReal
 	}
 	outcome := strings.ToUpper(strings.TrimSpace(in.OutcomeType))
-	if outcome == "" || closeBlocked || held {
-		if held && (isWonType(outcome) || isLostType(outcome) || in.PipelineOpen || in.RevenueEvidenced) {
-			outcome = OutcomeUnknown
-		} else if outcome == "" || closeBlocked {
-			outcome = OutcomeUnknown
-		}
-	}
-	if (isWonType(outcome) || isLostType(outcome)) && !in.HumanConfirmed {
-		outcome = OutcomeUnknown
-	}
-	if held && (isWonType(outcome) || isLostType(outcome)) {
+	// Held keeps QCO/MEETING; only unconfirmed/held WON/LOST become UNKNOWN.
+	if outcome == "" || closeOutcomeBlocked(outcome, in.HumanConfirmed, held, closeBlocked) {
 		outcome = OutcomeUnknown
 	}
 	qualified := in.Qualified || outcome == OutcomeQualifiedConversation
@@ -370,10 +361,10 @@ func mergeIntoChain(existing Chain, in ObservedFacts, closeBlocked, held bool) (
 	}
 
 	incoming := strings.ToUpper(strings.TrimSpace(in.OutcomeType))
-	if closeBlocked || held || ((isWonType(incoming) || isLostType(incoming)) && !in.HumanConfirmed) {
+	if closeOutcomeBlocked(incoming, in.HumanConfirmed, held, closeBlocked) {
 		incoming = OutcomeUnknown
 	}
-	if !held && incoming != "" && incoming != OutcomeUnknown {
+	if incoming != "" && incoming != OutcomeUnknown {
 		if merged.OutcomeType == "" || merged.OutcomeType == OutcomeUnknown {
 			merged.OutcomeType = incoming
 			changed = true
@@ -482,6 +473,16 @@ func mergeIntoChain(existing Chain, in ObservedFacts, closeBlocked, held bool) (
 		merged.CausalProof = false
 	}
 	return merged, changed
+}
+
+func closeOutcomeBlocked(outcome string, humanConfirmed, held, closeBlocked bool) bool {
+	if closeBlocked {
+		return true
+	}
+	if isWonType(outcome) || isLostType(outcome) {
+		return held || !humanConfirmed
+	}
+	return false
 }
 
 func persistExceptions(store Store, xs []Exception) {
