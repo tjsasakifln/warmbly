@@ -50,7 +50,7 @@ fi
 if [ -z "$URL" ]; then
   echo
   echo "UNPROVEN: no inbound URL in this environment."
-  echo "api.warmbly.com does not resolve from typical operator laptops."
+  echo "Canonical public endpoint: https://api.confenge.com.br/api/v1/webhooks/confenge/inbound"
   echo "VPS/operator API is loopback (127.0.0.1). A secret with no public URL is UNPROVEN."
 fi
 

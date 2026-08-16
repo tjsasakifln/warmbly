@@ -13,10 +13,19 @@ PII is not accepted on the query string. Send the body.
 Auth: `X-Warmbly-Signature: t=<unix>,v1=<hex(hmac_sha256(secret, "<unix>." + body))>`
 
 `GET /api/v1/webhooks/confenge/inbound/health` is a public, PII-free,
-secret-free probe. It always returns HTTP 200 with `status=READY|BLOCKED`,
-`auto_send_enabled`, and machine `reasons`. Timeout (process unreachable)
-stays distinct from POST `401` (HMAC) and POST `5xx` (persist). A lying
-READY when secret, dest org, or auto-send are wrong is a defect.
+secret-free probe. It always returns HTTP 200 with `status=READY|BLOCKED`
+for the receive gate (web-cfg uses that field), plus an additive
+`health_matrix` (`READY|DEGRADED|BLOCKED` per plane) and
+`real_event_ready`. Timeout (process unreachable) stays distinct from
+POST `401` (HMAC) and POST `5xx` (persist). A lying READY when secret,
+dest org, or auto-send are wrong is a defect. `real_event_ready` is false
+until money-asset, Netlify env, capture/handoff, attribution keys, and
+`public_read` freshness are all observed healthy. Computing it creates no
+lead.
+
+Authenticated `GET /confenge/ops/health` returns the same matrix plus
+actionable alerts and UNKNOWN-until-measured technical SLOs. Incident
+steps: [inbound-incident-runbook.md](./inbound-incident-runbook.md).
 
 | Setting | Purpose |
 | --- | --- |
@@ -59,8 +68,10 @@ READY when secret, dest org, or auto-send are wrong is a defect.
 
 Shipped web-cfg (`mapLeadToInboundV1`) emits `source=CONFENGE_WEB` and omits
 empty optionals. `source=web-cfg` is still accepted (no allowlist). `lead_id`
-or `receipt_id` is required. Missing facts stay `UNKNOWN`. Warmbly does not
-invent a name, role, email, or phone.
+or `receipt_id` is required. `public_contract_id` is accepted as the
+web-cfg store name and stored as `contract_public_id`. `entity_public_id`
+is the canonical extra-cli account id. Missing facts stay `UNKNOWN`.
+Warmbly does not invent a name, role, email, or phone.
 
 ## Dedupe
 
@@ -132,34 +143,52 @@ inferred.
 
 ## Live verdict (this tree)
 
-**UNPROVEN.** Code and shipped-path tests exist. A production or VPS
-synthetic POST has not been observed from this environment.
+**PUBLIC HTTPS READY.**
 
-Probed 2026-08-15 from the implementer host against origin/main
-`dab3ea3446348d1adcd76c6d5c98eba9dade1498`:
+Proved 2026-08-16 on the Netcup VPS (`159.195.18.88`) at production SHA
+`deabc11e715d508a68ee231376148b52ee4b8aca`:
 
-- `CONFENGE_INBOUND_WEBHOOK_SECRET` unset
-- `CONFENGE_INBOUND_ORG_ID` unset
-- `CONFENGE_INBOUND_WEBHOOK_URL` unset
-- `api.warmbly.com` does not resolve
-- `https://app.warmbly.com/api/v1/webhooks/confenge/inbound` OPTIONS 404
-- `https://warmbly.com/api/v1/webhooks/confenge/inbound` OPTIONS 405
-- `127.0.0.1:8080` connection refused
-- no `.env.confenge` with a real secret
+- Process env: secret + dest org set, `CONFENGE_AUTO_SEND_ENABLED=false`
+- Loopback `GET /api/v1/webhooks/confenge/inbound/health` → 200 `READY`, `auto_send_enabled=false`
+- Official `scripts/confenge_inbound_live_preflight.sh` against
+  `http://127.0.0.1:8080/api/v1/webhooks/confenge/inbound` → `VERDICT=LIVE_WEBHOOK`
+  (201 then replay 200). Commercial INBOUND NOW stayed empty.
+  `include_synthetic=0` denominators did not increment. One
+  `SYNTHETIC-INBOUND-*` row persisted and stayed SKIPPED.
+- Loopback POST unsigned / `t=1,v1=deadbeef` → 401. Invalid JSON and
+  missing `lead_id` (valid HMAC) → 400. Query `?email=` → 400. Persist
+  500 / missing dest org 503 covered by shipped tests at this SHA.
+- Host nginx on public `:80` allowlists only the inbound path + health.
+  `/admin` and `/confenge` → 404. Query strings → 400. POST burst → 429
+  (20/min, burst 10). Health/POST without query → 301 to
+  `https://api.confenge.com.br/...` (plaintext webhook is not served).
+- Backend remains `127.0.0.1:8080`. Postgres remains `127.0.0.1:15432`.
+  SSH remains `2222`. extra-cli remains `:8443`.
 
-`make confenge-preflight` now surfaces `inbound_secret` / `inbound_org` /
-`inbound_ready`. `GET /confenge/status` `readiness.inbound` and the public
-health probe are READY only when secret + dest org are set and
-`CONFENGE_AUTO_SEND_ENABLED=false`. That is configuration, not a live POST.
+`confenge.com.br` is delegated from Hostinger to Cloudflare
+(`grannbo.ns.cloudflare.com` / `kai.ns.cloudflare.com`). The canonical
+DNS-only record answers publicly:
 
-## Human proof (remaining)
-
-```bash
-# 1. Warmbly process: set secret + dest org, keep auto-send off, restart on this SHA.
-# 2. Caller: set CONFENGE_INBOUND_WEBHOOK_URL + the same secret.
-scripts/confenge_inbound_live_preflight.sh
-# 3. Open INBOUND NOW and confirm the printed lead_id. Do not contact.
+```text
+api.confenge.com.br.  300  IN  A  159.195.18.88
 ```
 
-A 201/200 from that script is a live webhook receipt. It is not a commercial
-send and not a web-cfg form proof.
+Host nginx presents a valid Let's Encrypt certificate for
+`api.confenge.com.br`; external health returns HTTP 200 `READY` with
+`auto_send_enabled=false`. External unsigned and invalid-signature POSTs both
+return 401. No commercial lead was created by these fail-closed probes.
+Handoff: [inbound-edge.md](./inbound-edge.md) and GitHub issue #78.
+
+## Live handoff command
+
+```bash
+#   CONFENGE_INBOUND_WEBHOOK_URL=https://api.confenge.com.br/api/v1/webhooks/confenge/inbound
+#   CONFENGE_INBOUND_WEBHOOK_SECRET=<same as process>
+#   CONFENGE_AUTO_SEND_ENABLED=false
+scripts/confenge_inbound_live_preflight.sh
+# Open INBOUND NOW only to confirm the printed lead_id. Do not contact.
+```
+
+A 201/200 from that script is a live webhook receipt. Run it only with the
+existing synthetic guard; it is not a commercial send and not a web-cfg form
+proof.

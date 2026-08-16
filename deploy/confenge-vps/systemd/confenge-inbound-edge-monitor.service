@@ -1,0 +1,15 @@
+[Unit]
+Description=CONFENGE inbound public-edge health/TLS/DNS probe
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/confenge-inbound-edge-monitor
+Nice=10
+# Never inherit mailbox or inbound HMAC secrets from a login shell.
+Environment=CONFENGE_INBOUND_PUBLIC_HOST=api.confenge.com.br
+Environment=CONFENGE_INBOUND_PUBLIC_IP=159.195.18.88
+
+[Install]
+WantedBy=multi-user.target

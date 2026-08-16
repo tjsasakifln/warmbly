@@ -35,6 +35,16 @@ The helper keeps local port `8080` available for Evolution API and forwards the
 CONFENGE backend to `18080`. Use `deploy/confenge-vps/compose.sh` for maintenance;
 raw `docker compose` commands do not load this deployment's override and `.env`.
 
+Public inbound edge (host nginx, not a new app):
+
+```bash
+# as root, after DNS A api.confenge.com.br -> 159.195.18.88 (DNS only)
+deploy/confenge-vps/inbound-edge-install.sh
+```
+
+Only `GET .../inbound/health` and `POST .../inbound` are proxied to
+loopback `:8080`. Handoff: [inbound-edge.md](../../docs/confenge/inbound-edge.md).
+
 Safety: GREEN autorun OFF, auto-send OFF, WhatsApp OFF, human approval ON.
 Operational pace 10→20/h, daily shell 200. Hostinger plan is **Business Email
 Starter** (1000 msgs/rolling 24h/mailbox); that is only the provider ceiling,

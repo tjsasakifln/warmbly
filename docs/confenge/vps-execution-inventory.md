@@ -48,7 +48,10 @@ Do not delete volumes without a restore plan.
 
 ## Firewall (ufw)
 
-Allow: 22, 2222, 8443. Deny public 8790. Docker bridge may reach 8790.
+Allow: 22, 2222, 80, 443, 8443. Deny public 8790. Docker bridge may reach 8790.
+
+80/443 belong to host nginx for `api.confenge.com.br` inbound only (see
+[inbound-edge.md](./inbound-edge.md)). extra-cli feed stays on 8443.
 
 Warmbly UI/API/Postgres/Redis/NATS must remain **loopback-bound** (this pack enforces `127.0.0.1` publishes).
 
