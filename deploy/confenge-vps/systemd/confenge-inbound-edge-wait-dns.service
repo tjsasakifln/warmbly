@@ -1,0 +1,12 @@
+[Unit]
+Description=Mint api.confenge.com.br TLS when the public A record appears
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/confenge-inbound-edge-wait-dns
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

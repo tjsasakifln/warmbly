@@ -177,6 +177,11 @@ remain enforced without an interactive login. Daily path: review, approve, edit,
 reject, or mark DNC in the browser. The laptop can sleep after approval because the
 queue, scheduling, governor, and SMTP transport run on the VPS.
 
+Public inbound (web-cfg) is the only application path that leaves the
+host: `https://api.confenge.com.br/api/v1/webhooks/confenge/inbound` via host
+nginx on 80/443, allowlisted to that POST and `GET .../health`. See
+[inbound-edge.md](./inbound-edge.md).
+
 Never expose ports 5173 or 8080 publicly while `CONFENGE_OPERATOR_MODE=true`.
 The laptop tunnel maps the backend to `127.0.0.1:18080`, leaving local port
 `8080` available for Evolution API. The web runtime's `API_PUBLIC_URL` must use

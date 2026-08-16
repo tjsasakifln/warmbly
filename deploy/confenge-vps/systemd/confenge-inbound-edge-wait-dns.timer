@@ -1,0 +1,12 @@
+[Unit]
+Description=Poll DNS for api.confenge.com.br then request Let's Encrypt
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Persistent=true
+Unit=confenge-inbound-edge-wait-dns.service
+
+[Install]
+WantedBy=timers.target

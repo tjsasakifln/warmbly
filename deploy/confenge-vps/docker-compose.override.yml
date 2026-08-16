@@ -129,6 +129,8 @@ services:
       SMTP_HOST: ${SMTP_HOST:-mailpit}
       SMTP_PORT: ${SMTP_PORT:-1025}
       MAIL_TLS_INSECURE: ${MAIL_TLS_INSECURE:-false}
+      # Honor X-Forwarded-For only from the host nginx inbound edge.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.1}
     volumes:
       - confenge_ops:/data/confenge-ops
       - confenge_keys:/data/confenge-keys:ro

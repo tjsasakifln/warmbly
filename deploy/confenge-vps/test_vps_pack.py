@@ -36,6 +36,8 @@ class TestConfengeVpsPack(unittest.TestCase):
             "lib.sh",
             "env.example",
             "docker-compose.override.yml",
+            "inbound-edge-install.sh",
+            "inbound-edge-monitor.sh",
         ]
         for name in required:
             path = PACK / name
@@ -50,6 +52,7 @@ class TestConfengeVpsPack(unittest.TestCase):
         self.assertIn("CONFENGE_RATE_MAX_PER_HOUR=20", text)
         self.assertIn("HOSTINGER_PLAN_CLASS=BUSINESS_EMAIL_STARTER", text)
         self.assertIn("CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=200", text)
+        self.assertIn("TRUSTED_PROXIES=127.0.0.1", text)
         # Must not raise operational max above 20 in this pack
         for m in re.finditer(r"CONFENGE_RATE_MAX_PER_HOUR=(\d+)", text):
             self.assertLessEqual(int(m.group(1)), 20)
@@ -101,6 +104,57 @@ class TestConfengeVpsPack(unittest.TestCase):
         if proc.returncode != 0:
             self.fail(f"validate.sh exit {proc.returncode}\n{proc.stdout}\n{proc.stderr}")
         self.assertIn("VALIDATE=PASS", proc.stdout)
+
+    def test_inbound_edge_nginx_allowlist_is_the_shipped_config(self) -> None:
+        """Drive the real nginx files that install.sh copies onto the VPS."""
+        https = (PACK / "nginx/site-https.conf").read_text(encoding="utf-8")
+        http = (PACK / "nginx/site-http.conf").read_text(encoding="utf-8")
+        params = (PACK / "nginx/http-params.conf").read_text(encoding="utf-8")
+        proxy = (PACK / "nginx/proxy-params.conf").read_text(encoding="utf-8")
+        install = (PACK / "inbound-edge-install.sh").read_text(encoding="utf-8")
+        monitor = (PACK / "inbound-edge-monitor.sh").read_text(encoding="utf-8")
+        wait_dns = (PACK / "inbound-edge-wait-dns.sh").read_text(encoding="utf-8")
+
+        self.assertIn("server_name api.confenge.com.br;", https)
+        self.assertIn("location = /api/v1/webhooks/confenge/inbound/health", https)
+        self.assertIn("location = /api/v1/webhooks/confenge/inbound {", https)
+        self.assertIn("proxy_pass http://warmbly_loopback;", https)
+        self.assertIn("server 127.0.0.1:8080;", params)
+        self.assertIn("limit_req zone=confenge_inbound", https)
+        self.assertIn("limit_req_status 429", https)
+        self.assertIn("client_max_body_size 1m;", https)
+        self.assertIn("proxy_connect_timeout 5s;", proxy)
+        self.assertIn("proxy_read_timeout 30s;", proxy)
+        self.assertIn("X-Forwarded-For $remote_addr", proxy)
+        self.assertIn("return 404;", https)
+        self.assertIn("return 444;", https)
+        self.assertIn("Strict-Transport-Security", https)
+        self.assertNotIn('includeSubDomains', https.split("add_header", 1)[-1])
+        self.assertIn("return 301 https://api.confenge.com.br", http)
+        self.assertIn("location ^~ /.well-known/acme-challenge/", http)
+        self.assertNotRegex(http, r"proxy_pass")
+        self.assertNotRegex(params, r"\$request_body|\$http_x_warmbly_signature|\$args|\$query_string")
+        for blob in (https, http, proxy):
+            self.assertNotRegex(blob, r"\$request_body|\$http_x_warmbly_signature|\$query_string")
+            self.assertNotIn("location /confenge", blob)
+            self.assertNotIn("location /admin", blob)
+            self.assertNotRegex(blob, r"listen\s+8080")
+            self.assertNotRegex(blob, r"listen\s+15432")
+        self.assertIn("ufw allow 80/tcp", install)
+        self.assertIn("ufw allow 443/tcp", install)
+        self.assertNotIn("ufw allow 8080", install)
+        self.assertNotIn("ufw allow 15432", install)
+        self.assertNotIn("CONFENGE_AUTO_SEND_ENABLED=true", install)
+        self.assertIn("/opt/warmbly-confenge/deploy/confenge-vps/inbound-edge-install.sh", wait_dns)
+        self.assertIn("confenge_inbound_hmac_fail_total", monitor)
+        self.assertIn("confenge_inbound_replay_total", monitor)
+        self.assertIn("public_health_not_ready", monitor)
+        self.assertNotIn("CONFENGE_INBOUND_WEBHOOK_SECRET", monitor)
+
+        override = (PACK / "docker-compose.override.yml").read_text(encoding="utf-8")
+        self.assertIn("TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.1}", override)
+        self.assertIn("127.0.0.1:8080:8080", override)
+        self.assertIn("127.0.0.1:15432:5432", override)
 
     def test_docs_inventory_exists(self) -> None:
         inv = ROOT / "docs/confenge/vps-execution-inventory.md"

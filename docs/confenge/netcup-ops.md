@@ -50,6 +50,7 @@ CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=200
 
 | Open on VPS | Purpose |
 | --- | --- |
+| TCP 80/443 | Host nginx: `api.confenge.com.br` inbound webhook + ACME only |
 | TCP 8443 | Feed + outcome webhook (existing plane) |
 | TCP 2222 | SSH ops + operator tunnel |
 | Warmbly 8080/5173 | **Loopback only** |
