@@ -1,3 +1,5 @@
+//go:build !minprofile
+
 package notify
 
 import (
@@ -9,15 +11,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sesv2/types"
 	"github.com/getsentry/sentry-go"
 )
-
-type EmailNotificationService interface {
-	Send(ctx context.Context, to, cc, bcc []string, subject, message string) error
-	// SendOutreach is the same as Send but lets the caller override
-	// the Reply-To header. Used by the admin outreach composer so a
-	// noreply From: address can still funnel replies into a real
-	// support inbox. Empty replyTo falls back to the From address.
-	SendOutreach(ctx context.Context, to []string, replyTo, subject, message string) error
-}
 
 type emailNotificationService struct {
 	Name    string

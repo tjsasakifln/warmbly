@@ -3,6 +3,10 @@
 Isolated always-on Warmbly deployment for CONFENGE on Netcup, co-tenant with
 extra-cli but **not** sharing application state.
 
+Go images build with `GO_TAGS=minprofile`: postgres, redis, nats, filesystem
+blobs, and local KMS only. Stripe, AWS, GCP Cloud Tasks/PubSub, and Kafka are
+not compile-linked and fail closed if selected.
+
 Full docs:
 
 - [vps-execution-plane.md](../../docs/confenge/vps-execution-plane.md)

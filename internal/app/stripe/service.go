@@ -1,3 +1,5 @@
+//go:build !minprofile
+
 package stripe
 
 import (
@@ -29,92 +31,6 @@ import (
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/repository"
 )
-
-// ProrationPreview represents the preview of a plan change proration
-type ProrationPreview struct {
-	CurrentPlan     *models.Plan `json:"current_plan"`
-	NewPlan         *models.Plan `json:"new_plan"`
-	ProrationAmount int64        `json:"proration_amount"`
-	AmountDue       int64        `json:"amount_due"`
-	NextBillingDate time.Time    `json:"next_billing_date"`
-	Currency        string       `json:"currency"`
-}
-
-type StripeService interface {
-	// Customer management
-	CreateCustomer(ctx context.Context, userID uuid.UUID, email, name string) (string, *errx.Error)
-	GetCustomer(ctx context.Context, customerID string) (*stripe.Customer, *errx.Error)
-
-	// Checkout. discountCode is optional ("" for none); when set, a one-off
-	// Stripe coupon (money discounts) or trial extension is applied.
-	CreateCheckoutSession(ctx context.Context, userID uuid.UUID, orgID uuid.UUID, priceID, successURL, cancelURL, discountCode string) (*stripe.CheckoutSession, *errx.Error)
-	CreatePortalSession(ctx context.Context, customerID, returnURL string) (string, *errx.Error)
-
-	// Subscriptions
-	GetSubscription(ctx context.Context, subscriptionID string) (*stripe.Subscription, *errx.Error)
-	CancelSubscription(ctx context.Context, subscriptionID string, cancelAtPeriodEnd bool) *errx.Error
-
-	// Plan changes with proration. discountCode is optional ("" for none).
-	ChangePlan(ctx context.Context, orgID uuid.UUID, newPlanID uuid.UUID, prorationBehavior, discountCode, interval string) (*stripe.Subscription, *errx.Error)
-	PreviewPlanChange(ctx context.Context, orgID uuid.UUID, newPlanID uuid.UUID) (*ProrationPreview, *errx.Error)
-
-	// Webhooks
-	VerifyWebhook(payload []byte, signature string) (*stripe.Event, *errx.Error)
-	ProcessWebhookEvent(ctx context.Context, event *stripe.Event) *errx.Error
-
-	// ApplyCustomerCredit adds a signed cents delta to a customer's Stripe
-	// balance (negative = credit the customer). Satisfies referral.StripeBalancer.
-	ApplyCustomerCredit(ctx context.Context, customerID string, amountCents int64, currency, idempotencyKey string) (string, *errx.Error)
-
-	// CreateCreditCheckoutSession creates a one-time (mode=payment) Stripe
-	// Checkout session to buy a top-up credit pack, reusing the org's existing
-	// Stripe customer. Fulfillment happens only in the webhook. packKey is a
-	// credits.CreditPack.Key; credits is the pack's credit count (recorded in
-	// session metadata so the webhook grants the right amount). The pack's
-	// Stripe price is resolved from config; an unconfigured pack returns 503.
-	CreateCreditCheckoutSession(ctx context.Context, userID, orgID uuid.UUID, packKey string, credits int, successURL, cancelURL string) (*stripe.CheckoutSession, *errx.Error)
-
-	// AutoTopUpCredits charges the org's saved payment method OFF-SESSION for
-	// one credit pack and fulfills it immediately on success (idempotent on
-	// the PaymentIntent id). Used by the credit-watch auto top-up; returns
-	// true when credits were granted. Fails cleanly (false, err) when the org
-	// has no saved payment method or the charge is declined.
-	AutoTopUpCredits(ctx context.Context, orgID uuid.UUID, packKey string, creditAmount int) (bool, error)
-
-	// WireReferral attaches the referral program (post-construction; nil = the
-	// referral hooks in the webhook flow are skipped).
-	WireReferral(r ReferralRewarder)
-
-	// WireCredits attaches the AI-credit granter and an audit logger
-	// (post-construction; nil = the credit grant/reset hooks are skipped).
-	WireCredits(g CreditGranter, a AuditLogger)
-}
-
-// CreditGranter is the slice of the credit service the Stripe webhook flow
-// drives: reset the monthly allowance each billing cycle and fulfill top-up
-// purchases. *credits.creditService satisfies it (plain error returns).
-type CreditGranter interface {
-	ResetMonthlyAllowance(ctx context.Context, orgID uuid.UUID, allowance int, idempotencyKey string) error
-	GrantPurchased(ctx context.Context, orgID uuid.UUID, amount int, reason, idempotencyKey string) (int, error)
-}
-
-// AuditLogger is the slice of the audit service the webhook flow uses to fire
-// AUDIT_CREATED so teammates' billing/credits views refresh live after a grant
-// or purchase. *audit.auditService satisfies it.
-type AuditLogger interface {
-	LogAction(ctx context.Context, orgID, actorID uuid.UUID, action models.AuditAction, entityType models.AuditEntityType, entityID *uuid.UUID, ip, userAgent string, changes, metadata map[string]string)
-}
-
-// ReferralRewarder is the slice of the referral service the Stripe webhook flow
-// drives. *referral.Service satisfies it; injected via WireReferral so the
-// stripe package needs no import of referral (no cycle).
-type ReferralRewarder interface {
-	QualifyOnConversion(ctx context.Context, inviteeOrgID uuid.UUID)
-	RewardOnFirstInvoice(ctx context.Context, inviteeOrgID, planID uuid.UUID, eventID string) *errx.Error
-	ClawbackForInvitee(ctx context.Context, inviteeOrgID uuid.UUID, eventID, reason string)
-	SyncStripeBalance(ctx context.Context, orgID uuid.UUID)
-	InviteeDiscountCode(ctx context.Context, inviteeOrgID uuid.UUID) string
-}
 
 type stripeService struct {
 	cfg              *config.StripeConfig
@@ -148,6 +64,43 @@ func NewService(
 	}
 }
 
+func newLive(
+	cfg *config.StripeConfig,
+	subRepo repository.SubscriptionRepository,
+	planRepo repository.PlanRepository,
+	workerAssignment worker.WorkerAssignmentService,
+	discountService discount.DiscountService,
+) (StripeService, error) {
+	return NewService(cfg, subRepo, planRepo, workerAssignment, discountService), nil
+}
+
+func checkoutFrom(s *stripe.CheckoutSession) *CheckoutSession {
+	if s == nil {
+		return nil
+	}
+	return &CheckoutSession{ID: s.ID, URL: s.URL}
+}
+
+func subscriptionFrom(s *stripe.Subscription) *Subscription {
+	if s == nil {
+		return nil
+	}
+	return &Subscription{
+		ID:                s.ID,
+		Status:            string(s.Status),
+		CurrentPeriodEnd:  s.CurrentPeriodEnd,
+		CancelAtPeriodEnd: s.CancelAtPeriodEnd,
+	}
+}
+
+func (s *stripeService) fetchStripeSubscription(subscriptionID string) (*stripe.Subscription, *errx.Error) {
+	sub, err := subscription.Get(subscriptionID, nil)
+	if err != nil {
+		return nil, errx.New(errx.NotFound, "subscription not found")
+	}
+	return sub, nil
+}
+
 func (s *stripeService) CreateCustomer(ctx context.Context, userID uuid.UUID, email, name string) (string, *errx.Error) {
 	params := &stripe.CustomerParams{
 		Email: stripe.String(email),
@@ -166,12 +119,12 @@ func (s *stripeService) CreateCustomer(ctx context.Context, userID uuid.UUID, em
 	return cust.ID, nil
 }
 
-func (s *stripeService) GetCustomer(ctx context.Context, customerID string) (*stripe.Customer, *errx.Error) {
+func (s *stripeService) GetCustomer(ctx context.Context, customerID string) (*Customer, *errx.Error) {
 	cust, err := customer.Get(customerID, nil)
 	if err != nil {
 		return nil, errx.New(errx.NotFound, "customer not found")
 	}
-	return cust, nil
+	return &Customer{ID: cust.ID, Email: cust.Email}, nil
 }
 
 // ApplyCustomerCredit posts a customer balance transaction. amountCents is the
@@ -199,7 +152,7 @@ func (s *stripeService) ApplyCustomerCredit(ctx context.Context, customerID stri
 	return txn.ID, nil
 }
 
-func (s *stripeService) CreateCheckoutSession(ctx context.Context, userID uuid.UUID, orgID uuid.UUID, priceID, successURL, cancelURL, discountCode string) (*stripe.CheckoutSession, *errx.Error) {
+func (s *stripeService) CreateCheckoutSession(ctx context.Context, userID uuid.UUID, orgID uuid.UUID, priceID, successURL, cancelURL, discountCode string) (*CheckoutSession, *errx.Error) {
 	// Get or create customer
 	sub, err := s.subRepo.GetByOrganizationID(ctx, orgID)
 	if err != nil {
@@ -312,7 +265,7 @@ func (s *stripeService) CreateCheckoutSession(ctx context.Context, userID uuid.U
 		}
 	}
 
-	return sess, nil
+	return checkoutFrom(sess), nil
 }
 
 // mintCoupon creates a one-off Stripe coupon for a money discount code.
@@ -360,7 +313,7 @@ func (s *stripeService) mintCoupon(dc *models.DiscountCode) (string, *errx.Error
 // checkout.session.completed webhook, keyed by the Stripe event id so a retry
 // can't double-grant. The org must already have a Stripe customer (paid-org
 // gating is enforced in the handler).
-func (s *stripeService) CreateCreditCheckoutSession(ctx context.Context, userID, orgID uuid.UUID, packKey string, credits int, successURL, cancelURL string) (*stripe.CheckoutSession, *errx.Error) {
+func (s *stripeService) CreateCreditCheckoutSession(ctx context.Context, userID, orgID uuid.UUID, packKey string, credits int, successURL, cancelURL string) (*CheckoutSession, *errx.Error) {
 	priceID := ""
 	if s.cfg != nil && s.cfg.CreditPackPriceIDs != nil {
 		priceID = s.cfg.CreditPackPriceIDs[packKey]
@@ -402,7 +355,7 @@ func (s *stripeService) CreateCreditCheckoutSession(ctx context.Context, userID,
 		sentry.CaptureException(fmt.Errorf("stripe credit checkout session failed: %w", serr))
 		return nil, errx.New(errx.Internal, "failed to create checkout session")
 	}
-	return sess, nil
+	return checkoutFrom(sess), nil
 }
 
 func (s *stripeService) AutoTopUpCredits(ctx context.Context, orgID uuid.UUID, packKey string, creditAmount int) (bool, error) {
@@ -495,12 +448,12 @@ func (s *stripeService) CreatePortalSession(ctx context.Context, customerID, ret
 	return sess.URL, nil
 }
 
-func (s *stripeService) GetSubscription(ctx context.Context, subscriptionID string) (*stripe.Subscription, *errx.Error) {
-	sub, err := subscription.Get(subscriptionID, nil)
-	if err != nil {
-		return nil, errx.New(errx.NotFound, "subscription not found")
+func (s *stripeService) GetSubscription(ctx context.Context, subscriptionID string) (*Subscription, *errx.Error) {
+	sub, xerr := s.fetchStripeSubscription(subscriptionID)
+	if xerr != nil {
+		return nil, xerr
 	}
-	return sub, nil
+	return subscriptionFrom(sub), nil
 }
 
 func (s *stripeService) CancelSubscription(ctx context.Context, subscriptionID string, cancelAtPeriodEnd bool) *errx.Error {
@@ -518,7 +471,7 @@ func (s *stripeService) CancelSubscription(ctx context.Context, subscriptionID s
 }
 
 // ChangePlan changes the organization's subscription to a new plan with proration
-func (s *stripeService) ChangePlan(ctx context.Context, orgID uuid.UUID, newPlanID uuid.UUID, prorationBehavior, discountCode, interval string) (*stripe.Subscription, *errx.Error) {
+func (s *stripeService) ChangePlan(ctx context.Context, orgID uuid.UUID, newPlanID uuid.UUID, prorationBehavior, discountCode, interval string) (*Subscription, *errx.Error) {
 	sub, err := s.subRepo.GetByOrganizationID(ctx, orgID)
 	if err != nil {
 		return nil, errx.New(errx.Internal, "failed to get subscription")
@@ -556,7 +509,7 @@ func (s *stripeService) ChangePlan(ctx context.Context, orgID uuid.UUID, newPlan
 	}
 
 	// Get current subscription from Stripe
-	stripeSub, xerr := s.GetSubscription(ctx, *sub.StripeSubscriptionID)
+	stripeSub, xerr := s.fetchStripeSubscription(*sub.StripeSubscriptionID)
 	if xerr != nil {
 		return nil, xerr
 	}
@@ -623,7 +576,7 @@ func (s *stripeService) ChangePlan(ctx context.Context, orgID uuid.UUID, newPlan
 		}
 	}
 
-	return updated, nil
+	return subscriptionFrom(updated), nil
 }
 
 // PreviewPlanChange previews the proration for changing to a new plan
@@ -647,7 +600,7 @@ func (s *stripeService) PreviewPlanChange(ctx context.Context, orgID uuid.UUID, 
 	}
 
 	// Get current subscription from Stripe
-	stripeSub, xerr := s.GetSubscription(ctx, *sub.StripeSubscriptionID)
+	stripeSub, xerr := s.fetchStripeSubscription(*sub.StripeSubscriptionID)
 	if xerr != nil {
 		return nil, xerr
 	}
@@ -694,15 +647,27 @@ func (s *stripeService) PreviewPlanChange(ctx context.Context, orgID uuid.UUID, 
 	}, nil
 }
 
-func (s *stripeService) VerifyWebhook(payload []byte, signature string) (*stripe.Event, *errx.Error) {
+func (s *stripeService) VerifyWebhook(payload []byte, signature string) (*Event, *errx.Error) {
 	event, err := webhook.ConstructEvent(payload, signature, s.cfg.WebhookSecret)
 	if err != nil {
 		return nil, errx.New(errx.BadRequest, "invalid webhook signature")
 	}
-	return &event, nil
+	raw, err := json.Marshal(event)
+	if err != nil {
+		return nil, errx.New(errx.Internal, "failed to encode webhook event")
+	}
+	return &Event{ID: event.ID, Type: string(event.Type), Payload: raw}, nil
 }
 
-func (s *stripeService) ProcessWebhookEvent(ctx context.Context, event *stripe.Event) *errx.Error {
+func (s *stripeService) ProcessWebhookEvent(ctx context.Context, wrapped *Event) *errx.Error {
+	if wrapped == nil || len(wrapped.Payload) == 0 {
+		return errx.New(errx.BadRequest, "invalid webhook event")
+	}
+	var decoded stripe.Event
+	if err := json.Unmarshal(wrapped.Payload, &decoded); err != nil {
+		return errx.New(errx.BadRequest, "invalid webhook event")
+	}
+	event := &decoded
 	// Check idempotency
 	exists, err := s.subRepo.WebhookEventExists(ctx, event.ID)
 	if err != nil {

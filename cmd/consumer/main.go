@@ -8,8 +8,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconf "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/getsentry/sentry-go"
 	"github.com/warmbly/warmbly/internal/app/advanced"
 	"github.com/warmbly/warmbly/internal/app/cipher"
@@ -62,17 +60,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// AWS SDK config, loaded only when an AWS-backed provider is selected
-	// (KMS_PROVIDER=aws or BLOB_PROVIDER=s3). A fully-local self-host needs no
-	// AWS_REGION or credentials.
-	var awscfg aws.Config
-	if config.AWSNeeded() {
-		awscfg, err = awsconf.LoadDefaultConfig(ctx)
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
-
 	// PostgreSQL
 	primaryDBEndpoint, err := cfg.LoadPrimaryDBEndpoint(ctx)
 	if err != nil {
@@ -99,7 +86,7 @@ func main() {
 		masterKey += "-dev"
 	}
 
-	kmsClient, err := kms.FromEnv(ctx, awscfg, masterKey)
+	kmsClient, err := kms.FromEnv(ctx, masterKey)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -114,7 +101,7 @@ func main() {
 	cipherService := cipher.NewService(kmsClient, redisCache, encryptedKeys)
 
 	// Blob storage (S3 by default, filesystem when BLOB_PROVIDER=filesystem).
-	s3Client, err := storage.NewFromEnv(ctx, awscfg, "main")
+	s3Client, err := storage.NewFromEnv(ctx, "main")
 	if err != nil {
 		log.Fatal(err)
 	}

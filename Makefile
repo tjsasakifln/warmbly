@@ -730,10 +730,14 @@ confenge-local:
 	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
 	trap 'kill 0' INT TERM; \
 	$(MAKE) --no-print-directory confenge-backend & \
-	$(MAKE) --no-print-directory consumer & \
+	$(MAKE) --no-print-directory confenge-consumer & \
 	$(MAKE) --no-print-directory confenge-worker & \
 	VITE_CONFENGE_OPERATOR_MODE=true $(MAKE) --no-print-directory web & \
 	wait
+
+# Min-profile tag excludes Stripe/AWS/GCP implementations from the link.
+# Do not add a CONFENGE product tag; this is a backend opt-out only.
+GO_MINPROFILE_TAGS ?= minprofile
 
 # Backend with CONFENGE flags and local-safe bind.
 # API_HOST must come from shell after sourcing .env.confenge (Make's
@@ -756,7 +760,12 @@ confenge-backend:
 	SMTP_PORT=11025 \
 	GEODB_PATH=data/GeoLite2-City.mmdb \
 	INTERNAL_API_TOKEN=local-dev-internal-token \
-	go run ./cmd/backend
+	go run -tags $(GO_MINPROFILE_TAGS) ./cmd/backend
+
+confenge-consumer:
+	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
+	$(GO_DEV_ENV) $(CONFENGE_DEV_ENV) \
+	go run -tags $(GO_MINPROFILE_TAGS) ./cmd/consumer
 
 # Worker wired to confenge-backend (same API_HOST / DEK URL). Uses Hostinger
 # SMTP/IMAP accounts via credentials sealed by the backend; no Graph/M365.
@@ -769,7 +778,7 @@ confenge-worker:
 	ENCRYPTED_KEYS_PROVIDER=http \
 	ENCRYPTED_KEYS_BACKEND_URL=$$api_base \
 	ENCRYPTED_KEYS_WORKER_TOKEN=local-dev-internal-token \
-	go run ./cmd/worker
+	go run -tags $(GO_MINPROFILE_TAGS) ./cmd/worker
 
 confenge-preflight:
 	@set -a; [ -f "$(CONFENGE_ENV_FILE)" ] && . ./$(CONFENGE_ENV_FILE); set +a; \
@@ -831,7 +840,11 @@ confenge-playwright:
 		CONFENGE_GATE_CODE_SHA=$$(git rev-parse HEAD) \
 		pnpm test:e2e:confenge:live
 
-.PHONY: confenge-local confenge-backend confenge-worker confenge-preflight confenge-bootstrap confenge-import confenge-stop-sending confenge-resume-sending confenge-db-backup confenge-db-restore confenge-readiness confenge-readiness-report confenge-playwright
+confenge-min-profile-sbom:
+	@mkdir -p data/confenge-artifacts
+	./scripts/confenge_min_profile_sbom.sh data/confenge-artifacts/min-profile-sbom.json
+
+.PHONY: confenge-local confenge-backend confenge-consumer confenge-worker confenge-preflight confenge-bootstrap confenge-import confenge-stop-sending confenge-resume-sending confenge-db-backup confenge-db-restore confenge-readiness confenge-readiness-report confenge-playwright confenge-min-profile-sbom
 
 # ─── admin bootstrap (local/test only) ──────────────────────────────────
 #

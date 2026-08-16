@@ -14,8 +14,6 @@ import (
 	"time"
 
 	"github.com/MicahParks/keyfunc/v3"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconf "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/getsentry/sentry-go"
 	"github.com/google/uuid"
 	"github.com/meszmate/apple-go"
@@ -319,25 +317,12 @@ func main() {
 			log.Fatal(err)
 		}
 
-		// AWS SDK config, loaded only when an AWS-backed provider is selected
-		// (KMS_PROVIDER=aws or BLOB_PROVIDER=s3). A fully-local self-host
-		// (local KMS + filesystem blobs) skips this and needs no AWS_REGION or
-		// credentials at all.
-		var awscfg aws.Config
-		if config.AWSNeeded() {
-			awscfg, err = awsconf.LoadDefaultConfig(ctx)
-			if err != nil {
-				sentry.CaptureException(err)
-				log.Fatal(err)
-			}
-		}
-
 		var masterKey string = "alias/master-key"
 		if cfg.Env != "prod" {
 			masterKey += "-dev"
 		}
 
-		kms, err := kms.FromEnv(ctx, awscfg, masterKey)
+		kms, err := kms.FromEnv(ctx, masterKey)
 		if err != nil {
 			sentry.CaptureException(err)
 			log.Fatal(err)
@@ -362,7 +347,7 @@ func main() {
 			geoloc, _ = geo.New("")
 		}
 
-		s3, err := storage.NewFromEnv(ctx, awscfg, "main")
+		s3, err := storage.NewFromEnv(ctx, "main")
 		if err != nil {
 			sentry.CaptureException(err)
 			log.Fatal(err)
@@ -706,15 +691,18 @@ func main() {
 		// Stripe service so the backend boots with no Stripe keys and every
 		// feature is unlocked by the feature gate. BILLING_PROVIDER=stripe wires
 		// the real Stripe integration (keys required).
+		var stripeCfg *config.StripeConfig
 		if config.BillingProvider() == "stripe" {
-			stripeCfg, err := cfg.LoadStripeConfig(ctx)
+			stripeCfg, err = cfg.LoadStripeConfig(ctx)
 			if err != nil {
 				sentry.CaptureException(err)
 				log.Fatal(err)
 			}
-			stripeService = stripe.NewService(stripeCfg, subscriptionRepository, planRepository, workerAssignmentService, discountService)
-		} else {
-			stripeService = stripe.NewDisabledService()
+		}
+		stripeService, err = stripe.NewFromEnv(stripeCfg, subscriptionRepository, planRepository, workerAssignmentService, discountService)
+		if err != nil {
+			sentry.CaptureException(err)
+			log.Fatal(err)
 		}
 
 		tokenService = token.NewService(primaryDB, tokenRepostory, cache, geoloc, authCfg.AuthSecret)

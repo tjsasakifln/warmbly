@@ -27,9 +27,5 @@ type Provider interface {
 
 // Compile-time interface checks.
 var (
-	_ Provider = (*KMS)(nil)
 	_ Provider = (*LocalProvider)(nil)
 )
-
-// Name satisfies Provider for the AWS implementation.
-func (k *KMS) Name() string { return "aws-kms" }

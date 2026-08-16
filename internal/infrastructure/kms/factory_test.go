@@ -6,13 +6,11 @@ import (
 	"encoding/base64"
 	"io"
 	"testing"
-
-	"github.com/aws/aws-sdk-go-v2/aws"
 )
 
 func TestFromEnv_UnknownProvider(t *testing.T) {
 	t.Setenv("KMS_PROVIDER", "no-such-provider")
-	_, err := FromEnv(context.Background(), aws.Config{}, "fallback")
+	_, err := FromEnv(context.Background(), "fallback")
 	if err == nil {
 		t.Fatal("expected error for unknown provider")
 	}
@@ -26,7 +24,7 @@ func TestFromEnv_LocalRoundTrip(t *testing.T) {
 	t.Setenv("KMS_PROVIDER", "local")
 	t.Setenv("KMS_LOCAL_MASTER_KEY", base64.StdEncoding.EncodeToString(key))
 
-	p, err := FromEnv(context.Background(), aws.Config{}, "")
+	p, err := FromEnv(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,40 +50,15 @@ func TestFromEnv_LocalMissingKeyErrors(t *testing.T) {
 	t.Setenv("KMS_LOCAL_MASTER_KEY", "")
 	t.Setenv("KMS_LOCAL_MASTER_KEY_FILE", "")
 
-	if _, err := FromEnv(context.Background(), aws.Config{}, ""); err == nil {
+	if _, err := FromEnv(context.Background(), ""); err == nil {
 		t.Fatal("expected error when local key unset")
-	}
-}
-
-func TestFromEnv_AWSFallsBackToProvidedKeyID(t *testing.T) {
-	// AWS provider construction is allowed even without real AWS — it just
-	// builds the client. Failure would only occur on real KMS calls.
-	t.Setenv("KMS_PROVIDER", "aws")
-	t.Setenv("KMS_AWS_KEY_ID", "")
-	p, err := FromEnv(context.Background(), aws.Config{}, "alias/fallback")
-	if err != nil {
-		t.Fatalf("aws provider with fallback key should construct: %v", err)
-	}
-	if p.Name() != "aws-kms" {
-		t.Fatalf("expected aws-kms, got %q", p.Name())
 	}
 }
 
 func TestFromEnv_AWSWithoutAnyKeyIDErrors(t *testing.T) {
 	t.Setenv("KMS_PROVIDER", "aws")
 	t.Setenv("KMS_AWS_KEY_ID", "")
-	if _, err := FromEnv(context.Background(), aws.Config{}, ""); err == nil {
+	if _, err := FromEnv(context.Background(), ""); err == nil {
 		t.Fatal("aws provider without key id should error")
-	}
-}
-
-func TestFromEnv_DefaultsToAWS(t *testing.T) {
-	t.Setenv("KMS_PROVIDER", "")
-	p, err := FromEnv(context.Background(), aws.Config{}, "alias/x")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.Name() != "aws-kms" {
-		t.Fatalf("unset KMS_PROVIDER should default to aws-kms, got %q", p.Name())
 	}
 }
