@@ -37,12 +37,12 @@ func ClassifyExceptions(in ObservedFacts, existing *Chain) []Exception {
 		add(ExceptionOrphan, "no lead_id, receipt_id, action_id, or idempotency_key", "hold until a durable ID arrives", true)
 	}
 
-	hasOutcome := knownID(in.Keys.OutcomeID) != "" || strings.TrimSpace(in.OutcomeType) != ""
+	hasOutcome := knownID(in.Keys.OutcomeID) != "" || (strings.TrimSpace(in.OutcomeType) != "" && in.OutcomeType != OutcomeUnknown)
 	hasAction := knownID(in.Keys.ActionID) != "" || chainHasAction(existing)
-	if hasOutcome && !hasAction {
+	if hasOutcome && !hasAction && !in.NotALead {
 		add(ExceptionOrphan, "outcome without action", "hold on exception queue until action arrives", true)
 	}
-	if normalizeFamily(in.Keys.RouteFamily) == FamilyInbound && strings.TrimSpace(in.Keys.LeadID) == "" && strings.TrimSpace(in.Keys.ReceiptID) == "" {
+	if normalizeFamily(in.Keys.RouteFamily) == FamilyInbound && strings.TrimSpace(in.Keys.LeadID) == "" && strings.TrimSpace(in.Keys.ReceiptID) == "" && !in.NotALead && !isNonLeadEvent(in.EventType) {
 		add(ExceptionOrphan, "inbound family missing lead_id/receipt_id", "hold until the web-cfg receipt IDs arrive", true)
 	}
 
@@ -68,7 +68,7 @@ func ClassifyExceptions(in ObservedFacts, existing *Chain) []Exception {
 		add(ExceptionStaleAttribution, "attribution or target-fit freshness is stale", "keep the observed IDs; do not invent a newer source/asset", false)
 	}
 
-	if outOfOrder(in) {
+	if outOfOrderAgainst(in, existing) {
 		add(ExceptionOutOfOrder, "outcome timestamp precedes action or inbound; order is not invented", "hold; do not reorder into a fake chain", true)
 	}
 
@@ -79,7 +79,142 @@ func ClassifyExceptions(in ObservedFacts, existing *Chain) []Exception {
 		add(ExceptionUnconfirmedLost, "LOST cannot be inferred", "require human or document confirmation; keep UNKNOWN", true)
 	}
 
+	if in.Keys.AssetFamily != "" && !knownAssetFamily(in.Keys.AssetFamily) && normalizeAssetFamily(in.Keys.AssetFamily) != "" {
+		add(ExceptionInvalidAssetFamily, "asset_family is not market_answer, contract_analysis, or b2g_xray", "exclude from assisted slices; do not invent a family", false)
+	}
+	if missingInboundAttribution(in) {
+		add(ExceptionMissingAttribution, "inbound path missing source/query/asset", "keep UNKNOWN attribution; do not invent a source or asset", false)
+	}
+	if outboundLabeledInbound(in) {
+		add(ExceptionOutboundAsInbound, "outbound action labeled inbound without a receipt", "hold off inbound denominators", true)
+	}
+	if code, reason := latencyViolation(in, existing); code != "" {
+		add(code, reason, "hold; do not coerce a negative or overlapping duration", true)
+	}
+	if reason := impossibleTransition(in, existing); reason != "" {
+		add(ExceptionImpossibleTransition, reason, "hold; do not invent the missing stage", true)
+	}
+
 	return out
+}
+
+func missingInboundAttribution(in ObservedFacts) bool {
+	if normalizeFamily(in.Keys.RouteFamily) != FamilyInbound || in.NotALead {
+		return false
+	}
+	if isNonLeadEvent(in.EventType) {
+		return false
+	}
+	return knownID(in.Keys.Source) == "" || knownID(in.Keys.Query) == "" || knownID(in.Keys.AssetID) == ""
+}
+
+func outboundLabeledInbound(in ObservedFacts) bool {
+	if normalizeFamily(in.Keys.RouteFamily) != FamilyInbound {
+		return false
+	}
+	if knownID(in.Keys.LeadID) != "" || knownID(in.Keys.ReceiptID) != "" {
+		return false
+	}
+	src := strings.ToLower(strings.TrimSpace(in.Keys.Source))
+	return src == "extra-cli" || src == FamilyOutbound || src == "outbound-pilot"
+}
+
+func latencyViolation(in ObservedFacts, existing *Chain) (string, string) {
+	type pair struct {
+		a, b time.Time
+		name string
+	}
+	lead := in.LeadCreatedAt
+	if lead.IsZero() && existing != nil {
+		lead = existing.LeadCreatedAt
+	}
+	var action time.Time
+	if in.FirstActionAt != nil {
+		action = *in.FirstActionAt
+	} else if !in.ActionOccurredAt.IsZero() {
+		action = in.ActionOccurredAt
+	} else if existing != nil && existing.FirstActionAt != nil {
+		action = *existing.FirstActionAt
+	}
+	var conv time.Time
+	if in.ConversationAt != nil {
+		conv = *in.ConversationAt
+	} else if existing != nil && existing.ConversationAt != nil {
+		conv = *existing.ConversationAt
+	}
+	var prop time.Time
+	if in.ProposalAt != nil {
+		prop = *in.ProposalAt
+	} else if existing != nil && existing.ProposalAt != nil {
+		prop = *existing.ProposalAt
+	}
+	var closeT time.Time
+	if in.CloseAt != nil {
+		closeT = *in.CloseAt
+	} else if existing != nil && existing.CloseAt != nil {
+		closeT = *existing.CloseAt
+	}
+	var pub, det time.Time
+	if in.PublishedAt != nil {
+		pub = *in.PublishedAt
+	} else if existing != nil && existing.PublishedAt != nil {
+		pub = *existing.PublishedAt
+	}
+	if in.DetectedAt != nil {
+		det = *in.DetectedAt
+	} else if existing != nil && existing.DetectedAt != nil {
+		det = *existing.DetectedAt
+	}
+	pairs := []pair{
+		{pub, det, "published→detected"},
+		{det, lead, "detected→lead"},
+		{lead, action, "lead→first action"},
+		{action, conv, "action→conversation"},
+		{conv, prop, "conversation→proposal"},
+		{prop, closeT, "proposal→close"},
+	}
+	if !in.ActionOccurredAt.IsZero() && !lead.IsZero() && in.ActionOccurredAt.Before(lead) {
+		return ExceptionNegativeLatency, "action timestamp precedes lead; duration is not coerced"
+	}
+	if !closeT.IsZero() && !lead.IsZero() && closeT.Before(lead) {
+		return ExceptionNegativeLatency, "close timestamp precedes lead; duration is not coerced"
+	}
+	for _, p := range pairs {
+		if p.a.IsZero() || p.b.IsZero() {
+			continue
+		}
+		if p.b.Before(p.a) {
+			return ExceptionNegativeLatency, p.name + " is negative; duration is not coerced"
+		}
+	}
+	if !action.IsZero() && !prop.IsZero() && !conv.IsZero() && prop.Before(conv) {
+		return ExceptionOverlappingLatency, "proposal overlaps conversation; duration is not coerced"
+	}
+	return "", ""
+}
+
+func impossibleTransition(in ObservedFacts, existing *Chain) string {
+	typ := strings.ToLower(strings.TrimSpace(in.EventType))
+	hasLead := knownID(in.Keys.LeadID) != "" || knownID(in.Keys.ReceiptID) != "" || (existing != nil && (knownID(existing.LeadID) != "" || knownID(existing.Keys.LeadID) != ""))
+	hasPipeline := in.PipelineOpen || (existing != nil && existing.PipelineOpen)
+	hasWon := (isWonType(in.OutcomeType) && in.HumanConfirmed) || (existing != nil && isWonType(existing.OutcomeType) && existing.HumanConfirmed)
+
+	if typ == EventRevenueEvidenced && !hasWon && !hasPipeline {
+		return "revenue_evidenced without pipeline or confirmed won"
+	}
+	if (typ == EventPipelineCreated || typ == EventPipelineUpdated) && normalizeFamily(in.Keys.RouteFamily) == FamilyInbound && !hasLead {
+		return "inbound pipeline event without lead"
+	}
+	if (typ == EventWon || typ == EventLost) && normalizeFamily(in.Keys.RouteFamily) == FamilyInbound && !hasLead {
+		return "inbound close without lead"
+	}
+	if existing != nil && contradictsConfirmed(*existing, strings.ToUpper(strings.TrimSpace(in.OutcomeType))) {
+		return "incoming close contradicts a human-confirmed close"
+	}
+	if in.NotALead && (in.PipelineOpen || isWonType(in.OutcomeType)) {
+		return "page view, citation, or X-Ray completion cannot become pipeline or won"
+	}
+	return ""
 }
 
 func chainHasAction(existing *Chain) bool {
@@ -126,13 +261,25 @@ func conflictAccount(a, b JoinKeys) bool {
 }
 
 func outOfOrder(in ObservedFacts) bool {
+	return outOfOrderAgainst(in, nil)
+}
+
+func outOfOrderAgainst(in ObservedFacts, existing *Chain) bool {
 	if in.OutcomeOccurredAt.IsZero() {
 		return false
 	}
-	if !in.ActionOccurredAt.IsZero() && in.OutcomeOccurredAt.Before(in.ActionOccurredAt) {
+	action := in.ActionOccurredAt
+	if action.IsZero() && existing != nil && existing.FirstActionAt != nil {
+		action = *existing.FirstActionAt
+	}
+	lead := in.LeadCreatedAt
+	if lead.IsZero() && existing != nil {
+		lead = existing.LeadCreatedAt
+	}
+	if !action.IsZero() && in.OutcomeOccurredAt.Before(action) {
 		return true
 	}
-	if !in.LeadCreatedAt.IsZero() && in.OutcomeOccurredAt.Before(in.LeadCreatedAt) {
+	if !lead.IsZero() && in.OutcomeOccurredAt.Before(lead) {
 		return true
 	}
 	if !in.IngestedAt.IsZero() && in.OutcomeOccurredAt.Before(in.IngestedAt) && strings.TrimSpace(in.Keys.ActionID) == "" {

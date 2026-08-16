@@ -123,6 +123,8 @@ type Service interface {
 	CommercialExecutiveView(ctx context.Context, orgID uuid.UUID, month string, includeSynthetic bool) (*intel.ExecutiveView, *errx.Error)
 	RecordIntelLearning(ctx context.Context, orgID uuid.UUID, in intel.LearningInput) (intel.LearningCandidate, *errx.Error)
 	ListIntelExceptions(ctx context.Context, orgID uuid.UUID) ([]intel.Exception, *errx.Error)
+	IngestCommercialEvent(ctx context.Context, orgID uuid.UUID, ev intel.CommercialEvent) (intel.JoinResult, *errx.Error)
+	CommercialIntelReport(ctx context.Context, orgID uuid.UUID, month string, includeSynthetic bool) (*intel.ObservabilityReport, *errx.Error)
 }
 
 // ImportOptions controls dry-run, idempotency, and source tracking.

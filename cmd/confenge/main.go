@@ -18,6 +18,7 @@ import (
 
 	"github.com/warmbly/warmbly/internal/app/confenge"
 	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
+	"github.com/warmbly/warmbly/internal/app/confenge/intel"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/repository"
 	"github.com/warmbly/warmbly/internal/seed"
@@ -41,6 +42,8 @@ func main() {
 		os.Exit(cmdStopSending())
 	case "resume-sending":
 		os.Exit(cmdResumeSending())
+	case "intel-report":
+		os.Exit(cmdIntelReport(os.Args[2:]))
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -60,9 +63,44 @@ Usage:
   confenge reconcile-target-fit [--dry-run] [--org-id UUID]
   confenge stop-sending
   confenge resume-sending
+  confenge intel-report [--month YYYY-MM] [--include-synthetic] [--json PATH] [--md PATH]
 
 Env: PRIMARY_DB, CONFENGE_*, REDIS, NATS_URL (see .env.confenge.example).
 `)
+}
+
+func cmdIntelReport(args []string) int {
+	fs := flag.NewFlagSet("intel-report", flag.ExitOnError)
+	month := fs.String("month", intel.SyntheticMonth, "month YYYY-MM")
+	include := fs.Bool("include-synthetic", true, "include labeled SYNTHETIC fixtures")
+	jsonPath := fs.String("json", "", "write JSON report to PATH (stdout if empty or -)")
+	mdPath := fs.String("md", "", "write Markdown report to PATH")
+	orgStr := fs.String("org-id", "org-inbound-learning-47", "organization id for fixture ingest")
+	_ = fs.Parse(args)
+
+	rep := intel.RunFixtureReport(*orgStr, *month, *include)
+	raw, err := intel.ReportJSON(rep)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "intel-report: %v\n", err)
+		return 1
+	}
+	if *jsonPath == "" || *jsonPath == "-" {
+		fmt.Println(string(raw))
+	} else if err := os.WriteFile(*jsonPath, raw, 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "intel-report json: %v\n", err)
+		return 1
+	}
+	if *mdPath != "" {
+		if err := os.WriteFile(*mdPath, []byte(intel.ReportMarkdown(rep)), 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "intel-report md: %v\n", err)
+			return 1
+		}
+	}
+	if *jsonPath != "" && *jsonPath != "-" {
+		fmt.Fprintf(os.Stderr, "intel-report recommendation=%s iqp=%d baseline=%s\n",
+			rep.Recommendation, rep.InboundQualifiedPipeline, rep.Latency.Baseline)
+	}
+	return 0
 }
 
 func loadEnvFile(path string) {
