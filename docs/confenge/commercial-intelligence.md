@@ -79,7 +79,8 @@ This capability never writes extra-cli, web-cfg, or SmartLic.
 durations fail reconciliation. Fixture-only latency is
 `BASELINE_SYNTHETIC`. A real event labels `BASELINE_OBSERVED`.
 
-See `docs/contracts/inbound-learning/` and `INTEGRATION_NOTES.md`.
+See `docs/contracts/inbound-learning/` (event schema, fixtures, and
+the web-cfg / extra-cli manifesto in `INTEGRATION_NOTES.md`).
 
 ## What this is not
 

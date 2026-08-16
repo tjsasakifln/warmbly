@@ -162,6 +162,40 @@ func TestLateCorrectionMergesWithoutSecondChain(t *testing.T) {
 	fmt.Printf("LATE_CORRECTION outcome=%s chains=%d\n", last.Chain.OutcomeType, len(chains))
 }
 
+func TestRevenueWithoutDocumentDoesNotCount(t *testing.T) {
+	st := NewMemoryStore()
+	fx := fixtureByName(t, FixturePipelineWithoutRevenue)
+	var last JoinResult
+	for _, ev := range fx.Events {
+		last = IngestEvent(st, ev)
+	}
+	if !last.Chain.PipelineOpen {
+		t.Fatal("pipeline fixture must be open before revenue_evidenced")
+	}
+	rev := CommercialEvent{
+		EventID: "ev-rev-nodoc", Version: "1", Schema: EventSchemaV1,
+		Type: EventRevenueEvidenced, OccurredAt: time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC),
+		IngestedAt: time.Date(2026, 8, 10, 12, 1, 0, 0, time.UTC), Timezone: "UTC",
+		OrganizationID: loopOrg, LeadID: "lead-pipe-norev", ReceiptID: "rcpt-pipe-norev",
+		IdempotencyKey: "idem-rev-nodoc", RouteFamily: FamilyInbound, Source: "web-cfg",
+		Query: "diagnostico", AssetID: "asset-pipe-1", ActionID: "act-pipe-1",
+		RevenueCents: 9900, RevenueDocumentID: "", Synthetic: true,
+	}
+	res := IngestEvent(st, rev)
+	if res.Chain.RevenueEvidenced || res.Chain.RevenueCents != 0 {
+		t.Fatalf("revenue without document_id evidenced: cents=%d evidenced=%v", res.Chain.RevenueCents, res.Chain.RevenueEvidenced)
+	}
+	saved, _ := st.GetChain(loopOrg, res.Chain.Identity)
+	if saved == nil || saved.RevenueEvidenced || saved.RevenueCents != 0 {
+		t.Fatalf("store kept undocumented revenue: %+v", saved)
+	}
+	view := Rollup(mustList(st, loopOrg), SyntheticMonth, true)
+	if view.RevenueCents != 0 || view.RevenueStatus == "evidenced" {
+		t.Fatalf("undocumented revenue counted: status=%s cents=%d", view.RevenueStatus, view.RevenueCents)
+	}
+	fmt.Printf("REV_NO_DOC evidenced=%v cents=%d status=%s pipe=%d\n", res.Chain.RevenueEvidenced, res.Chain.RevenueCents, view.RevenueStatus, view.Pipeline)
+}
+
 func TestPipelineWithoutRevenueDoesNotCountRevenue(t *testing.T) {
 	st := NewMemoryStore()
 	fx := fixtureByName(t, FixturePipelineWithoutRevenue)
@@ -444,16 +478,76 @@ func TestRunFixtureReportTwiceStable(t *testing.T) {
 	if !found {
 		t.Fatal("no learning candidates")
 	}
-	raw, _ := ReportJSON(a)
-	md := ReportMarkdown(a)
-	if !strings.Contains(md, "INBOUND QUALIFIED PIPELINE") {
+	rawA, err := ReportJSON(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawB, err := ReportJSON(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(rawA) != string(rawB) {
+		t.Fatal("JSON reports are not byte-stable across two RunFixtureReport calls")
+	}
+	mdA := ReportMarkdown(a)
+	mdB := ReportMarkdown(b)
+	if mdA != mdB {
+		t.Fatal("markdown reports are not byte-stable across two RunFixtureReport calls")
+	}
+	if !strings.Contains(mdA, "INBOUND QUALIFIED PIPELINE") {
 		t.Fatal("markdown missing IQP")
 	}
-	if ReportHasPII(raw) {
+	if ReportHasPII(rawA) {
 		t.Fatal("report JSON flagged as PII")
 	}
-	fmt.Printf("REPORT_STABLE iqp=%d won=%d lost=%d unknown=%d baseline=%s rec=%s\n",
-		a.InboundQualifiedPipeline, a.Won, a.Lost, a.Unknown, a.Latency.Baseline, a.Recommendation)
+	fmt.Printf("REPORT_STABLE iqp=%d won=%d lost=%d unknown=%d baseline=%s rec=%s json_bytes=%d md_bytes=%d\n",
+		a.InboundQualifiedPipeline, a.Won, a.Lost, a.Unknown, a.Latency.Baseline, a.Recommendation, len(rawA), len(mdA))
+}
+
+func TestManifestoNamesBothConsumers(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "..", "docs", "contracts", "inbound-learning", "INTEGRATION_NOTES.md")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := strings.ToLower(string(raw))
+	for _, tok := range []string{
+		"confenge.commercial_event.v1",
+		"confenge.inbound_learning_report.v1",
+		"web-cfg consumer",
+		"extra-cli consumer",
+		"source / query / asset / cta / consent",
+		"facts / entities / events / evidence",
+		"upstream_writes",
+		"baseline_observed",
+	} {
+		if !strings.Contains(body, tok) {
+			t.Fatalf("manifesto missing %q", tok)
+		}
+	}
+	fmt.Printf("MANIFESTO both_consumers=true bytes=%d\n", len(raw))
+}
+
+func TestPersistedExceptionCodesInMigration102(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "infrastructure", "db", "migrations", "000102_outreach_intel_event_exception_codes.up.sql")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw)
+	for _, code := range []string{
+		ExceptionOrphan, ExceptionDuplicate, ExceptionConflictingAccount,
+		ExceptionMissingVersion, ExceptionStaleAttribution, ExceptionOutOfOrder,
+		ExceptionUnconfirmedWon, ExceptionUnconfirmedLost, ExceptionUnavailable,
+		ExceptionImpossibleTransition, ExceptionNegativeLatency, ExceptionOverlappingLatency,
+		ExceptionOutboundAsInbound, ExceptionInvalidAssetFamily, ExceptionMissingAttribution,
+	} {
+		quoted := "'" + code + "'"
+		if !strings.Contains(body, quoted) {
+			t.Fatalf("migration 000102 missing exception code %s", code)
+		}
+	}
+	fmt.Printf("MIGRATION_102 exception_codes_present=true bytes=%d\n", len(raw))
 }
 
 func TestOrderingOutOfOrderHeld(t *testing.T) {

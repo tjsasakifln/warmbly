@@ -24,7 +24,7 @@ mapping here. Do not silently rename.
 | `analysis_id` | web-cfg | pointer only |
 | `source` / `referrer` / `query` / `intent_class` | web-cfg | no PII |
 | `cta_id` / `offer_id` / `route` | web-cfg / Warmbly | IDs |
-| `account_public_id` / `entity_public_id` | extra-cli | public refs |
+| `account_public_id` / `entity_public_id` | extra-cli | public refs; first account wins |
 | `consent` / `suppression` | web-cfg | refs, not raw PII |
 | `actor_ref` / `evidence_ref` | producer | pointers |
 | `outcome_state` | Warmbly / human | WON/LOST need human_confirmed |
