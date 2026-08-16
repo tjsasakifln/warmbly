@@ -65,7 +65,21 @@ empty/UNKNOWN until a human-approved action exists.
 
 Corrections and recorded outcomes emit a local `LEARNING CANDIDATE` for
 demand / asset / offer / content / distribution. Status is `PENDING`.
+The verdict is exactly `REPEAT` | `CHANGE` | `STOP` | `NEED_MORE_DATA`.
 This capability never writes extra-cli, web-cfg, or SmartLic.
+
+## Versioned events
+
+`POST /confenge/intel/events` and `confenge intel-report` consume
+`confenge.commercial_event.v1`. Fixtures and future real events share
+`IngestEvent`. Asset families `market_answer`, `contract_analysis`, and
+`b2g_xray` stay in separate slices. Pipeline opens only on
+`pipeline_created` / `pipeline_updated`. Revenue increments only on
+`revenue_evidenced` with a document id. Negative or overlapping
+durations fail reconciliation. Fixture-only latency is
+`BASELINE_SYNTHETIC`. A real event labels `BASELINE_OBSERVED`.
+
+See `docs/contracts/inbound-learning/` and `INTEGRATION_NOTES.md`.
 
 ## What this is not
 

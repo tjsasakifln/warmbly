@@ -59,3 +59,43 @@ func (h *Handler) RecordConfengeIntelLearning(c *gin.Context) {
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": cand})
 }
+
+// IngestConfengeIntelEvent — POST /confenge/intel/events
+// Versioned commercial envelope. Same event_id is a replay.
+func (h *Handler) IngestConfengeIntelEvent(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	var ev intel.CommercialEvent
+	if err := c.ShouldBindJSON(&ev); err != nil {
+		errx.JSON(c, errx.New(errx.BadRequest, "invalid commercial event"))
+		return
+	}
+	res, xerr := h.ConfengeService.IngestCommercialEvent(c.Request.Context(), orgID, ev)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	status := http.StatusCreated
+	if res.Replay {
+		status = http.StatusOK
+	}
+	c.JSON(status, gin.H{"data": res})
+}
+
+// GetConfengeIntelReport — GET /confenge/intel/report
+func (h *Handler) GetConfengeIntelReport(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	month := strings.TrimSpace(c.Query("month"))
+	includeSynthetic := queryBool(c, "include_synthetic")
+	rep, xerr := h.ConfengeService.CommercialIntelReport(c.Request.Context(), orgID, month, includeSynthetic)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": rep})
+}

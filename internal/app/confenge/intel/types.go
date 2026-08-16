@@ -55,12 +55,68 @@ const (
 	LearningFromOutcome    = "outcome"
 	LearningPending        = "PENDING"
 
-	LearningRepeat  = "repeat"
-	LearningChange  = "change"
-	LearningStop    = "stop"
-	LearningUnknown = "UNKNOWN"
+	LearningRepeat   = "REPEAT"
+	LearningChange   = "CHANGE"
+	LearningStop     = "STOP"
+	LearningNeedMore = "NEED_MORE_DATA"
+	LearningUnknown  = "NEED_MORE_DATA"
 
 	AssociationObserved = "observed_association"
+
+	EventSchemaV1 = "confenge.commercial_event.v1"
+
+	EventLeadReceived      = "lead_received"
+	EventLeadValidated     = "lead_validated"
+	EventLeadRejected      = "lead_rejected"
+	EventHandoffAccepted   = "handoff_accepted"
+	EventHandoffException  = "handoff_exception"
+	EventActionApproved    = "action_approved"
+	EventActionExecuted    = "action_executed"
+	EventReply             = "reply"
+	EventOutcomeObserved   = "outcome_observed"
+	EventMeeting           = "meeting"
+	EventProposal          = "proposal"
+	EventPipelineCreated   = "pipeline_created"
+	EventPipelineUpdated   = "pipeline_updated"
+	EventWon               = "won"
+	EventLost              = "lost"
+	EventUnknownState      = "unknown"
+	EventRevenueEvidenced  = "revenue_evidenced"
+	EventLearningCandidate = "learning_candidate"
+	EventXRayCompleted     = "xray_completed"
+	EventPageView          = "page_view"
+	EventCitation          = "citation"
+	EventCorrection        = "correction"
+
+	AssetFamilyMarketAnswer     = "market_answer"
+	AssetFamilyContractAnalysis = "contract_analysis"
+	AssetFamilyB2GXRay          = "b2g_xray"
+
+	LaneInbound          = "inbound"
+	LaneOutbound         = "outbound"
+	LanePartner          = "partner"
+	LaneExpansion        = "customer_expansion"
+	LaneCustomerProof    = "customer_proof"
+	LaneMarketAnswer     = "market_answer_assisted"
+	LaneContractAnalysis = "contract_analysis_assisted"
+	LaneB2GXRay          = "b2g_xray_assisted"
+
+	ExceptionImpossibleTransition = "impossible_transition"
+	ExceptionNegativeLatency      = "negative_latency"
+	ExceptionOverlappingLatency   = "overlapping_latency"
+	ExceptionOutboundAsInbound    = "outbound_as_inbound"
+	ExceptionInvalidAssetFamily   = "invalid_asset_family"
+	ExceptionMissingAttribution   = "missing_attribution"
+
+	BaselineSynthetic = "BASELINE_SYNTHETIC"
+	BaselineObserved  = "BASELINE_OBSERVED"
+	BaselineNone      = "insufficient_data"
+
+	RecommendReady  = "READY_FOR_REAL_EVENTS"
+	RecommendAdjust = "ADJUST"
+	RecommendNoGo   = "NO_GO"
+
+	ReportSchemaV1 = "confenge.inbound_learning_report.v1"
 )
 
 // JoinKeys is the typed, idempotent join contract. Metric keys use these
@@ -99,6 +155,23 @@ type JoinKeys struct {
 	Trigger     string `json:"trigger,omitempty"`
 	OfferID     string `json:"offer_id,omitempty"`
 	Route       string `json:"route,omitempty"`
+
+	// Envelope / asset attribution. IDs and pointers only.
+	EventID           string `json:"event_id,omitempty"`
+	AssetFamily       string `json:"asset_family,omitempty"`
+	MarketAnswerID    string `json:"market_answer_id,omitempty"`
+	AnalysisID        string `json:"analysis_id,omitempty"`
+	Referrer          string `json:"referrer,omitempty"`
+	IntentClass       string `json:"intent_class,omitempty"`
+	CitationRoute     string `json:"citation_route,omitempty"`
+	DistributionRoute string `json:"distribution_route,omitempty"`
+	ActorRef          string `json:"actor_ref,omitempty"`
+	EvidenceRef       string `json:"evidence_ref,omitempty"`
+	Consent           string `json:"consent,omitempty"`
+	ProducerSHA       string `json:"producer_sha,omitempty"`
+	Schema            string `json:"schema,omitempty"`
+	RevenueDocumentID string `json:"revenue_document_id,omitempty"`
+	CustomerProofLane bool   `json:"customer_proof_lane,omitempty"`
 }
 
 // ObservedFacts is one observed commercial record. Missing optional IDs
@@ -125,6 +198,18 @@ type ObservedFacts struct {
 
 	AttributionStale bool `json:"attribution_stale,omitempty"`
 	RequiresFresh    bool `json:"requires_fresh,omitempty"`
+
+	PublishedAt *time.Time `json:"published_at,omitempty"`
+	DetectedAt  *time.Time `json:"detected_at,omitempty"`
+
+	EventType        string `json:"event_type,omitempty"`
+	NotALead         bool   `json:"not_a_lead,omitempty"`
+	Correction       bool   `json:"correction,omitempty"`
+	RevenueEvidenced bool   `json:"revenue_evidenced,omitempty"`
+	RevenueCents     int64  `json:"revenue_cents,omitempty"`
+	HandRaise        bool   `json:"hand_raise,omitempty"`
+	Suppression      bool   `json:"suppression,omitempty"`
+	Timezone         string `json:"timezone,omitempty"`
 
 	Synthetic bool   `json:"synthetic,omitempty"`
 	Label     string `json:"label,omitempty"`
@@ -156,6 +241,15 @@ type Chain struct {
 	OfferID     string `json:"offer_id"`
 	Route       string `json:"route"`
 
+	CTAID             string `json:"cta_id,omitempty"`
+	AssetFamily       string `json:"asset_family,omitempty"`
+	MarketAnswerID    string `json:"market_answer_id,omitempty"`
+	AnalysisID        string `json:"analysis_id,omitempty"`
+	Referrer          string `json:"referrer,omitempty"`
+	IntentClass       string `json:"intent_class,omitempty"`
+	CitationRoute     string `json:"citation_route,omitempty"`
+	DistributionRoute string `json:"distribution_route,omitempty"`
+
 	Versions Versions `json:"versions"`
 
 	LeadCreatedAt  time.Time  `json:"lead_created_at,omitempty"`
@@ -165,13 +259,21 @@ type Chain struct {
 	ConversationAt *time.Time `json:"conversation_at,omitempty"`
 	ProposalAt     *time.Time `json:"proposal_at,omitempty"`
 	CloseAt        *time.Time `json:"close_at,omitempty"`
+	PublishedAt    *time.Time `json:"published_at,omitempty"`
+	DetectedAt     *time.Time `json:"detected_at,omitempty"`
 
-	OutcomeType    string `json:"outcome_type"`
-	HumanConfirmed bool   `json:"human_confirmed"`
-	Qualified      bool   `json:"qualified"`
-	Conversation   bool   `json:"conversation"`
-	PipelineOpen   bool   `json:"pipeline_open"`
-	Held           bool   `json:"held"`
+	OutcomeType       string `json:"outcome_type"`
+	HumanConfirmed    bool   `json:"human_confirmed"`
+	Qualified         bool   `json:"qualified"`
+	Conversation      bool   `json:"conversation"`
+	PipelineOpen      bool   `json:"pipeline_open"`
+	Held              bool   `json:"held"`
+	NotALead          bool   `json:"not_a_lead,omitempty"`
+	RevenueEvidenced  bool   `json:"revenue_evidenced,omitempty"`
+	RevenueCents      int64  `json:"revenue_cents,omitempty"`
+	CorrectionApplied bool   `json:"correction_applied,omitempty"`
+	EventType         string `json:"event_type,omitempty"`
+	Timezone          string `json:"timezone,omitempty"`
 
 	AttributionKind string `json:"attribution_kind"`
 	CausalProof     bool   `json:"causal_proof"`
@@ -285,15 +387,21 @@ type Denominators struct {
 	Closed        int `json:"closed"`
 }
 
-// LatencyMS is observed elapsed time between stamps. Missing stamps stay 0.
+// LatencyMS is observed elapsed time between stamps. Missing stamps are
+// censored, not coerced to zero. Negative/overlapping spans never enter
+// these averages; they fail reconciliation instead.
 type LatencyMS struct {
+	PublishedToDetected    int64  `json:"published_to_detected_ms"`
+	DetectedToLead         int64  `json:"detected_to_lead_ms"`
 	LeadToIngest           int64  `json:"lead_to_ingest_ms"`
+	LeadToFirstAction      int64  `json:"lead_to_first_action_ms"`
 	IngestToEnrichment     int64  `json:"ingest_to_enrichment_ms"`
 	EnrichmentToAction     int64  `json:"enrichment_to_action_ms"`
 	ActionToConversation   int64  `json:"action_to_conversation_ms"`
 	ConversationToProposal int64  `json:"conversation_to_proposal_ms"`
 	ProposalToClose        int64  `json:"proposal_to_close_ms"`
 	SampledChains          int    `json:"sampled_chains"`
+	CensoredCycles         int    `json:"censored_cycles"`
 	Baseline               string `json:"baseline"`
 }
 
@@ -326,6 +434,13 @@ type ExecutiveView struct {
 	ByTrigger                []Breakdown    `json:"by_trigger"`
 	ByOffer                  []Breakdown    `json:"by_offer"`
 	ByRoute                  []Breakdown    `json:"by_route"`
+	ByIntent                 []Breakdown    `json:"by_intent,omitempty"`
+	MarketAnswer             AssetSlice     `json:"market_answer"`
+	ContractAnalysis         AssetSlice     `json:"contract_analysis"`
+	B2GXRay                  AssetSlice     `json:"b2g_xray"`
+	CustomerProof            int            `json:"customer_proof"`
+	RevenueCents             int64          `json:"revenue_cents"`
+	RevenueStatus            string         `json:"revenue_status"`
 	Denominators             Denominators   `json:"denominators"`
 	Latency                  LatencyMS      `json:"latency"`
 	Freshness                Freshness      `json:"freshness"`
@@ -333,6 +448,25 @@ type ExecutiveView struct {
 	CausalProof              bool           `json:"causal_proof"`
 	RealEmpty                bool           `json:"real_empty"`
 	ChainCount               int            `json:"chain_count"`
+}
+
+// AssetSlice is one assisted-asset lane. It is not a CRM stage.
+type AssetSlice struct {
+	AssetFamily        string `json:"asset_family"`
+	Leads              int    `json:"leads"`
+	Qualified          int    `json:"qualified"`
+	Actions            int    `json:"actions"`
+	Meetings           int    `json:"meetings"`
+	Proposals          int    `json:"proposals"`
+	Pipeline           int    `json:"pipeline"`
+	Won                int    `json:"won"`
+	Lost               int    `json:"lost"`
+	Unknown            int    `json:"unknown"`
+	Completions        int    `json:"completions,omitempty"`
+	HandRaises         int    `json:"hand_raises,omitempty"`
+	RevenueCents       int64  `json:"revenue_cents"`
+	RevenueStatus      string `json:"revenue_status"`
+	MissingAttribution int    `json:"missing_attribution"`
 }
 
 func idOrUnknown(v string) string {
@@ -367,4 +501,113 @@ func isWonType(t string) bool {
 
 func isLostType(t string) bool {
 	return strings.EqualFold(strings.TrimSpace(t), OutcomeLost)
+}
+
+// CommercialEvent is the versioned envelope consumed by IngestEvent.
+// PII lives only at PIIPointer and is never copied into metric keys.
+type CommercialEvent struct {
+	EventID           string     `json:"event_id"`
+	Version           string     `json:"version"`
+	Type              string     `json:"type"`
+	OccurredAt        time.Time  `json:"occurred_at"`
+	IngestedAt        time.Time  `json:"ingested_at"`
+	Timezone          string     `json:"timezone"`
+	CorrelationID     string     `json:"correlation_id,omitempty"`
+	IdempotencyKey    string     `json:"idempotency_key,omitempty"`
+	AssetFamily       string     `json:"asset_family,omitempty"`
+	MarketAnswerID    string     `json:"market_answer_id,omitempty"`
+	AnalysisID        string     `json:"analysis_id,omitempty"`
+	Source            string     `json:"source,omitempty"`
+	Referrer          string     `json:"referrer,omitempty"`
+	Query             string     `json:"query,omitempty"`
+	IntentClass       string     `json:"intent_class,omitempty"`
+	CTAID             string     `json:"cta_id,omitempty"`
+	OfferID           string     `json:"offer_id,omitempty"`
+	Route             string     `json:"route,omitempty"`
+	AccountPublicID   string     `json:"account_public_id,omitempty"`
+	EntityPublicID    string     `json:"entity_public_id,omitempty"`
+	ContractPublicID  string     `json:"contract_public_id,omitempty"`
+	Consent           string     `json:"consent,omitempty"`
+	Suppression       bool       `json:"suppression,omitempty"`
+	ActorRef          string     `json:"actor_ref,omitempty"`
+	EvidenceRef       string     `json:"evidence_ref,omitempty"`
+	OutcomeState      string     `json:"outcome_state,omitempty"`
+	ProducerSHA       string     `json:"producer_sha,omitempty"`
+	Schema            string     `json:"schema,omitempty"`
+	PIIPointer        string     `json:"pii_pointer,omitempty"`
+	LeadID            string     `json:"lead_id,omitempty"`
+	ReceiptID         string     `json:"receipt_id,omitempty"`
+	ActionID          string     `json:"action_id,omitempty"`
+	OutcomeID         string     `json:"outcome_id,omitempty"`
+	RouteFamily       string     `json:"route_family,omitempty"`
+	Trigger           string     `json:"trigger,omitempty"`
+	AssetID           string     `json:"asset_id,omitempty"`
+	Qualified         bool       `json:"qualified,omitempty"`
+	HumanConfirmed    bool       `json:"human_confirmed,omitempty"`
+	RevenueCents      int64      `json:"revenue_cents,omitempty"`
+	RevenueDocumentID string     `json:"revenue_document_id,omitempty"`
+	PublishedAt       *time.Time `json:"published_at,omitempty"`
+	DetectedAt        *time.Time `json:"detected_at,omitempty"`
+	HandRaise         bool       `json:"hand_raise,omitempty"`
+	Correction        bool       `json:"correction,omitempty"`
+	CustomerProofLane bool       `json:"customer_proof_lane,omitempty"`
+	OrganizationID    string     `json:"organization_id,omitempty"`
+	Synthetic         bool       `json:"synthetic,omitempty"`
+}
+
+// ObservabilityReport is the executive JSON/MD payload for the learning loop.
+type ObservabilityReport struct {
+	SchemaVersion            string            `json:"schema_version"`
+	Month                    string            `json:"month"`
+	IncludeSynthetic         bool              `json:"include_synthetic"`
+	InboundQualifiedPipeline int               `json:"inbound_qualified_pipeline"`
+	ValidLeads               int               `json:"valid_leads"`
+	QualifiedLeads           int               `json:"qualified_leads"`
+	Actions                  int               `json:"actions"`
+	Outcomes                 int               `json:"outcomes"`
+	Meetings                 int               `json:"meetings"`
+	Proposals                int               `json:"proposals"`
+	Pipeline                 int               `json:"pipeline"`
+	Won                      int               `json:"won"`
+	Lost                     int               `json:"lost"`
+	Unknown                  int               `json:"unknown"`
+	Missing                  int               `json:"missing"`
+	Lanes                    map[string]int    `json:"lanes"`
+	BySource                 []Breakdown       `json:"by_source"`
+	ByAsset                  []Breakdown       `json:"by_asset"`
+	ByIntent                 []Breakdown       `json:"by_intent"`
+	ByOffer                  []Breakdown       `json:"by_offer"`
+	ByRoute                  []Breakdown       `json:"by_route"`
+	MarketAnswer             AssetSlice        `json:"market_answer"`
+	ContractAnalysis         AssetSlice        `json:"contract_analysis"`
+	B2GXRay                  AssetSlice        `json:"b2g_xray"`
+	CustomerProof            int               `json:"customer_proof"`
+	Denominators             Denominators      `json:"denominators"`
+	ExceptionCounts          map[string]int    `json:"exception_counts"`
+	EventsConsumed           int               `json:"events_consumed"`
+	Joins                    int               `json:"joins"`
+	Orphans                  int               `json:"orphans"`
+	Conflicts                int               `json:"conflicts"`
+	AttributionCompleteness  float64           `json:"attribution_completeness"`
+	Latency                  LatencyMS         `json:"latency"`
+	RevenueCents             int64             `json:"revenue_cents"`
+	RevenueStatus            string            `json:"revenue_status"`
+	Freshness                Freshness         `json:"freshness"`
+	LearningCandidates       []LearningSummary `json:"learning_candidates"`
+	Blockers                 []string          `json:"blockers"`
+	Recommendation           string            `json:"recommendation"`
+	CausalProof              bool              `json:"causal_proof"`
+	UpstreamWrites           []string          `json:"upstream_writes"`
+	RealEmpty                bool              `json:"real_empty"`
+	AutoSend                 bool              `json:"auto_send"`
+	EmailSideEffects         bool              `json:"email_side_effects"`
+}
+
+// LearningSummary is the PII-free learning row on the report.
+type LearningSummary struct {
+	Identity       string `json:"identity"`
+	Recommendation string `json:"recommendation"`
+	Reason         string `json:"reason"`
+	Target         string `json:"target"`
+	Synthetic      bool   `json:"synthetic"`
 }

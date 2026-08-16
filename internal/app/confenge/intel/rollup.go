@@ -39,6 +39,10 @@ func Rollup(chains []Chain, month string, includeSynthetic bool) ExecutiveView {
 	byTrigger := map[string]int{}
 	byOffer := map[string]int{}
 	byRoute := map[string]int{}
+	byIntent := map[string]int{}
+	ma := emptyAssetSlice(AssetFamilyMarketAnswer)
+	ca := emptyAssetSlice(AssetFamilyContractAnalysis)
+	xr := emptyAssetSlice(AssetFamilyB2GXRay)
 	tfVers := map[string]struct{}{}
 	apVers := map[string]struct{}{}
 	marks := map[string]struct{}{}
@@ -59,6 +63,22 @@ func Rollup(chains []Chain, month string, includeSynthetic bool) ExecutiveView {
 		incBreakdown(byTrigger, c.Trigger)
 		incBreakdown(byOffer, c.OfferID)
 		incBreakdown(byRoute, c.Route)
+		incBreakdown(byIntent, firstNonEmpty(c.IntentClass, c.Keys.IntentClass))
+		switch normalizeAssetFamily(firstNonEmpty(c.AssetFamily, c.Keys.AssetFamily)) {
+		case AssetFamilyMarketAnswer:
+			addAssetSlice(&ma, c)
+		case AssetFamilyContractAnalysis:
+			addAssetSlice(&ca, c)
+		case AssetFamilyB2GXRay:
+			addAssetSlice(&xr, c)
+		}
+		if c.Keys.CustomerProofLane && !c.NotALead {
+			view.CustomerProof++
+		}
+		if c.RevenueEvidenced && c.RevenueCents > 0 {
+			view.RevenueCents += c.RevenueCents
+			view.RevenueStatus = "evidenced"
+		}
 		if c.Versions.TargetFit != "" {
 			tfVers[c.Versions.TargetFit] = struct{}{}
 		}
@@ -75,7 +95,7 @@ func Rollup(chains []Chain, month string, includeSynthetic bool) ExecutiveView {
 			view.Freshness.MissingVersionChains++
 		}
 
-		if strings.TrimSpace(c.LeadID) != "" && c.LeadID != Unknown {
+		if !c.NotALead && strings.TrimSpace(c.LeadID) != "" && c.LeadID != Unknown {
 			view.Denominators.Leads++
 		}
 		if strings.TrimSpace(c.ActionID) != "" && c.ActionID != Unknown {
@@ -100,7 +120,7 @@ func Rollup(chains []Chain, month string, includeSynthetic bool) ExecutiveView {
 				view.Families[fi].QCO++
 			}
 		}
-		if c.RouteFamily == FamilyInbound && qco {
+		if c.RouteFamily == FamilyInbound && qco && !c.NotALead && !c.Held {
 			view.InboundQualifiedPipeline++
 			if fi >= 0 {
 				view.Families[fi].InboundQualifiedPipeline++
@@ -156,34 +176,52 @@ func Rollup(chains []Chain, month string, includeSynthetic bool) ExecutiveView {
 
 		if n := latencySample(c); n.SampledChains == 1 {
 			latN++
+			latSum.PublishedToDetected += n.PublishedToDetected
+			latSum.DetectedToLead += n.DetectedToLead
 			latSum.LeadToIngest += n.LeadToIngest
+			latSum.LeadToFirstAction += n.LeadToFirstAction
 			latSum.IngestToEnrichment += n.IngestToEnrichment
 			latSum.EnrichmentToAction += n.EnrichmentToAction
 			latSum.ActionToConversation += n.ActionToConversation
 			latSum.ConversationToProposal += n.ConversationToProposal
 			latSum.ProposalToClose += n.ProposalToClose
+			latSum.CensoredCycles += n.CensoredCycles
+		} else {
+			latSum.CensoredCycles++
 		}
 	}
 
 	if latN > 0 {
 		view.Latency = LatencyMS{
+			PublishedToDetected:    latSum.PublishedToDetected / int64(latN),
+			DetectedToLead:         latSum.DetectedToLead / int64(latN),
 			LeadToIngest:           latSum.LeadToIngest / int64(latN),
+			LeadToFirstAction:      latSum.LeadToFirstAction / int64(latN),
 			IngestToEnrichment:     latSum.IngestToEnrichment / int64(latN),
 			EnrichmentToAction:     latSum.EnrichmentToAction / int64(latN),
 			ActionToConversation:   latSum.ActionToConversation / int64(latN),
 			ConversationToProposal: latSum.ConversationToProposal / int64(latN),
 			ProposalToClose:        latSum.ProposalToClose / int64(latN),
 			SampledChains:          latN,
-			Baseline:               "observed",
+			CensoredCycles:         latSum.CensoredCycles,
+			Baseline:               latencyBaseline(chains, includeSynthetic),
 		}
 	} else {
-		view.Latency.Baseline = "insufficient_data"
+		view.Latency.Baseline = BaselineNone
+		view.Latency.CensoredCycles = latSum.CensoredCycles
+	}
+	if view.RevenueStatus == "" {
+		view.RevenueStatus = Unknown
 	}
 	view.BySource = mapBreakdown(bySource)
 	view.ByAsset = mapBreakdown(byAsset)
 	view.ByTrigger = mapBreakdown(byTrigger)
 	view.ByOffer = mapBreakdown(byOffer)
 	view.ByRoute = mapBreakdown(byRoute)
+	view.ByIntent = mapBreakdown(byIntent)
+	view.MarketAnswer = ma
+	view.ContractAnalysis = ca
+	view.B2GXRay = xr
 	view.Freshness.TargetFitVersions = mapKeys(tfVers)
 	view.Freshness.ActivationPolicyVersions = mapKeys(apVers)
 	view.Freshness.Watermarks = mapKeys(marks)
@@ -234,39 +272,162 @@ func mapKeys(m map[string]struct{}) []string {
 }
 
 func latencySample(c Chain) LatencyMS {
-	ms := func(a, b time.Time) int64 {
-		if a.IsZero() || b.IsZero() || b.Before(a) {
-			return 0
-		}
-		return b.Sub(a).Milliseconds()
+	if hasInvertedLatency(c) {
+		return LatencyMS{}
 	}
-	var firstAction time.Time
+	span := func(a, b time.Time) (int64, bool) {
+		if a.IsZero() || b.IsZero() {
+			return 0, true
+		}
+		if b.Before(a) {
+			return 0, true
+		}
+		return b.Sub(a).Milliseconds(), false
+	}
+	var firstAction, enrich, conv, prop, closeT, pub, det time.Time
 	if c.FirstActionAt != nil {
 		firstAction = *c.FirstActionAt
 	}
-	var enrich time.Time
 	if c.EnrichmentAt != nil {
 		enrich = *c.EnrichmentAt
 	}
-	var conv time.Time
 	if c.ConversationAt != nil {
 		conv = *c.ConversationAt
 	}
-	var prop time.Time
 	if c.ProposalAt != nil {
 		prop = *c.ProposalAt
 	}
-	var closeT time.Time
 	if c.CloseAt != nil {
 		closeT = *c.CloseAt
 	}
+	if c.PublishedAt != nil {
+		pub = *c.PublishedAt
+	}
+	if c.DetectedAt != nil {
+		det = *c.DetectedAt
+	}
+	var censored int
+	take := func(a, b time.Time) int64 {
+		v, miss := span(a, b)
+		if miss {
+			censored++
+		}
+		return v
+	}
 	return LatencyMS{
-		LeadToIngest:           ms(c.LeadCreatedAt, c.IngestedAt),
-		IngestToEnrichment:     ms(c.IngestedAt, enrich),
-		EnrichmentToAction:     ms(enrich, firstAction),
-		ActionToConversation:   ms(firstAction, conv),
-		ConversationToProposal: ms(conv, prop),
-		ProposalToClose:        ms(prop, closeT),
+		PublishedToDetected:    take(pub, det),
+		DetectedToLead:         take(det, c.LeadCreatedAt),
+		LeadToIngest:           take(c.LeadCreatedAt, c.IngestedAt),
+		LeadToFirstAction:      take(c.LeadCreatedAt, firstAction),
+		IngestToEnrichment:     take(c.IngestedAt, enrich),
+		EnrichmentToAction:     take(enrich, firstAction),
+		ActionToConversation:   take(firstAction, conv),
+		ConversationToProposal: take(conv, prop),
+		ProposalToClose:        take(prop, closeT),
 		SampledChains:          1,
+		CensoredCycles:         censored,
+	}
+}
+
+func hasInvertedLatency(c Chain) bool {
+	times := []time.Time{}
+	add := func(t time.Time) {
+		if !t.IsZero() {
+			times = append(times, t)
+		}
+	}
+	if c.PublishedAt != nil {
+		add(*c.PublishedAt)
+	}
+	if c.DetectedAt != nil {
+		add(*c.DetectedAt)
+	}
+	add(c.LeadCreatedAt)
+	if c.FirstActionAt != nil {
+		add(*c.FirstActionAt)
+	}
+	if c.ConversationAt != nil {
+		add(*c.ConversationAt)
+	}
+	if c.ProposalAt != nil {
+		add(*c.ProposalAt)
+	}
+	if c.CloseAt != nil {
+		add(*c.CloseAt)
+	}
+	for i := 1; i < len(times); i++ {
+		if times[i].Before(times[i-1]) {
+			return true
+		}
+	}
+	return false
+}
+
+func latencyBaseline(chains []Chain, includeSynthetic bool) string {
+	sawReal, sawSyn := false, false
+	for _, c := range chains {
+		if !includeSynthetic && (c.Synthetic || c.Label == LabelSynthetic) {
+			continue
+		}
+		if c.Synthetic || c.Label == LabelSynthetic {
+			sawSyn = true
+		} else {
+			sawReal = true
+		}
+	}
+	switch {
+	case sawReal:
+		return BaselineObserved
+	case sawSyn:
+		return BaselineSynthetic
+	default:
+		return BaselineNone
+	}
+}
+
+func emptyAssetSlice(family string) AssetSlice {
+	return AssetSlice{AssetFamily: family, RevenueStatus: Unknown}
+}
+
+func addAssetSlice(s *AssetSlice, c Chain) {
+	if s == nil {
+		return
+	}
+	if c.NotALead {
+		s.Completions++
+		return
+	}
+	if knownID(c.LeadID) != "" || knownID(c.ReceiptID) != "" {
+		s.Leads++
+	}
+	if knownID(c.ActionID) != "" {
+		s.Actions++
+	}
+	if c.Qualified || c.OutcomeType == OutcomeQualifiedConversation {
+		s.Qualified++
+	}
+	if c.OutcomeType == OutcomeMeeting {
+		s.Meetings++
+	}
+	if c.OutcomeType == OutcomeProposal || c.ProposalAt != nil {
+		s.Proposals++
+	}
+	if c.PipelineOpen {
+		s.Pipeline++
+	}
+	switch {
+	case isWonType(c.OutcomeType) && c.HumanConfirmed:
+		s.Won++
+	case isLostType(c.OutcomeType) && c.HumanConfirmed:
+		s.Lost++
+	default:
+		s.Unknown++
+	}
+	if c.RevenueEvidenced && c.RevenueCents > 0 {
+		s.RevenueCents += c.RevenueCents
+		s.RevenueStatus = "evidenced"
+	}
+	if knownID(c.Source) == "" || knownID(c.AssetID) == "" {
+		s.MissingAttribution++
 	}
 }

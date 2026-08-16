@@ -79,6 +79,27 @@ func (s *service) RecordIntelLearning(_ context.Context, orgID uuid.UUID, in int
 	return intel.EmitLearning(s.intelStore(), in), nil
 }
 
+// IngestCommercialEvent consumes one versioned envelope. Same event_id
+// is a replay. Fixtures and real events share this path.
+func (s *service) IngestCommercialEvent(_ context.Context, orgID uuid.UUID, ev intel.CommercialEvent) (intel.JoinResult, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return intel.JoinResult{}, xerr
+	}
+	if ev.OrganizationID == "" {
+		ev.OrganizationID = orgID.String()
+	}
+	return intel.IngestEvent(s.intelStore(), ev), nil
+}
+
+// CommercialIntelReport is the executive observability payload.
+func (s *service) CommercialIntelReport(_ context.Context, orgID uuid.UUID, month string, includeSynthetic bool) (*intel.ObservabilityReport, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return nil, xerr
+	}
+	rep := intel.BuildObservabilityReport(s.intelStore(), orgID.String(), month, includeSynthetic)
+	return &rep, nil
+}
+
 // ListIntelExceptions returns the durable exception queue.
 func (s *service) ListIntelExceptions(_ context.Context, orgID uuid.UUID) ([]intel.Exception, *errx.Error) {
 	if xerr := s.requireEnabled(); xerr != nil {
