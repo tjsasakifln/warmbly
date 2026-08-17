@@ -137,6 +137,7 @@ func (a *FakeAdapter) MapEvent(p ProviderEvent, orgID string) CommercialEvent {
 		OrganizationID:    orgID,
 		ProviderEventID:   p.ProviderEventID,
 		ExternalReference: p.ExternalRef,
+		Synthetic:         true,
 		Provider: ProviderRefs{
 			CustomerID:      p.CustomerID,
 			CheckoutID:      p.CheckoutID,
@@ -149,20 +150,14 @@ func (a *FakeAdapter) MapEvent(p ProviderEvent, orgID string) CommercialEvent {
 		Payment: PaymentState{
 			RawProviderStatus: p.RawStatus,
 			PrincipalCents:    p.AmountCents,
-			ReceivedCents:     receivedIf(typ, p.AmountCents),
+			// Amount is principal only. Received revenue is applied by
+			// ApplyCommercialTransition after a prior commercial snapshot.
+			ReceivedCents: 0,
 		},
 		Offer: OfferSnapshot{
-			AmountCents: p.AmountCents,
-			Currency:    firstNonEmpty(p.Currency, CurrencyBRL),
+			Currency: firstNonEmpty(p.Currency, CurrencyBRL),
 		},
 	}
-}
-
-func receivedIf(typ string, cents int64) int64 {
-	if typ == EventPaymentReceived {
-		return cents
-	}
-	return 0
 }
 
 func mapProviderType(rawType, rawStatus string) string {
@@ -282,6 +277,7 @@ func IngestProviderWebhook(store Store, adapter ProviderAdapter, orgID, secret, 
 			return ack, nil
 		}
 		ev := adapter.MapEvent(parsed, orgID)
+		ev.Synthetic = true
 		join := IngestEvent(store, ev)
 		ack.Processed = !join.Held || join.Chain.Identity != ""
 		ack.Held = join.Held
@@ -294,6 +290,7 @@ func IngestProviderWebhook(store Store, adapter ProviderAdapter, orgID, secret, 
 		return ack, nil
 	}
 	ev := adapter.MapEvent(parsed, orgID)
+	ev.Synthetic = true
 	join := IngestEvent(store, ev)
 	return WebhookAck{ReceiptID: ev.EventID, Acked: true, Processed: true, Held: join.Held, Join: join}, nil
 }

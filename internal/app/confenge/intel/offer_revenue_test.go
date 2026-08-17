@@ -218,6 +218,91 @@ func TestConflictingExternalReferenceHeld(t *testing.T) {
 	fmt.Printf("CONFLICT_EXT held=%v\n", res.Held)
 }
 
+func TestPaymentReceivedWithoutSnapshotIsNotRevenue(t *testing.T) {
+	st := NewMemoryStore()
+	ev := diagEnv(offerOrg, "lead-rx-orphan", "ev-rx-orphan", EventPaymentReceived, time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC))
+	ev.Payment.ReceivedCents = 800000
+	ev.Provider.CheckoutID = "chk-forged"
+	ev.Capacity.State = CapacityStateNone
+	res := IngestEvent(st, ev)
+	if !res.Held {
+		t.Fatal("payment_received without snapshot was accepted")
+	}
+	if res.Chain.Commercial.Payment.ReceivedCents != 0 {
+		t.Fatalf("received applied without snapshot: %d", res.Chain.Commercial.Payment.ReceivedCents)
+	}
+	chains, _ := st.ListChains(offerOrg)
+	real := Rollup(chains, SyntheticMonth, false)
+	if real.Commercial.ReceivedCents != 0 {
+		t.Fatalf("real rollup invented received=%d", real.Commercial.ReceivedCents)
+	}
+	syn := Rollup(chains, SyntheticMonth, true)
+	if syn.Commercial.ReceivedCents != 0 {
+		t.Fatalf("held received counted in synthetic rollup: %d", syn.Commercial.ReceivedCents)
+	}
+	fmt.Printf("RX_NO_SNAPSHOT held=%v received=%d real=%d syn=%d\n",
+		res.Held, res.Chain.Commercial.Payment.ReceivedCents, real.Commercial.ReceivedCents, syn.Commercial.ReceivedCents)
+}
+
+func TestSandboxWebhookDoesNotInventRealRevenue(t *testing.T) {
+	st := NewMemoryStore()
+	ad := NewFakeAdapter()
+	body := []byte(`{"id":"evt-unsourced","event":"PAYMENT_RECEIVED","externalReference":"ext-unsourced","payment":{"id":"pay-unsourced","status":"RECEIVED","value":8000.00},"dateCreated":"2026-08-04T12:00:00Z"}`)
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	sig := SignProviderHMAC("secret-a", now, body)
+	ack, err := IngestProviderWebhook(st, ad, offerOrg, "secret-a", "", sig, body, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ack.Acked {
+		t.Fatal("durable receipt missing")
+	}
+	if !ack.Held && ack.Join.Chain.Commercial.Payment.ReceivedCents > 0 && !ack.Join.Chain.Synthetic {
+		t.Fatal("sandbox webhook invented real received revenue")
+	}
+	if ack.Join.Chain.Identity != "" && !ack.Join.Chain.Synthetic && ack.Join.Chain.Label != LabelSynthetic {
+		t.Fatal("sandbox adapter event was not labeled synthetic")
+	}
+	if ack.Join.Chain.Commercial.Payment.ReceivedCents != 0 {
+		t.Fatalf("unsourced webhook received=%d", ack.Join.Chain.Commercial.Payment.ReceivedCents)
+	}
+	chains, _ := st.ListChains(offerOrg)
+	real := Rollup(chains, SyntheticMonth, false)
+	if real.Commercial.ReceivedCents != 0 || !real.RealEmpty {
+		t.Fatalf("include_synthetic=0 counted webhook revenue: %+v", real.Commercial)
+	}
+	mapped := ad.MapEvent(ProviderEvent{ProviderEventID: "x", RawType: "PAYMENT_RECEIVED", AmountCents: 800000, OccurredAt: now}, offerOrg)
+	if !mapped.Synthetic {
+		t.Fatal("MapEvent did not mark sandbox event synthetic")
+	}
+	if mapped.Payment.ReceivedCents != 0 {
+		t.Fatalf("MapEvent pre-applied received=%d", mapped.Payment.ReceivedCents)
+	}
+	fmt.Printf("WEBHOOK_NO_REVENUE acked=%v held=%v received=%d real_empty=%v synthetic=%v\n",
+		ack.Acked, ack.Held, ack.Join.Chain.Commercial.Payment.ReceivedCents, real.RealEmpty, mapped.Synthetic)
+}
+
+func TestPGStoreImplementsCapacityStore(t *testing.T) {
+	var cs CapacityStore = NewPGStore(nil, "")
+	_, holdErr := cs.HoldCapacity("org", "lead", 1, time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC))
+	if holdErr == nil {
+		t.Fatal("nil PG store accepted a capacity hold")
+	}
+	pool := cs.GetCapacityPool("org", time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC))
+	if pool.Limit != CapacityLimitV1 || pool.PolicyVersion != CapacityPolicyV1 {
+		t.Fatalf("policy missing on nil PG pool: %+v", pool)
+	}
+	path := filepath.Join("..", "..", "..", "infrastructure", "db", "migrations", "000103_outreach_intel_offer_revenue.up.sql")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "outreach_intel_capacity_holds") {
+		t.Fatal("migration missing capacity holds table")
+	}
+	fmt.Printf("PG_CAPACITY_STORE hold_err=%q limit=%d table=true\n", holdErr.Error(), pool.Limit)
+}
+
 func TestOutOfOrderPaymentBeforeCheckoutHeld(t *testing.T) {
 	st := NewMemoryStore()
 	ev := diagEnv(offerOrg, "lead-ooo", "ev-ooo-pay", EventPaymentConfirmed, time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC))

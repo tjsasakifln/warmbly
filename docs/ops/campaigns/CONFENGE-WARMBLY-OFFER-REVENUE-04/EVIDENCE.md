@@ -69,6 +69,16 @@ EXEC real_empty=true syn_received=9800000 syn_mrr=0 syn_contracted=9800000 pay_l
 - `gofmt -l` empty on touched Go
 - golangci-lint on intel/confenge/handler/api: pass
 
+## Follow-up gates (unsourced payment / PG capacity)
+
+```
+RX_NO_SNAPSHOT held=true received=0 real=0 syn=0
+WEBHOOK_NO_REVENUE acked=true held=true received=0 real_empty=true synthetic=true
+PG_CAPACITY_STORE hold_err="intel pg store unavailable" limit=50 table=true
+```
+
+`payment_received` uses the same prior-snapshot/checkout gate as `payment_confirmed`. Sandbox `MapEvent` sets `synthetic=true` and does not pre-apply received cents. Held chains do not increment received/MRR/contracted. `PGStore` implements `CapacityStore` on `outreach_intel_capacity_holds`.
+
 ## Deploy / canary
 
 Not deployed from this environment. Adapter default is sandbox/disabled. No production Asaas key. No public real-money mutation. `LIVE_PROVEN` is BLOCKED.

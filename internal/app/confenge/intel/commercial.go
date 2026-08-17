@@ -130,15 +130,11 @@ func ApplyCommercialTransition(existing *Chain, ev CommercialEvent) TransitionRe
 	case EventPaymentCreated, EventPaymentPending, EventSubscriptionCreated:
 		// created objects never increment received or contracted-as-received
 	case EventPaymentConfirmed:
-		hasCheckout := st.Provider.CheckoutID != "" || ev.Provider.CheckoutID != "" || hasTimelineType(st, EventCheckoutCreated)
-		if existing != nil {
-			hasCheckout = hasCheckout || existing.Commercial.Provider.CheckoutID != "" || hasTimelineType(existing.Commercial, EventCheckoutCreated)
-		}
-		if !hasCheckout {
-			add(ExceptionOutOfOrder, "payment before checkout", "hold; do not reorder into a fake chain", true)
+		if blocked, why := paymentFinancialGate(existing, ev, st); blocked {
+			add(ExceptionOutOfOrder, why, "hold; do not infer confirmed payment or revenue", true)
 			res.Held = true
 			res.Rejected = true
-			res.Reason = "payment_before_checkout"
+			res.Reason = why
 			return res
 		}
 		if ev.OccurredAt.Before(checkoutTime(existing)) && !checkoutTime(existing).IsZero() {
@@ -157,6 +153,14 @@ func ApplyCommercialTransition(existing *Chain, ev CommercialEvent) TransitionRe
 			st.Payment.MRRCents = st.Offer.AmountCents
 		}
 	case EventPaymentReceived:
+		if blocked, why := paymentFinancialGate(existing, ev, st); blocked {
+			add(ExceptionOutOfOrder, why, "hold; do not apply received revenue", true)
+			res.Held = true
+			res.Rejected = true
+			res.Reason = why
+			st.Payment.CanonicalStatus = firstNonEmpty(st.Payment.CanonicalStatus, PaymentStatusUnknown)
+			return res
+		}
 		t := ev.OccurredAt
 		st.Payment.CanonicalStatus = PaymentStatusReceived
 		st.Payment.ReceivedAt = &t
@@ -668,6 +672,47 @@ func copyCommercialKeys(in *ObservedFacts, st CommercialState) {
 	if in.Keys.HoldID == "" {
 		in.Keys.HoldID = st.Capacity.HoldID
 	}
+}
+
+func hasCommercialSnapshot(existing *Chain) bool {
+	if existing == nil {
+		return false
+	}
+	st := existing.Commercial
+	if strings.TrimSpace(st.Offer.OfferID) != "" && st.Offer.OfferID != Unknown {
+		return true
+	}
+	if hasTimelineType(st, EventTermsAccepted) || hasTimelineType(st, EventCheckoutCreated) || hasTimelineType(st, EventOfferSelected) {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(st.Capacity.State)) {
+	case CapacityStateOK, CapacityStateHold, CapacityStateFinal:
+		return true
+	default:
+		return false
+	}
+}
+
+func hasCheckoutOn(existing *Chain, ev CommercialEvent, st CommercialState) bool {
+	if st.Provider.CheckoutID != "" || hasTimelineType(st, EventCheckoutCreated) {
+		return true
+	}
+	if existing != nil && (existing.Commercial.Provider.CheckoutID != "" || hasTimelineType(existing.Commercial, EventCheckoutCreated)) {
+		return true
+	}
+	// An inbound checkout id without a prior snapshot is not a gate pass.
+	_ = ev
+	return false
+}
+
+func paymentFinancialGate(existing *Chain, ev CommercialEvent, st CommercialState) (blocked bool, reason string) {
+	if !hasCommercialSnapshot(existing) {
+		return true, "payment without prior offer/capacity/checkout snapshot"
+	}
+	if !hasCheckoutOn(existing, ev, st) {
+		return true, "payment before checkout"
+	}
+	return false, ""
 }
 
 func paymentConfirmed(p PaymentState) bool {

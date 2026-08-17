@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -335,4 +336,198 @@ func (s *PGStore) MarkReceiptProcessed(orgID, providerEventID string) {
 	_, _ = s.db.Exec(context.Background(), `
 		UPDATE outreach_intel_event_receipts SET processed = true
 		WHERE organization_id = $1::uuid AND provider_event_id = $2`, org, providerEventID)
+}
+
+func (s *PGStore) HoldCapacity(orgID, leadID string, units int, now time.Time) (CapacityHold, error) {
+	if s == nil || s.db == nil {
+		return CapacityHold{}, errors.New("intel pg store unavailable")
+	}
+	if units <= 0 {
+		units = 1
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	org := firstNonEmpty(orgID, s.orgID)
+	tx, err := s.db.Begin(context.Background())
+	if err != nil {
+		return CapacityHold{}, err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(context.Background(), `SELECT pg_advisory_xact_lock(hashtext($1))`, org); err != nil {
+		return CapacityHold{}, err
+	}
+	holds, err := s.listHoldsTx(tx, org)
+	if err != nil {
+		return CapacityHold{}, err
+	}
+	pool := capacityPoolFromHolds(holds, now)
+	if pool.Available < units {
+		return CapacityHold{}, fmt.Errorf("no capacity: available=%d need=%d", pool.Available, units)
+	}
+	h := CapacityHold{
+		HoldID:    uuid.NewString(),
+		OrgID:     org,
+		LeadID:    strings.TrimSpace(leadID),
+		Units:     units,
+		State:     CapacityStateHold,
+		CreatedAt: now,
+		ExpiresAt: now.Add(CapacityHoldTTL),
+	}
+	raw, err := json.Marshal(h)
+	if err != nil {
+		return CapacityHold{}, err
+	}
+	_, err = tx.Exec(context.Background(), `
+		INSERT INTO outreach_intel_capacity_holds (
+			hold_id, organization_id, lead_id, units, state, created_at, expires_at, payload
+		) VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8::jsonb)`,
+		h.HoldID, org, h.LeadID, h.Units, h.State, h.CreatedAt, h.ExpiresAt, raw,
+	)
+	if err != nil {
+		return CapacityHold{}, err
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		return CapacityHold{}, err
+	}
+	return h, nil
+}
+
+func (s *PGStore) ReleaseCapacity(orgID, holdID string) error {
+	if s == nil || s.db == nil {
+		return errors.New("intel pg store unavailable")
+	}
+	org := firstNonEmpty(orgID, s.orgID)
+	h, err := s.GetHold(holdID)
+	if err != nil || h == nil {
+		return err
+	}
+	if org != "" && h.OrgID != org {
+		return nil
+	}
+	h.State = CapacityStateRelease
+	return s.updateHold(*h)
+}
+
+func (s *PGStore) FinalizeCapacity(orgID, holdID string, now time.Time) error {
+	if s == nil || s.db == nil {
+		return errors.New("intel pg store unavailable")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	org := firstNonEmpty(orgID, s.orgID)
+	h, err := s.GetHold(holdID)
+	if err != nil {
+		return err
+	}
+	if h == nil || (org != "" && h.OrgID != org) {
+		return fmt.Errorf("hold not found")
+	}
+	if h.State == CapacityStateExpired || (!h.ExpiresAt.IsZero() && now.After(h.ExpiresAt) && h.State != CapacityStateFinal) {
+		h.State = CapacityStateExpired
+		_ = s.updateHold(*h)
+		return fmt.Errorf("hold expired")
+	}
+	if h.State == CapacityStateRelease {
+		return fmt.Errorf("hold released")
+	}
+	t := now
+	h.State = CapacityStateFinal
+	h.FinalizedAt = &t
+	return s.updateHold(*h)
+}
+
+func (s *PGStore) GetCapacityPool(orgID string, now time.Time) CapacityPool {
+	if s == nil || s.db == nil {
+		return CapacityPool{PolicyVersion: CapacityPolicyV1, Limit: CapacityLimitV1, Available: CapacityLimitV1}
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	org := firstNonEmpty(orgID, s.orgID)
+	holds, err := s.listHolds(org)
+	if err != nil {
+		return CapacityPool{PolicyVersion: CapacityPolicyV1, Limit: CapacityLimitV1, Available: CapacityLimitV1}
+	}
+	return capacityPoolFromHolds(holds, now)
+}
+
+func (s *PGStore) GetHold(holdID string) (*CapacityHold, error) {
+	if s == nil || s.db == nil || strings.TrimSpace(holdID) == "" {
+		return nil, nil
+	}
+	var raw []byte
+	err := s.db.QueryRow(context.Background(), `
+		SELECT payload FROM outreach_intel_capacity_holds WHERE hold_id = $1`, strings.TrimSpace(holdID)).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var h CapacityHold
+	if err := json.Unmarshal(raw, &h); err != nil {
+		return nil, err
+	}
+	return &h, nil
+}
+
+func (s *PGStore) updateHold(h CapacityHold) error {
+	raw, err := json.Marshal(h)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(context.Background(), `
+		UPDATE outreach_intel_capacity_holds
+		SET state = $2, finalized_at = $3, payload = $4::jsonb
+		WHERE hold_id = $1`, h.HoldID, h.State, h.FinalizedAt, raw)
+	return err
+}
+
+func (s *PGStore) listHolds(orgID string) ([]CapacityHold, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("intel pg store unavailable")
+	}
+	rows, err := s.db.Query(context.Background(), `
+		SELECT payload FROM outreach_intel_capacity_holds WHERE organization_id = $1::uuid`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []CapacityHold
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var h CapacityHold
+		if err := json.Unmarshal(raw, &h); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) listHoldsTx(tx pgx.Tx, orgID string) ([]CapacityHold, error) {
+	rows, err := tx.Query(context.Background(), `
+		SELECT payload FROM outreach_intel_capacity_holds WHERE organization_id = $1::uuid`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []CapacityHold
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var h CapacityHold
+		if err := json.Unmarshal(raw, &h); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
 }

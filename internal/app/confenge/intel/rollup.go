@@ -378,6 +378,15 @@ func firstNonZeroTime(vs ...time.Time) time.Time {
 
 func addCommercialCounts(comm *CommercialCounts, c Chain) {
 	st := c.Commercial
+	if c.Held {
+		if strings.EqualFold(st.Capacity.State, CapacityStateHold) {
+			comm.CapacityHeld++
+		}
+		if strings.EqualFold(st.Capacity.State, CapacityStateExpired) {
+			comm.CapacityExpired++
+		}
+		return
+	}
 	if st.Offer.OfferID != "" || hasTimelineType(st, EventOfferViewed) || hasTimelineType(st, EventOfferSelected) {
 		comm.OfferViewed++
 	}
