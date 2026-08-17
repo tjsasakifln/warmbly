@@ -8,6 +8,20 @@ import (
 	"github.com/google/uuid"
 )
 
+// CapacityStore is the versioned 50-unit pool. MemoryStore and PGStore
+// both implement it so WireIntel is operational after deploy.
+type CapacityStore interface {
+	HoldCapacity(orgID, leadID string, units int, now time.Time) (CapacityHold, error)
+	ReleaseCapacity(orgID, holdID string) error
+	FinalizeCapacity(orgID, holdID string, now time.Time) error
+	GetCapacityPool(orgID string, now time.Time) CapacityPool
+}
+
+var (
+	_ CapacityStore = (*MemoryStore)(nil)
+	_ CapacityStore = (*PGStore)(nil)
+)
+
 // DefaultCapacityPolicy is the versioned 50-unit pool.
 func DefaultCapacityPolicy() CapacitySnapshot {
 	return CapacitySnapshot{
@@ -128,11 +142,19 @@ func (m *MemoryStore) GetHold(holdID string) *CapacityHold {
 
 func capacityPoolLocked(m *MemoryStore, orgID string, now time.Time) CapacityPool {
 	orgID = strings.TrimSpace(orgID)
-	p := CapacityPool{PolicyVersion: CapacityPolicyV1, Limit: CapacityLimitV1}
+	var holds []CapacityHold
 	for _, h := range m.holds {
 		if orgID != "" && h.OrgID != orgID {
 			continue
 		}
+		holds = append(holds, h)
+	}
+	return capacityPoolFromHolds(holds, now)
+}
+
+func capacityPoolFromHolds(holds []CapacityHold, now time.Time) CapacityPool {
+	p := CapacityPool{PolicyVersion: CapacityPolicyV1, Limit: CapacityLimitV1}
+	for _, h := range holds {
 		switch {
 		case h.State == CapacityStateFinal:
 			p.Used += h.Units
