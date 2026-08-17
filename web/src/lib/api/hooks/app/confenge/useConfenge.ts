@@ -19,6 +19,9 @@ import {
     applyConfengeManualAction,
     getConfengeCockpit,
     getConfengeExecutiveIntel,
+    getConfengeIntelException,
+    listConfengeIntelExceptions,
+    resolveConfengeIntelException,
     getConfengeToday,
     recordConfengeActionOutcome,
     recordConfengeInboundOutcome,
@@ -38,7 +41,7 @@ import {
     reviewConfengeDraft,
     syncConfengeFeed,
 } from "@/lib/api/client/app/confenge/confenge";
-import type { ConfengeAttentionFilter } from "@/lib/api/models/app/confenge/Confenge";
+import type { ConfengeAttentionFilter, ConfengeIntelExceptionFilter } from "@/lib/api/models/app/confenge/Confenge";
 import type { AppError } from "@/lib/api/client/normalizeError";
 
 const KEY = ["confenge"] as const;
@@ -81,6 +84,44 @@ export function useConfengeExecutiveIntel(enabled = true) {
         queryFn: () => getConfengeExecutiveIntel({ includeSynthetic: false }),
         enabled,
         staleTime: 15_000,
+    });
+}
+
+export function useConfengeIntelExceptions(filter: ConfengeIntelExceptionFilter, enabled = true) {
+    return useQuery({
+        queryKey: [...KEY, "intel", "exceptions", filter],
+        queryFn: () => listConfengeIntelExceptions(filter),
+        enabled,
+        staleTime: 10_000,
+    });
+}
+
+export function useConfengeIntelException(id: string | null) {
+    return useQuery({
+        queryKey: [...KEY, "intel", "exceptions", "detail", id],
+        queryFn: () => getConfengeIntelException(id!),
+        enabled: !!id,
+    });
+}
+
+export function useResolveConfengeIntelException() {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: (args: {
+            id: string;
+            action: "link" | "defer" | "reject" | "mark_external_evidence_required";
+            reason: string;
+            link_identity?: string;
+        }) => resolveConfengeIntelException(args.id, args),
+        onSuccess: (res) => {
+            void qc.invalidateQueries({ queryKey: KEY });
+            if (res.replay) {
+                toast.success("Ação já registrada. Replay sem nova mudança.");
+                return;
+            }
+            toast.success("Exceção atualizada. Sem inventar WON, LOST, receita ou identidade.");
+        },
+        onError: (e) => toast.error(confengeError(e, "A resolução foi recusada. A exceção permanece aberta.")),
     });
 }
 

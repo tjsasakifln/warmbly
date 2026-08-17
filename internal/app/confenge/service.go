@@ -122,7 +122,9 @@ type Service interface {
 	ReconcileCommercialIntel(ctx context.Context, orgID uuid.UUID, in intel.ObservedFacts) (intel.JoinResult, *errx.Error)
 	CommercialExecutiveView(ctx context.Context, orgID uuid.UUID, month string, includeSynthetic bool) (*intel.ExecutiveView, *errx.Error)
 	RecordIntelLearning(ctx context.Context, orgID uuid.UUID, in intel.LearningInput) (intel.LearningCandidate, *errx.Error)
-	ListIntelExceptions(ctx context.Context, orgID uuid.UUID) ([]intel.Exception, *errx.Error)
+	ListIntelExceptions(ctx context.Context, orgID uuid.UUID, filter intel.ExceptionFilter) ([]intel.Exception, *errx.Error)
+	GetIntelException(ctx context.Context, orgID uuid.UUID, id string) (*intel.Exception, *errx.Error)
+	ResolveIntelException(ctx context.Context, orgID uuid.UUID, id string, req intel.ResolveRequest) (intel.ResolveResult, *errx.Error)
 	IngestCommercialEvent(ctx context.Context, orgID uuid.UUID, ev intel.CommercialEvent) (intel.JoinResult, *errx.Error)
 	CommercialIntelReport(ctx context.Context, orgID uuid.UUID, month string, includeSynthetic bool) (*intel.ObservabilityReport, *errx.Error)
 }

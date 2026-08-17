@@ -291,6 +291,55 @@ type Versions struct {
 	Fresh              bool   `json:"target_fit_fresh"`
 }
 
+const (
+	ResolveLink             = "link"
+	ResolveDefer            = "defer"
+	ResolveReject           = "reject"
+	ResolveExternalEvidence = "mark_external_evidence_required"
+
+	StatusOpen             = "open"
+	StatusDeferred         = "deferred"
+	StatusRejected         = "rejected"
+	StatusLinked           = "linked"
+	StatusExternalEvidence = "external_evidence_required"
+
+	SeverityHigh   = "high"
+	SeverityMedium = "medium"
+	SeverityLow    = "low"
+)
+
+// EvidenceItem is one observed join ID or classification fact. Nothing is invented.
+type EvidenceItem struct {
+	Kind  string `json:"kind"`
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// QueueEvent is one audited step on an exception (classify, resolve, replay, refuse).
+type QueueEvent struct {
+	At     time.Time `json:"at"`
+	Kind   string    `json:"kind"`
+	Actor  string    `json:"actor,omitempty"`
+	Action string    `json:"action,omitempty"`
+	Reason string    `json:"reason,omitempty"`
+	Detail string    `json:"detail,omitempty"`
+}
+
+// ExceptionResolution is the last legal operator action. Replay returns this.
+type ExceptionResolution struct {
+	Action         string    `json:"action"`
+	Actor          string    `json:"actor"`
+	Reason         string    `json:"reason"`
+	At             time.Time `json:"at"`
+	IdempotencyKey string    `json:"idempotency_key,omitempty"`
+	BeforeStatus   string    `json:"before_status"`
+	AfterStatus    string    `json:"after_status"`
+	LinkIdentity   string    `json:"link_identity,omitempty"`
+	LinkLeadID     string    `json:"link_lead_id,omitempty"`
+	LinkActionID   string    `json:"link_action_id,omitempty"`
+	LinkAccountID  string    `json:"link_account_id,omitempty"`
+}
+
 // Exception is a durable queue item. Out-of-order items are held.
 type Exception struct {
 	ID             string    `json:"id"`
@@ -304,9 +353,22 @@ type Exception struct {
 	OutcomeID      string    `json:"outcome_id,omitempty"`
 	AccountID      string    `json:"account_id,omitempty"`
 	LeadID         string    `json:"lead_id,omitempty"`
+	ReceiptID      string    `json:"receipt_id,omitempty"`
 	Held           bool      `json:"held"`
 	Synthetic      bool      `json:"synthetic,omitempty"`
 	At             time.Time `json:"at"`
+
+	// Operator queue presentation. Additive; old payload rows get defaults on read.
+	Lane           string               `json:"lane,omitempty"`
+	Source         string               `json:"source,omitempty"`
+	Severity       string               `json:"severity,omitempty"`
+	Status         string               `json:"status,omitempty"`
+	AgeSeconds     int64                `json:"age_seconds"`
+	Evidence       []EvidenceItem       `json:"evidence,omitempty"`
+	History        []QueueEvent         `json:"history,omitempty"`
+	AllowedActions []string             `json:"allowed_actions,omitempty"`
+	Resolution     *ExceptionResolution `json:"resolution,omitempty"`
+	LinkedIdentity string               `json:"linked_identity,omitempty"`
 }
 
 // JoinResult is the shipped reconcile outcome.

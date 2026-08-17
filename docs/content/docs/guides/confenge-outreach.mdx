@@ -142,6 +142,9 @@ Target-fit is updated only by a current authoritative decision. A downgrade take
 | `POST /confenge/touchpoints/:id/decision` | Skip or reject |
 | `POST /confenge/touchpoints/:id/queue` | CAS queue then transport |
 | `POST /confenge/accounts/:id/dnc` | DNC and cancel open futures |
+| `GET /confenge/intel/exceptions` | Operator exception queue (filter by type, lane, age, source, severity) |
+| `GET /confenge/intel/exceptions/:id` | Exception evidence and history |
+| `POST /confenge/intel/exceptions/:id/resolve` | `link`, `defer`, `reject`, or `mark_external_evidence_required` |
 
 Permissions follow contacts: view for reads, manage for import, plan, review, and send actions.
 
@@ -152,6 +155,8 @@ The CONFENGE page is a PT-BR commercial operations center. It uses the CONFENGE 
 Feed freshness uses the upstream manifest's durable `source_generated_at`, not the time at which Warmbly downloaded it. The API retains `feed_last_success_at` as a backward-compatible alias for that authoritative source time and exposes `feed_synced_at` separately for operational diagnostics. The dashboard, API and VPS status script use the same `CONFENGE_FEED_MAX_AGE` threshold, which defaults to 24 hours. Missing, stale, corrupt, or rolled-back feed state blocks cohort preparation.
 
 The page opens with **INBOUND NOW**: web-cfg leads that already have a durable receipt, recommended next action, owner or explicit UNKNOWN, and commercial-latency timestamps. Then **O que fazer agora**: only executable human work (calls, routed calls, emails to review, role mailboxes, WhatsApp, professional profiles, forms). Each card shows company, person or target role, route class, why now, offer, channel, reachability class, confidence, factual hook, evidence, warnings, channel-appropriate copy, last outcome, and next action, plus a Revisar / copiar control. Call, routed-call, WhatsApp, and generic-mailbox copy is written for that route: short, accented PT-BR, one public fact, one question. It does not reuse the email template, dump `objeto`/`órgão`/`UF`/`R$` fields, or label `comercial@` as "área de contratos". A corporate switchboard is labeled as the company number, never as the person's direct phone. Calls, WhatsApp, social, and forms are human-executed only. They never auto-send and never bypass the email `VALIDATED + READY → NEEDS_REVIEW → human approval → dispatch` path. Inbound classification may recommend `SEND_EMAIL` in review. It never dispatches.
+
+The commercial-intelligence panel is followed by **Fila de exceções**: orphans, conflicts, and impossible transitions. The operator can filter by type, lane, age, source, and severity, open evidence and history, and take only `link`, `defer`, `reject`, or `mark_external_evidence_required`. There is no control that invents WON, LOST, revenue, or identity. UNKNOWN stays UNKNOWN. The same actions exist on `confenge intel-exceptions` when there is no UI.
 
 The operational funnel counts imported tiers, `NEEDS_REVIEW`, the manual lanes, planned and actionable work, approvals, and post-send outcomes (`SENT` as contacted, `REPLIED`, `MEETING`) from `GET /confenge/cockpit`. Each manual-lane card shows why now, the factual hook, the recommended action, confidence, and a Copy text control. The per-message review queue shows company, exact recipient, channel, service, fact and evidence, stage number, short history, and the exact send preview. The operator can approve without dispatch, skip the stage, reject with a reason, or mark the account as do not contact.
 

@@ -41,6 +41,30 @@ is fail-closed. Additive IDs (action, then outcome) merge onto the first
 chain. Outcomes join only by `lead_id` / `receipt_id` / `action_id` /
 `outcome_id`, never by email or CNPJ.
 
+Operators list, open, and filter by type, lane, age, source, and
+severity. Each item shows evidence, event history, and a next action, or
+stays nominally open. Legal resolutions are only `link`, `defer`,
+`reject`, and `mark_external_evidence_required`. They are replay-safe,
+record before/after plus actor/reason, and refuse any move that would
+invent WON, LOST, revenue, or identity, or overwrite a conflicting
+account, or reorder an out-of-order path.
+
+```
+GET  /confenge/intel/exceptions
+GET  /confenge/intel/exceptions/:id
+POST /confenge/intel/exceptions/:id/resolve
+```
+
+CLI without a UI:
+
+```
+go run ./cmd/confenge intel-exceptions list --fixture --format json
+go run ./cmd/confenge intel-exceptions show <id> --fixture
+go run ./cmd/confenge intel-exceptions resolve <id> --action defer --actor op --reason "wait" --fixture
+```
+
+`--fixture` is the labeled SYNTHETIC set. Live use requires `PRIMARY_DB`.
+
 ## Executive view
 
 `GET /confenge/intel/executive?month=YYYY-MM&include_synthetic=0`

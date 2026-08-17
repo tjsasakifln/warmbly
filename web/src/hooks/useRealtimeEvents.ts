@@ -330,6 +330,7 @@ export function useRealtimeEvents() {
           outreach_account: [['confenge']],
           outreach_commercial_action: [['confenge']],
           outreach_inbound_lead: [['confenge']],
+          outreach_intel_exception: [['confenge']],
           settings: [['organizations', 'current']],
           unibox: [['unibox']],
           crm_note: [['crm'], ['contacts']],

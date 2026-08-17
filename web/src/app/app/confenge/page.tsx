@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import toast from "react-hot-toast";
 import {
   AlertTriangle,
   ArrowRight,
@@ -28,6 +29,9 @@ import {
   useApplyConfengeManualAction,
   useConfengeCockpit,
   useConfengeExecutiveIntel,
+  useConfengeIntelException,
+  useConfengeIntelExceptions,
+  useResolveConfengeIntelException,
   useRecordConfengeActionOutcome,
   useRecordConfengeInboundOutcome,
   useConfengeWorkingOverview,
@@ -48,6 +52,8 @@ import type {
   ConfengeActionCopy,
   ConfengeInboundNowItem,
   ConfengeExecutiveView,
+  ConfengeIntelException,
+  ConfengeIntelExceptionFilter,
   ConfengeAttentionFilter,
   ConfengeTouchpoint,
   ConfengeWorkingQueueItem,
@@ -373,6 +379,8 @@ export default function ConfengePage() {
         {executive.data && (
           <ExecutiveIntelPanel view={executive.data} />
         )}
+
+        <ExceptionQueuePanel enabled={enabled} />
 
         {cockpit.data?.today && (
           <section id="hoje" data-testid="confenge-today" className="rounded-md border border-slate-200 bg-white">
@@ -1430,6 +1438,183 @@ const OUTCOME_OPTIONS = [
   "DNC",
   "SKIPPED",
 ];
+
+const EXCEPTION_TYPES = ["", "orphan", "duplicate", "conflicting_account", "missing_version", "stale_attribution", "out_of_order", "unconfirmed_won", "unconfirmed_lost", "ledger_unavailable"];
+const EXCEPTION_LANES = ["", "inbound", "outbound", "partner", "expansion", "UNKNOWN"];
+const EXCEPTION_SOURCES = ["", "web-cfg", "extra-cli", "partner", "expansion", "UNKNOWN"];
+const EXCEPTION_SEVERITIES = ["", "high", "medium", "low"];
+const EXCEPTION_AGES: { id: number; label: string }[] = [
+  { id: 0, label: "qualquer idade" },
+  { id: 3600, label: ">1h" },
+  { id: 86400, label: ">24h" },
+  { id: 604800, label: ">7d" },
+];
+
+function ExceptionQueuePanel({ enabled }: { enabled: boolean }) {
+  const confirm = useConfirm();
+  const [filter, setFilter] = useState<ConfengeIntelExceptionFilter>({});
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [reason, setReason] = useState("");
+  const [linkIdentity, setLinkIdentity] = useState("");
+  const list = useConfengeIntelExceptions(filter, enabled);
+  const detail = useConfengeIntelException(selectedId);
+  const resolve = useResolveConfengeIntelException();
+  const items = list.data ?? [];
+  const current: ConfengeIntelException | undefined = detail.data ?? items.find((x) => x.id === selectedId);
+
+  const act = (action: "link" | "defer" | "reject" | "mark_external_evidence_required") => {
+    if (!current) return;
+    const why = reason.trim();
+    if (!why) {
+      toast.error("Informe o motivo. A fila não inventa outcome.");
+      return;
+    }
+    if (action === "link" && !linkIdentity.trim()) {
+      toast.error("Informe um identity já existente. A fila não inventa identidade.");
+      return;
+    }
+    const label = action === "link" ? "vincular ao identity existente" : action === "defer" ? "adiar" : action === "reject" ? "rejeitar" : "marcar evidência externa";
+    void confirm.show(`Confirmar ${label}? Isso não cria WON, LOST, receita ou identidade.`, async () => {
+      await resolve.mutateAsync({
+        id: current.id,
+        action,
+        reason: why,
+        link_identity: action === "link" ? linkIdentity.trim() : undefined,
+      });
+    });
+  };
+
+  return (
+    <section id="fila-excecoes" data-testid="confenge-intel-exceptions" className="rounded-md border border-slate-200 bg-white">
+      <div className="px-3 h-10 flex items-center border-b border-slate-200">
+        <span className="text-[12.5px] font-medium text-slate-900">Fila de exceções</span>
+        <span className="ml-2 text-[12.5px] text-slate-500 tabular-nums">{items.length}</span>
+      </div>
+      <p className="px-3 pt-2 text-[11.5px] text-slate-500">
+        Órfãos, conflitos e transições impossíveis. Cada item mostra evidência e a próxima ação, ou permanece aberto.
+        Sem botão para inventar WON, LOST, receita ou identidade.
+      </p>
+      <div className="px-3 py-2 flex flex-wrap gap-1.5" data-testid="confenge-intel-exception-filters">
+        <FilterChips label="tipo" value={filter.type ?? ""} options={EXCEPTION_TYPES} onChange={(type) => setFilter((f) => ({ ...f, type: type || undefined }))} />
+        <FilterChips label="lane" value={filter.lane ?? ""} options={EXCEPTION_LANES} onChange={(lane) => setFilter((f) => ({ ...f, lane: lane || undefined }))} />
+        <FilterChips label="fonte" value={filter.source ?? ""} options={EXCEPTION_SOURCES} onChange={(source) => setFilter((f) => ({ ...f, source: source || undefined }))} />
+        <FilterChips label="severidade" value={filter.severity ?? ""} options={EXCEPTION_SEVERITIES} onChange={(severity) => setFilter((f) => ({ ...f, severity: severity || undefined }))} />
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="text-[10px] uppercase tracking-[0.14em] text-slate-400">idade</span>
+          {EXCEPTION_AGES.map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              className={`h-7 px-2 rounded-md border text-[11.5px] ${ (filter.ageMinSeconds ?? 0) === opt.id ? "border-sky-400 bg-sky-50 text-sky-700" : "border-slate-200 text-slate-600"}`}
+              onClick={() => setFilter((f) => ({ ...f, ageMinSeconds: opt.id || undefined }))}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <ul className="divide-y divide-slate-100 max-h-72 overflow-auto" data-testid="confenge-intel-exception-list">
+        {items.map((ex) => (
+          <li key={ex.id}>
+            <button
+              type="button"
+              className={`w-full text-left px-3 py-2 text-[12.5px] ${selectedId === ex.id ? "bg-sky-50" : ""}`}
+              onClick={() => setSelectedId(ex.id)}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium text-slate-900">{ex.code}</span>
+                <span className="text-[11px] text-slate-500">{ex.severity} · {ex.lane} · {ex.status || "open"}</span>
+              </div>
+              <div className="text-slate-500 truncate">{ex.next_action || "permanece aberta"}</div>
+              <div className="text-[11px] text-slate-400">{ex.source} · {formatAge(ex.age_seconds)}</div>
+            </button>
+          </li>
+        ))}
+        {!items.length && (
+          <li className="px-3 py-8 text-center text-slate-400 text-[12.5px]">
+            Nenhuma exceção persistida. Sem evento real a fila fica vazia e UNKNOWN permanece UNKNOWN.
+          </li>
+        )}
+      </ul>
+      {current && (
+        <div className="border-t border-slate-200 px-3 py-3 space-y-2" data-testid="confenge-intel-exception-detail">
+          <div className="text-[12.5px] font-medium text-slate-900">{current.code} · {current.status || "open"}</div>
+          <p className="text-[12px] text-slate-600">{current.reason}</p>
+          <p className="text-[12px] text-slate-700">Próxima ação: {current.next_action || "permanece aberta"}</p>
+          <div>
+            <div className="text-[10px] uppercase tracking-[0.14em] text-slate-400">Evidência</div>
+            <ul className="mt-1 space-y-0.5 text-[11.5px] text-slate-600">
+              {(current.evidence ?? []).map((ev) => (
+                <li key={`${ev.kind}-${ev.key}`}>{ev.kind}: {ev.key}={ev.value}</li>
+              ))}
+            </ul>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-[0.14em] text-slate-400">Histórico</div>
+            <ul className="mt-1 space-y-0.5 text-[11.5px] text-slate-600">
+              {(current.history ?? []).map((ev, i) => (
+                <li key={`${ev.at}-${i}`}>{ev.kind}{ev.action ? ` · ${ev.action}` : ""}{ev.actor ? ` · ${ev.actor}` : ""}{ev.reason ? ` · ${ev.reason}` : ""}</li>
+              ))}
+            </ul>
+          </div>
+          <TextInput value={reason} onChange={setReason} placeholder="Motivo obrigatório (ator vem da sessão)" />
+          {(current.allowed_actions ?? []).includes("link") && (
+            <TextInput value={linkIdentity} onChange={setLinkIdentity} placeholder="Identity existente para vincular" />
+          )}
+          <div className="flex flex-wrap gap-1.5" data-testid="confenge-intel-exception-actions">
+            {(current.allowed_actions ?? []).includes("link") && (
+              <button type="button" className="h-7 px-2.5 rounded-md border border-slate-200 text-[12px] text-slate-700" onClick={() => act("link")}>Vincular</button>
+            )}
+            {(current.allowed_actions ?? []).includes("defer") && (
+              <button type="button" className="h-7 px-2.5 rounded-md border border-slate-200 text-[12px] text-slate-700" onClick={() => act("defer")}>Adiar</button>
+            )}
+            {(current.allowed_actions ?? []).includes("reject") && (
+              <button type="button" className="h-7 px-2.5 rounded-md border border-slate-200 text-[12px] text-slate-700" onClick={() => act("reject")}>Rejeitar</button>
+            )}
+            {(current.allowed_actions ?? []).includes("mark_external_evidence_required") && (
+              <button type="button" className="h-7 px-2.5 rounded-md border border-slate-200 text-[12px] text-slate-700" onClick={() => act("mark_external_evidence_required")}>Evidência externa</button>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function formatAge(seconds: number): string {
+  if (!seconds || seconds < 60) return `${seconds || 0}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
+}
+
+function FilterChips({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: string[];
+  onChange: (next: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      <span className="text-[10px] uppercase tracking-[0.14em] text-slate-400">{label}</span>
+      {options.map((opt) => (
+        <button
+          key={opt || "any"}
+          type="button"
+          className={`h-7 px-2 rounded-md border text-[11.5px] ${value === opt ? "border-sky-400 bg-sky-50 text-sky-700" : "border-slate-200 text-slate-600"}`}
+          onClick={() => onChange(opt)}
+        >
+          {opt || "todas"}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 function ExecutiveIntelPanel({ view }: { view: ConfengeExecutiveView }) {
   const unknownLabel = view.real_empty ? "UNKNOWN" : String(view.unknown);
