@@ -66,7 +66,7 @@ func TestForkSyncBoundaryAppConfengeRouteAndPage(t *testing.T) {
 	if _, err := os.Stat(page); err != nil {
 		t.Fatalf("/app/confenge page missing: %v", err)
 	}
-	mainTSX := readRepoFile(t, root, "web/src/main.tsx")
+	mainTSX := readForkRepoFile(t, root, "web/src/main.tsx")
 	if !strings.Contains(mainTSX, `path: "confenge"`) {
 		t.Fatal(`web/src/main.tsx must keep path: "confenge"`)
 	}
@@ -76,11 +76,11 @@ func TestForkSyncBoundaryAppConfengeRouteAndPage(t *testing.T) {
 	if !strings.Contains(mainTSX, `path: "app/confenge"`) {
 		t.Fatal(`web/src/main.tsx must keep the operator path "app/confenge"`)
 	}
-	nav := readRepoFile(t, root, "web/src/components/layout/AppNav.tsx")
+	nav := readForkRepoFile(t, root, "web/src/components/layout/AppNav.tsx")
 	if !strings.Contains(nav, `url: "/app/confenge"`) {
 		t.Fatal("AppNav must keep url /app/confenge")
 	}
-	routes := readRepoFile(t, root, "internal/api/routes.go")
+	routes := readForkRepoFile(t, root, "internal/api/routes.go")
 	if !strings.Contains(routes, `protected.Group("/confenge")`) {
 		t.Fatal("routes.go must keep the /confenge group")
 	}
@@ -149,7 +149,7 @@ func TestForkSyncBoundaryHumanApprovalKillSwitchNoAutoSend(t *testing.T) {
 	}
 
 	root := findRepoRoot(t)
-	worker := readRepoFile(t, root, "internal/app/worker/event_send_email.go")
+	worker := readForkRepoFile(t, root, "internal/app/worker/event_send_email.go")
 	if !strings.Contains(worker, "confenge.LoadConfig") || !strings.Contains(worker, "SendingAllowed") {
 		t.Fatal("worker HandleSendEmail must re-check CONFENGE LoadConfig and SendingAllowed")
 	}
@@ -296,20 +296,27 @@ func TestForkSyncBoundaryAuditManifestComplete(t *testing.T) {
 	if len(a.UpstreamOnlyCommits) != 16 {
 		t.Fatalf("expected 16 upstream-only commits, got %d", len(a.UpstreamOnlyCommits))
 	}
-	for i, c := range a.UpstreamOnlyCommits {
-		if !isGitSHA(c.SHA) {
-			t.Errorf("upstream_only_commits[%d] sha %q", i, c.SHA)
-			continue
+	// Upstream objects and recorded origin/main ancestry require a full
+	// clone with the upstream remote. GitHub Actions checkouts are shallow
+	// and fork-only; skip those pins there. Classification rows still run.
+	if gitObjectExists(t, root, a.Refs["upstream_main"]) {
+		for i, c := range a.UpstreamOnlyCommits {
+			if !isGitSHA(c.SHA) {
+				t.Errorf("upstream_only_commits[%d] sha %q", i, c.SHA)
+				continue
+			}
+			if !gitObjectExists(t, root, c.SHA) {
+				t.Errorf("upstream commit %s not in this clone; refetch upstream/main", c.SHA)
+			}
 		}
-		if !gitObjectExists(t, root, c.SHA) {
-			t.Errorf("upstream commit %s not in this clone; refetch upstream/main", c.SHA)
-		}
+	} else {
+		t.Log("upstream/main objects absent; skip SHA pin of the 16 upstream-only commits")
 	}
-	if origin := a.Refs["origin_main"]; isGitSHA(origin) && !gitIsAncestor(t, root, origin, "HEAD") {
+	if origin := a.Refs["origin_main"]; isGitSHA(origin) && gitObjectExists(t, root, origin) && !gitIsAncestor(t, root, origin, "HEAD") {
 		t.Errorf("recorded origin_main %s is not an ancestor of HEAD; revalidate the audit", origin)
 	}
 
-	maint := readRepoFile(t, root, "docs/confenge/upstream-maintenance.md")
+	maint := readForkRepoFile(t, root, "docs/confenge/upstream-maintenance.md")
 	for _, needle := range []string{
 		"Never automatic cherry-pick",
 		"confenge-product-acceptance",
@@ -388,7 +395,7 @@ func gitIsAncestor(t *testing.T, root, anc, desc string) bool {
 	return cmd.Run() == nil
 }
 
-func readRepoFile(t *testing.T, root, rel string) string {
+func readForkRepoFile(t *testing.T, root, rel string) string {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(root, rel))
 	if err != nil {
