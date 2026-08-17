@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
-	"time"
 )
 
 // RunFixtureReport loads named SYNTHETIC fixtures through IngestEvent
@@ -163,6 +163,16 @@ func BuildObservabilityReport(store Store, orgID, month string, includeSynthetic
 			Synthetic:      cand.Synthetic,
 		})
 	}
+	sort.Slice(rep.LearningCandidates, func(i, j int) bool {
+		a, b := rep.LearningCandidates[i], rep.LearningCandidates[j]
+		if a.Identity == b.Identity {
+			if a.Recommendation == b.Recommendation {
+				return a.Reason < b.Reason
+			}
+			return a.Recommendation < b.Recommendation
+		}
+		return a.Identity < b.Identity
+	})
 
 	rep.EventsConsumed = countConsumedEvents(chains, includeSynthetic)
 	if !includeSynthetic && view.RealEmpty {
@@ -277,8 +287,13 @@ func ReportMarkdown(rep ObservabilityReport) string {
 	if len(rep.ExceptionCounts) == 0 {
 		fmt.Fprintf(&b, "- none\n")
 	} else {
-		for k, n := range rep.ExceptionCounts {
-			fmt.Fprintf(&b, "- %s: %d\n", k, n)
+		codes := make([]string, 0, len(rep.ExceptionCounts))
+		for k := range rep.ExceptionCounts {
+			codes = append(codes, k)
+		}
+		sort.Strings(codes)
+		for _, k := range codes {
+			fmt.Fprintf(&b, "- %s: %d\n", k, rep.ExceptionCounts[k])
 		}
 	}
 	fmt.Fprintf(&b, "\n## Learning candidates\n\n")
@@ -291,7 +306,7 @@ func ReportMarkdown(rep ObservabilityReport) string {
 			fmt.Fprintf(&b, "- %s\n", bl)
 		}
 	}
-	fmt.Fprintf(&b, "\nGenerated at %s. This is not a CRM and not a forecast.\n", time.Now().UTC().Format(time.RFC3339))
+	fmt.Fprintf(&b, "\nThis is not a CRM and not a forecast.\n")
 	return b.String()
 }
 

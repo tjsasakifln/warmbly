@@ -102,7 +102,7 @@ func (s *PGStore) ListChains(orgID string) ([]Chain, error) {
 	}
 	org := firstNonEmpty(orgID, s.orgID)
 	rows, err := s.db.Query(context.Background(), `
-		SELECT payload FROM outreach_intel_chains WHERE organization_id = $1::uuid`, org)
+		SELECT payload FROM outreach_intel_chains WHERE organization_id = $1::uuid ORDER BY identity`, org)
 	if err != nil {
 		return nil, err
 	}

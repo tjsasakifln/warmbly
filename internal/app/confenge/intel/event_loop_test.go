@@ -444,16 +444,30 @@ func TestRunFixtureReportTwiceStable(t *testing.T) {
 	if !found {
 		t.Fatal("no learning candidates")
 	}
-	raw, _ := ReportJSON(a)
-	md := ReportMarkdown(a)
-	if !strings.Contains(md, "INBOUND QUALIFIED PIPELINE") {
+	rawA, err := ReportJSON(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawB, err := ReportJSON(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(rawA) != string(rawB) {
+		t.Fatal("JSON reports are not byte-stable across two RunFixtureReport calls")
+	}
+	mdA := ReportMarkdown(a)
+	mdB := ReportMarkdown(b)
+	if mdA != mdB {
+		t.Fatal("markdown reports are not byte-stable across two RunFixtureReport calls")
+	}
+	if !strings.Contains(mdA, "INBOUND QUALIFIED PIPELINE") {
 		t.Fatal("markdown missing IQP")
 	}
-	if ReportHasPII(raw) {
+	if ReportHasPII(rawA) {
 		t.Fatal("report JSON flagged as PII")
 	}
-	fmt.Printf("REPORT_STABLE iqp=%d won=%d lost=%d unknown=%d baseline=%s rec=%s\n",
-		a.InboundQualifiedPipeline, a.Won, a.Lost, a.Unknown, a.Latency.Baseline, a.Recommendation)
+	fmt.Printf("REPORT_STABLE iqp=%d won=%d lost=%d unknown=%d baseline=%s rec=%s json_bytes=%d md_bytes=%d\n",
+		a.InboundQualifiedPipeline, a.Won, a.Lost, a.Unknown, a.Latency.Baseline, a.Recommendation, len(rawA), len(mdA))
 }
 
 func TestOrderingOutOfOrderHeld(t *testing.T) {
