@@ -39,12 +39,18 @@ for due sends after approval.
 CONFENGE_GREEN_AUTORUN_ENABLED=false
 CONFENGE_AUTO_SEND_ENABLED=false
 CONFENGE_REQUIRE_HUMAN_APPROVAL=true
+CONFENGE_SENDING_PAUSED=true
 CONFENGE_WHATSAPP_ENABLED=false
 HOSTINGER_PLAN_CLASS=BUSINESS_EMAIL_STARTER
 # provider ceiling 1000/rolling 24h/mailbox; ops pace stays 10→20/h, daily 200
 CONFENGE_RATE_MAX_PER_HOUR=20
 CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT=200
 ```
+
+Live on 2026-08-17 after #82 (`d6eb0ef1`): backend and worker process env match the
+block above, kill switch reason `warmbly002_post_deploy`, inbound health
+`auto_send_enabled=false`. Isolated env cannot reactivate auto-send, GREEN autorun,
+or human-approval-off. Do not resume dispatch from this page.
 
 ## Public exposure
 

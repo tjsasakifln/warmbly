@@ -48,7 +48,35 @@ CONFENGE_RATE_START_PER_HOUR=10
 CONFENGE_RATE_MAX_PER_HOUR=20
 ```
 
-Always-on execution ≠ unattended authorization. GREEN autorun stays off.
+Always-on execution is not unattended authorization. GREEN autorun stays off.
+Startup and the worker refuse `CONFENGE_AUTO_SEND_ENABLED=true`,
+`CONFENGE_GREEN_AUTORUN_ENABLED=true`, and `CONFENGE_REQUIRE_HUMAN_APPROVAL=false`.
+
+### Live effective (2026-08-17, WARMBLY-002 / #82)
+
+Deployed on `/opt/warmbly-confenge` (`warmbly-confenge`):
+
+```text
+SHA=d6eb0ef1a9c206807bc4c3df8b0d21b1167971c8
+APP_ENV=production
+CONFENGE_OUTREACH_ENABLED=true
+CONFENGE_AUTO_SEND_ENABLED=false
+CONFENGE_GREEN_AUTORUN_ENABLED=false
+CONFENGE_REQUIRE_HUMAN_APPROVAL=true
+CONFENGE_SENDING_PAUSED=true
+CONFENGE_WHATSAPP_ENABLED=false
+CONFENGE_WHATSAPP_AUTO_SEND_ENABLED=false
+kill_switch=engaged reason=warmbly002_post_deploy
+dispatch=PAUSED
+inbound_health=auto_send_enabled=false dispatch_attempted=false status=READY
+```
+
+Backend and worker process env match the file profile. Local Mailpit sink stayed at 7
+`CONFENGE-PA-*` messages (no new message after deploy). This deploy does not authorize
+any real send. Do not run `resume.sh` from this page.
+
+`origin/main` later moved to `4a505917` (#87 intel exception-code persist). That commit
+does not touch send gates. It is not on this host yet.
 
 ## Hostinger Business Email Starter vs commercial pacing
 
