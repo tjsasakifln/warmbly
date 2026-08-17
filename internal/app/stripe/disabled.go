@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/google/uuid"
-	stripe "github.com/stripe/stripe-go/v76"
 
 	"github.com/warmbly/warmbly/internal/errx"
 )
@@ -28,11 +27,11 @@ func (d *disabledService) CreateCustomer(_ context.Context, _ uuid.UUID, _, _ st
 	return "", billingDisabled()
 }
 
-func (d *disabledService) GetCustomer(_ context.Context, _ string) (*stripe.Customer, *errx.Error) {
+func (d *disabledService) GetCustomer(_ context.Context, _ string) (*Customer, *errx.Error) {
 	return nil, billingDisabled()
 }
 
-func (d *disabledService) CreateCheckoutSession(_ context.Context, _, _ uuid.UUID, _, _, _, _ string) (*stripe.CheckoutSession, *errx.Error) {
+func (d *disabledService) CreateCheckoutSession(_ context.Context, _, _ uuid.UUID, _, _, _, _ string) (*CheckoutSession, *errx.Error) {
 	return nil, billingDisabled()
 }
 
@@ -40,7 +39,7 @@ func (d *disabledService) CreatePortalSession(_ context.Context, _, _ string) (s
 	return "", billingDisabled()
 }
 
-func (d *disabledService) GetSubscription(_ context.Context, _ string) (*stripe.Subscription, *errx.Error) {
+func (d *disabledService) GetSubscription(_ context.Context, _ string) (*Subscription, *errx.Error) {
 	return nil, billingDisabled()
 }
 
@@ -48,7 +47,7 @@ func (d *disabledService) CancelSubscription(_ context.Context, _ string, _ bool
 	return billingDisabled()
 }
 
-func (d *disabledService) ChangePlan(_ context.Context, _, _ uuid.UUID, _, _, _ string) (*stripe.Subscription, *errx.Error) {
+func (d *disabledService) ChangePlan(_ context.Context, _, _ uuid.UUID, _, _, _ string) (*Subscription, *errx.Error) {
 	return nil, billingDisabled()
 }
 
@@ -56,11 +55,11 @@ func (d *disabledService) PreviewPlanChange(_ context.Context, _, _ uuid.UUID) (
 	return nil, billingDisabled()
 }
 
-func (d *disabledService) VerifyWebhook(_ []byte, _ string) (*stripe.Event, *errx.Error) {
+func (d *disabledService) VerifyWebhook(_ []byte, _ string) (*Event, *errx.Error) {
 	return nil, billingDisabled()
 }
 
-func (d *disabledService) ProcessWebhookEvent(_ context.Context, _ *stripe.Event) *errx.Error {
+func (d *disabledService) ProcessWebhookEvent(_ context.Context, _ *Event) *errx.Error {
 	return nil
 }
 
@@ -68,7 +67,7 @@ func (d *disabledService) ApplyCustomerCredit(_ context.Context, _ string, _ int
 	return "", billingDisabled()
 }
 
-func (d *disabledService) CreateCreditCheckoutSession(_ context.Context, _, _ uuid.UUID, _ string, _ int, _, _ string) (*stripe.CheckoutSession, *errx.Error) {
+func (d *disabledService) CreateCreditCheckoutSession(_ context.Context, _, _ uuid.UUID, _ string, _ int, _, _ string) (*CheckoutSession, *errx.Error) {
 	return nil, billingDisabled()
 }
 

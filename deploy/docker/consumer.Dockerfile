@@ -18,7 +18,7 @@ COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     set -eux; \
-    if echo "$GO_TAGS" | grep -qw kafka; then CGO=1; TAGS="musl kafka"; else CGO=0; TAGS=""; fi; \
+    if echo "$GO_TAGS" | grep -qw kafka; then CGO=1; TAGS="musl $GO_TAGS"; else CGO=0; TAGS="$GO_TAGS"; fi; \
     CGO_ENABLED=$CGO GOOS=$TARGETOS GOARCH=$TARGETARCH go build -tags "$TAGS" -ldflags="-s -w" -o /out/consumer ./cmd/consumer
 
 # Runtime stage

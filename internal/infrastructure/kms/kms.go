@@ -1,3 +1,5 @@
+//go:build !minprofile
+
 package kms
 
 import (
@@ -18,3 +20,7 @@ func New(ctx context.Context, cfg aws.Config, keyID string) (*KMS, error) {
 		MasterKey: keyID,
 	}, nil
 }
+
+func (k *KMS) Name() string { return "aws-kms" }
+
+var _ Provider = (*KMS)(nil)

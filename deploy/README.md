@@ -39,6 +39,7 @@ docker build -f admin/Dockerfile                  -t warmbly/admin    admin/
 ```
 
 The default builds have no Kafka/Avro support; add `--build-arg GO_TAGS=kafka` (Go images) or `--build-arg CARGO_FEATURES=kafka` (tracking) to opt in.
+CONFENGE min-profile images use `--build-arg GO_TAGS=minprofile` (see `docker-compose.confenge.yml` and `deploy/confenge-vps/docker-compose.override.yml`) so Stripe, AWS SDK, and GCP Cloud Tasks/PubSub are not compile-linked. Selecting those providers on a min-profile binary fails closed.
 
 GitHub Actions publishes these to GHCR automatically. See [the self-hosting guide](https://docs.warmbly.com/development/deployment-guide/).
 

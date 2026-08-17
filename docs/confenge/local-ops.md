@@ -1,6 +1,9 @@
 # CONFENGE local-first ops (WSL)
 
 One-command local stack for operators. No Kafka, AWS, GCP, or Stripe required.
+Native CONFENGE targets build with `-tags minprofile` so those backends are not
+linked. Compose overlay: `docker-compose.confenge.yml` (same allowed infra as
+the VPS overlay: postgres, redis, nats, filesystem, local KMS, billing none).
 
 ## Prerequisites
 
@@ -35,7 +38,8 @@ at `http://localhost:18025`. Nothing real is sent.
 
 | Target | Purpose |
 | --- | --- |
-| `make confenge-local` | Infra + migrate + seed + backend/consumer/worker/web with CONFENGE on |
+| `make confenge-local` | Infra + migrate + seed + min-profile backend/consumer/worker/web |
+| `make confenge-min-profile-sbom` | Deterministic JSON SBOM of the min-profile module graph |
 | `make confenge-preflight` | DB, Redis, NATS, flags, AI, mailbox, feed, outcome, governor, WA, kill switch |
 | `make confenge-bootstrap` | Workspace settings without raw SQL |
 | `make confenge-import FEED=... [DRY_RUN=true]` | Import feed; prints creates/updates/blocked |

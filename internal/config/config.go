@@ -6,17 +6,20 @@ import (
 	"os"
 	"strconv"
 	"strings"
-
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/warmbly/warmbly/internal/infrastructure/secrets"
-	"github.com/warmbly/warmbly/internal/infrastructure/ssm"
 )
+
+// remoteKV is the env-fallback store used when AWS_CONFIG_ENABLED=true.
+// Hosted builds wire SSM / Secrets Manager; the min-profile build rejects
+// AWS_CONFIG_ENABLED so this stays nil.
+type remoteKV interface {
+	Get(ctx context.Context, key string) (string, error)
+}
 
 type Config struct {
 	Env              string // "dev" or "prod"
 	AWSConfigEnabled bool
-	params           *ssm.SSMParameterStore
-	secrets          *secrets.SecretsManagerClient
+	params           remoteKV
+	secrets          remoteKV
 }
 
 // NewConfig creates a new config instance with env-first loading and optional AWS fallback.
@@ -31,38 +34,12 @@ func NewConfig(ctx context.Context) (*Config, error) {
 	}
 
 	if awsEnabled {
-		awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load AWS config: %w", err)
+		if err := cfg.initAWS(ctx); err != nil {
+			return nil, err
 		}
-
-		params, err := ssm.NewSSMParameterStore(ctx, awsCfg)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create SSM client: %w", err)
-		}
-		cfg.params = params
-
-		secretsClient, err := secrets.NewSecretsManagerClient(ctx, awsCfg)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create Secrets Manager client: %w", err)
-		}
-		cfg.secrets = secretsClient
 	}
 
 	return cfg, nil
-}
-
-// Load creates a Config with pre-initialized AWS clients (legacy compatibility).
-// Deprecated: Use NewConfig for new code.
-func Load(params *ssm.SSMParameterStore, secrets *secrets.SecretsManagerClient) *Config {
-	env := getEnvOrDefault("APP_ENV", "dev")
-
-	return &Config{
-		Env:              env,
-		AWSConfigEnabled: true, // Legacy mode always has AWS enabled
-		params:           params,
-		secrets:          secrets,
-	}
 }
 
 // GetKeyID returns the full AWS parameter/secret path with environment prefix.

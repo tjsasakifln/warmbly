@@ -1,0 +1,28 @@
+# CONFENGE min runtime overlay.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.confenge.yml --profile sandbox config
+#
+# Allowed infra (same contract as deploy/confenge-vps):
+#   postgres, redis, nats, filesystem blobs, local KMS, billing none.
+# Go images build with GO_TAGS=minprofile so Stripe, AWS SDK, GCP Cloud
+# Tasks/PubSub, and Kafka are not compile-linked.
+# Admin is not required for the action plane.
+#
+# Do not use this overlay with GO_TAGS=kafka. Selecting kafka/stripe/aws/gcloud
+# on the resulting binaries fails closed.
+
+services:
+  backend:
+    build:
+      args:
+        GO_TAGS: ${GO_TAGS:-minprofile}
+  consumer:
+    build:
+      args:
+        GO_TAGS: ${GO_TAGS:-minprofile}
+  worker:
+    build:
+      args:
+        GO_TAGS: ${GO_TAGS:-minprofile}
+  admin:
+    profiles: ["admin"]

@@ -121,6 +121,9 @@ services:
   backend:
     <<: *restart
     logging: *default-logging
+    build:
+      args:
+        GO_TAGS: ${GO_TAGS:-minprofile}
     ports: !override
       - "127.0.0.1:8080:8080"
     environment:
@@ -153,6 +156,9 @@ services:
   consumer:
     <<: *restart
     logging: *default-logging
+    build:
+      args:
+        GO_TAGS: ${GO_TAGS:-minprofile}
     environment:
       <<: *confenge-env
     volumes:
@@ -167,6 +173,9 @@ services:
   worker:
     <<: *restart
     logging: *default-logging
+    build:
+      args:
+        GO_TAGS: ${GO_TAGS:-minprofile}
     environment:
       <<: *confenge-env
       # Stable worker id so backend can route validate/send commands (hostname is not a UUID).

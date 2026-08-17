@@ -12,8 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconf "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/google/uuid"
 	"github.com/warmbly/warmbly/internal/app/cipher"
 	"github.com/warmbly/warmbly/internal/app/worker"
@@ -53,17 +51,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// AWS SDK config, loaded only when an AWS-backed provider is selected
-	// (KMS_PROVIDER=aws or BLOB_PROVIDER=s3). A fully-local self-host needs no
-	// AWS_REGION or credentials.
-	var awscfg aws.Config
-	if config.AWSNeeded() {
-		awscfg, err = awsconf.LoadDefaultConfig(ctx)
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
-
 	// Redis
 	primaryRedis, err := cfg.LoadPrimaryRedisEndpoint(ctx)
 	if err != nil {
@@ -80,7 +67,7 @@ func main() {
 		masterKey += "-dev"
 	}
 
-	kmsClient, err := kms.FromEnv(ctx, awscfg, masterKey)
+	kmsClient, err := kms.FromEnv(ctx, masterKey)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -105,7 +92,7 @@ func main() {
 	}
 
 	// Blob storage (S3 by default, filesystem when BLOB_PROVIDER=filesystem).
-	s3Client, err := storage.NewFromEnv(ctx, awscfg, "main")
+	s3Client, err := storage.NewFromEnv(ctx, "main")
 	if err != nil {
 		log.Fatal(err)
 	}

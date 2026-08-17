@@ -1,3 +1,5 @@
+//go:build !minprofile
+
 package storage
 
 import (
@@ -31,3 +33,5 @@ func NewClient(ctx context.Context, cfg aws.Config, bucket string) (*Client, err
 		}),
 	}, nil
 }
+
+var _ Store = (*Client)(nil)

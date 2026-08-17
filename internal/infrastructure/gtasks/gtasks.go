@@ -1,3 +1,5 @@
+//go:build !minprofile
+
 package gtasks
 
 import (

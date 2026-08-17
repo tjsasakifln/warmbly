@@ -9,6 +9,16 @@ import (
 	"github.com/warmbly/warmbly/internal/config"
 )
 
+// EmailNotificationService sends platform mail (login codes, resets, invites).
+type EmailNotificationService interface {
+	Send(ctx context.Context, to, cc, bcc []string, subject, message string) error
+	// SendOutreach is the same as Send but lets the caller override
+	// the Reply-To header. Used by the admin outreach composer so a
+	// noreply From: address can still funnel replies into a real
+	// support inbox. Empty replyTo falls back to the From address.
+	SendOutreach(ctx context.Context, to []string, replyTo, subject, message string) error
+}
+
 // Transport is a constructed platform-mail sender plus enough metadata for the
 // boot preflight, the admin diagnostics endpoint, and the login screen to tell
 // the operator what is actually happening to their mail.

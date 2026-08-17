@@ -7,7 +7,8 @@
 # The builder always runs on the build host ($BUILDPLATFORM) and cross-compiles
 # to $TARGETARCH, so multi-arch CI builds never run the Go compiler under QEMU.
 #
-# To include the optional Kafka backend, build with --build-arg GO_TAGS=kafka
+# Optional tags: kafka (librdkafka + CGO) and/or minprofile (no Stripe/AWS/GCP).
+# CONFENGE images use --build-arg GO_TAGS=minprofile.
 # (adds librdkafka + CGO; slower, and CGO cannot cross-compile — build each arch
 # on a native runner). Runtime selection is still by env
 # (EVENTBUS_PROVIDER / CODEC_PROVIDER).
@@ -26,7 +27,7 @@ COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     set -eux; \
-    if echo "$GO_TAGS" | grep -qw kafka; then CGO=1; TAGS="musl kafka"; else CGO=0; TAGS=""; fi; \
+    if echo "$GO_TAGS" | grep -qw kafka; then CGO=1; TAGS="musl $GO_TAGS"; else CGO=0; TAGS="$GO_TAGS"; fi; \
     CGO_ENABLED=$CGO GOOS=$TARGETOS GOARCH=$TARGETARCH go build -tags "$TAGS" -ldflags="-s -w" -o /out/backend ./cmd/backend; \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags="-s -w" -o /out/confenge ./cmd/confenge; \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags="-s -w" -o /out/seed ./cmd/seed; \
