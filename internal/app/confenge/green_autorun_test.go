@@ -127,13 +127,19 @@ func TestCampaignPolicyGreenAutoqueueNoFakeApprovedBy(t *testing.T) {
 	store := newMemPolicyStore()
 	svc.WirePolicyAuth(store)
 
-	// No policy yet → refuse
-	_, dec, xerr := svc.TryGreenAutorun(ctx, org, user, tp.ID)
+	// Isolated env cannot reactivate green autorun: TryGreenAutorun never queues.
+	out, dec, xerr := svc.TryGreenAutorun(ctx, org, user, tp.ID)
 	if xerr != nil {
 		t.Fatal(xerr)
 	}
 	if dec.Allow {
-		t.Fatal("must not allow without campaign policy")
+		t.Fatal("green autorun must not allow")
+	}
+	if !containsString(dec.Reasons, "individual_approval_required") {
+		t.Fatalf("want individual_approval_required, got %v", dec.Reasons)
+	}
+	if out != nil && (out.State == models.TouchpointQueued || out.ApprovedBy != nil) {
+		t.Fatalf("autorun must not mint a sendable touchpoint: %+v", out)
 	}
 
 	auth, xerr := svc.AuthorizeCampaignPolicy(ctx, org, user, &models.CampaignPolicyAuthorization{
@@ -196,23 +202,26 @@ func TestCampaignPolicyGreenAutoqueueNoFakeApprovedBy(t *testing.T) {
 	if tp.AuthorizationMode != AuthorizationModeCampaignPolicy {
 		t.Fatalf("auth mode=%s", tp.AuthorizationMode)
 	}
-	if err := CanTransport(tp); err != nil {
-		t.Fatalf("CanTransport: %v", err)
+	if err := CanTransport(tp); err == nil {
+		t.Fatal("campaign_policy must not satisfy CanTransport")
 	}
 	_ = repo.UpdateTouchpoint(ctx, tp)
-	queued, err := repo.CASQueueTouchpoint(ctx, org, tp.ID, tp.ContentHash)
-	if err != nil || queued == nil {
-		t.Fatalf("CASQueue policy path failed: %v %v", err, queued)
+	if _, xerr := svc.QueueTouchpoint(ctx, org, user, tp.ID); xerr == nil {
+		t.Fatal("QueueTouchpoint must refuse policy-only authorization")
 	}
-	if queued.State != models.TouchpointQueued {
-		t.Fatalf("state=%s", queued.State)
+	stored, _ := repo.GetTouchpoint(ctx, org, tp.ID)
+	if stored != nil && stored.State == models.TouchpointQueued {
+		t.Fatal("policy-only path must not birth a queued send job")
 	}
-	if queued.ApprovedBy != nil {
-		t.Fatal("queued touchpoint still has approved_by")
+}
+
+func containsString(vals []string, want string) bool {
+	for _, v := range vals {
+		if v == want {
+			return true
+		}
 	}
-	if queued.AuthorizationMode != AuthorizationModeCampaignPolicy {
-		t.Fatalf("queued mode=%s", queued.AuthorizationMode)
-	}
+	return false
 }
 
 func TestYellowAndRedStayOutOfAutorun(t *testing.T) {

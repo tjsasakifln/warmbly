@@ -277,9 +277,8 @@ func TestAssertTransportableAfterRevokeFails(t *testing.T) {
 	if err := ApplyCampaignPolicyAuthorization(tp, auth, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	// Structural CanTransport still passes (binding fields present).
-	if err := CanTransport(tp); err != nil {
-		t.Fatalf("structural CanTransport: %v", err)
+	if err := CanTransport(tp); err == nil {
+		t.Fatal("policy-only CanTransport must fail; individual approval is required")
 	}
 	// Revoke live grant.
 	if ok, _ := svc.RevokeCampaignPolicy(ctx, org, camp, user); !ok {
@@ -346,11 +345,11 @@ func TestRequireTouchTransportAfterRevokeBlocks(t *testing.T) {
 	}
 	_ = repo.InsertTouchpoint(ctx, tp)
 
-	if err := CanTransport(tp); err != nil {
-		t.Fatalf("structural CanTransport: %v", err)
+	if err := CanTransport(tp); err == nil {
+		t.Fatal("policy-only CanTransport must fail before enroll")
 	}
-	if xerr := AssertTransportAllowed(tp); xerr != nil {
-		t.Fatalf("structural AssertTransportAllowed: %v", xerr)
+	if xerr := AssertTransportAllowed(tp); xerr == nil {
+		t.Fatal("policy-only AssertTransportAllowed must fail")
 	}
 
 	if ok, _ := svc.RevokeCampaignPolicy(ctx, org, camp, user); !ok {

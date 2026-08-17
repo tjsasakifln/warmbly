@@ -27,12 +27,14 @@ func (w *WorkerService) HandleSendEmail(ctx context.Context, sendEmail models.Se
 	// the backend. Re-check it at the worker boundary so a stale or directly
 	// published queue item cannot reach SMTP while dispatch is paused.
 	confengeCfg := confenge.LoadConfig()
-	if confengeCfg.Enabled && confengeCfg.OperatorMode &&
-		(!confengeCfg.RequireHumanApproval || confengeCfg.AutoSendEnabled || confengeCfg.GreenAutorunEnabled) {
-		return fmt.Errorf("CONFENGE unsafe authorization configuration at worker transport boundary")
-	}
-	if confengeCfg.Enabled && confengeCfg.OperatorMode && !confengeCfg.SendingAllowed() {
-		return fmt.Errorf("CONFENGE sending paused at worker transport boundary")
+	// Isolated env that omits operator mode must not become fail-open at SMTP.
+	if confengeCfg.Enabled {
+		if err := confengeCfg.ForbiddenAutomation(); err != nil {
+			return fmt.Errorf("CONFENGE unsafe authorization configuration at worker transport boundary: %w", err)
+		}
+		if !confengeCfg.SendingAllowed() {
+			return fmt.Errorf("CONFENGE sending paused at worker transport boundary")
+		}
 	}
 
 	// Get the email account from MailManager

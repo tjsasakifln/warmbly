@@ -237,9 +237,12 @@ func TestConfigDefaultsOff(t *testing.T) {
 
 func TestConfigValidateProdHTTPS(t *testing.T) {
 	cfg := Config{
-		Enabled:      true,
-		FeedURL:      "http://insecure.example.com/feed",
-		AllowedHosts: []string{"insecure.example.com"},
+		Enabled:              true,
+		RequireHumanApproval: true,
+		DefaultDailyLimit:    200,
+		MaxInitialEmailWords: 120,
+		FeedURL:              "http://insecure.example.com/feed",
+		AllowedHosts:         []string{"insecure.example.com"},
 	}
 	if err := cfg.ValidateStartup("prod"); err == nil {
 		t.Fatal("prod must require https feed")
@@ -281,6 +284,28 @@ func TestConfigValidateStartupRejectsUnsafeOperatorAutomation(t *testing.T) {
 	green.GreenAutorunEnabled = true
 	if err := green.ValidateStartup("production"); err == nil {
 		t.Fatal("operator startup must reject green autorun")
+	}
+}
+
+func TestConfigValidateStartupRejectsUnsafeAutomationWithoutOperatorMode(t *testing.T) {
+	base := Config{Enabled: true, RequireHumanApproval: true, DefaultDailyLimit: 200, MaxInitialEmailWords: 120}
+	auto := base
+	auto.AutoSendEnabled = true
+	if err := auto.ValidateStartup("test"); err == nil {
+		t.Fatal("isolated env must not reactivate auto-send")
+	}
+	noHuman := base
+	noHuman.RequireHumanApproval = false
+	if err := noHuman.ValidateStartup("test"); err == nil {
+		t.Fatal("isolated env must not turn off human approval")
+	}
+	green := base
+	green.GreenAutorunEnabled = true
+	if err := green.ValidateStartup("dev"); err == nil {
+		t.Fatal("isolated env must not reactivate green autorun")
+	}
+	if err := base.ValidateStartup("test"); err != nil {
+		t.Fatalf("safe defaults must start: %v", err)
 	}
 }
 

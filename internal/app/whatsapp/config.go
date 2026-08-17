@@ -97,6 +97,9 @@ func (c Config) ValidateStartup() error {
 	if !c.Enabled {
 		return nil
 	}
+	if c.AutoSendEnabled {
+		return fmt.Errorf("%s=true is not supported; CONFENGE WhatsApp requires an explicit human send", EnvAutoSend)
+	}
 	// Baileys must never enable under production.
 	if c.IsProduction() && c.AllowBaileys {
 		return fmt.Errorf("%s cannot be true when APP_ENV is production (Cloud API only)", EnvEvolutionAllowBaileys)

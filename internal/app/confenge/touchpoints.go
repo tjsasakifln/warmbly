@@ -602,7 +602,7 @@ func (s *service) EditTouchpoint(ctx context.Context, orgID, userID, id uuid.UUI
 			return nil, errx.New(errx.Internal, "load draft failed")
 		} else if d != nil {
 			// Keep draft transport fields in lockstep with the touchpoint so
-			// requireTouchTransport ContentHash(draft) matches approved hash.
+			// requireTouchTransport binding hash matches approved hash.
 			d.Subject, d.BodyText = tp.Subject, tp.BodyText
 			d.Channel = tp.Channel
 			if tp.Channel == models.OutreachChannelWhatsApp || tp.Channel == "WHATSAPP" {
@@ -875,6 +875,9 @@ func (s *service) QueueTouchpoint(ctx context.Context, orgID, userID, id uuid.UU
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, xerr
 	}
+	if s.cfg.AutoSendEnabled || s.cfg.GreenAutorunEnabled {
+		return nil, errx.New(errx.BadRequest, "refusing queue: auto-send and green autorun cannot create send jobs")
+	}
 	if !s.cfg.SendingAllowed() {
 		return nil, errx.New(errx.Conflict, "sending paused; approval was preserved and nothing was queued")
 	}
@@ -1088,7 +1091,7 @@ func (s *service) requireTouchTransport(ctx context.Context, orgID, draftID uuid
 				recipient = tp.Recipient
 			}
 		}
-		live := ContentHash(ch, recipient, d.Subject, d.BodyText, tp.Purpose)
+		live := ContentBindingHash(ch, recipient, d.Subject, d.BodyText, tp.Purpose, tp.EvidenceIDs, tp.GeneratedContextHash)
 		if live != tp.ContentHash || live != tp.ApprovedContentHash {
 			return nil, errx.New(errx.BadRequest, "draft content diverged from approved touchpoint; re-approve the exact send payload")
 		}

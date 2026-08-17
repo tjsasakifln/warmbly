@@ -224,14 +224,34 @@ func envDuration(key string, def time.Duration) time.Duration {
 	return d
 }
 
-// ValidateStartup fails closed on insecure production combinations.
-// Called when the feature is enabled.
+// ForbiddenAutomation reports env/config that must never birth a CONFENGE send
+// job. Isolated env cannot reactivate auto-send, bulk/green autorun, or
+// human-approval-off. Used at startup, enroll/queue, and the worker boundary.
+func (c Config) ForbiddenAutomation() error {
+	if c.AutoSendEnabled {
+		return fmt.Errorf("%s=true is not supported; CONFENGE requires an explicit dispatch action", EnvAutoSend)
+	}
+	if !c.RequireHumanApproval {
+		return fmt.Errorf("%s must remain true; individual human approval is required", EnvRequireHuman)
+	}
+	if c.GreenAutorunEnabled {
+		return fmt.Errorf("%s=true is not supported; individual human approval is required", EnvGreenAutorun)
+	}
+	return nil
+}
+
+// ValidateStartup fails closed on insecure or policy-violating combinations.
+// Called when the feature is enabled. Auto-send, green autorun, and
+// human-approval-off are rejected in every environment, not only operator mode.
 func (c Config) ValidateStartup(appEnv string) error {
 	if !c.Enabled {
 		if c.OperatorMode {
 			return fmt.Errorf("%s requires %s=true", EnvOperatorMode, EnvEnabled)
 		}
 		return nil
+	}
+	if err := c.ForbiddenAutomation(); err != nil {
+		return err
 	}
 	if c.OperatorMode {
 		if c.OperatorUserID == uuid.Nil {
@@ -245,15 +265,6 @@ func (c Config) ValidateStartup(appEnv string) error {
 		}
 	}
 	prod := strings.EqualFold(appEnv, "prod") || strings.EqualFold(appEnv, "production")
-	if c.AutoSendEnabled {
-		return fmt.Errorf("%s=true is not supported; CONFENGE requires an explicit dispatch action", EnvAutoSend)
-	}
-	if c.OperatorMode && !c.RequireHumanApproval {
-		return fmt.Errorf("%s=true requires %s=true", EnvOperatorMode, EnvRequireHuman)
-	}
-	if c.OperatorMode && c.GreenAutorunEnabled {
-		return fmt.Errorf("%s=true is not supported in operator mode", EnvGreenAutorun)
-	}
 	if prod {
 		if (c.FeedURL != "" || c.ManifestURL != "") && len(c.AllowedHosts) == 0 {
 			return fmt.Errorf("%s is required when a feed URL is set in production", EnvAllowedHosts)
