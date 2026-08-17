@@ -1,6 +1,7 @@
 package intel
 
 import (
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -105,6 +106,12 @@ func (m *MemoryStore) ListChains(orgID string) ([]Chain, error) {
 			out = append(out, c)
 		}
 	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Identity == out[j].Identity {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].Identity < out[j].Identity
+	})
 	return out, nil
 }
 
