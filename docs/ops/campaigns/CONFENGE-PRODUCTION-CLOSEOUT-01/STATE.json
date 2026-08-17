@@ -1,0 +1,32 @@
+{
+  "campaign": "CONFENGE-PRODUCTION-CLOSEOUT-01",
+  "repo": "tjsasakifln/warmbly",
+  "approval": "OWNER_CONDITIONAL_PREAPPROVAL_CONFENGE_PRODUCTION_CLOSEOUT_01",
+  "as_of": "2026-08-17T12:41:00Z",
+  "origin_main": "6612b7ed3769bd8bf0341ed64fb4b638ccd7bf09",
+  "deployed_sha": "6612b7ed3769bd8bf0341ed64fb4b638ccd7bf09",
+  "inbound_health": {
+    "url": "https://api.confenge.com.br/api/v1/webhooks/confenge/inbound/health",
+    "status": "READY",
+    "auto_send_enabled": false,
+    "class": "LIVE_PROVEN"
+  },
+  "hmac_secret": "PRESENTE",
+  "auto_send": false,
+  "green_autorun": false,
+  "dispatch_paused": true,
+  "issue_47": "OPEN",
+  "live_ready_deps": "LIVE_PROVEN",
+  "owner_canary": {
+    "class": "CONTROLLED_OWNER_CANARY",
+    "lead_id": "synthetic-owner-canary-closeout-83431301ee10",
+    "receipt_id": "synthetic-owner-canary-receipt-83431301ee10",
+    "row_id": "97489e04-2c13-4666-bd6e-19a9849f2ec9",
+    "http_first": 201,
+    "http_replay": 200,
+    "duplicate": true,
+    "dispatch_attempted": false,
+    "next_action": "SUPPRESSED",
+    "invalid_hmac": 401
+  }
+}
