@@ -1,0 +1,34 @@
+{
+  "schema": "confenge.commercial_event.v1",
+  "example": {
+    "event_id": "ev-diag-terms-example",
+    "version": "1",
+    "type": "terms_accepted",
+    "occurred_at": "2026-08-04T16:00:00Z",
+    "timezone": "America/Sao_Paulo",
+    "lead_id": "lead-diag-example",
+    "receipt_id": "rcpt-diag-example",
+    "correlation_id": "corr-diag-example",
+    "offer_id": "CFG-DIAG-EXP-v1",
+    "source": "operator",
+    "route_family": "inbound",
+    "actor_ref": "operator:example",
+    "evidence_ref": "evidence:terms-pack",
+    "offer": {
+      "offer_id": "CFG-DIAG-EXP-v1",
+      "offer_version": "v1",
+      "terms_version": "CFG-TERMS-B2B-2026-08-17-v1",
+      "amount_cents": 800000,
+      "currency": "BRL",
+      "billing_mode": "one_time",
+      "canonical_api_host": "api.confenge.com.br"
+    },
+    "capacity": {
+      "policy_version": "capacity.policy.v1",
+      "capacity_limit": 50,
+      "eligibility_state": "eligible",
+      "reservation_state": "approved"
+    },
+    "synthetic": true
+  }
+}

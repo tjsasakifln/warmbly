@@ -90,13 +90,19 @@ All paths below are relative to the versioned base URL `https://api.warmbly.com/
 | POST | `/confenge/intel/exceptions/:id/resolve` | `WRITE_CONTACTS` |
 | POST | `/confenge/intel/learning` | `WRITE_CONTACTS` |
 | POST | `/confenge/intel/events` | `WRITE_CONTACTS` |
+| POST | `/confenge/intel/commercial` | `WRITE_CONTACTS` |
+| GET | `/confenge/intel/commercial/:leadId` | `READ_CONTACTS` |
+| POST | `/confenge/intel/commercial/provider-events` | `WRITE_CONTACTS` |
+| POST | `/confenge/intel/exceptions/:id/reopen` | `WRITE_CONTACTS` |
 | POST | `/confenge/manual-queue/:id/action` | `WRITE_CONTACTS` |
 
 `GET /contacts/custom-fields` lists the distinct custom-field keys used across your contacts (frequency-ranked), for building personalization pickers. It returns a flat string array under `data`, capped at 200 keys.
 
 `GET /confenge/intel/executive` is the monthly commercial-intelligence query (not a CRM board). Families stay separate. Real counts stay empty or `UNKNOWN` until a human-approved action exists. `include_synthetic=1` is the labeled fixture path. WON is never inferred. `causal_proof` is always false.
 
-`POST /confenge/intel/events` ingests one versioned commercial event (`confenge.commercial_event.v1`). Same `event_id` or idempotency key is a replay. Lead, page view, citation, and X-Ray completion never become pipeline. Pipeline never becomes revenue.
+`POST /confenge/intel/events` ingests one versioned commercial event (`confenge.commercial_event.v1`). Same `event_id` or idempotency key is a replay. Lead, page view, citation, and X-Ray completion never become pipeline. Pipeline never becomes revenue. Checkout, payment, subscription, and provider object creation are not received revenue. Onboarding starts only after a reconciled financial confirmation.
+
+`POST /confenge/intel/commercial` is the authenticated manual-first operator path (register offer/terms/capacity, attach already-created provider IDs, record a financial event with evidence and review status, start onboarding after the gate, or apply a HumanCorrection). It does not call Asaas. `GET /confenge/intel/commercial/:leadId` returns the canonical timeline. `POST /confenge/intel/commercial/provider-events` persist-first acks a signed sandbox provider event. `POST /confenge/intel/exceptions/:id/reopen` reopens a resolved exception. None of these routes are public.
 
 `GET /confenge/intel/report` is the inbound learning observability payload (IQP, lanes, exceptions, latency baseline, learning candidates, `READY_FOR_REAL_EVENTS` / `ADJUST` / `NO_GO`). It is not a CRM and not a forecast.
 

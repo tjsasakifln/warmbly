@@ -146,6 +146,58 @@ func (s *service) ResolveIntelException(_ context.Context, orgID uuid.UUID, id s
 	return res, nil
 }
 
+func (s *service) ApplyCommercialOperator(_ context.Context, orgID uuid.UUID, req intel.OperatorRequest) (intel.OperatorResult, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return intel.OperatorResult{}, xerr
+	}
+	return intel.ApplyOperator(s.intelStore(), orgID.String(), req), nil
+}
+
+func (s *service) GetCommercialCanonical(_ context.Context, orgID uuid.UUID, leadID string) (*intel.CanonicalState, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return nil, xerr
+	}
+	can, err := intel.GetCanonical(s.intelStore(), orgID.String(), leadID)
+	if err != nil {
+		return nil, errx.New(errx.Internal, "commercial canonical: "+err.Error())
+	}
+	if can == nil {
+		return nil, errx.New(errx.NotFound, "commercial canonical not found")
+	}
+	return can, nil
+}
+
+func (s *service) IngestProviderWebhook(_ context.Context, orgID uuid.UUID, secret, previous, header string, body []byte) (intel.WebhookAck, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return intel.WebhookAck{}, xerr
+	}
+	ack, err := intel.IngestProviderWebhook(s.intelStore(), intel.NewFakeAdapter(), orgID.String(), secret, previous, header, body, time.Now().UTC())
+	if err != nil && ack.ReceiptID == "" && !ack.Acked {
+		if strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "secret") {
+			return ack, errx.New(errx.Unauthorized, err.Error())
+		}
+		return ack, errx.New(errx.Unprocessable, err.Error())
+	}
+	return ack, nil
+}
+
+func (s *service) ReopenIntelException(_ context.Context, orgID uuid.UUID, id, actor, reason string) (intel.ResolveResult, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return intel.ResolveResult{}, xerr
+	}
+	res, err := intel.ReopenException(s.intelStore(), orgID.String(), id, actor, reason, time.Now().UTC())
+	if err != nil {
+		return intel.ResolveResult{}, errx.New(errx.Internal, "commercial intel reopen: "+err.Error())
+	}
+	if res.Refused && res.Reason == "exception not found" {
+		return res, errx.New(errx.NotFound, res.Reason)
+	}
+	if res.Refused {
+		return res, errx.New(errx.Unprocessable, res.Reason)
+	}
+	return res, nil
+}
+
 func (s *service) observeExisting(ctx context.Context, orgID uuid.UUID) {
 	st := s.intelStore()
 	seenActions := map[string]bool{}

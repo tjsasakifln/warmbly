@@ -188,3 +188,97 @@ func (h *Handler) GetConfengeIntelReport(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"data": rep})
 }
+
+// ApplyConfengeCommercialOperator — POST /confenge/intel/commercial
+func (h *Handler) ApplyConfengeCommercialOperator(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	var body intel.OperatorRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		errx.JSON(c, errx.New(errx.BadRequest, "invalid operator request"))
+		return
+	}
+	if strings.TrimSpace(body.ActorRef) == "" {
+		if uid, err := middleware.GetUserUUID(c); err == nil {
+			body.ActorRef = uid.String()
+		}
+	}
+	res, xerr := h.ConfengeService.ApplyCommercialOperator(c.Request.Context(), orgID, body)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	status := http.StatusCreated
+	if res.Join.Replay {
+		status = http.StatusOK
+	}
+	if res.Rejected {
+		status = http.StatusUnprocessableEntity
+	}
+	c.JSON(status, gin.H{"data": res})
+}
+
+// GetConfengeCommercialCanonical — GET /confenge/intel/commercial/:leadId
+func (h *Handler) GetConfengeCommercialCanonical(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	can, xerr := h.ConfengeService.GetCommercialCanonical(c.Request.Context(), orgID, c.Param("leadId"))
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": can})
+}
+
+// IngestConfengeProviderEvent — POST /confenge/intel/commercial/provider-events
+func (h *Handler) IngestConfengeProviderEvent(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	body, err := c.GetRawData()
+	if err != nil {
+		errx.JSON(c, errx.New(errx.BadRequest, "invalid body"))
+		return
+	}
+	header := firstNonEmptyQuery(c, "x-confenge-signature")
+	if header == "" {
+		header = strings.TrimSpace(c.GetHeader("X-Confenge-Signature"))
+	}
+	secret := strings.TrimSpace(c.GetHeader("X-Confenge-Webhook-Secret"))
+	previous := strings.TrimSpace(c.GetHeader("X-Confenge-Webhook-Secret-Previous"))
+	ack, xerr := h.ConfengeService.IngestProviderWebhook(c.Request.Context(), orgID, secret, previous, header, body)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"data": ack})
+}
+
+// ReopenConfengeIntelException — POST /confenge/intel/exceptions/:id/reopen
+func (h *Handler) ReopenConfengeIntelException(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		Actor  string `json:"actor"`
+		Reason string `json:"reason"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	if strings.TrimSpace(body.Actor) == "" {
+		if uid, err := middleware.GetUserUUID(c); err == nil {
+			body.Actor = uid.String()
+		}
+	}
+	res, xerr := h.ConfengeService.ReopenIntelException(c.Request.Context(), orgID, c.Param("id"), body.Actor, body.Reason)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": res})
+}

@@ -64,6 +64,13 @@ func MetricKey(k JoinKeys) string {
 		strings.TrimSpace(k.AnalysisID),
 		strings.TrimSpace(k.Referrer),
 		strings.TrimSpace(k.IntentClass),
+		strings.TrimSpace(k.OfferVersion),
+		strings.TrimSpace(k.TermsVersion),
+		strings.TrimSpace(k.ExternalReference),
+		strings.TrimSpace(k.ProviderEventID),
+		strings.TrimSpace(k.CompanyRef),
+		strings.TrimSpace(k.CNPJHash),
+		strings.TrimSpace(k.HoldID),
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	return hex.EncodeToString(sum[:])
@@ -265,6 +272,7 @@ func buildChain(in ObservedFacts, identity, metric string, now time.Time, closeB
 		Timezone:          firstNonEmpty(in.Timezone, "UTC"),
 		AttributionKind:   AssociationObserved,
 		CausalProof:       false,
+		Commercial:        in.Commercial,
 		Synthetic:         in.Synthetic || label == LabelSynthetic,
 		Label:             label,
 		CreatedAt:         now,
@@ -464,6 +472,18 @@ func mergeIntoChain(existing Chain, in ObservedFacts, closeBlocked, held bool) (
 		merged.Qualified = qualified
 		merged.Conversation = conversation
 		merged.PipelineOpen = pipeline
+		changed = true
+	}
+
+	if in.Commercial.Offer.OfferID != "" || len(in.Commercial.Timeline) > 0 {
+		merged.Commercial = mergeCommercial(merged.Commercial, in.Commercial, CommercialEvent{Type: in.EventType})
+		if len(in.Commercial.Timeline) > 0 {
+			merged.Commercial.Timeline = in.Commercial.Timeline
+		}
+		merged.Commercial.Payment = in.Commercial.Payment
+		merged.Commercial.Subscription = in.Commercial.Subscription
+		merged.Commercial.Delivery = in.Commercial.Delivery
+		merged.Commercial.Capacity = in.Commercial.Capacity
 		changed = true
 	}
 

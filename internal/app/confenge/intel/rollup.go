@@ -39,6 +39,11 @@ func Rollup(chains []Chain, month string, includeSynthetic bool) ExecutiveView {
 	byTrigger := map[string]int{}
 	byOffer := map[string]int{}
 	byRoute := map[string]int{}
+	byTerms := map[string]int{}
+	byCTA := map[string]int{}
+	comm := CommercialCounts{}
+	exCount := 0
+	manual := 0
 	byIntent := map[string]int{}
 	ma := emptyAssetSlice(AssetFamilyMarketAnswer)
 	ca := emptyAssetSlice(AssetFamilyContractAnalysis)
@@ -63,7 +68,14 @@ func Rollup(chains []Chain, month string, includeSynthetic bool) ExecutiveView {
 		incBreakdown(byTrigger, c.Trigger)
 		incBreakdown(byOffer, c.OfferID)
 		incBreakdown(byRoute, c.Route)
+		incBreakdown(byTerms, c.Commercial.Offer.TermsVersion)
+		incBreakdown(byCTA, firstNonEmpty(c.CTAID, c.Keys.CTAID))
 		incBreakdown(byIntent, firstNonEmpty(c.IntentClass, c.Keys.IntentClass))
+		addCommercialCounts(&comm, c)
+		if c.Held {
+			exCount++
+		}
+		manual += c.Commercial.ManualTouches
 		switch normalizeAssetFamily(firstNonEmpty(c.AssetFamily, c.Keys.AssetFamily)) {
 		case AssetFamilyMarketAnswer:
 			addAssetSlice(&ma, c)
@@ -185,6 +197,9 @@ func Rollup(chains []Chain, month string, includeSynthetic bool) ExecutiveView {
 			latSum.ActionToConversation += n.ActionToConversation
 			latSum.ConversationToProposal += n.ConversationToProposal
 			latSum.ProposalToClose += n.ProposalToClose
+			latSum.LeadToPayment += n.LeadToPayment
+			latSum.PaymentToOnboarding += n.PaymentToOnboarding
+			latSum.OnboardingToActivation += n.OnboardingToActivation
 			latSum.CensoredCycles += n.CensoredCycles
 		} else {
 			latSum.CensoredCycles++
@@ -202,6 +217,9 @@ func Rollup(chains []Chain, month string, includeSynthetic bool) ExecutiveView {
 			ActionToConversation:   latSum.ActionToConversation / int64(latN),
 			ConversationToProposal: latSum.ConversationToProposal / int64(latN),
 			ProposalToClose:        latSum.ProposalToClose / int64(latN),
+			LeadToPayment:          latSum.LeadToPayment / int64(latN),
+			PaymentToOnboarding:    latSum.PaymentToOnboarding / int64(latN),
+			OnboardingToActivation: latSum.OnboardingToActivation / int64(latN),
 			SampledChains:          latN,
 			CensoredCycles:         latSum.CensoredCycles,
 			Baseline:               latencyBaseline(chains, includeSynthetic),
@@ -219,6 +237,11 @@ func Rollup(chains []Chain, month string, includeSynthetic bool) ExecutiveView {
 	view.ByOffer = mapBreakdown(byOffer)
 	view.ByRoute = mapBreakdown(byRoute)
 	view.ByIntent = mapBreakdown(byIntent)
+	view.ByTerms = mapBreakdown(byTerms)
+	view.ByCTA = mapBreakdown(byCTA)
+	comm.ExceptionCount = exCount
+	comm.ManualTouches = manual
+	view.Commercial = comm
 	view.MarketAnswer = ma
 	view.ContractAnalysis = ca
 	view.B2GXRay = xr
@@ -314,6 +337,18 @@ func latencySample(c Chain) LatencyMS {
 		}
 		return v
 	}
+	var pay, onboard, activate time.Time
+	if c.Commercial.Payment.ReceivedAt != nil {
+		pay = *c.Commercial.Payment.ReceivedAt
+	} else if c.Commercial.Payment.ConfirmedAt != nil {
+		pay = *c.Commercial.Payment.ConfirmedAt
+	}
+	if c.Commercial.Delivery.OnboardingStartedAt != nil {
+		onboard = *c.Commercial.Delivery.OnboardingStartedAt
+	}
+	if c.Commercial.Delivery.ServiceActivatedAt != nil {
+		activate = *c.Commercial.Delivery.ServiceActivatedAt
+	}
 	return LatencyMS{
 		PublishedToDetected:    take(pub, det),
 		DetectedToLead:         take(det, c.LeadCreatedAt),
@@ -324,8 +359,85 @@ func latencySample(c Chain) LatencyMS {
 		ActionToConversation:   take(firstAction, conv),
 		ConversationToProposal: take(conv, prop),
 		ProposalToClose:        take(prop, closeT),
+		LeadToPayment:          take(firstNonZeroTime(c.LeadCreatedAt, c.IngestedAt), pay),
+		PaymentToOnboarding:    take(pay, onboard),
+		OnboardingToActivation: take(onboard, activate),
 		SampledChains:          1,
 		CensoredCycles:         censored,
+	}
+}
+
+func firstNonZeroTime(vs ...time.Time) time.Time {
+	for _, t := range vs {
+		if !t.IsZero() {
+			return t
+		}
+	}
+	return time.Time{}
+}
+
+func addCommercialCounts(comm *CommercialCounts, c Chain) {
+	st := c.Commercial
+	if st.Offer.OfferID != "" || hasTimelineType(st, EventOfferViewed) || hasTimelineType(st, EventOfferSelected) {
+		comm.OfferViewed++
+	}
+	if st.Capacity.Eligibility != "" && st.Capacity.Eligibility != EligibilityUnknown {
+		comm.Eligibility++
+	}
+	switch strings.ToLower(st.Capacity.State) {
+	case CapacityStateOK:
+		comm.CapacityApproved++
+	case CapacityStateHold:
+		comm.CapacityHeld++
+	case CapacityStateWait:
+		comm.CapacityWaitlisted++
+	case CapacityStateReject:
+		comm.CapacityRejected++
+	case CapacityStateExpired:
+		comm.CapacityExpired++
+	case CapacityStateFinal:
+		comm.CapacityUsed++
+	}
+	if hasTimelineType(st, EventTermsAccepted) {
+		comm.TermsAccepted++
+	}
+	if hasTimelineType(st, EventCheckoutCreated) {
+		comm.CheckoutCreated++
+	}
+	switch strings.ToLower(st.Payment.CanonicalStatus) {
+	case PaymentStatusCreated:
+		comm.PaymentCreated++
+	case PaymentStatusPending:
+		comm.PaymentPending++
+	case PaymentStatusConfirmed:
+		comm.PaymentConfirmed++
+	case PaymentStatusReceived:
+		comm.PaymentReceived++
+	case PaymentStatusOverdue:
+		comm.PaymentOverdue++
+	case PaymentStatusRefunded:
+		comm.PaymentRefunded++
+	}
+	if st.Delivery.OnboardingStartedAt != nil {
+		comm.Onboarding++
+	}
+	if st.Delivery.ServiceActivatedAt != nil && st.Delivery.ServiceEndedAt == nil {
+		comm.ServiceActive++
+	}
+	if hasTimelineType(st, EventRenewalDue) || hasTimelineType(st, EventRenewed) {
+		comm.Renewal++
+	}
+	if st.Subscription.CanceledAt != nil || st.Subscription.CanonicalStatus == EventSubscriptionCanceled {
+		comm.Canceled++
+	}
+	if c.RouteFamily == FamilyExpansion {
+		comm.Expansion++
+	}
+	comm.ContractedCents += st.Payment.ContractedCents
+	comm.MRRCents += st.Payment.MRRCents
+	comm.ReceivedCents += st.Payment.ReceivedCents
+	if c.Qualified && !c.Held && st.Payment.CanonicalStatus != PaymentStatusReceived {
+		comm.QualifiedPipeline++
 	}
 }
 

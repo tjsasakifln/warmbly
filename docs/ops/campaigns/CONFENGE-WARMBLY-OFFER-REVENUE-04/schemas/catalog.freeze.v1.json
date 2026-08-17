@@ -1,0 +1,41 @@
+{
+  "schema": "confenge.catalog.freeze.v1",
+  "authority_hash_env": "CONFENGE_CATALOG_AUTHORITY_HASH",
+  "notes": "Frozen public catalog for #47. Extra R$10k is a private historical exception and is not a catalog row. No secrets or PII.",
+  "canonical_api_host": "api.confenge.com.br",
+  "capacity_policy": {
+    "version": "capacity.policy.v1",
+    "limit": 50,
+    "hold_ttl_hours": 72
+  },
+  "offers": [
+    {
+      "offer_id": "CFG-DIAG-EXP-v1",
+      "offer_version": "v1",
+      "public_code": "CFG-DIAG-EXP-v1",
+      "terms_version": "CFG-TERMS-B2B-2026-08-17-v1",
+      "amount_cents": 800000,
+      "currency": "BRL",
+      "billing_mode": "one_time",
+      "cycle": "once",
+      "max_payments": 1,
+      "total_commitment_cents": 800000,
+      "sla_business_days": "10-15",
+      "public": true
+    },
+    {
+      "offer_id": "CFG-DIRB2G-180-v1",
+      "offer_version": "v1",
+      "public_code": "CFG-DIRB2G-180-v1",
+      "terms_version": "CFG-TERMS-B2B-2026-08-17-v1",
+      "amount_cents": 1500000,
+      "currency": "BRL",
+      "billing_mode": "recurring",
+      "cycle": "monthly",
+      "commitment_months": 6,
+      "max_payments": 6,
+      "total_commitment_cents": 9000000,
+      "public": true
+    }
+  ]
+}

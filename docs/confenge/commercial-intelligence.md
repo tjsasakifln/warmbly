@@ -105,6 +105,16 @@ durations fail reconciliation. Fixture-only latency is
 
 See `docs/contracts/inbound-learning/` and `INTEGRATION_NOTES.md`.
 
+## Offer, capacity, and finance (same plane)
+
+`confenge.commercial_event.v1` also carries offer/capacity/checkout/payment/onboarding
+events. Created provider objects are not received revenue. Contracted revenue, MRR,
+and received revenue stay separate fields. Capacity limit 50 is `capacity.policy.v1`.
+Holds expire in 72h. Diagnóstico one-offs keep SLA 10-15 business days. Extra R$10k
+is a private historical exception, never a catalog row. The provider adapter is
+sandbox/disabled only. Manual-first writes go through
+`POST /confenge/intel/commercial`.
+
 ## What this is not
 
 No CRM board, forecast, magic score, auto-send, or second truth plane.

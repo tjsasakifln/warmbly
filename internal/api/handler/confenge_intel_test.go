@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -74,6 +75,69 @@ func TestGetConfengeExecutiveIntelBody(t *testing.T) {
 	}
 	fmt.Printf("HTTP_EXEC status=%d iqp=%d qco=%d won=%d lost=%d unknown=%d\n",
 		w.Code, wrap.Data.InboundQualifiedPipeline, wrap.Data.QCO, wrap.Data.Won, wrap.Data.Lost, wrap.Data.Unknown)
+}
+
+type commercialHTTPStub struct {
+	confenge.Service
+	op  intel.OperatorResult
+	can intel.CanonicalState
+	ack intel.WebhookAck
+}
+
+func (s *commercialHTTPStub) Enabled() bool { return true }
+func (s *commercialHTTPStub) ApplyCommercialOperator(_ context.Context, _ uuid.UUID, req intel.OperatorRequest) (intel.OperatorResult, *errx.Error) {
+	if strings.Contains(req.Query, "@") {
+		return intel.OperatorResult{Rejected: true, Reason: "pii"}, nil
+	}
+	return s.op, nil
+}
+func (s *commercialHTTPStub) GetCommercialCanonical(_ context.Context, _ uuid.UUID, lead string) (*intel.CanonicalState, *errx.Error) {
+	c := s.can
+	c.LeadID = lead
+	return &c, nil
+}
+
+func TestConfengeCommercialOperatorRequiresOrg(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &Handler{ConfengeService: &commercialHTTPStub{}}
+	req := httptest.NewRequest(http.MethodPost, "/confenge/intel/commercial", strings.NewReader(`{"action":"register_snapshot"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	h.ApplyConfengeCommercialOperator(c)
+	if w.Code == http.StatusCreated || w.Code == http.StatusOK {
+		t.Fatalf("unauthenticated operator write accepted status=%d", w.Code)
+	}
+	fmt.Printf("OPERATOR_UNAUTH status=%d\n", w.Code)
+}
+
+func TestConfengeCommercialOperatorRegister(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	org := uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+	st := intel.NewMemoryStore()
+	off, _ := intel.FrozenOffer(intel.OfferDiagnostico)
+	op := intel.ApplyOperator(st, org.String(), intel.OperatorRequest{
+		Action: intel.OpRegisterSnapshot, LeadID: "lead-http-1", Offer: off,
+		Capacity: intel.CapacitySnapshot{State: intel.CapacityStateOK}, ActorRef: "op", Synthetic: true,
+		OccurredAt: time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC),
+	})
+	h := &Handler{ConfengeService: &commercialHTTPStub{op: op}}
+	body := `{"action":"register_snapshot","lead_id":"lead-http-1","offer":{"offer_id":"CFG-DIAG-EXP-v1"}}`
+	req := httptest.NewRequest(http.MethodPost, "/confenge/intel/commercial", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Set(middleware.OrganizationIDKey, org)
+	h.ApplyConfengeCommercialOperator(c)
+	if w.Code != http.StatusCreated && w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "@") && strings.Contains(w.Body.String(), "email=") {
+		t.Fatal("PII in operator response")
+	}
+	fmt.Printf("OPERATOR_HTTP status=%d\n", w.Code)
 }
 
 type intelQueueHTTPStub struct {
