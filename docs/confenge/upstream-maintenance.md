@@ -8,9 +8,9 @@ This page is the merge/rebase contract. It does not try to land every fork featu
 
 ## Recorded SHAs (revalidate before every sync)
 
-Audited 2026-08-16T17:47:24Z:
+Recounted 2026-08-17T03:55:00Z:
 
-- `origin/main` = `2444058ef3a64774b84eea57425b731700946b84` (85 ahead)
+- `origin/main` = `7a69403cf780f57d3220a252ad2cddc54a1dfb79` (90 ahead)
 - `upstream/main` = `7521575cef47200c7c165afdbbba8e075e6b1ac1` (16 behind)
 - merge-base = `0ae4db2c4114404705735c480101250467f4fe6c`
 
@@ -20,7 +20,7 @@ If `origin/main` or `upstream/main` moved, refresh the audit JSON before merging
 
 1. **Weekly fetch, no merge.** `git fetch origin main && git fetch upstream main`. Record left-right counts. Do nothing else unless a core file below changed upstream.
 2. **Sync only on a dedicated branch** cut from current `origin/main`. Never from a dirty last-mile tree.
-3. **Prefer merge of `upstream/main` into the fork**, not a rebase of the 85 published fork commits. Rebase would rewrite PRs and VPS deploy SHAs.
+3. **Prefer merge of `upstream/main` into the fork**, not a rebase of the 90 published fork commits. Rebase would rewrite PRs and VPS deploy SHAs.
 4. **Never automatic cherry-pick or `git pull upstream`.** A GitHub workflow that syncs from `warmbly/warmbly` must run:
    - `go test` on `./internal/app/confenge/...` `./cmd/consumer/` (CONFENGE wire) and any new `fork_sync_boundary` tests
    - the existing `confenge-product-acceptance` job
@@ -31,7 +31,7 @@ Weekly is enough. Daily auto-sync would burn the high-churn files below for no a
 
 ## What stays fork-only (do not offer upstream)
 
-KEEP_CONFENGE and ISOLATE rows in the audit JSON: `/app/confenge`, outreach migrations `000083`–`000101`, inbound webhook, kill switch, VPS pack, WhatsApp/Evolution, CRM bootstrap, operator mode, GREEN autorun, intel executive view.
+KEEP_CONFENGE and ISOLATE rows in the audit JSON: `/app/confenge`, outreach migrations `000083`–`000102`, inbound webhook, kill switch, VPS pack, WhatsApp/Evolution, CRM bootstrap, operator mode, GREEN autorun, intel executive view. Next upstream SQL must land as `000103+`.
 
 UPSTREAMABLE later, as their own PRs, without CONFENGE:
 

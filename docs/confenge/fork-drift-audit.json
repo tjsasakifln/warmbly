@@ -1,19 +1,20 @@
 {
   "campaign": "WARMBLY-013",
-  "audited_at": "2026-08-16T17:47:24Z",
+  "audited_at": "2026-08-17T03:55:00Z",
   "fork": "tjsasakifln/warmbly",
   "upstream": "warmbly/warmbly",
   "refs": {
-    "origin_main": "2444058ef3a64774b84eea57425b731700946b84",
+    "origin_main": "7a69403cf780f57d3220a252ad2cddc54a1dfb79",
     "upstream_main": "7521575cef47200c7c165afdbbba8e075e6b1ac1",
     "merge_base": "0ae4db2c4114404705735c480101250467f4fe6c",
-    "left_right": "85 16",
+    "left_right": "90 16",
     "plan_time_base": "2444058ef3a64774b84eea57425b731700946b84",
-    "base_moved": "false"
+    "base_moved": "true",
+    "rebase_note": "Recount only. No upstream merge. 000102 is on origin/main via #87. Next real sync still replays upstream SQL as 000103+."
   },
   "context_only": {
-    "pr_80": "open; synthetic reconcile; not this campaign",
-    "migration_000102": "untracked on feat/confenge-inbound-last-mile; not on origin/main"
+    "pr_80": "superseded by #47/#87 on main; residual real inbound event still open",
+    "migration_000102": "on origin/main (exception codes persist). Do not renumber. Upstream 000083/000084 still collide; replay as 000103+."
   },
   "build_tags_confenge": [],
   "decisions": ["KEEP_CONFENGE", "UPSTREAMABLE", "ISOLATE", "DROP", "RISK"],

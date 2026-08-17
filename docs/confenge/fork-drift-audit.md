@@ -3,17 +3,17 @@
 Machine-readable twin: [fork-drift-audit.json](./fork-drift-audit.json).
 Strategy, cadence, and conflict forecast: [upstream-maintenance.md](./upstream-maintenance.md).
 
-## Recorded SHAs (fetched 2026-08-16T17:47:24Z)
+## Recorded SHAs (recounted 2026-08-17T03:55:00Z)
 
 | Ref | SHA |
 | --- | --- |
-| `origin/main` (`tjsasakifln/warmbly`) | `2444058ef3a64774b84eea57425b731700946b84` |
+| `origin/main` (`tjsasakifln/warmbly`) | `7a69403cf780f57d3220a252ad2cddc54a1dfb79` |
 | `upstream/main` (`warmbly/warmbly`) | `7521575cef47200c7c165afdbbba8e075e6b1ac1` |
 | merge-base | `0ae4db2c4114404705735c480101250467f4fe6c` |
-| left-right | 85 ahead / 16 behind |
-| Plan-time base | `2444058ef3a64774b84eea57425b731700946b84` (unchanged) |
+| left-right | 90 ahead / 16 behind |
+| Plan-time base | `2444058ef3a64774b84eea57425b731700946b84` (moved) |
 
-Base revalidation: `origin/main` did not move. Full map, not residual-only. PR #80 is open and synthetic-only; it is not this campaign. Untracked `000102` on `feat/confenge-inbound-last-mile` is not on `origin/main`.
+Recount only. No upstream merge. `#47` `#82` `#87` `#88` `#83` landed on the fork after the first audit. `000102` is on `origin/main` (exception codes). Next real sync still replays upstream SQL as `000103+`. Do not renumber applied fork migrations.
 
 ## What this audit is for
 
@@ -23,12 +23,12 @@ The job is to cheapen the next real sync, not to keep every fork feature on the 
 
 ## Counts
 
-- Fork-only commits after merge-base: 85
+- Fork-only commits after merge-base: 90
 - Upstream-only commits after merge-base: 16
 - Fork-added files: 392
 - Fork-modified files: 58
 - Same-path modified on both sides: 14
-- Fork migrations on main: `000083`–`000101`
+- Fork migrations on main: `000083`–`000102`
 - CONFENGE Go build tags: none (repo tags are `kafka` / `!kafka` / `tools` only)
 
 ## Classification summary
