@@ -31,10 +31,23 @@ type MemoryStore struct {
 	chains     map[string]Chain
 	exceptions []Exception
 	learning   []LearningCandidate
+	receipts   map[string]EventReceipt
+	holds      map[string]CapacityHold
+	failPuts   bool
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{chains: map[string]Chain{}}
+	return &MemoryStore{chains: map[string]Chain{}, receipts: map[string]EventReceipt{}, holds: map[string]CapacityHold{}}
+}
+
+// SetUnavailable makes PutChain/PutException fail closed (consumer down).
+func (m *MemoryStore) SetUnavailable(v bool) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.failPuts = v
 }
 
 func chainKey(orgID, identity string) string {
@@ -64,6 +77,9 @@ func (m *MemoryStore) PutChain(c Chain) (Chain, bool, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failPuts {
+		return c, false, errUnavailable("put chain")
+	}
 	if m.chains == nil {
 		m.chains = map[string]Chain{}
 	}
@@ -123,6 +139,9 @@ func (m *MemoryStore) PutException(ex Exception) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failPuts {
+		return errUnavailable("put exception")
+	}
 	ex = assignExceptionID(ex)
 	if ex.At.IsZero() {
 		ex.At = time.Now().UTC()
@@ -223,3 +242,69 @@ func (m *MemoryStore) ListLearning(orgID string) ([]LearningCandidate, error) {
 	copy(out, m.learning)
 	return out, nil
 }
+
+func receiptKey(orgID, providerEventID string) string {
+	return strings.TrimSpace(orgID) + "\x00" + strings.TrimSpace(providerEventID)
+}
+
+func (m *MemoryStore) PutEventReceipt(r EventReceipt) (EventReceipt, bool, error) {
+	if m == nil {
+		return r, false, errUnavailable("receipt store")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.failPuts {
+		return r, false, errUnavailable("put receipt")
+	}
+	if m.receipts == nil {
+		m.receipts = map[string]EventReceipt{}
+	}
+	key := receiptKey(r.OrganizationID, firstNonEmpty(r.ProviderEventID, r.EventID))
+	if existing, ok := m.receipts[key]; ok {
+		return existing, false, nil
+	}
+	if strings.TrimSpace(r.ID) == "" {
+		r.ID = uuid.NewString()
+	}
+	if r.At.IsZero() {
+		r.At = time.Now().UTC()
+	}
+	r.Acked = true
+	m.receipts[key] = r
+	return r, true, nil
+}
+
+func (m *MemoryStore) GetEventReceipt(orgID, providerEventID string) (*EventReceipt, error) {
+	if m == nil {
+		return nil, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.receipts[receiptKey(orgID, providerEventID)]
+	if !ok {
+		return nil, nil
+	}
+	cp := r
+	return &cp, nil
+}
+
+func (m *MemoryStore) MarkReceiptProcessed(orgID, providerEventID string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := receiptKey(orgID, providerEventID)
+	r, ok := m.receipts[key]
+	if !ok {
+		return
+	}
+	r.Processed = true
+	m.receipts[key] = r
+}
+
+type unavailableError struct{ op string }
+
+func (e unavailableError) Error() string { return e.op + ": commercial intelligence store unavailable" }
+
+func errUnavailable(op string) error { return unavailableError{op: op} }

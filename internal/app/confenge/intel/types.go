@@ -172,6 +172,16 @@ type JoinKeys struct {
 	Schema            string `json:"schema,omitempty"`
 	RevenueDocumentID string `json:"revenue_document_id,omitempty"`
 	CustomerProofLane bool   `json:"customer_proof_lane,omitempty"`
+
+	OfferVersion      string `json:"offer_version,omitempty"`
+	TermsVersion      string `json:"terms_version,omitempty"`
+	ExternalReference string `json:"external_reference,omitempty"`
+	ProviderEventID   string `json:"provider_event_id,omitempty"`
+	CompanyRef        string `json:"company_ref,omitempty"`
+	CNPJHash          string `json:"cnpj_hash,omitempty"`
+	HoldID            string `json:"hold_id,omitempty"`
+	QueryClass        string `json:"query_class,omitempty"`
+	ReferrerClass     string `json:"referrer_class,omitempty"`
 }
 
 // ObservedFacts is one observed commercial record. Missing optional IDs
@@ -210,6 +220,8 @@ type ObservedFacts struct {
 	HandRaise        bool   `json:"hand_raise,omitempty"`
 	Suppression      bool   `json:"suppression,omitempty"`
 	Timezone         string `json:"timezone,omitempty"`
+
+	Commercial CommercialState `json:"commercial,omitempty"`
 
 	Synthetic bool   `json:"synthetic,omitempty"`
 	Label     string `json:"label,omitempty"`
@@ -274,6 +286,8 @@ type Chain struct {
 	CorrectionApplied bool   `json:"correction_applied,omitempty"`
 	EventType         string `json:"event_type,omitempty"`
 	Timezone          string `json:"timezone,omitempty"`
+
+	Commercial CommercialState `json:"commercial,omitempty"`
 
 	AttributionKind string `json:"attribution_kind"`
 	CausalProof     bool   `json:"causal_proof"`
@@ -369,6 +383,13 @@ type Exception struct {
 	AllowedActions []string             `json:"allowed_actions,omitempty"`
 	Resolution     *ExceptionResolution `json:"resolution,omitempty"`
 	LinkedIdentity string               `json:"linked_identity,omitempty"`
+
+	CodeVersion  string     `json:"code_version,omitempty"`
+	Owner        string     `json:"owner,omitempty"`
+	EvidenceRefs []string   `json:"evidence_refs,omitempty"`
+	OpenedAt     time.Time  `json:"opened_at,omitempty"`
+	ResolvedAt   *time.Time `json:"resolved_at,omitempty"`
+	RetryState   string     `json:"retry_state,omitempty"`
 }
 
 // JoinResult is the shipped reconcile outcome.
@@ -462,6 +483,9 @@ type LatencyMS struct {
 	ActionToConversation   int64  `json:"action_to_conversation_ms"`
 	ConversationToProposal int64  `json:"conversation_to_proposal_ms"`
 	ProposalToClose        int64  `json:"proposal_to_close_ms"`
+	LeadToPayment          int64  `json:"lead_to_payment_ms"`
+	PaymentToOnboarding    int64  `json:"payment_to_onboarding_ms"`
+	OnboardingToActivation int64  `json:"onboarding_to_activation_ms"`
 	SampledChains          int    `json:"sampled_chains"`
 	CensoredCycles         int    `json:"censored_cycles"`
 	Baseline               string `json:"baseline"`
@@ -478,38 +502,41 @@ type Freshness struct {
 
 // ExecutiveView is the monthly query payload. Not a CRM board.
 type ExecutiveView struct {
-	SchemaVersion            string         `json:"schema_version"`
-	Month                    string         `json:"month"`
-	IncludeSynthetic         bool           `json:"include_synthetic"`
-	InboundQualifiedPipeline int            `json:"inbound_qualified_pipeline"`
-	QCO                      int            `json:"qco"`
-	Conversations            int            `json:"conversations"`
-	Meetings                 int            `json:"meetings"`
-	Proposals                int            `json:"proposals"`
-	Pipeline                 int            `json:"pipeline"`
-	Won                      int            `json:"won"`
-	Lost                     int            `json:"lost"`
-	Unknown                  int            `json:"unknown"`
-	Families                 []FamilyCounts `json:"families"`
-	BySource                 []Breakdown    `json:"by_source"`
-	ByAsset                  []Breakdown    `json:"by_asset"`
-	ByTrigger                []Breakdown    `json:"by_trigger"`
-	ByOffer                  []Breakdown    `json:"by_offer"`
-	ByRoute                  []Breakdown    `json:"by_route"`
-	ByIntent                 []Breakdown    `json:"by_intent,omitempty"`
-	MarketAnswer             AssetSlice     `json:"market_answer"`
-	ContractAnalysis         AssetSlice     `json:"contract_analysis"`
-	B2GXRay                  AssetSlice     `json:"b2g_xray"`
-	CustomerProof            int            `json:"customer_proof"`
-	RevenueCents             int64          `json:"revenue_cents"`
-	RevenueStatus            string         `json:"revenue_status"`
-	Denominators             Denominators   `json:"denominators"`
-	Latency                  LatencyMS      `json:"latency"`
-	Freshness                Freshness      `json:"freshness"`
-	AttributionKind          string         `json:"attribution_kind"`
-	CausalProof              bool           `json:"causal_proof"`
-	RealEmpty                bool           `json:"real_empty"`
-	ChainCount               int            `json:"chain_count"`
+	SchemaVersion            string           `json:"schema_version"`
+	Month                    string           `json:"month"`
+	IncludeSynthetic         bool             `json:"include_synthetic"`
+	InboundQualifiedPipeline int              `json:"inbound_qualified_pipeline"`
+	QCO                      int              `json:"qco"`
+	Conversations            int              `json:"conversations"`
+	Meetings                 int              `json:"meetings"`
+	Proposals                int              `json:"proposals"`
+	Pipeline                 int              `json:"pipeline"`
+	Won                      int              `json:"won"`
+	Lost                     int              `json:"lost"`
+	Unknown                  int              `json:"unknown"`
+	Families                 []FamilyCounts   `json:"families"`
+	BySource                 []Breakdown      `json:"by_source"`
+	ByAsset                  []Breakdown      `json:"by_asset"`
+	ByTrigger                []Breakdown      `json:"by_trigger"`
+	ByOffer                  []Breakdown      `json:"by_offer"`
+	ByRoute                  []Breakdown      `json:"by_route"`
+	ByIntent                 []Breakdown      `json:"by_intent,omitempty"`
+	MarketAnswer             AssetSlice       `json:"market_answer"`
+	ContractAnalysis         AssetSlice       `json:"contract_analysis"`
+	B2GXRay                  AssetSlice       `json:"b2g_xray"`
+	CustomerProof            int              `json:"customer_proof"`
+	RevenueCents             int64            `json:"revenue_cents"`
+	RevenueStatus            string           `json:"revenue_status"`
+	Commercial               CommercialCounts `json:"commercial"`
+	ByTerms                  []Breakdown      `json:"by_terms,omitempty"`
+	ByCTA                    []Breakdown      `json:"by_cta,omitempty"`
+	Denominators             Denominators     `json:"denominators"`
+	Latency                  LatencyMS        `json:"latency"`
+	Freshness                Freshness        `json:"freshness"`
+	AttributionKind          string           `json:"attribution_kind"`
+	CausalProof              bool             `json:"causal_proof"`
+	RealEmpty                bool             `json:"real_empty"`
+	ChainCount               int              `json:"chain_count"`
 }
 
 // AssetSlice is one assisted-asset lane. It is not a CRM stage.
@@ -615,6 +642,22 @@ type CommercialEvent struct {
 	CustomerProofLane bool       `json:"customer_proof_lane,omitempty"`
 	OrganizationID    string     `json:"organization_id,omitempty"`
 	Synthetic         bool       `json:"synthetic,omitempty"`
+
+	Offer             OfferSnapshot    `json:"offer,omitempty"`
+	Capacity          CapacitySnapshot `json:"capacity,omitempty"`
+	Provider          ProviderRefs     `json:"provider,omitempty"`
+	Payment           PaymentState     `json:"payment,omitempty"`
+	Gates             GateStates       `json:"gates,omitempty"`
+	ExternalReference string           `json:"external_reference,omitempty"`
+	ProviderEventID   string           `json:"provider_event_id,omitempty"`
+	RawEventType      string           `json:"raw_event_type,omitempty"`
+	RawProviderStatus string           `json:"raw_provider_status,omitempty"`
+	CompanyRef        string           `json:"company_ref,omitempty"`
+	CNPJ              string           `json:"-"`
+	CNPJHash          string           `json:"cnpj_hash,omitempty"`
+	QueryClass        string           `json:"query_class,omitempty"`
+	ReferrerClass     string           `json:"referrer_class,omitempty"`
+	CallbackOnly      bool             `json:"callback_only,omitempty"`
 }
 
 // ObservabilityReport is the executive JSON/MD payload for the learning loop.

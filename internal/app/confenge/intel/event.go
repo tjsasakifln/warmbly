@@ -35,14 +35,15 @@ func ValidateCommercialEvent(ev CommercialEvent) error {
 	if ev.OccurredAt.IsZero() {
 		return fmt.Errorf("occurred_at required")
 	}
-	if !knownEventType(ev.Type) {
-		return fmt.Errorf("unknown event type %q", ev.Type)
-	}
 	return nil
 }
 
 func knownEventType(t string) bool {
-	switch strings.ToLower(strings.TrimSpace(t)) {
+	c, _, unk := NormalizeEventType(t)
+	if unk {
+		return c == EventUnknownProvider
+	}
+	switch strings.ToLower(strings.TrimSpace(c)) {
 	case EventLeadReceived, EventLeadValidated, EventLeadRejected,
 		EventHandoffAccepted, EventHandoffException,
 		EventActionApproved, EventActionExecuted,
@@ -53,14 +54,17 @@ func knownEventType(t string) bool {
 		EventCitation, EventCorrection:
 		return true
 	default:
-		return false
+		return isCommercialEvent(c)
 	}
 }
 
 // EventToFacts maps one envelope onto ObservedFacts. PIIPointer is
 // discarded. Pipeline and revenue flags are set only from their events.
 func EventToFacts(ev CommercialEvent) ObservedFacts {
-	typ := strings.ToLower(strings.TrimSpace(ev.Type))
+	typ, _, _ := NormalizeEventType(ev.Type)
+	if typ == "" {
+		typ = strings.ToLower(strings.TrimSpace(ev.Type))
+	}
 	ingested := ev.IngestedAt
 	if ingested.IsZero() {
 		ingested = time.Now().UTC()
@@ -99,6 +103,15 @@ func EventToFacts(ev CommercialEvent) ObservedFacts {
 			Schema:            firstNonEmpty(ev.Schema, ev.Version),
 			RevenueDocumentID: strings.TrimSpace(ev.RevenueDocumentID),
 			CustomerProofLane: ev.CustomerProofLane,
+			OfferVersion:      strings.TrimSpace(ev.Offer.OfferVersion),
+			TermsVersion:      strings.TrimSpace(ev.Offer.TermsVersion),
+			ExternalReference: firstNonEmpty(ev.ExternalReference, ev.Provider.ExternalRef),
+			ProviderEventID:   firstNonEmpty(ev.ProviderEventID, ev.Provider.ProviderEventID),
+			CompanyRef:        strings.TrimSpace(ev.CompanyRef),
+			CNPJHash:          strings.TrimSpace(ev.CNPJHash),
+			HoldID:            strings.TrimSpace(ev.Capacity.HoldID),
+			QueryClass:        strings.TrimSpace(ev.QueryClass),
+			ReferrerClass:     strings.TrimSpace(ev.ReferrerClass),
 		},
 		LeadCreatedAt:     leadStamp(typ, occurred),
 		IngestedAt:        ingested,
@@ -196,6 +209,9 @@ func eventIDList(ev CommercialEvent) []string {
 	}
 	if id := strings.TrimSpace(ev.IdempotencyKey); id != "" {
 		out = append(out, "idem:"+id)
+	}
+	if id := strings.TrimSpace(ev.ProviderEventID); id != "" {
+		out = append(out, "provider:"+id)
 	}
 	return out
 }
@@ -312,6 +328,10 @@ func IngestEvent(store Store, ev CommercialEvent) JoinResult {
 		return JoinResult{Chain: *existing, Replay: true, Held: existing.Held}
 	}
 
+	if isCommercialEvent(ev.Type) || ev.Offer.OfferID != "" || ev.ProviderEventID != "" || ev.CallbackOnly {
+		return ingestCommercial(store, ev)
+	}
+
 	if ev.Type == EventLearningCandidate {
 		facts := EventToFacts(ev)
 		cand := EmitLearning(store, LearningInput{
@@ -349,8 +369,18 @@ func findSeenEvent(store Store, ev CommercialEvent) *Chain {
 	}
 	eventID := strings.TrimSpace(ev.EventID)
 	idem := strings.TrimSpace(ev.IdempotencyKey)
-	if eventID == "" && idem == "" {
+	prov := strings.TrimSpace(ev.ProviderEventID)
+	if eventID == "" && idem == "" && prov == "" {
 		return nil
+	}
+	if rs, ok := store.(interface {
+		GetEventReceipt(string, string) (*EventReceipt, error)
+	}); ok && prov != "" {
+		if rec, err := rs.GetEventReceipt(ev.OrganizationID, prov); err == nil && rec != nil && rec.Identity != "" {
+			if ch, _ := store.GetChain(ev.OrganizationID, rec.Identity); ch != nil {
+				return ch
+			}
+		}
 	}
 	chains, err := store.ListChains(strings.TrimSpace(ev.OrganizationID))
 	if err != nil {
@@ -364,12 +394,204 @@ func findSeenEvent(store Store, ev CommercialEvent) *Chain {
 			if idem != "" && id == "idem:"+idem {
 				return &chains[i]
 			}
+			if prov != "" && id == "provider:"+prov {
+				return &chains[i]
+			}
 		}
 		if eventID != "" && chains[i].Keys.EventID == eventID {
 			return &chains[i]
 		}
+		if prov != "" && chains[i].Keys.ProviderEventID == prov {
+			return &chains[i]
+		}
 	}
 	return nil
+}
+
+func ingestCommercial(store Store, ev CommercialEvent) JoinResult {
+	now := time.Now().UTC()
+	if ev.CallbackOnly && ev.Type == "" {
+		ev.Type = EventUnknownProvider
+	}
+	if ev.CallbackOnly && !hasFinancialType(ev.Type) {
+		ex := Exception{
+			OrganizationID: ev.OrganizationID,
+			Code:           ExceptionImpossibleCommercial,
+			CodeVersion:    ExceptionCodeVersion,
+			Reason:         "callback/success URL is not a financial event",
+			NextAction:     "wait for a confirmed/received payment event; do not infer revenue",
+			LeadID:         ev.LeadID,
+			Held:           true,
+			Synthetic:      ev.Synthetic,
+			Owner:          firstNonEmpty(ev.ActorRef, "commercial-intel"),
+			OpenedAt:       now,
+			At:             now,
+			RetryState:     "pending",
+		}
+		if store != nil {
+			_ = store.PutException(ex)
+		}
+		facts := EventToFacts(ev)
+		facts.Commercial.Payment.CanonicalStatus = PaymentStatusNone
+		res := Reconcile(store, facts)
+		res.Exceptions = append(res.Exceptions, ex)
+		res.Held = true
+		return res
+	}
+
+	identity := ChainIdentity(JoinKeys{
+		LeadID: ev.LeadID, ReceiptID: ev.ReceiptID, ActionID: ev.ActionID,
+		IdempotencyKey: ev.IdempotencyKey, OrganizationID: ev.OrganizationID,
+	})
+	var existing *Chain
+	if store != nil && identity != "" {
+		existing, _ = store.GetChain(ev.OrganizationID, identity)
+	}
+
+	if store != nil {
+		if err := holdConflictingExternal(store, ev, existing); err != nil {
+			ex := Exception{
+				OrganizationID: ev.OrganizationID, Code: ExceptionConflictingExternal,
+				CodeVersion: ExceptionCodeVersion, Reason: err.Error(),
+				NextAction: "hold; keep the first binding", LeadID: ev.LeadID,
+				Held: true, Synthetic: ev.Synthetic, Owner: "commercial-intel",
+				OpenedAt: now, At: now, RetryState: "pending",
+			}
+			_ = store.PutException(ex)
+			if existing != nil {
+				return JoinResult{Chain: *existing, Exceptions: []Exception{ex}, Held: true}
+			}
+			return JoinResult{Exceptions: []Exception{ex}, Held: true}
+		}
+	}
+	tr := ApplyCommercialTransition(existing, ev)
+	if store != nil && ev.ProviderEventID != "" {
+		if rs, ok := store.(interface {
+			PutEventReceipt(EventReceipt) (EventReceipt, bool, error)
+		}); ok {
+			rec, created, err := rs.PutEventReceipt(EventReceipt{
+				OrganizationID:  ev.OrganizationID,
+				ProviderEventID: ev.ProviderEventID,
+				ExternalRef:     firstNonEmpty(ev.ExternalReference, ev.Provider.ExternalRef),
+				EventID:         ev.EventID,
+				Identity:        identity,
+				Type:            ev.Type,
+				RawType:         ev.RawEventType,
+				RawStatus:       ev.RawProviderStatus,
+				Synthetic:       ev.Synthetic,
+				At:              now,
+			})
+			if err != nil {
+				ex := Exception{
+					Code: ExceptionUnavailable, CodeVersion: ExceptionCodeVersion,
+					Reason:     "receipt store unavailable: " + err.Error(),
+					NextAction: "retry; do not drop the event", Held: true, At: now,
+					Owner: "commercial-intel", RetryState: "pending",
+				}
+				_ = store.PutException(ex)
+				return JoinResult{Exceptions: []Exception{ex}, Held: true}
+			}
+			if !created {
+				if ch, _ := store.GetChain(ev.OrganizationID, rec.Identity); ch != nil {
+					return JoinResult{Chain: *ch, Replay: true, Held: ch.Held}
+				}
+			}
+		}
+	}
+
+	if tr.Rejected {
+		persistExceptions(store, tr.Exceptions)
+		if existing != nil {
+			return JoinResult{Chain: *existing, Exceptions: tr.Exceptions, Held: true}
+		}
+		// Persist a held chain so timeline/canonical state is visible.
+		res := Reconcile(store, tr.Facts)
+		if saved, _ := storeGet(store, ev.OrganizationID, identity); saved != nil {
+			saved.Commercial = tr.Facts.Commercial
+			saved.Held = true
+			_ = store.UpdateChain(*saved)
+			res.Chain = *saved
+		}
+		res.Exceptions = append(res.Exceptions, tr.Exceptions...)
+		res.Held = true
+		return res
+	}
+
+	res := Reconcile(store, tr.Facts)
+	if store == nil {
+		res.Exceptions = append(res.Exceptions, tr.Exceptions...)
+		res.Held = res.Held || tr.Held
+		return res
+	}
+	saved, _ := store.GetChain(ev.OrganizationID, identity)
+	if saved == nil && res.Chain.Identity != "" {
+		cp := res.Chain
+		saved = &cp
+	}
+	if saved != nil {
+		saved.Commercial = tr.Facts.Commercial
+		if tr.Held {
+			saved.Held = true
+		}
+		_ = store.UpdateChain(*saved)
+		res.Chain = *saved
+	}
+	persistExceptions(store, tr.Exceptions)
+	res.Exceptions = append(res.Exceptions, tr.Exceptions...)
+	res.Held = res.Held || tr.Held
+	if rs, ok := store.(interface {
+		MarkReceiptProcessed(string, string)
+	}); ok && ev.ProviderEventID != "" {
+		rs.MarkReceiptProcessed(ev.OrganizationID, ev.ProviderEventID)
+	}
+	return res
+}
+
+func storeGet(store Store, orgID, identity string) (*Chain, error) {
+	if store == nil {
+		return nil, nil
+	}
+	return store.GetChain(orgID, identity)
+}
+
+func holdConflictingExternal(store Store, ev CommercialEvent, existing *Chain) error {
+	ext := firstNonEmpty(ev.ExternalReference, ev.Provider.ExternalRef)
+	if ext == "" {
+		return nil
+	}
+	lead := strings.TrimSpace(ev.LeadID)
+	chains, err := store.ListChains(ev.OrganizationID)
+	if err != nil {
+		return nil
+	}
+	for _, c := range chains {
+		have := firstNonEmpty(c.Commercial.Provider.ExternalRef, c.Keys.ExternalReference)
+		if have != ext {
+			continue
+		}
+		other := strings.TrimSpace(c.LeadID)
+		if other != "" && other != Unknown && lead != "" && other != lead {
+			return fmt.Errorf("externalReference %s already bound to %s", ext, c.Identity)
+		}
+		wantOffer := strings.TrimSpace(c.Commercial.Offer.OfferID)
+		gotOffer := firstNonEmpty(ev.Offer.OfferID, ev.OfferID)
+		if wantOffer != "" && gotOffer != "" && wantOffer != gotOffer {
+			return fmt.Errorf("externalReference %s already bound to offer %s", ext, wantOffer)
+		}
+	}
+	_ = existing
+	return nil
+}
+
+func hasFinancialType(t string) bool {
+	c, _, _ := NormalizeEventType(t)
+	switch c {
+	case EventPaymentCreated, EventPaymentPending, EventPaymentConfirmed,
+		EventPaymentReceived, EventPaymentOverdue, EventPaymentRefunded, EventPaymentFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 func isNonLeadEvent(typ string) bool {

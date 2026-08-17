@@ -127,6 +127,10 @@ type Service interface {
 	ResolveIntelException(ctx context.Context, orgID uuid.UUID, id string, req intel.ResolveRequest) (intel.ResolveResult, *errx.Error)
 	IngestCommercialEvent(ctx context.Context, orgID uuid.UUID, ev intel.CommercialEvent) (intel.JoinResult, *errx.Error)
 	CommercialIntelReport(ctx context.Context, orgID uuid.UUID, month string, includeSynthetic bool) (*intel.ObservabilityReport, *errx.Error)
+	ApplyCommercialOperator(ctx context.Context, orgID uuid.UUID, req intel.OperatorRequest) (intel.OperatorResult, *errx.Error)
+	GetCommercialCanonical(ctx context.Context, orgID uuid.UUID, leadID string) (*intel.CanonicalState, *errx.Error)
+	IngestProviderWebhook(ctx context.Context, orgID uuid.UUID, secret, previous, header string, body []byte) (intel.WebhookAck, *errx.Error)
+	ReopenIntelException(ctx context.Context, orgID uuid.UUID, id, actor, reason string) (intel.ResolveResult, *errx.Error)
 }
 
 // ImportOptions controls dry-run, idempotency, and source tracking.

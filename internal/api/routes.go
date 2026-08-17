@@ -538,6 +538,7 @@ func Run(
 				confengeGroup.GET("/intel/report", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeIntelReport)
 				confengeGroup.GET("/intel/exceptions", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeIntelExceptions)
 				confengeGroup.GET("/intel/exceptions/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeIntelException)
+				confengeGroup.GET("/intel/commercial/:leadId", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeCommercialCanonical)
 				confengeGroup.GET("/attention", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeAttention)
 				confengeGroup.GET("/attention/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeAttention)
 				confengeGroup.GET("/accounts", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeAccounts)
@@ -588,6 +589,9 @@ func Run(
 					confengeWrite.POST("/intel/learning", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.RecordConfengeIntelLearning)
 					confengeWrite.POST("/intel/events", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.IngestConfengeIntelEvent)
 					confengeWrite.POST("/intel/exceptions/:id/resolve", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ResolveConfengeIntelException)
+					confengeWrite.POST("/intel/exceptions/:id/reopen", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ReopenConfengeIntelException)
+					confengeWrite.POST("/intel/commercial", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ApplyConfengeCommercialOperator)
+					confengeWrite.POST("/intel/commercial/provider-events", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.IngestConfengeProviderEvent)
 					confengeWrite.POST("/dispatch/pause", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.PauseConfengeDispatch)
 					confengeWrite.POST("/dispatch/resume", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ResumeConfengeDispatch)
 				}
