@@ -34,6 +34,7 @@ import (
 	"github.com/warmbly/warmbly/internal/app/organization"
 	"github.com/warmbly/warmbly/internal/app/passkey"
 	"github.com/warmbly/warmbly/internal/app/placement"
+	"github.com/warmbly/warmbly/internal/app/plathealth"
 	"github.com/warmbly/warmbly/internal/app/ratelimit"
 	"github.com/warmbly/warmbly/internal/app/referral"
 	"github.com/warmbly/warmbly/internal/app/releases"
@@ -292,4 +293,8 @@ type Handler struct {
 	// Infrastructure liveness probes for the admin System Status page.
 	// Wired in cmd/backend/main.go where the concrete clients live.
 	SystemChecker *sysstatus.Checker
+
+	// Platform liveness/readiness/dependency evaluator. Distinct from
+	// GET /health (process-up) and from inbound receive health.
+	PlatformHealth *plathealth.Collector
 }

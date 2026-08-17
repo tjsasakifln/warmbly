@@ -7,6 +7,7 @@
     "local-development",
     "sandbox",
     "deployment-guide",
+    "incident-runbook",
     "events"
   ]
 }
