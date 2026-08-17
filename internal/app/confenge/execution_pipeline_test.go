@@ -201,6 +201,12 @@ func TestResolveRecipientMissingDateStaleDNCBounce(t *testing.T) {
 	if got := ResolveRecipient(acc, []models.OutreachContactCandidate{sup}, now); got.State != RecipientBlocked {
 		t.Fatalf("suppressed want BLOCKED got %s", got.State)
 	}
+
+	unknown := validatedCand("Ana Silva", "Diretora", "ana@encopav.com.br")
+	unknown.RecipientCommercialSuitability = "UNKNOWN"
+	if got := ResolveRecipient(acc, []models.OutreachContactCandidate{unknown}, now); got.State == RecipientValidated {
+		t.Fatal("UNKNOWN suitability must not VALIDATE")
+	}
 }
 
 func TestResolveRecipientDoesNotInventIdentity(t *testing.T) {

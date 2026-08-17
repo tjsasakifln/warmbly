@@ -190,6 +190,15 @@ func TestInboundShippedPathIngestToOutcome(t *testing.T) {
 	if svc.cfg.AutoSendEnabled {
 		t.Fatal("CONFENGE_AUTO_SEND_ENABLED must remain false")
 	}
+	if n := len(repo.touchpoints); n != 0 {
+		t.Fatalf("inbound persist/reprocess must not enroll or queue touchpoints: %d", n)
+	}
+	if n := len(repo.drafts); n != 0 {
+		t.Fatalf("inbound persist/reprocess must not mint drafts: %d", n)
+	}
+	if replay.DispatchAttempted {
+		t.Fatal("reprocess must not attempt dispatch")
+	}
 
 	if err := RejectInboundQueryPII(url.Values{"phone": []string{"4199"}}); err == nil {
 		t.Fatal("query PII must still be rejected after path")
