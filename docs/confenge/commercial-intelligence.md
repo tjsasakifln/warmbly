@@ -67,6 +67,12 @@ go run ./cmd/confenge intel-exceptions resolve <id> --action defer --actor op --
 
 ## Executive view
 
+`GET /confenge/intel/scoreboard?include_synthetic=0` is the seven-stage
+inbound truth placar. Stages 1-2 stay BLOCKED until a GSC or URL-index
+ingest exists. CTA, lead, conversation, proposal, and receita stay
+distinct. Contracted pipeline, MRR, charge created, and cash received
+are `separate_metrics`. Default excludes synthetic.
+
 `GET /confenge/intel/executive?month=YYYY-MM&include_synthetic=0`
 
 Monthly payload, families kept separate (`inbound` / `outbound` /

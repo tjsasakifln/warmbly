@@ -198,6 +198,55 @@ func (s *service) ReopenIntelException(_ context.Context, orgID uuid.UUID, id, a
 	return res, nil
 }
 
+// TruthScoreboard projects the seven-stage executive placar. Default
+// includeSynthetic=false excludes canaries from every stage.
+func (s *service) TruthScoreboard(ctx context.Context, orgID uuid.UUID, month string, includeSynthetic bool) (*intel.Scoreboard, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return nil, xerr
+	}
+	s.observeExisting(ctx, orgID)
+	view, xerr := s.CommercialExecutiveView(ctx, orgID, month, includeSynthetic)
+	if xerr != nil {
+		return nil, xerr
+	}
+	probe := EvaluateInboundReceive(s.cfg)
+	inboundNow := 0
+	if items, err := s.CollectInboundNow(ctx, orgID); err == nil {
+		inboundNow = len(items)
+	}
+	leads := view.Denominators.Leads
+	if leads == 0 {
+		leads = inboundNow
+	}
+	board := intel.ProjectScoreboard(intel.ScoreboardSources{
+		Now:                time.Now().UTC(),
+		IncludeSynthetic:   includeSynthetic,
+		InboundHealthReady: probe.Status == InboundReceiveReady,
+		InboundHealth:      probe.Status,
+		AutoSendEnabled:    probe.AutoSendEnabled,
+		DispatchAttempted:  probe.DispatchAttempted,
+		InboundNowCount:    inboundNow,
+		CTACompletedCount:  leads,
+		LeadPersistedCount: leads,
+		Executive:          *view,
+	})
+	return &board, nil
+}
+
+func (s *service) RegisterHumanOutcome(_ context.Context, orgID uuid.UUID, in intel.HumanOutcomeEntry) (intel.JoinResult, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return intel.JoinResult{}, xerr
+	}
+	if in.OrganizationID == "" {
+		in.OrganizationID = orgID.String()
+	}
+	return intel.RegisterHumanOutcome(s.intelStore(), in), nil
+}
+
+func (s *service) HumanOutcomeEnvelopes() []intel.HumanOutcomeEnvelope {
+	return intel.EmptyEnvelopes()
+}
+
 func (s *service) observeExisting(ctx context.Context, orgID uuid.UUID) {
 	st := s.intelStore()
 	seenActions := map[string]bool{}

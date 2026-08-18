@@ -1,0 +1,65 @@
+FOUNDER ACTION REQUIRED — inbound live canary
+
+Single blocker
+  CONFENGE_INBOUND_WEBHOOK_SECRET is unset in this environment.
+  The public receiver is already READY. Do not mint a second secret unless you intend to rotate.
+
+Observed (no secret values printed)
+  CONFENGE_INBOUND_WEBHOOK_SECRET=UNSET
+  CONFENGE_INBOUND_ORG_ID=UNSET
+  CONFENGE_AUTO_SEND_ENABLED=UNSET (deployed health reports false)
+  CONFENGE_INBOUND_WEBHOOK_URL=UNSET
+  GET https://api.confenge.com.br/api/v1/webhooks/confenge/inbound/health
+    HTTP 200 {"status":"READY","auto_send_enabled":false,"dispatch_attempted":false,"reasons":[]}
+  GET https://api.warmbly.com/.../inbound/health  NXDOMAIN
+  GET http://127.0.0.1:8080/.../inbound/health    connection refused
+
+Destination
+  https://api.confenge.com.br/api/v1/webhooks/confenge/inbound
+  Health: https://api.confenge.com.br/api/v1/webhooks/confenge/inbound/health
+
+Do not
+  echo the secret
+  POST a commercial lead
+  enable CONFENGE_AUTO_SEND_ENABLED
+  treat a synthetic canary as INBOUND NOW / pipeline / receita
+
+If the process already has the shared HMAC (health READY), copy it into this shell without printing:
+
+  read -s CONFENGE_INBOUND_WEBHOOK_SECRET
+  export CONFENGE_INBOUND_WEBHOOK_SECRET
+  export CONFENGE_INBOUND_WEBHOOK_URL=https://api.confenge.com.br/api/v1/webhooks/confenge/inbound
+  export CONFENGE_AUTO_SEND_ENABLED=false
+  scripts/confenge_inbound_live_preflight.sh
+
+Expected preflight
+  HEALTH READY auto_send_enabled=false
+  first POST 201 persist
+  byte-equivalent replay 200 duplicate
+  invalid secret 401
+  dispatch_attempted=false
+  include_synthetic=0 scoreboard and INBOUND NOW exclude the canary
+
+If you must mint or rotate (only if the live process secret is lost):
+
+  python3 - <<'PY'
+import secrets, pathlib
+p = pathlib.Path.home() / ".config" / "confenge" / "inbound_webhook_secret"
+p.parent.mkdir(parents=True, exist_ok=True)
+if p.exists() and p.stat().st_size > 0:
+    raise SystemExit("secret file already exists; refusing to overwrite")
+p.write_text(secrets.token_urlsafe(48))
+p.chmod(0o600)
+print("wrote", p, "bytes", p.stat().st_size)
+PY
+  Then load that file into the process secret manager / unit EnvironmentFile without cat/echo.
+  Redeploy the Warmbly process with CONFENGE_AUTO_SEND_ENABLED=false.
+  Update the web-cfg / Netlify inbound secret to the same value.
+  Re-run scripts/confenge_inbound_live_preflight.sh
+  After rotate, old signatures fail 401. That is expected.
+
+After a real consented form POST
+  Open INBOUND NOW, copy lead_id
+  scripts/confenge_human_outcome.sh attempted <lead_id> EXTRA
+  Then reached / reply / meeting only after the interaction
+  WON/LOST/receita only with evidence_ref / revenue_document_id

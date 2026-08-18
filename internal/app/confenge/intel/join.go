@@ -97,7 +97,10 @@ func Reconcile(store Store, in ObservedFacts) JoinResult {
 			Code:       ExceptionUnavailable,
 			Reason:     "commercial intelligence store unavailable",
 			NextAction: "retry with the same IDs; do not invent a chain",
+			Owner:      ExceptionOwner(ExceptionUnavailable),
 			At:         now,
+			OpenedAt:   now,
+			Held:       true,
 		}
 		return JoinResult{Exceptions: []Exception{ex}, Held: true}
 	}

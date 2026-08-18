@@ -19,6 +19,9 @@ import {
     applyConfengeManualAction,
     getConfengeCockpit,
     getConfengeExecutiveIntel,
+    getConfengeTruthScoreboard,
+    listConfengeHumanEnvelopes,
+    recordConfengeHumanOutcome,
     getConfengeIntelException,
     listConfengeIntelExceptions,
     resolveConfengeIntelException,
@@ -84,6 +87,36 @@ export function useConfengeExecutiveIntel(enabled = true) {
         queryFn: () => getConfengeExecutiveIntel({ includeSynthetic: false }),
         enabled,
         staleTime: 15_000,
+    });
+}
+
+export function useConfengeTruthScoreboard(enabled = true) {
+    return useQuery({
+        queryKey: [...KEY, "intel", "scoreboard"],
+        queryFn: () => getConfengeTruthScoreboard({ includeSynthetic: false }),
+        enabled,
+        staleTime: 15_000,
+    });
+}
+
+export function useConfengeHumanEnvelopes(enabled = true) {
+    return useQuery({
+        queryKey: [...KEY, "intel", "human-envelopes"],
+        queryFn: listConfengeHumanEnvelopes,
+        enabled,
+        staleTime: 60_000,
+    });
+}
+
+export function useRecordConfengeHumanOutcome() {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: recordConfengeHumanOutcome,
+        onSuccess: () => {
+            void qc.invalidateQueries({ queryKey: [...KEY, "intel"] });
+            toast.success("Registro humano gravado");
+        },
+        onError: (error) => toast.error(confengeError(error, "Nao foi possivel gravar o registro humano")),
     });
 }
 

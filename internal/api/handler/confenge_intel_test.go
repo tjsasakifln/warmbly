@@ -302,3 +302,103 @@ func jsonHasKey(body, key string) bool {
 	}
 	return false
 }
+
+type scoreboardHTTPStub struct {
+	confenge.Service
+	board intel.Scoreboard
+	join  intel.JoinResult
+}
+
+func (s *scoreboardHTTPStub) Enabled() bool { return true }
+func (s *scoreboardHTTPStub) TruthScoreboard(_ context.Context, _ uuid.UUID, _ string, includeSynthetic bool) (*intel.Scoreboard, *errx.Error) {
+	b := s.board
+	b.IncludeSynthetic = includeSynthetic
+	return &b, nil
+}
+func (s *scoreboardHTTPStub) HumanOutcomeEnvelopes() []intel.HumanOutcomeEnvelope {
+	return intel.EmptyEnvelopes()
+}
+func (s *scoreboardHTTPStub) RegisterHumanOutcome(_ context.Context, _ uuid.UUID, in intel.HumanOutcomeEntry) (intel.JoinResult, *errx.Error) {
+	if s.join.Chain.Identity == "" {
+		return intel.RegisterHumanOutcome(intel.NewMemoryStore(), in), nil
+	}
+	return s.join, nil
+}
+
+func TestGetConfengeTruthScoreboardBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	org := uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+	board := intel.ProjectScoreboard(intel.ScoreboardSources{
+		Now:                time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC),
+		InboundHealthReady: true, Executive: intel.Rollup(nil, "2026-08", false),
+	})
+	h := &Handler{ConfengeService: &scoreboardHTTPStub{board: board}}
+	req := httptest.NewRequest(http.MethodGet, "/confenge/intel/scoreboard?include_synthetic=0", nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Set(middleware.OrganizationIDKey, org)
+	h.GetConfengeTruthScoreboard(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var wrap struct {
+		Data intel.Scoreboard `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &wrap); err != nil {
+		t.Fatal(err)
+	}
+	if len(wrap.Data.Stages) != 7 {
+		t.Fatalf("stages=%d", len(wrap.Data.Stages))
+	}
+	if wrap.Data.IncludeSynthetic || wrap.Data.CausalProof {
+		t.Fatal("HTTP scoreboard leaked synthetic or causal_proof")
+	}
+	fmt.Printf("HTTP_SCOREBOARD status=%d stages=%d path=%s\n", w.Code, len(wrap.Data.Stages), wrap.Data.ProductionPath)
+}
+
+func TestListConfengeHumanEnvelopes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	org := uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+	h := &Handler{ConfengeService: &scoreboardHTTPStub{}}
+	req := httptest.NewRequest(http.MethodGet, "/confenge/intel/human-envelopes", nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Set(middleware.OrganizationIDKey, org)
+	h.ListConfengeHumanEnvelopes(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var wrap struct {
+		Data []intel.HumanOutcomeEnvelope `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &wrap); err != nil {
+		t.Fatal(err)
+	}
+	if len(wrap.Data) != 4 {
+		t.Fatalf("envelopes=%d", len(wrap.Data))
+	}
+	for _, env := range wrap.Data {
+		if env.LeadID != "" || env.AccountID != "" || env.InventedIDs {
+			t.Fatalf("invented envelope: %+v", env)
+		}
+	}
+}
+
+func TestRecordConfengeHumanOutcomeRejectsBareWon(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	org := uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+	h := &Handler{ConfengeService: &scoreboardHTTPStub{}}
+	req := httptest.NewRequest(http.MethodPost, "/confenge/intel/human-outcomes", strings.NewReader(`{"lead_id":"lead-http-won","action":"won"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Set(middleware.OrganizationIDKey, org)
+	h.RecordConfengeHumanOutcome(c)
+	if w.Code == http.StatusCreated || w.Code == http.StatusOK {
+		t.Fatalf("bare WON accepted status=%d body=%s", w.Code, w.Body.String())
+	}
+	fmt.Printf("HTTP_HUMAN_WON_BARE status=%d\n", w.Code)
+}

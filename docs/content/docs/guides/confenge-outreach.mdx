@@ -124,6 +124,9 @@ Target-fit is updated only by a current authoritative decision. A downgrade take
 | `GET /confenge/today` | Executable human work only (calls, routed calls, reviews, forms) |
 | `GET /confenge/inbound` | INBOUND NOW queue (web-cfg receipts) |
 | `POST /confenge/inbound/:leadId/outcome` | Record a human commercial outcome on an inbound lead |
+| `GET /confenge/intel/scoreboard` | Seven-stage inbound truth placar (synthetic excluded by default) |
+| `GET /confenge/intel/human-envelopes` | Empty EXTRA / ACCOUNT_1 / ACCOUNT_2 / ACCOUNT_3 capture slots |
+| `POST /confenge/intel/human-outcomes` | Founder action/outcome with evidence gates |
 | `POST /confenge/actions/:id/start` | Mark a commercial action in progress |
 | `POST /confenge/actions/:id/outcome` | Record a lean commercial outcome (WON is human-only, never inferred) |
 | `POST /confenge/manual-queue/:id/action` | Persist a `HumanCorrection` without auto-approve |

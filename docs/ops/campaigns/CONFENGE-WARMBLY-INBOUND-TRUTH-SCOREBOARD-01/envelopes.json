@@ -1,0 +1,9 @@
+{
+  "invented_ids": false,
+  "envelopes": [
+    {"slot": "EXTRA", "lead_id": "", "account_id": "", "idempotency_key": "envelope:EXTRA", "status": "empty"},
+    {"slot": "ACCOUNT_1", "lead_id": "", "account_id": "", "idempotency_key": "envelope:ACCOUNT_1", "status": "empty"},
+    {"slot": "ACCOUNT_2", "lead_id": "", "account_id": "", "idempotency_key": "envelope:ACCOUNT_2", "status": "empty"},
+    {"slot": "ACCOUNT_3", "lead_id": "", "account_id": "", "idempotency_key": "envelope:ACCOUNT_3", "status": "empty"}
+  ]
+}

@@ -29,6 +29,9 @@ import {
   useApplyConfengeManualAction,
   useConfengeCockpit,
   useConfengeExecutiveIntel,
+  useConfengeTruthScoreboard,
+  useConfengeHumanEnvelopes,
+  useRecordConfengeHumanOutcome,
   useConfengeIntelException,
   useConfengeIntelExceptions,
   useResolveConfengeIntelException,
@@ -52,6 +55,9 @@ import type {
   ConfengeActionCopy,
   ConfengeInboundNowItem,
   ConfengeExecutiveView,
+  ConfengeScoreboard,
+  ConfengeHumanEnvelope,
+  ConfengeHumanOutcomeEntry,
   ConfengeIntelException,
   ConfengeIntelExceptionFilter,
   ConfengeAttentionFilter,
@@ -76,6 +82,9 @@ export default function ConfengePage() {
   const workingOverview = useConfengeWorkingOverview(enabled);
   const cockpit = useConfengeCockpit(enabled);
   const executive = useConfengeExecutiveIntel(enabled);
+  const scoreboard = useConfengeTruthScoreboard(enabled);
+  const envelopes = useConfengeHumanEnvelopes(enabled);
+  const recordHuman = useRecordConfengeHumanOutcome();
   const manualAction = useApplyConfengeManualAction();
   const recordOutcome = useRecordConfengeActionOutcome();
   const recordInbound = useRecordConfengeInboundOutcome();
@@ -376,9 +385,19 @@ export default function ConfengePage() {
           </section>
         )}
 
+        {scoreboard.data && (
+          <TruthScoreboardPanel view={scoreboard.data} />
+        )}
+
         {executive.data && (
           <ExecutiveIntelPanel view={executive.data} />
         )}
+
+        <HumanOutcomePanel
+          envelopes={envelopes.data ?? []}
+          submitting={recordHuman.isPending}
+          onSubmit={(payload) => recordHuman.mutate(payload)}
+        />
 
         <ExceptionQueuePanel enabled={enabled} />
 
@@ -1613,6 +1632,162 @@ function FilterChips({
         </button>
       ))}
     </div>
+  );
+}
+
+function TruthScoreboardPanel({ view }: { view: ConfengeScoreboard }) {
+  return (
+    <section id="placar-inbound" data-testid="confenge-truth-scoreboard" className="rounded-md border border-slate-200 bg-white">
+      <div className="px-3 h-10 flex items-center border-b border-slate-200">
+        <span className="text-[12.5px] font-medium text-slate-900">Placar inbound</span>
+        <span className="ml-2 text-[10px] uppercase tracking-[0.14em] text-slate-500">{view.production_path}</span>
+      </div>
+      <p className="px-3 pt-2 text-[11.5px] text-slate-500">
+        Sete estágios. Synthetic excluído. causal_proof={String(view.causal_proof)}. auto_send={String(view.auto_send_enabled)}.
+        {view.human_blocker ? ` Blocker: ${view.human_blocker}` : ""}
+      </p>
+      <div className="px-3 py-2 space-y-1.5">
+        {(view.stages ?? []).map((stage) => (
+          <div key={stage.id} data-testid={`scoreboard-stage-${stage.id}`} className="rounded-md border border-slate-200 px-2 py-1.5">
+            <div className="flex flex-wrap items-baseline gap-2">
+              <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">{stage.order}</span>
+              <span className="text-[12.5px] font-medium text-slate-900">{stage.label}</span>
+              <span className="text-[11px] tabular-nums text-slate-700">{stage.status}</span>
+              {stage.numerator != null && (
+                <span className="text-[11px] text-slate-500 tabular-nums">{stage.numerator}/{stage.denominator ?? "?"}</span>
+              )}
+            </div>
+            <p className="mt-0.5 text-[11px] text-slate-500">{stage.observation}</p>
+            <p className="text-[11px] text-slate-400">owner {stage.owner} · {stage.next_action}</p>
+          </div>
+        ))}
+      </div>
+      <div className="px-3 pb-3 flex flex-wrap gap-2 text-[11px] text-slate-500">
+        {(view.separate_metrics ?? []).map((m) => (
+          <span key={m.id} className="rounded-md border border-slate-200 px-2 py-1">
+            {m.label}: {m.status} · {m.value_cents || m.count || 0}
+          </span>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+const HUMAN_ACTIONS = [
+  { id: "attempted", label: "Tentativa" },
+  { id: "reached", label: "Alcançou" },
+  { id: "not_reached", label: "Não alcançou" },
+  { id: "routed", label: "Roteado" },
+  { id: "wrong_route", label: "Rota errada" },
+  { id: "reply", label: "Resposta" },
+  { id: "meeting_scheduled", label: "Reunião marcada" },
+  { id: "meeting_held", label: "Reunião feita" },
+  { id: "follow_up", label: "Follow-up" },
+  { id: "disqualified", label: "Desqualificado" },
+  { id: "proposal_emitted", label: "Proposta emitida" },
+  { id: "won", label: "WON (com evidência)" },
+  { id: "lost", label: "LOST (com evidência)" },
+  { id: "revenue_received", label: "Receita (com documento)" },
+];
+
+function HumanOutcomePanel({
+  envelopes,
+  submitting,
+  onSubmit,
+}: {
+  envelopes: ConfengeHumanEnvelope[];
+  submitting: boolean;
+  onSubmit: (payload: ConfengeHumanOutcomeEntry) => void;
+}) {
+  const [envelope, setEnvelope] = useState("EXTRA");
+  const [leadId, setLeadId] = useState("");
+  const [accountId, setAccountId] = useState("");
+  const [action, setAction] = useState("attempted");
+  const [followUp, setFollowUp] = useState("");
+  const [evidence, setEvidence] = useState("");
+  const [doc, setDoc] = useState("");
+  const [cents, setCents] = useState("");
+  const [notes, setNotes] = useState("");
+  const selected = envelopes.find((e) => e.slot === envelope);
+  const needsEvidence = action === "won" || action === "lost" || action === "revenue_received";
+  return (
+    <section id="registro-humano" data-testid="confenge-human-outcome" className="rounded-md border border-slate-200 bg-white">
+      <div className="px-3 h-10 flex items-center border-b border-slate-200">
+        <span className="text-[12.5px] font-medium text-slate-900">Registrar contato</span>
+      </div>
+      <p className="px-3 pt-2 text-[11.5px] text-slate-500">
+        Menos passos que uma planilha. WON, LOST e receita exigem evidência. IDs em branco ficam em branco.
+      </p>
+      <form
+        className="px-3 py-2 grid gap-2 sm:grid-cols-2 text-[12.5px]"
+        onSubmit={(e) => {
+          e.preventDefault();
+          onSubmit({
+            envelope_id: envelope,
+            idempotency_key: selected?.idempotency_key || `human:${leadId || envelope}:${action}`,
+            lead_id: leadId || undefined,
+            account_id: accountId || undefined,
+            action,
+            follow_up_at: followUp || undefined,
+            evidence_ref: evidence || undefined,
+            revenue_document_id: doc || undefined,
+            revenue_cents: cents ? Number(cents) : undefined,
+            human_confirmed: needsEvidence,
+            notes: notes || undefined,
+          });
+        }}
+      >
+        <label className="grid gap-1">
+          <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Envelope</span>
+          <select className="h-7 rounded-md border border-slate-200 px-2" value={envelope} onChange={(e) => setEnvelope(e.target.value)}>
+            {(envelopes.length ? envelopes : [{ slot: "EXTRA" }, { slot: "ACCOUNT_1" }, { slot: "ACCOUNT_2" }, { slot: "ACCOUNT_3" }]).map((env) => (
+              <option key={env.slot} value={env.slot}>{env.slot}</option>
+            ))}
+          </select>
+        </label>
+        <label className="grid gap-1">
+          <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Ação</span>
+          <select className="h-7 rounded-md border border-slate-200 px-2" value={action} onChange={(e) => setAction(e.target.value)}>
+            {HUMAN_ACTIONS.map((a) => (
+              <option key={a.id} value={a.id}>{a.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="grid gap-1">
+          <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">lead_id (depois)</span>
+          <TextInput value={leadId} onChange={setLeadId} placeholder="vazio até existir" />
+        </label>
+        <label className="grid gap-1">
+          <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">account_id (depois)</span>
+          <TextInput value={accountId} onChange={setAccountId} placeholder="vazio até existir" />
+        </label>
+        <label className="grid gap-1">
+          <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Follow-up (RFC3339)</span>
+          <TextInput value={followUp} onChange={setFollowUp} />
+        </label>
+        <label className="grid gap-1">
+          <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Evidência</span>
+          <TextInput value={evidence} onChange={setEvidence} />
+        </label>
+        <label className="grid gap-1">
+          <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Documento financeiro</span>
+          <TextInput value={doc} onChange={setDoc} />
+        </label>
+        <label className="grid gap-1">
+          <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Receita (centavos)</span>
+          <TextInput value={cents} onChange={setCents} />
+        </label>
+        <label className="grid gap-1 sm:col-span-2">
+          <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Notas</span>
+          <TextInput value={notes} onChange={setNotes} />
+        </label>
+        <div className="sm:col-span-2">
+          <button type="submit" disabled={submitting} className="h-7 px-3 rounded-md bg-sky-600 text-white text-[12.5px] disabled:opacity-50">
+            {submitting ? "Gravando" : "Gravar registro"}
+          </button>
+        </div>
+      </form>
+    </section>
   );
 }
 

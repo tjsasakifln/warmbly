@@ -227,6 +227,9 @@ func enrichException(ex *Exception, in ObservedFacts) {
 	if ex.Status == "" {
 		ex.Status = StatusOpen
 	}
+	if strings.TrimSpace(ex.Owner) == "" {
+		ex.Owner = ExceptionOwner(ex.Code)
+	}
 	if strings.TrimSpace(ex.NextAction) == "" {
 		ex.NextAction = nextActionFor(ex.Status, "")
 	}
@@ -263,6 +266,9 @@ func PresentException(ex Exception, now time.Time) Exception {
 	}
 	if ex.Source == "" {
 		ex.Source = Unknown
+	}
+	if strings.TrimSpace(ex.Owner) == "" {
+		ex.Owner = ExceptionOwner(ex.Code)
 	}
 	if strings.TrimSpace(ex.NextAction) == "" {
 		ex.NextAction = nextActionFor(ex.Status, "")

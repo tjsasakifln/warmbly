@@ -1,0 +1,59 @@
+{
+  "schema": "confenge.exception_cases.v1",
+  "cases": [
+    {
+      "name": "unknown_event",
+      "input": {"type": "totally_unknown_event", "event_id": "ev-unknown-type"},
+      "code": "unknown_provider_event",
+      "held": true,
+      "owner": "commercial-intel",
+      "next_action": "review raw type; do not promote status",
+      "silent_drop": false
+    },
+    {
+      "name": "out_of_order",
+      "input": "meeting occurred_at before action",
+      "code": "out_of_order",
+      "held": true,
+      "owner": "inbound-ops",
+      "next_action": "hold; do not reorder into a fake chain",
+      "silent_drop": false
+    },
+    {
+      "name": "retry_same_event_id",
+      "input": "same event_id as first action",
+      "code": "replay",
+      "held": false,
+      "owner": "n/a",
+      "next_action": "return first chain",
+      "silent_drop": false
+    },
+    {
+      "name": "unavailable_consumer",
+      "input": "Reconcile(store=nil)",
+      "code": "ledger_unavailable",
+      "held": true,
+      "owner": "inbound-ops",
+      "next_action": "retry with the same IDs; do not invent a chain",
+      "silent_drop": false
+    },
+    {
+      "name": "invalid_secret",
+      "input": "HMAC signed with wrong secret",
+      "code": "unauthorized",
+      "http": 401,
+      "owner": "inbound-ops",
+      "next_action": "fix the shared HMAC; do not persist",
+      "silent_drop": false
+    },
+    {
+      "name": "unconfirmed_won",
+      "input": "won without human_confirmed+evidence_ref",
+      "code": "unconfirmed_won",
+      "held": true,
+      "owner": "founder",
+      "next_action": "require human or document confirmation; keep UNKNOWN",
+      "silent_drop": false
+    }
+  ]
+}

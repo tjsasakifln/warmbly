@@ -1,0 +1,39 @@
+HUMAN OUTCOME ENTRY
+Fewer fields than a spreadsheet. Leave IDs blank until they exist.
+
+Envelope (one of): EXTRA | ACCOUNT_1 | ACCOUNT_2 | ACCOUNT_3
+Idempotency key: envelope:<SLOT> or human:<lead_id>:<action>
+lead_id:
+account_id:
+action (one of):
+  attempted
+  reached
+  not_reached
+  routed
+  wrong_route
+  reply
+  meeting_scheduled
+  meeting_held
+  follow_up
+  disqualified
+  proposal_emitted
+  won            (requires HUMAN_CONFIRMED=true and evidence_ref)
+  lost           (requires HUMAN_CONFIRMED=true and evidence_ref)
+  revenue_received (requires HUMAN_CONFIRMED=true, revenue_document_id, revenue_cents)
+follow_up_at (RFC3339):
+evidence_ref:
+revenue_document_id:
+revenue_cents:
+notes:
+
+CLI:
+  scripts/confenge_human_outcome.sh attempted
+  scripts/confenge_human_outcome.sh reply <lead_id> EXTRA
+  HUMAN_CONFIRMED=true HUMAN_EVIDENCE_REF=evidence:... \
+    scripts/confenge_human_outcome.sh won <lead_id> EXTRA
+
+HTTP:
+  POST /confenge/intel/human-outcomes
+  GET  /confenge/intel/human-envelopes
+
+Do not invent WON, LOST, or receita. Do not enable auto-send.
