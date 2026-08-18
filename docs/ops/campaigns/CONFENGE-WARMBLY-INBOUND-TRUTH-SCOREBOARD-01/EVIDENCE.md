@@ -34,6 +34,8 @@ Observed:
 - seven stages keep impression, lead, proposal, and cash distinct (1-2 BLOCKED; receita not TRUE without a document)
 - WON / LOST / receita without evidence stay held / UNKNOWN
 - EXTRA + ACCOUNT_1 + ACCOUNT_2 + ACCOUNT_3 invent no IDs and replay idempotently
+- two different EXTRA actions (attempted then reached) both persist even when the caller sends the slot-only `envelope:EXTRA` key
+- `follow_up_at` is copied onto the commercial event and chain; `follow_up` without a date is a held exception
 
 `gofmt -l` on touched Go: empty. golangci-lint on touched packages: pass. `pnpm typecheck` in `web/`: pass.
 

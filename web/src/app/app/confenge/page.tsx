@@ -1708,7 +1708,6 @@ function HumanOutcomePanel({
   const [doc, setDoc] = useState("");
   const [cents, setCents] = useState("");
   const [notes, setNotes] = useState("");
-  const selected = envelopes.find((e) => e.slot === envelope);
   const needsEvidence = action === "won" || action === "lost" || action === "revenue_received";
   return (
     <section id="registro-humano" data-testid="confenge-human-outcome" className="rounded-md border border-slate-200 bg-white">
@@ -1724,7 +1723,7 @@ function HumanOutcomePanel({
           e.preventDefault();
           onSubmit({
             envelope_id: envelope,
-            idempotency_key: selected?.idempotency_key || `human:${leadId || envelope}:${action}`,
+            idempotency_key: `human:${envelope}:${action}:${leadId || "unbound"}`,
             lead_id: leadId || undefined,
             account_id: accountId || undefined,
             action,

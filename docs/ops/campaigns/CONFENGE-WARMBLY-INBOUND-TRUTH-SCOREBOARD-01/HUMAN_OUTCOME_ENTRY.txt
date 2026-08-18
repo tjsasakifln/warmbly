@@ -2,7 +2,8 @@ HUMAN OUTCOME ENTRY
 Fewer fields than a spreadsheet. Leave IDs blank until they exist.
 
 Envelope (one of): EXTRA | ACCOUNT_1 | ACCOUNT_2 | ACCOUNT_3
-Idempotency key: envelope:<SLOT> or human:<lead_id>:<action>
+Idempotency key: human:<SLOT>:<action>:<lead_id|unbound>
+  (envelope:<SLOT> is a prefix only; the registrar expands it)
 lead_id:
 account_id:
 action (one of):

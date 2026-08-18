@@ -2,6 +2,7 @@ package intel
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -133,6 +134,77 @@ func TestRegisterHumanOutcomeReplayIsIdempotent(t *testing.T) {
 		t.Fatalf("reply opened %d chains", n)
 	}
 	fmt.Printf("HUMAN_REPLAY created=%v replay=%v chains=%d\n", second.Created, second.Replay, n)
+}
+
+func TestRegisterHumanOutcomeTwoExtraActionsPersist(t *testing.T) {
+	st := NewMemoryStore()
+	now := time.Date(2026, 8, 18, 18, 0, 0, 0, time.UTC)
+	// Dashboard used to send the slot-only key for every action on EXTRA.
+	slotKey := EnvelopeIdempotencyKey(EnvelopeEXTRA)
+	first := RegisterHumanOutcome(st, HumanOutcomeEntry{
+		EnvelopeID: EnvelopeEXTRA, IdempotencyKey: slotKey,
+		Action: HumanAttempted, OccurredAt: now, OrganizationID: loopOrg,
+	})
+	second := RegisterHumanOutcome(st, HumanOutcomeEntry{
+		EnvelopeID: EnvelopeEXTRA, IdempotencyKey: slotKey,
+		Action: HumanReached, OccurredAt: now.Add(time.Minute), OrganizationID: loopOrg,
+	})
+	if first.Replay {
+		t.Fatalf("first EXTRA attempted was a replay: %+v", first)
+	}
+	if second.Replay {
+		t.Fatalf("second EXTRA action silently dropped as replay: first=%s second=%s", first.Chain.Keys.EventID, second.Chain.Keys.EventID)
+	}
+	if first.Chain.Keys.EventID == "" || first.Chain.Keys.EventID == slotKey {
+		t.Fatalf("attempted kept slot-only key: %s", first.Chain.Keys.EventID)
+	}
+	if second.Chain.Keys.EventID == "" || second.Chain.Keys.EventID == first.Chain.Keys.EventID {
+		t.Fatalf("reached did not get its own event id: first=%s second=%s", first.Chain.Keys.EventID, second.Chain.Keys.EventID)
+	}
+	again := RegisterHumanOutcome(st, HumanOutcomeEntry{
+		EnvelopeID: EnvelopeEXTRA, IdempotencyKey: slotKey,
+		Action: HumanAttempted, OccurredAt: now.Add(2 * time.Minute), OrganizationID: loopOrg,
+	})
+	if !again.Replay {
+		t.Fatal("same EXTRA attempted must replay")
+	}
+	fmt.Printf("EXTRA_ACTIONS attempted=%s reached=%s replay=%v\n", first.Chain.Keys.EventID, second.Chain.Keys.EventID, again.Replay)
+}
+
+func TestRegisterHumanOutcomePersistsFollowUpAt(t *testing.T) {
+	st := NewMemoryStore()
+	now := time.Date(2026, 8, 18, 18, 30, 0, 0, time.UTC)
+	follow := now.Add(48 * time.Hour)
+	missing := RegisterHumanOutcome(st, HumanOutcomeEntry{
+		EnvelopeID: EnvelopeEXTRA, Action: HumanFollowUp, OccurredAt: now, OrganizationID: loopOrg,
+	})
+	if !missing.Held || len(missing.Exceptions) == 0 {
+		t.Fatalf("follow_up without date silent: %+v", missing)
+	}
+	if !strings.Contains(missing.Exceptions[0].Reason, "follow_up_at") {
+		t.Fatalf("missing follow_up_at not observable: %+v", missing.Exceptions[0])
+	}
+
+	ok := RegisterHumanOutcome(st, HumanOutcomeEntry{
+		LeadID: "lead-follow-1", Action: HumanFollowUp, OccurredAt: now,
+		FollowUpAt: &follow, OrganizationID: loopOrg,
+	})
+	if ok.Replay && ok.Chain.FollowUpAt == nil {
+		t.Fatalf("follow_up_at dropped: %+v", ok.Chain)
+	}
+	if ok.Chain.FollowUpAt == nil || !ok.Chain.FollowUpAt.Equal(follow) {
+		t.Fatalf("follow_up_at not persisted: %+v", ok.Chain.FollowUpAt)
+	}
+	ev, err := HumanOutcomeToEvent(HumanOutcomeEntry{
+		LeadID: "lead-follow-1", Action: HumanFollowUp, OccurredAt: now, FollowUpAt: &follow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.FollowUpAt == nil || !ev.FollowUpAt.Equal(follow) {
+		t.Fatalf("HumanOutcomeToEvent dropped follow_up_at: %+v", ev.FollowUpAt)
+	}
+	fmt.Printf("FOLLOW_UP persisted=%s missing_held=%v\n", ok.Chain.FollowUpAt.UTC().Format(time.RFC3339), missing.Held)
 }
 
 func TestPlaceholderIDsAreRejected(t *testing.T) {

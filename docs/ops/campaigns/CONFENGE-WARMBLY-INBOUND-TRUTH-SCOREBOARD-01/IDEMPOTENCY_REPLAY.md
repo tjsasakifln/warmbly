@@ -16,6 +16,6 @@ Same `event_id` or `idempotency_key` is a replay (`JoinResult.Replay=true`, `Cre
 
 ## Human outcome
 
-`RegisterHumanOutcome` uses `idempotency_key`. Empty EXTRA / ACCOUNT_1 / ACCOUNT_2 / ACCOUNT_3 envelopes reuse `envelope:<SLOT>`. Replay of EXTRA attempted does not invent IDs or open a second chain.
+`RegisterHumanOutcome` keys each capture as `human:<slot>:<action>:<lead|unbound>`. A slot-only `envelope:<SLOT>` from the dashboard is expanded, so EXTRA attempted then EXTRA reached both persist. Replay of the same (slot, action, lead) returns the first event. `follow_up_at` is copied onto the commercial event and chain; `follow_up` without a date is a held exception.
 
 WON / LOST / receita without evidence are held exceptions. They are not recorded as TRUE on the scoreboard.

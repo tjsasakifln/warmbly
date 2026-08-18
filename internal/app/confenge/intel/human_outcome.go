@@ -91,9 +91,41 @@ func EmptyEnvelopes() []HumanOutcomeEnvelope {
 	return out
 }
 
-// EnvelopeIdempotencyKey is stable per slot so later fill stays idempotent.
+// EnvelopeIdempotencyKey is the slot prefix only. Event identity is
+// HumanOutcomeEventKey (slot + action + lead_id). A slot-only key is expanded.
 func EnvelopeIdempotencyKey(slot string) string {
 	return "envelope:" + strings.ToUpper(strings.TrimSpace(slot))
+}
+
+// HumanOutcomeEventKey is the durable ingest identity: one action per slot/lead.
+func HumanOutcomeEventKey(in HumanOutcomeEntry, action string) string {
+	slot := strings.ToLower(firstNonEmpty(in.EnvelopeID, "unbound"))
+	lead := strings.ToLower(strings.TrimSpace(in.LeadID))
+	if lead == "" {
+		lead = "unbound"
+	}
+	return "human:" + slot + ":" + action + ":" + lead
+}
+
+func isSlotOnlyKey(k string) bool {
+	k = strings.TrimSpace(k)
+	if k == "" {
+		return true
+	}
+	low := strings.ToLower(k)
+	if strings.HasPrefix(low, "envelope:") {
+		rest := strings.TrimPrefix(low, "envelope:")
+		return !strings.Contains(rest, ":")
+	}
+	return false
+}
+
+func resolveHumanEventKey(in HumanOutcomeEntry, action string) string {
+	computed := HumanOutcomeEventKey(in, action)
+	if isSlotOnlyKey(in.IdempotencyKey) {
+		return computed
+	}
+	return strings.TrimSpace(in.IdempotencyKey)
 }
 
 // ValidateHumanOutcome refuses WON/LOST/receita without evidence. Blank IDs stay blank.
@@ -124,6 +156,9 @@ func ValidateHumanOutcome(in HumanOutcomeEntry) error {
 			return fmt.Errorf("received revenue requires human_confirmed, revenue_document_id, and revenue_cents")
 		}
 	}
+	if action == HumanFollowUp && (in.FollowUpAt == nil || in.FollowUpAt.IsZero()) {
+		return fmt.Errorf("follow_up_at required")
+	}
 	return nil
 }
 
@@ -139,14 +174,15 @@ func HumanOutcomeToEvent(in HumanOutcomeEntry) (CommercialEvent, error) {
 		occurred = time.Now().UTC()
 	}
 	typ, state := humanEventType(in, action)
+	key := resolveHumanEventKey(in, action)
 	ev := CommercialEvent{
-		EventID:           firstNonEmpty(in.IdempotencyKey, humanEventID(in, action)),
+		EventID:           key,
 		Version:           "1",
 		Schema:            EventSchemaV1,
 		Type:              typ,
 		OccurredAt:        occurred,
 		Timezone:          "America/Sao_Paulo",
-		IdempotencyKey:    firstNonEmpty(in.IdempotencyKey, humanEventID(in, action)),
+		IdempotencyKey:    key,
 		LeadID:            strings.TrimSpace(in.LeadID),
 		ReceiptID:         firstNonEmpty(in.ReceiptID, in.LeadID),
 		AccountPublicID:   strings.TrimSpace(in.AccountID),
@@ -155,6 +191,7 @@ func HumanOutcomeToEvent(in HumanOutcomeEntry) (CommercialEvent, error) {
 		EvidenceRef:       strings.TrimSpace(in.EvidenceRef),
 		RevenueDocumentID: strings.TrimSpace(in.RevenueDocumentID),
 		RevenueCents:      in.RevenueCents,
+		FollowUpAt:        in.FollowUpAt,
 		ActorRef:          firstNonEmpty(in.ActorRef, OwnerFounder),
 		Source:            firstNonEmpty(in.Source, "founder-capture"),
 		Query:             in.Query,
@@ -186,12 +223,19 @@ func RegisterHumanOutcome(store Store, in HumanOutcomeEntry) JoinResult {
 		case strings.Contains(err.Error(), "revenue"):
 			code = ExceptionCreatedAsRevenue
 			owner = OwnerFinance
+		case strings.Contains(err.Error(), "follow_up_at"):
+			code = ExceptionOrphan
+			owner = OwnerFounder
+		}
+		next := "supply human/document evidence; do not invent WON, LOST, or receita"
+		if strings.Contains(err.Error(), "follow_up_at") {
+			next = "supply follow_up_at; do not drop the date"
 		}
 		ex := Exception{
 			OrganizationID: in.OrganizationID,
 			Code:           code,
 			Reason:         err.Error(),
-			NextAction:     "supply human/document evidence; do not invent WON, LOST, or receita",
+			NextAction:     next,
 			LeadID:         strings.TrimSpace(in.LeadID),
 			AccountID:      strings.TrimSpace(in.AccountID),
 			Owner:          owner,
@@ -279,11 +323,6 @@ func humanEventType(in HumanOutcomeEntry, action string) (typ, state string) {
 	default:
 		return EventOutcomeObserved, firstNonEmpty(strings.ToUpper(strings.TrimSpace(in.OutcomeState)), OutcomeUnknown)
 	}
-}
-
-func humanEventID(in HumanOutcomeEntry, action string) string {
-	slot := firstNonEmpty(in.EnvelopeID, in.LeadID, in.AccountID, "unbound")
-	return "human:" + strings.ToLower(slot) + ":" + action
 }
 
 func inventedPlaceholderID(v string) bool {
