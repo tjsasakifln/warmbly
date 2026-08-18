@@ -211,6 +211,7 @@ type ObservedFacts struct {
 
 	PublishedAt *time.Time `json:"published_at,omitempty"`
 	DetectedAt  *time.Time `json:"detected_at,omitempty"`
+	FollowUpAt  *time.Time `json:"follow_up_at,omitempty"`
 
 	EventType        string `json:"event_type,omitempty"`
 	NotALead         bool   `json:"not_a_lead,omitempty"`
@@ -273,6 +274,7 @@ type Chain struct {
 	CloseAt        *time.Time `json:"close_at,omitempty"`
 	PublishedAt    *time.Time `json:"published_at,omitempty"`
 	DetectedAt     *time.Time `json:"detected_at,omitempty"`
+	FollowUpAt     *time.Time `json:"follow_up_at,omitempty"`
 
 	OutcomeType       string `json:"outcome_type"`
 	HumanConfirmed    bool   `json:"human_confirmed"`
@@ -637,6 +639,7 @@ type CommercialEvent struct {
 	RevenueDocumentID string     `json:"revenue_document_id,omitempty"`
 	PublishedAt       *time.Time `json:"published_at,omitempty"`
 	DetectedAt        *time.Time `json:"detected_at,omitempty"`
+	FollowUpAt        *time.Time `json:"follow_up_at,omitempty"`
 	HandRaise         bool       `json:"hand_raise,omitempty"`
 	Correction        bool       `json:"correction,omitempty"`
 	CustomerProofLane bool       `json:"customer_proof_lane,omitempty"`

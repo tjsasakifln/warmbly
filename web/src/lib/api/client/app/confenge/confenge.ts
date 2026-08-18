@@ -14,6 +14,9 @@ import type {
     ConfengeWorkingQueueItem,
     ConfengeWorkingQueueSummary,
     ConfengeExecutiveView,
+    ConfengeScoreboard,
+    ConfengeHumanEnvelope,
+    ConfengeHumanOutcomeEntry,
     ConfengeIntelException,
     ConfengeIntelExceptionFilter,
     ConfengeIntelResolveResult,
@@ -74,6 +77,46 @@ export async function getConfengeExecutiveIntel(params?: {
         method: "GET",
         url: `/confenge/intel/executive${qs ? `?${qs}` : ""}`,
         authorization: true,
+    });
+    return res.data;
+}
+
+export async function getConfengeTruthScoreboard(params?: {
+    month?: string;
+    includeSynthetic?: boolean;
+}): Promise<ConfengeScoreboard> {
+    const sp = new URLSearchParams();
+    if (params?.month) sp.set("month", params.month);
+    sp.set("include_synthetic", params?.includeSynthetic ? "1" : "0");
+    const qs = sp.toString();
+    const res = await Request<{ data: ConfengeScoreboard }>({
+        method: "GET",
+        url: `/confenge/intel/scoreboard${qs ? `?${qs}` : ""}`,
+        authorization: true,
+    });
+    return res.data;
+}
+
+export async function listConfengeHumanEnvelopes(): Promise<ConfengeHumanEnvelope[]> {
+    const res = await Request<{ data: ConfengeHumanEnvelope[] }>({
+        method: "GET",
+        url: "/confenge/intel/human-envelopes",
+        authorization: true,
+    });
+    return res.data ?? [];
+}
+
+export async function recordConfengeHumanOutcome(
+    payload: ConfengeHumanOutcomeEntry,
+): Promise<unknown> {
+    const res = await Request<{ data: unknown }>({
+        method: "POST",
+        url: "/confenge/intel/human-outcomes",
+        authorization: true,
+        data: payload,
+        headers: payload.idempotency_key
+            ? { "Idempotency-Key": payload.idempotency_key }
+            : undefined,
     });
     return res.data;
 }

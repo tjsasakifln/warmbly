@@ -32,6 +32,9 @@ func ClassifyExceptions(in ObservedFacts, existing *Chain) []Exception {
 		ex.Reason = reason
 		ex.NextAction = next
 		ex.Held = held
+		if strings.TrimSpace(ex.Owner) == "" {
+			ex.Owner = ExceptionOwner(code)
+		}
 		enrichException(&ex, in)
 		out = append(out, ex)
 	}

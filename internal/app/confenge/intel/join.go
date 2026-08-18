@@ -97,7 +97,10 @@ func Reconcile(store Store, in ObservedFacts) JoinResult {
 			Code:       ExceptionUnavailable,
 			Reason:     "commercial intelligence store unavailable",
 			NextAction: "retry with the same IDs; do not invent a chain",
+			Owner:      ExceptionOwner(ExceptionUnavailable),
 			At:         now,
+			OpenedAt:   now,
+			Held:       true,
 		}
 		return JoinResult{Exceptions: []Exception{ex}, Held: true}
 	}
@@ -258,6 +261,7 @@ func buildChain(in ObservedFacts, identity, metric string, now time.Time, closeB
 		CloseAt:           closeAt,
 		PublishedAt:       in.PublishedAt,
 		DetectedAt:        in.DetectedAt,
+		FollowUpAt:        in.FollowUpAt,
 		OutcomeType:       outcome,
 		HumanConfirmed:    closeOK,
 		Qualified:         qualified,
@@ -429,6 +433,10 @@ func mergeIntoChain(existing Chain, in ObservedFacts, closeBlocked, held bool) (
 	}
 	if in.DetectedAt != nil && merged.DetectedAt == nil {
 		merged.DetectedAt = in.DetectedAt
+		changed = true
+	}
+	if in.FollowUpAt != nil && merged.FollowUpAt == nil {
+		merged.FollowUpAt = in.FollowUpAt
 		changed = true
 	}
 	if !held && in.PipelineOpen && !merged.PipelineOpen && !in.NotALead && !isWonType(merged.OutcomeType) && !isLostType(merged.OutcomeType) {

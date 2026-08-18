@@ -282,3 +282,62 @@ func (h *Handler) ReopenConfengeIntelException(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"data": res})
 }
+
+// GetConfengeTruthScoreboard — GET /confenge/intel/scoreboard
+// Seven-stage executive placar. Default excludes synthetic.
+func (h *Handler) GetConfengeTruthScoreboard(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	month := strings.TrimSpace(c.Query("month"))
+	includeSynthetic := queryBool(c, "include_synthetic")
+	board, xerr := h.ConfengeService.TruthScoreboard(c.Request.Context(), orgID, month, includeSynthetic)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": board})
+}
+
+// ListConfengeHumanEnvelopes — GET /confenge/intel/human-envelopes
+func (h *Handler) ListConfengeHumanEnvelopes(c *gin.Context) {
+	if _, ok := h.confengeOrg(c); !ok {
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": h.ConfengeService.HumanOutcomeEnvelopes()})
+}
+
+// RecordConfengeHumanOutcome — POST /confenge/intel/human-outcomes
+func (h *Handler) RecordConfengeHumanOutcome(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	var body intel.HumanOutcomeEntry
+	if err := c.ShouldBindJSON(&body); err != nil {
+		errx.JSON(c, errx.New(errx.BadRequest, "invalid human outcome"))
+		return
+	}
+	if strings.TrimSpace(body.ActorRef) == "" {
+		if uid, err := middleware.GetUserUUID(c); err == nil {
+			body.ActorRef = uid.String()
+		}
+	}
+	if strings.TrimSpace(body.IdempotencyKey) == "" {
+		body.IdempotencyKey = strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	}
+	res, xerr := h.ConfengeService.RegisterHumanOutcome(c.Request.Context(), orgID, body)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	status := http.StatusCreated
+	if res.Replay {
+		status = http.StatusOK
+	}
+	if res.Held && res.Chain.Identity == "" {
+		status = http.StatusUnprocessableEntity
+	}
+	c.JSON(status, gin.H{"data": res})
+}

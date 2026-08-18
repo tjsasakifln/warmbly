@@ -1,0 +1,28 @@
+{
+  "campaign": "CONFENGE-WARMBLY-INBOUND-TRUTH-SCOREBOARD-01",
+  "kind": "infrastructure_canary",
+  "pii": false,
+  "synthetic": true,
+  "live_post": false,
+  "reason_live_post_skipped": "CONFENGE_INBOUND_WEBHOOK_SECRET unset in this environment",
+  "public_health": {
+    "url": "https://api.confenge.com.br/api/v1/webhooks/confenge/inbound/health",
+    "http": 200,
+    "status": "READY",
+    "auto_send_enabled": false,
+    "dispatch_attempted": false
+  },
+  "fixture_canary": {
+    "lead_id": "SYNTHETIC-INBOUND-truth",
+    "source": "infrastructure_canary",
+    "label": "infrastructure_canary",
+    "company": "SYNTHETIC-INBOUND",
+    "persist": true,
+    "replay": "byte-equivalent duplicate",
+    "invalid_secret": "401 unauthorized",
+    "dispatch_attempted": false,
+    "auto_send": false,
+    "include_synthetic_0": "excluded from INBOUND NOW, executive, scoreboard"
+  },
+  "secrets_printed": false
+}

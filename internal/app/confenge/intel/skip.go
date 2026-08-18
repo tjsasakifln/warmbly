@@ -16,6 +16,7 @@ const (
 	// officialSyntheticMarker is the only free-text skip in company/name/email/message.
 	// Tokens "qa" or "internal" in those fields are real commercial Portuguese.
 	officialSyntheticMarker = "synthetic-inbound"
+	infrastructureCanary    = "infrastructure_canary"
 )
 
 // InboundCommercialSkipReason is the commercial-queue skip gate. Receipts
@@ -57,9 +58,12 @@ func skipTokenIn(s string) string {
 		return ""
 	}
 	low := strings.ToLower(s)
+	if low == infrastructureCanary || strings.Contains(low, infrastructureCanary) {
+		return InboundSkipSynthetic
+	}
 	for _, tok := range splitSkipTokens(low) {
 		switch tok {
-		case InboundSkipSynthetic:
+		case InboundSkipSynthetic, infrastructureCanary:
 			return InboundSkipSynthetic
 		case InboundSkipQA:
 			return InboundSkipQA
@@ -90,7 +94,7 @@ func skipFromPayload(raw []byte) string {
 	if truthy(m["synthetic"]) || truthy(m["is_synthetic"]) {
 		return InboundSkipSynthetic
 	}
-	for _, key := range []string{"label", "environment", "env", "fixture"} {
+	for _, key := range []string{"label", "environment", "env", "fixture", "kind", "canary"} {
 		if reason := skipTokenIn(asString(m[key])); reason != "" {
 			return reason
 		}

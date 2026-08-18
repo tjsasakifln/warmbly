@@ -131,6 +131,9 @@ type Service interface {
 	GetCommercialCanonical(ctx context.Context, orgID uuid.UUID, leadID string) (*intel.CanonicalState, *errx.Error)
 	IngestProviderWebhook(ctx context.Context, orgID uuid.UUID, secret, previous, header string, body []byte) (intel.WebhookAck, *errx.Error)
 	ReopenIntelException(ctx context.Context, orgID uuid.UUID, id, actor, reason string) (intel.ResolveResult, *errx.Error)
+	TruthScoreboard(ctx context.Context, orgID uuid.UUID, month string, includeSynthetic bool) (*intel.Scoreboard, *errx.Error)
+	RegisterHumanOutcome(ctx context.Context, orgID uuid.UUID, in intel.HumanOutcomeEntry) (intel.JoinResult, *errx.Error)
+	HumanOutcomeEnvelopes() []intel.HumanOutcomeEnvelope
 }
 
 // ImportOptions controls dry-run, idempotency, and source tracking.

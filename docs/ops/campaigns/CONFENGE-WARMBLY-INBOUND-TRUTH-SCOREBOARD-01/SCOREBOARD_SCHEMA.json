@@ -1,0 +1,48 @@
+{
+  "schema": "confenge.inbound_truth_scoreboard.v1",
+  "stages_order": [
+    "urls_live_indexable",
+    "non_branded_impressions_clicks",
+    "cta_completed",
+    "lead_persisted",
+    "qualified_conversation",
+    "proposal_emitted",
+    "revenue_received"
+  ],
+  "status_enum": ["TRUE", "FALSE", "UNKNOWN", "BLOCKED"],
+  "stage_fields": [
+    "id",
+    "label",
+    "order",
+    "status",
+    "source_of_truth",
+    "snapshot_at",
+    "freshness",
+    "numerator",
+    "denominator",
+    "synthetic_included",
+    "owner",
+    "next_action",
+    "latency",
+    "observation"
+  ],
+  "default_include_synthetic": false,
+  "causal_proof": false,
+  "separate_metrics": [
+    "pipeline_contracted",
+    "mrr",
+    "charge_created",
+    "cash_received"
+  ],
+  "future_ingest_contracts": {
+    "urls_live_indexable": "confenge.url_index.v1",
+    "non_branded_impressions_clicks": "confenge.search_observation.v1"
+  },
+  "not_revenue": [
+    "callback",
+    "HTTP 200",
+    "checkout_created",
+    "payment_created",
+    "page_view"
+  ]
+}

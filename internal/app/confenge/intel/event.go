@@ -126,6 +126,7 @@ func EventToFacts(ev CommercialEvent) ObservedFacts {
 		Timezone:          firstNonEmpty(ev.Timezone, "UTC"),
 		PublishedAt:       ev.PublishedAt,
 		DetectedAt:        ev.DetectedAt,
+		FollowUpAt:        ev.FollowUpAt,
 		Synthetic:         ev.Synthetic,
 		Label:             labelFor(ev.Synthetic),
 	}

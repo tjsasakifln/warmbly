@@ -365,6 +365,79 @@ export type ConfengeExecutiveView = {
     chain_count: number;
 };
 
+export type ConfengeScoreboardStage = {
+    id: string;
+    label: string;
+    order: number;
+    status: "TRUE" | "FALSE" | "UNKNOWN" | "BLOCKED";
+    source_of_truth: string;
+    snapshot_at: string;
+    freshness: string;
+    numerator?: number | null;
+    denominator?: number | null;
+    synthetic_included: boolean;
+    owner: string;
+    next_action: string;
+    latency: string;
+    observation: string;
+};
+
+export type ConfengeScoreboardMetric = {
+    id: string;
+    label: string;
+    status: string;
+    value_cents: number;
+    count?: number;
+    source_of_truth: string;
+    observation: string;
+};
+
+export type ConfengeScoreboard = {
+    schema_version: string;
+    generated_at: string;
+    include_synthetic: boolean;
+    production_path: string;
+    human_blocker?: string;
+    next_real_event: string;
+    causal_proof: boolean;
+    auto_send_enabled: boolean;
+    dispatch_attempted: boolean;
+    stages: ConfengeScoreboardStage[];
+    separate_metrics: ConfengeScoreboardMetric[];
+};
+
+export type ConfengeHumanEnvelope = {
+    slot: string;
+    lead_id: string;
+    account_id: string;
+    idempotency_key: string;
+    status: string;
+    invented_ids: boolean;
+    next_action: string;
+};
+
+export type ConfengeHumanOutcomeEntry = {
+    envelope_id?: string;
+    idempotency_key?: string;
+    lead_id?: string;
+    account_id?: string;
+    action: string;
+    reached?: boolean;
+    route_valid?: boolean;
+    reply?: boolean;
+    meeting_scheduled?: boolean;
+    meeting_held?: boolean;
+    follow_up_at?: string;
+    disqualified?: boolean;
+    proposal_emitted?: boolean;
+    outcome_state?: string;
+    human_confirmed?: boolean;
+    evidence_ref?: string;
+    revenue_document_id?: string;
+    revenue_cents?: number;
+    notes?: string;
+};
+
 export type ConfengeCockpit = {
     funnel: ConfengeContactFunnel;
     manual: ConfengeManualItem[];
