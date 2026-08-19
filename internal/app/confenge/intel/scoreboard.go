@@ -475,8 +475,10 @@ func ExceptionOwner(code string) string {
 		return OwnerExtraCLI
 	case ExceptionStaleAttribution, ExceptionMissingAttribution:
 		return OwnerWebCfg
-	case ExceptionCreatedAsRevenue, ExceptionOnboardingBeforePay:
+	case ExceptionCreatedAsRevenue, ExceptionOnboardingBeforePay, ExceptionNfseManualQueue, ExceptionChargeback, ExceptionPaymentRefund:
 		return OwnerFinance
+	case ExceptionCounselReviewDue:
+		return OwnerFounder
 	case ExceptionUnknownProviderEvent:
 		return OwnerCommercial
 	default:

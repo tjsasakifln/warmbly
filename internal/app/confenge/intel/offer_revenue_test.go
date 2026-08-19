@@ -702,6 +702,161 @@ func TestMigration103MentionsNewCodes(t *testing.T) {
 	fmt.Printf("MIGRATION_103 up_bytes=%d down_bytes=%d\n", len(raw), len(down))
 }
 
+func TestConfirmedIsNotReceivedRevenue(t *testing.T) {
+	st := NewMemoryStore()
+	seq := DiagnosticoSequence(offerOrg, "lead-conf-not-rx", false)
+	last := ingestSeq(st, seq[:8]) // through payment_confirmed only
+	pay := last.Chain.Commercial.Payment
+	if pay.CanonicalStatus != PaymentStatusConfirmed {
+		t.Fatalf("canonical=%s want %s", pay.CanonicalStatus, PaymentStatusConfirmed)
+	}
+	if pay.ConfirmedCount < 1 {
+		t.Fatalf("confirmed_count=%d", pay.ConfirmedCount)
+	}
+	if pay.ReceivedCents != 0 || pay.ReceivedCount != 0 {
+		t.Fatalf("confirmed counted as received cents=%d count=%d", pay.ReceivedCents, pay.ReceivedCount)
+	}
+	if last.Chain.Commercial.Offer.AmountCents != 800000 {
+		t.Fatalf("price mutated on confirm: %d", last.Chain.Commercial.Offer.AmountCents)
+	}
+	if !hasCode(last.Exceptions, ExceptionNfseManualQueue) {
+		t.Fatalf("nfse_manual_queue missing: %v", exceptionCodes(last.Exceptions))
+	}
+	view := Rollup([]Chain{last.Chain}, SyntheticMonth, true)
+	if view.Commercial.ReceivedCents != 0 {
+		t.Fatalf("rollup received=%d", view.Commercial.ReceivedCents)
+	}
+	fmt.Printf("CONFIRMED_NOT_RECEIVED status=%s confirmed=%d received=%d nfse=%v\n",
+		pay.CanonicalStatus, pay.ConfirmedCount, pay.ReceivedCents, hasCode(last.Exceptions, ExceptionNfseManualQueue))
+}
+
+func TestReceivedIsOnlyCashBasis(t *testing.T) {
+	st := NewMemoryStore()
+	seq := DiagnosticoSequence(offerOrg, "lead-rx-cash", false)
+	ingestSeq(st, seq[:8])
+	last := IngestEvent(st, seq[8]) // payment_received
+	pay := last.Chain.Commercial.Payment
+	if pay.ReceivedCents != 800000 {
+		t.Fatalf("received=%d want 800000", pay.ReceivedCents)
+	}
+	if pay.MRRCents != 0 {
+		t.Fatalf("diagnostico invented MRR=%d", pay.MRRCents)
+	}
+	if pay.CanonicalStatus != PaymentStatusReceived {
+		t.Fatalf("canonical=%s", pay.CanonicalStatus)
+	}
+	if !hasCode(last.Exceptions, ExceptionCounselReviewDue) {
+		t.Fatalf("counsel_review_due missing: %v", exceptionCodes(last.Exceptions))
+	}
+	if last.Held {
+		t.Fatal("counsel reminder held cash/onboarding")
+	}
+	fmt.Printf("RECEIVED_CASH received=%d mrr=%d counsel=%v held=%v\n",
+		pay.ReceivedCents, pay.MRRCents, hasCode(last.Exceptions, ExceptionCounselReviewDue), last.Held)
+}
+
+func TestCheckoutAndCreatedNotPaymentOrRevenue(t *testing.T) {
+	st := NewMemoryStore()
+	seq := DiagnosticoSequence(offerOrg, "lead-chk-created", false)
+	chk := ingestSeq(st, seq[:6]) // through checkout_created
+	if chk.Chain.Commercial.Payment.ReceivedCents != 0 || chk.Chain.Commercial.Payment.ReceivedCount != 0 {
+		t.Fatalf("checkout counted as cash: %+v", chk.Chain.Commercial.Payment)
+	}
+	if chk.Chain.Commercial.Payment.CanonicalStatus == PaymentStatusConfirmed || chk.Chain.Commercial.Payment.CanonicalStatus == PaymentStatusReceived {
+		t.Fatalf("checkout promoted to %s", chk.Chain.Commercial.Payment.CanonicalStatus)
+	}
+	created := IngestEvent(st, seq[6]) // payment_created
+	if created.Chain.Commercial.Payment.ReceivedCents != 0 || created.Chain.Commercial.Payment.ReceivedCount != 0 {
+		t.Fatalf("payment_created counted as cash: %+v", created.Chain.Commercial.Payment)
+	}
+	if created.Chain.Commercial.Payment.CanonicalStatus != PaymentStatusCreated {
+		t.Fatalf("created status=%s", created.Chain.Commercial.Payment.CanonicalStatus)
+	}
+	view := Rollup([]Chain{created.Chain}, SyntheticMonth, true)
+	if view.Commercial.ReceivedCents != 0 {
+		t.Fatalf("rollup received=%d", view.Commercial.ReceivedCents)
+	}
+	fmt.Printf("CHECKOUT_CREATED_NOT_REVENUE checkout_status=%s created_status=%s received=%d\n",
+		chk.Chain.Commercial.Payment.CanonicalStatus, created.Chain.Commercial.Payment.CanonicalStatus,
+		created.Chain.Commercial.Payment.ReceivedCents)
+}
+
+func TestPaymentDoesNotAutoOnboardOrWon(t *testing.T) {
+	st := NewMemoryStore()
+	seq := DiagnosticoSequence(offerOrg, "lead-no-auto", false)
+	conf := ingestSeq(st, seq[:8])
+	if conf.Chain.Commercial.Delivery.OnboardingStartedAt != nil {
+		t.Fatal("onboarding started on payment_confirmed")
+	}
+	if isWonType(conf.Chain.OutcomeType) {
+		t.Fatalf("confirmed inferred WON: %s", conf.Chain.OutcomeType)
+	}
+	rx := IngestEvent(st, seq[8])
+	if rx.Chain.Commercial.Delivery.OnboardingStartedAt != nil {
+		t.Fatal("onboarding started on payment_received")
+	}
+	if isWonType(rx.Chain.OutcomeType) {
+		t.Fatalf("received inferred WON: %s", rx.Chain.OutcomeType)
+	}
+	onb := diagEnv(offerOrg, "lead-no-auto", "ev-no-auto-onb", EventOnboardingStarted, time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC))
+	onb.Offer, _ = FrozenOffer(OfferDiagnostico)
+	onb.Capacity = rx.Chain.Commercial.Capacity
+	onb.Provider.CheckoutID = rx.Chain.Commercial.Provider.CheckoutID
+	ok := IngestEvent(st, onb)
+	if ok.Held || ok.Chain.Commercial.Delivery.OnboardingStartedAt == nil {
+		t.Fatalf("explicit onboarding failed held=%v", ok.Held)
+	}
+	if isWonType(ok.Chain.OutcomeType) {
+		t.Fatalf("onboarding inferred WON: %s", ok.Chain.OutcomeType)
+	}
+	fmt.Printf("NO_AUTO_ONBOARD_WON confirmed_onb=%v received_onb=%v explicit=%v outcome=%s\n",
+		conf.Chain.Commercial.Delivery.OnboardingStartedAt != nil,
+		rx.Chain.Commercial.Delivery.OnboardingStartedAt != nil,
+		ok.Chain.Commercial.Delivery.OnboardingStartedAt != nil, ok.Chain.OutcomeType)
+}
+
+func TestChargebackOpensExceptionNotClose(t *testing.T) {
+	st := NewMemoryStore()
+	seq := DiagnosticoSequence(offerOrg, "lead-cbk", false)
+	ingestSeq(st, seq)
+	cb := diagEnv(offerOrg, "lead-cbk", "ev-cbk", "CHARGEBACK", time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC))
+	cb.RawProviderStatus = "CHARGEBACK"
+	cb.RawEventType = "CHARGEBACK"
+	cb.Provider.CheckoutID = "chk-lead-cbk"
+	cb.ProviderEventID = "asaas-cbk-1"
+	cb.Payment.RefundedCents = 800000
+	res := IngestEvent(st, cb)
+	if !hasCode(res.Exceptions, ExceptionChargeback) {
+		t.Fatalf("CHARGEBACK did not open payment_chargeback: %v", exceptionCodes(res.Exceptions))
+	}
+	if hasCode(res.Exceptions, ExceptionPaymentRefund) && !hasCode(res.Exceptions, ExceptionChargeback) {
+		t.Fatal("CHARGEBACK remapped only to refund")
+	}
+	if isWonType(res.Chain.OutcomeType) || isLostType(res.Chain.OutcomeType) {
+		t.Fatalf("CHARGEBACK auto-closed as %s", res.Chain.OutcomeType)
+	}
+	if res.Chain.OutcomeType == OutcomeWon || res.Chain.OutcomeType == OutcomeLost {
+		t.Fatalf("CHARGEBACK stored close %s", res.Chain.OutcomeType)
+	}
+	fmt.Printf("CHARGEBACK_EXCEPTION codes=%v outcome=%s status=%s\n",
+		exceptionCodes(res.Exceptions), res.Chain.OutcomeType, res.Chain.Commercial.Payment.CanonicalStatus)
+}
+
+func TestMigration104CounselAndNfseCodes(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "infrastructure", "db", "migrations", "000104_outreach_intel_legal_risk_acceptance.up.sql")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw)
+	for _, code := range []string{ExceptionCounselReviewDue, ExceptionNfseManualQueue, ExceptionChargeback} {
+		if !strings.Contains(body, "'"+code+"'") {
+			t.Fatalf("000104 missing %s", code)
+		}
+	}
+	fmt.Printf("MIGRATION_104 up_bytes=%d\n", len(raw))
+}
+
 func exceptionCodes(xs []Exception) []string {
 	out := make([]string, 0, len(xs))
 	for _, x := range xs {

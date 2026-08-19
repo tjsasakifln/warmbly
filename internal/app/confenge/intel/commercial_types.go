@@ -109,6 +109,8 @@ const (
 	ExceptionPaymentOverdue       = "payment_overdue"
 	ExceptionPaymentRefund        = "payment_refund"
 	ExceptionChargeback           = "payment_chargeback"
+	ExceptionCounselReviewDue     = "counsel_review_due"
+	ExceptionNfseManualQueue      = "nfse_manual_queue"
 	ExceptionSubscriptionEnded    = "subscription_ended"
 	ExceptionUnknownProviderEvent = "unknown_provider_event"
 	ExceptionInvalidSecret        = "invalid_secret"
