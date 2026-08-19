@@ -519,6 +519,22 @@ func TestMigration105AddsOperatorAlertsAndAlertStoreFailed(t *testing.T) {
 	}
 }
 
+func TestRequireAlertActorRejectsNilUUIDString(t *testing.T) {
+	if xerr := requireAlertActor(uuid.Nil, ""); xerr == nil {
+		t.Fatal("empty actor must fail")
+	}
+	if xerr := requireAlertActor(uuid.Nil, uuid.Nil.String()); xerr == nil {
+		t.Fatal("nil uuid string must fail")
+	}
+	actor := uuid.MustParse("11111111-2222-4333-8444-555555555555")
+	if xerr := requireAlertActor(actor, ""); xerr != nil {
+		t.Fatal(xerr)
+	}
+	if xerr := requireAlertActor(uuid.Nil, actor.String()); xerr != nil {
+		t.Fatal(xerr)
+	}
+}
+
 func TestOperatorAlertEventsDoNotOpenPipeline(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{"ok": true})
 	_ = raw
