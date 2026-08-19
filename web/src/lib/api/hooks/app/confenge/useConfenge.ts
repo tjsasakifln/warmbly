@@ -28,6 +28,8 @@ import {
     getConfengeToday,
     recordConfengeActionOutcome,
     recordConfengeInboundOutcome,
+    acknowledgeConfengeInboundAlert,
+    resolveConfengeInboundNoAction,
     startConfengeAction,
     getConfengeWorkingOverview,
     listConfengeAccountTouchpoints,
@@ -238,6 +240,31 @@ export function useRecordConfengeInboundOutcome() {
             toast.success("Outcome inbound registrado");
         },
         onError: (error) => toast.error(confengeError(error, "Nao foi possivel registrar o outcome inbound")),
+    });
+}
+
+export function useAcknowledgeConfengeInboundAlert() {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: (leadId: string) => acknowledgeConfengeInboundAlert(leadId),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: [...KEY, "cockpit"] });
+            toast.success("Lead reconhecido. Sem contato automático.");
+        },
+        onError: (error) => toast.error(confengeError(error, "Nao foi possivel reconhecer o lead")),
+    });
+}
+
+export function useResolveConfengeInboundNoAction() {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({ leadId, reason }: { leadId: string; reason: string }) =>
+            resolveConfengeInboundNoAction(leadId, reason),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: [...KEY, "cockpit"] });
+            toast.success("Resolvido sem ação. Motivo registrado.");
+        },
+        onError: (error) => toast.error(confengeError(error, "Nao foi possivel resolver sem ação")),
     });
 }
 

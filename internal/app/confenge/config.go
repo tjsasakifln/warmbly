@@ -48,15 +48,18 @@ const (
 	// GREEN autorun under campaign policy authorization (fail-closed default).
 	EnvGreenAutorun = "CONFENGE_GREEN_AUTORUN_ENABLED"
 	// Adaptive rate (single capacity authority with dispatch governor).
-	EnvRateMode          = "CONFENGE_RATE_MODE"
-	EnvRateStartPerHour  = "CONFENGE_RATE_START_PER_HOUR"
-	EnvRateMaxPerHour    = "CONFENGE_RATE_MAX_PER_HOUR"
-	EnvAllowEnrollMint   = "CONFENGE_ALLOW_ENROLL_MINT" // dev/Mailpit only; ignored in production
-	EnvOperatorMode      = "CONFENGE_OPERATOR_MODE"
-	EnvOperatorUserID    = "CONFENGE_OPERATOR_USER_ID"
-	EnvOperatorOrgID     = "CONFENGE_OPERATOR_ORG_ID"
-	EnvInboundWebhookSec = "CONFENGE_INBOUND_WEBHOOK_SECRET"
-	EnvInboundOrgID      = "CONFENGE_INBOUND_ORG_ID"
+	EnvRateMode                     = "CONFENGE_RATE_MODE"
+	EnvRateStartPerHour             = "CONFENGE_RATE_START_PER_HOUR"
+	EnvRateMaxPerHour               = "CONFENGE_RATE_MAX_PER_HOUR"
+	EnvAllowEnrollMint              = "CONFENGE_ALLOW_ENROLL_MINT" // dev/Mailpit only; ignored in production
+	EnvOperatorMode                 = "CONFENGE_OPERATOR_MODE"
+	EnvOperatorUserID               = "CONFENGE_OPERATOR_USER_ID"
+	EnvOperatorOrgID                = "CONFENGE_OPERATOR_ORG_ID"
+	EnvInboundWebhookSec            = "CONFENGE_INBOUND_WEBHOOK_SECRET"
+	EnvInboundOrgID                 = "CONFENGE_INBOUND_ORG_ID"
+	EnvOperatorAlertEmail           = "CONFENGE_OPERATOR_ALERT_EMAIL"
+	EnvOperatorAlertEmailEnabled    = "CONFENGE_OPERATOR_ALERT_EMAIL_ENABLED"
+	EnvOperatorAlertEmailKillSwitch = "CONFENGE_OPERATOR_ALERT_EMAIL_KILL_SWITCH"
 )
 
 // Defaults for conservative cold outreach.
@@ -119,6 +122,11 @@ type Config struct {
 	// InboundWebhookSecret authenticates POST /api/v1/webhooks/confenge/inbound.
 	InboundWebhookSecret string
 	InboundOrgID         uuid.UUID
+	// OperatorAlertEmail is the single allowlisted internal recipient.
+	// Default-off. Never derived from the lead. Isolated from campaign SMTP.
+	OperatorAlertEmail           string
+	OperatorAlertEmailEnabled    bool
+	OperatorAlertEmailKillSwitch bool
 }
 
 // SendWindowHours returns whole hours in [start, end) for HH:MM window strings.
@@ -160,37 +168,40 @@ func parseHHMM(s string) (h, m int, ok bool) {
 // LoadConfig reads CONFENGE_* env vars. Safe defaults keep the feature off.
 func LoadConfig() Config {
 	cfg := Config{
-		Enabled:                envBool(EnvEnabled, false),
-		AutoSendEnabled:        envBool(EnvAutoSend, false),
-		FeedURL:                strings.TrimSpace(os.Getenv(EnvFeedURL)),
-		FeedToken:              strings.TrimSpace(os.Getenv(EnvFeedToken)),
-		AllowedHosts:           splitHosts(os.Getenv(EnvAllowedHosts)),
-		OutcomeWebhookURL:      strings.TrimSpace(os.Getenv(EnvOutcomeWebhookURL)),
-		OutcomeWebhookSecret:   strings.TrimSpace(os.Getenv(EnvOutcomeWebhookSec)),
-		DefaultDailyLimit:      envInt(EnvDefaultDailyLimit, DefaultCampaignDailyLimit),
-		MaxInitialEmailWords:   envInt(EnvMaxInitialWords, DefaultMaxInitialWords),
-		RequireHumanApproval:   envBool(EnvRequireHuman, true),
-		MaxFeedPayloadBytes:    int64(envInt(EnvMaxPayloadBytes, DefaultMaxPayloadBytes)),
-		WhatsAppEnabled:        envBool(EnvWhatsAppEnabled, false),
-		CrossChannelHours:      envInt(EnvCrossChannelHours, DefaultCrossChannelHours),
-		MaxWhatsAppWords:       envInt(EnvWhatsAppMaxWords, DefaultMaxWhatsAppWords),
-		SendingPaused:          envBool(EnvSendingPaused, false),
-		DynamicPriorityEnabled: envBool(EnvDynamicPriority, false),
-		FeedSyncEnabled:        envBool(EnvFeedSyncEnabled, false),
-		FeedSyncInterval:       envDuration(EnvFeedSyncInterval, 15*time.Minute),
-		FeedMaxAge:             envDuration(EnvFeedMaxAge, 24*time.Hour),
-		ManifestURL:            strings.TrimSpace(os.Getenv(EnvManifestURL)),
-		GreenAutorunEnabled:    envBool(EnvGreenAutorun, false),
-		RateMode:               strings.ToLower(strings.TrimSpace(os.Getenv(EnvRateMode))),
-		RateStartPerHour:       envInt(EnvRateStartPerHour, 10),
-		RateMaxPerHour:         envInt(EnvRateMaxPerHour, 20),
-		AllowEnrollMint:        envBool(EnvAllowEnrollMint, false),
-		AppEnv:                 strings.TrimSpace(os.Getenv("APP_ENV")),
-		OperatorMode:           envBool(EnvOperatorMode, false),
-		OperatorUserID:         parseUUIDEnv(EnvOperatorUserID),
-		OperatorOrgID:          parseUUIDEnv(EnvOperatorOrgID),
-		InboundWebhookSecret:   strings.TrimSpace(os.Getenv(EnvInboundWebhookSec)),
-		InboundOrgID:           parseUUIDEnv(EnvInboundOrgID),
+		Enabled:                      envBool(EnvEnabled, false),
+		AutoSendEnabled:              envBool(EnvAutoSend, false),
+		FeedURL:                      strings.TrimSpace(os.Getenv(EnvFeedURL)),
+		FeedToken:                    strings.TrimSpace(os.Getenv(EnvFeedToken)),
+		AllowedHosts:                 splitHosts(os.Getenv(EnvAllowedHosts)),
+		OutcomeWebhookURL:            strings.TrimSpace(os.Getenv(EnvOutcomeWebhookURL)),
+		OutcomeWebhookSecret:         strings.TrimSpace(os.Getenv(EnvOutcomeWebhookSec)),
+		DefaultDailyLimit:            envInt(EnvDefaultDailyLimit, DefaultCampaignDailyLimit),
+		MaxInitialEmailWords:         envInt(EnvMaxInitialWords, DefaultMaxInitialWords),
+		RequireHumanApproval:         envBool(EnvRequireHuman, true),
+		MaxFeedPayloadBytes:          int64(envInt(EnvMaxPayloadBytes, DefaultMaxPayloadBytes)),
+		WhatsAppEnabled:              envBool(EnvWhatsAppEnabled, false),
+		CrossChannelHours:            envInt(EnvCrossChannelHours, DefaultCrossChannelHours),
+		MaxWhatsAppWords:             envInt(EnvWhatsAppMaxWords, DefaultMaxWhatsAppWords),
+		SendingPaused:                envBool(EnvSendingPaused, false),
+		DynamicPriorityEnabled:       envBool(EnvDynamicPriority, false),
+		FeedSyncEnabled:              envBool(EnvFeedSyncEnabled, false),
+		FeedSyncInterval:             envDuration(EnvFeedSyncInterval, 15*time.Minute),
+		FeedMaxAge:                   envDuration(EnvFeedMaxAge, 24*time.Hour),
+		ManifestURL:                  strings.TrimSpace(os.Getenv(EnvManifestURL)),
+		GreenAutorunEnabled:          envBool(EnvGreenAutorun, false),
+		RateMode:                     strings.ToLower(strings.TrimSpace(os.Getenv(EnvRateMode))),
+		RateStartPerHour:             envInt(EnvRateStartPerHour, 10),
+		RateMaxPerHour:               envInt(EnvRateMaxPerHour, 20),
+		AllowEnrollMint:              envBool(EnvAllowEnrollMint, false),
+		AppEnv:                       strings.TrimSpace(os.Getenv("APP_ENV")),
+		OperatorMode:                 envBool(EnvOperatorMode, false),
+		OperatorUserID:               parseUUIDEnv(EnvOperatorUserID),
+		OperatorOrgID:                parseUUIDEnv(EnvOperatorOrgID),
+		InboundWebhookSecret:         strings.TrimSpace(os.Getenv(EnvInboundWebhookSec)),
+		InboundOrgID:                 parseUUIDEnv(EnvInboundOrgID),
+		OperatorAlertEmail:           strings.TrimSpace(os.Getenv(EnvOperatorAlertEmail)),
+		OperatorAlertEmailEnabled:    envBool(EnvOperatorAlertEmailEnabled, false),
+		OperatorAlertEmailKillSwitch: envBool(EnvOperatorAlertEmailKillSwitch, true),
 	}
 	if cfg.InboundOrgID == uuid.Nil {
 		cfg.InboundOrgID = cfg.OperatorOrgID

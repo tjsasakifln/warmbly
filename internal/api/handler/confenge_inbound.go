@@ -90,7 +90,8 @@ func (h *Handler) ListConfengeInboundNow(c *gin.Context) {
 	if !ok {
 		return
 	}
-	items, xerr := h.ConfengeService.CollectInboundNow(c.Request.Context(), orgID)
+	includeSynthetic := c.Query("include_synthetic") == "1"
+	items, xerr := h.ConfengeService.CollectInboundNowFiltered(c.Request.Context(), orgID, includeSynthetic)
 	if xerr != nil {
 		errx.JSON(c, xerr)
 		return
@@ -133,6 +134,55 @@ func (h *Handler) RecordConfengeInboundOutcome(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": res})
+}
+
+// AcknowledgeConfengeInboundAlert — POST /confenge/inbound/:leadId/acknowledge
+func (h *Handler) AcknowledgeConfengeInboundAlert(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	leadID := strings.TrimSpace(c.Param("leadId"))
+	if leadID == "" {
+		errx.JSON(c, errx.New(errx.BadRequest, "lead_id is required"))
+		return
+	}
+	userID, _ := c.Get("user_id")
+	uid, _ := userID.(uuid.UUID)
+	alert, xerr := h.ConfengeService.AcknowledgeInboundAlert(c.Request.Context(), orgID, uid, leadID, time.Now().UTC())
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": alert})
+}
+
+// ResolveConfengeInboundNoAction — POST /confenge/inbound/:leadId/resolve
+func (h *Handler) ResolveConfengeInboundNoAction(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	leadID := strings.TrimSpace(c.Param("leadId"))
+	if leadID == "" {
+		errx.JSON(c, errx.New(errx.BadRequest, "lead_id is required"))
+		return
+	}
+	userID, _ := c.Get("user_id")
+	uid, _ := userID.(uuid.UUID)
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		errx.JSON(c, errx.New(errx.BadRequest, "invalid body"))
+		return
+	}
+	alert, xerr := h.ConfengeService.ResolveInboundNoAction(c.Request.Context(), orgID, uid, leadID, body.Reason, time.Now().UTC())
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": alert})
 }
 
 func firstNonEmptyHeader(c *gin.Context, names ...string) string {

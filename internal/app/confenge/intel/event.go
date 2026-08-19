@@ -51,7 +51,9 @@ func knownEventType(t string) bool {
 		EventPipelineCreated, EventPipelineUpdated,
 		EventWon, EventLost, EventUnknownState, EventRevenueEvidenced,
 		EventLearningCandidate, EventXRayCompleted, EventPageView,
-		EventCitation, EventCorrection:
+		EventCitation, EventCorrection,
+		EventOperatorAlertCreated, EventOperatorAlertEmitted, EventOperatorAlertFailed,
+		EventOperatorAlertAcknowledged, EventFirstHumanActionRecorded, EventInboundResolvedNoAction:
 		return true
 	default:
 		return isCommercialEvent(c)
@@ -143,7 +145,7 @@ func EventToFacts(ev CommercialEvent) ObservedFacts {
 		in.OutcomeType = OutcomeUnknown
 	case EventHandoffException:
 		in.OutcomeType = OutcomeUnknown
-	case EventActionApproved, EventActionExecuted:
+	case EventActionApproved, EventActionExecuted, EventFirstHumanActionRecorded:
 		t := occurred
 		in.FirstActionAt = &t
 	case EventReply:
@@ -228,7 +230,7 @@ func leadStamp(typ string, occurred time.Time) time.Time {
 
 func actionStamp(typ string, occurred time.Time) time.Time {
 	switch typ {
-	case EventActionApproved, EventActionExecuted:
+	case EventActionApproved, EventActionExecuted, EventFirstHumanActionRecorded:
 		return occurred
 	default:
 		return time.Time{}
@@ -597,7 +599,9 @@ func hasFinancialType(t string) bool {
 
 func isNonLeadEvent(typ string) bool {
 	switch strings.ToLower(strings.TrimSpace(typ)) {
-	case EventXRayCompleted, EventPageView, EventCitation:
+	case EventXRayCompleted, EventPageView, EventCitation,
+		EventOperatorAlertCreated, EventOperatorAlertEmitted, EventOperatorAlertFailed,
+		EventOperatorAlertAcknowledged, EventFirstHumanActionRecorded, EventInboundResolvedNoAction:
 		return true
 	default:
 		return false

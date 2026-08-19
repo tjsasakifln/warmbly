@@ -16,6 +16,11 @@ describe("rótulos da Central comercial CONFENGE", () => {
     expect(reasonLabel("generic_mailbox")).toContain("genérica");
     expect(reasonLabel("missing_contract_event")).toContain("evento contratual");
     expect(stateLabel("DO_NOT_CONTACT")).toBe("Não contatar");
+    expect(stateLabel("NEW")).toBe("Novo");
+    expect(stateLabel("ATTENTION")).toBe("Atenção");
+    expect(stateLabel("AGED")).toBe("Envelhecido");
+    expect(stateLabel("ACKNOWLEDGED")).toBe("Reconhecido");
+    expect(stateLabel("ALERT_FAILED")).toBe("Alerta falhou");
     expect(channelLabel("EMAIL")).toBe("E-mail");
     expect(intentLabel("POSITIVE_INTEREST")).toBe("Interesse positivo");
     expect(purposeLabel("FOLLOW_UP")).toBe("Acompanhamento");

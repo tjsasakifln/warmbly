@@ -75,7 +75,10 @@ type Service interface {
 	ProcessInboundHandoff(ctx context.Context, orgID uuid.UUID, in InboundHandoff) (*HandoffResult, *errx.Error)
 	IngestInboundLead(ctx context.Context, orgID uuid.UUID, raw []byte, opts IngestOptions) (*InboundIngestResult, *errx.Error)
 	CollectInboundNow(ctx context.Context, orgID uuid.UUID) ([]InboundNowItem, *errx.Error)
+	CollectInboundNowFiltered(ctx context.Context, orgID uuid.UUID, includeSynthetic bool) ([]InboundNowItem, *errx.Error)
 	RecordInboundOutcome(ctx context.Context, orgID, userID uuid.UUID, leadID string, req OutcomeRequest) (*OutcomeApply, *errx.Error)
+	AcknowledgeInboundAlert(ctx context.Context, orgID, userID uuid.UUID, leadID string, now time.Time) (*OperatorAlert, *errx.Error)
+	ResolveInboundNoAction(ctx context.Context, orgID, userID uuid.UUID, leadID, reason string, now time.Time) (*OperatorAlert, *errx.Error)
 	ListAttention(ctx context.Context, orgID uuid.UUID, filter string, limit int) ([]AttentionItem, *errx.Error)
 	GetAttention(ctx context.Context, orgID, accountID uuid.UUID) (*AttentionItem, *errx.Error)
 	GenerateReplyDraft(ctx context.Context, orgID, userID, accountID uuid.UUID, contactID *uuid.UUID) (*models.OutreachDraft, *errx.Error)
@@ -148,19 +151,20 @@ type ApprovalOptions struct {
 }
 
 type service struct {
-	cfg         Config
-	repo        repository.OutreachRepository
-	audit       AuditLogger
-	fetch       *FeedFetcher
-	ai          generation.Provider
-	campaigns   CampaignAPI
-	contacts    ContactAPI
-	crm         CRMAPI
-	wa          WhatsAppSender
-	waStore     WhatsAppStateStore
-	governor    *dispatch.Governor
-	policyStore repository.ConfengePolicyRepository
-	intel       intel.Store
+	cfg          Config
+	repo         repository.OutreachRepository
+	audit        AuditLogger
+	fetch        *FeedFetcher
+	ai           generation.Provider
+	campaigns    CampaignAPI
+	contacts     ContactAPI
+	crm          CRMAPI
+	wa           WhatsAppSender
+	waStore      WhatsAppStateStore
+	governor     *dispatch.Governor
+	policyStore  repository.ConfengePolicyRepository
+	intel        intel.Store
+	operatorMail func(to, subject, body string) error
 }
 
 // NewService wires confenge outreach. When cfg.Enabled is false, mutators return 404-style disabled errors.
