@@ -152,6 +152,29 @@ func ApplyCommercialTransition(existing *Chain, ev CommercialEvent) TransitionRe
 		if recurringActive(st) {
 			st.Payment.MRRCents = st.Offer.AmountCents
 		}
+		// Manual NFS-e queue only. Do not auto-issue and do not change price.
+		st.Payment.FinanceReviewReq = true
+		if st.Gates.Finance == "" {
+			st.Gates.Finance = ReviewRequired
+		}
+		res.Exceptions = append(res.Exceptions, Exception{
+			OrganizationID: strings.TrimSpace(ev.OrganizationID),
+			Code:           ExceptionNfseManualQueue,
+			CodeVersion:    ExceptionCodeVersion,
+			Reason:         "manual NFS-e queue; do not auto-issue or change price",
+			NextAction:     "human finance issues NFS-e; do not mutate amount_cents",
+			Identity:       ChainIdentity(facts.Keys),
+			MetricKey:      MetricKey(facts.Keys),
+			LeadID:         facts.Keys.LeadID,
+			ReceiptID:      facts.Keys.ReceiptID,
+			Held:           true,
+			Synthetic:      ev.Synthetic,
+			Owner:          OwnerFinance,
+			EvidenceRefs:   evidenceRefs(ev),
+			OpenedAt:       now,
+			At:             now,
+			RetryState:     "pending",
+		})
 	case EventPaymentReceived:
 		if blocked, why := paymentFinancialGate(existing, ev, st); blocked {
 			add(ExceptionOutOfOrder, why, "hold; do not apply received revenue", true)
@@ -184,6 +207,10 @@ func ApplyCommercialTransition(existing *Chain, ev CommercialEvent) TransitionRe
 		}
 		st.Payment.ReceivedCents += inc
 		st.Payment.ReceivedCount++
+		if st.Payment.ReceivedCount == 1 && st.Offer.OfferID == OfferDiagnostico {
+			// Reminder only. Not a kill switch; cash and onboarding stay open.
+			add(ExceptionCounselReviewDue, "counsel review due within 10 business days of first payment_received", "hire/review counsel; do not block cash or onboarding", false)
+		}
 		if st.Offer.TotalCommitmentCents > 0 {
 			st.Payment.ContractedCents = st.Offer.TotalCommitmentCents
 		}
@@ -210,7 +237,11 @@ func ApplyCommercialTransition(existing *Chain, ev CommercialEvent) TransitionRe
 			ref = ev.Offer.AmountCents
 		}
 		st.Payment.RefundedCents += ref
-		add(ExceptionPaymentRefund, "payment refunded", "finance review; do not infer WON", false)
+		if isChargebackEvent(ev) {
+			add(ExceptionChargeback, "payment chargeback", "finance review; do not infer WON or LOST; do not auto-mutate the provider", false)
+		} else {
+			add(ExceptionPaymentRefund, "payment refunded", "finance review; do not infer WON", false)
+		}
 	case EventPaymentFailed:
 		st.Payment.CanonicalStatus = PaymentStatusFailed
 	case EventSubscriptionEnded, EventSubscriptionCanceled:
@@ -720,6 +751,11 @@ func paymentConfirmed(p PaymentState) bool {
 	return s == PaymentStatusConfirmed || s == PaymentStatusReceived
 }
 
+func isChargebackEvent(ev CommercialEvent) bool {
+	blob := strings.ToUpper(strings.TrimSpace(ev.RawEventType + " " + ev.RawProviderStatus + " " + ev.Type))
+	return strings.Contains(blob, "CHARGEBACK")
+}
+
 func capacityAllowsCheckout(c CapacitySnapshot, now time.Time) bool {
 	if strings.EqualFold(c.State, CapacityStateOK) || strings.EqualFold(c.State, CapacityStateFinal) {
 		return true
@@ -904,6 +940,8 @@ func NormalizeEventType(t string) (canonical, raw string, unknown bool) {
 	case "PAYMENT_OVERDUE":
 		return EventPaymentOverdue, raw, false
 	case "PAYMENT_REFUNDED":
+		return EventPaymentRefunded, raw, false
+	case "CHARGEBACK", "PAYMENT_CHARGEBACK":
 		return EventPaymentRefunded, raw, false
 	case "PAYMENT_FAILED":
 		return EventPaymentFailed, raw, false
