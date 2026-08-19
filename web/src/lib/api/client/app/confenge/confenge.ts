@@ -10,6 +10,7 @@ import type {
     ConfengeSummary,
     ConfengeTouchpoint,
     ConfengeCockpit,
+    ConfengeInboundNowItem,
     ConfengeToday,
     ConfengeWorkingQueueItem,
     ConfengeWorkingQueueSummary,
@@ -211,6 +212,36 @@ export async function recordConfengeInboundOutcome(
         authorization: true,
         data: payload,
     });
+}
+
+export async function acknowledgeConfengeInboundAlert(leadId: string): Promise<void> {
+    await Request({
+        method: "POST",
+        url: `/confenge/inbound/${leadId}/acknowledge`,
+        authorization: true,
+        data: {},
+        headers: { "Idempotency-Key": `inbound-ack-${leadId}` },
+    });
+}
+
+export async function resolveConfengeInboundNoAction(leadId: string, reason: string): Promise<void> {
+    await Request({
+        method: "POST",
+        url: `/confenge/inbound/${leadId}/resolve`,
+        authorization: true,
+        data: { reason },
+        headers: { "Idempotency-Key": `inbound-resolve-${leadId}-${reason}` },
+    });
+}
+
+export async function listConfengeInboundNow(includeSynthetic = false): Promise<ConfengeInboundNowItem[]> {
+    const qs = includeSynthetic ? "?include_synthetic=1" : "";
+    const res = await Request<{ data: ConfengeInboundNowItem[] }>({
+        method: "GET",
+        url: `/confenge/inbound${qs}`,
+        authorization: true,
+    });
+    return res.data ?? [];
 }
 
 export async function recordConfengeActionOutcome(

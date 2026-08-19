@@ -123,6 +123,7 @@ const (
 	AuditEntityOutreachCommercialAction AuditEntityType = "outreach_commercial_action"
 	AuditEntityOutreachInboundLead      AuditEntityType = "outreach_inbound_lead"
 	AuditEntityOutreachIntelException   AuditEntityType = "outreach_intel_exception"
+	AuditEntityOutreachOperatorAlert    AuditEntityType = "outreach_operator_alert"
 )
 
 // AuditActor is the minimal identity of the member who performed an action,

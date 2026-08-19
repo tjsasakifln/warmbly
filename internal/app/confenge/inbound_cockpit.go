@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,42 +18,53 @@ import (
 // InboundNowItem is one Monday-queue row. Work, not ornament.
 // Missing facts render as UNKNOWN. Email is not required.
 type InboundNowItem struct {
-	LeadID              string         `json:"lead_id"`
-	ReceiptID           string         `json:"receipt_id"`
-	Company             string         `json:"company"`
-	Person              string         `json:"person"`
-	Origin              string         `json:"origin"`
-	Asset               string         `json:"asset"`
-	Query               string         `json:"query"`
-	CTA                 string         `json:"cta"`
-	Trigger             string         `json:"trigger"`
-	Offer               string         `json:"offer"`
-	EntityID            string         `json:"entity_id"`
-	PersonID            string         `json:"person_id"`
-	CorrelationID       string         `json:"correlation_id"`
-	ContractContext     string         `json:"contract_context"`
-	WhyNow              string         `json:"why_now"`
-	RecommendedAction   string         `json:"recommended_action"`
-	Channel             string         `json:"channel"`
-	Reachability        string         `json:"reachability"`
-	Freshness           string         `json:"freshness"`
-	Confidence          string         `json:"confidence"`
-	Evidence            []string       `json:"evidence,omitempty"`
-	Owner               string         `json:"owner"`
-	LeadAgeSeconds      int64          `json:"lead_age_seconds"`
-	LeadAge             string         `json:"lead_age"`
-	Status              string         `json:"status"`
-	NextAction          string         `json:"next_action"`
-	ActionID            string         `json:"action_id,omitempty"`
-	AccountID           string         `json:"account_id,omitempty"`
-	EmailSendable       bool           `json:"email_sendable"`
-	Dispatchable        bool           `json:"dispatchable"`
-	EnrichmentStatus    string         `json:"enrichment_status"`
-	Warnings            []string       `json:"warnings,omitempty"`
-	SuggestedCopy       string         `json:"suggested_copy,omitempty"`
-	SuggestedCopyRoute  string         `json:"suggested_copy_route,omitempty"`
-	SuggestedCopyReview string         `json:"suggested_copy_review"`
-	Latency             InboundLatency `json:"latency"`
+	LeadID              string               `json:"lead_id"`
+	ReceiptID           string               `json:"receipt_id"`
+	Company             string               `json:"company"`
+	Person              string               `json:"person"`
+	Origin              string               `json:"origin"`
+	Asset               string               `json:"asset"`
+	Query               string               `json:"query"`
+	CTA                 string               `json:"cta"`
+	Trigger             string               `json:"trigger"`
+	Offer               string               `json:"offer"`
+	EntityID            string               `json:"entity_id"`
+	PersonID            string               `json:"person_id"`
+	CorrelationID       string               `json:"correlation_id"`
+	ContractContext     string               `json:"contract_context"`
+	WhyNow              string               `json:"why_now"`
+	RecommendedAction   string               `json:"recommended_action"`
+	Channel             string               `json:"channel"`
+	Reachability        string               `json:"reachability"`
+	Freshness           string               `json:"freshness"`
+	Confidence          string               `json:"confidence"`
+	Evidence            []string             `json:"evidence,omitempty"`
+	Owner               string               `json:"owner"`
+	LeadAgeSeconds      int64                `json:"lead_age_seconds"`
+	LeadAge             string               `json:"lead_age"`
+	Status              string               `json:"status"`
+	NextAction          string               `json:"next_action"`
+	ActionID            string               `json:"action_id,omitempty"`
+	AccountID           string               `json:"account_id,omitempty"`
+	EmailSendable       bool                 `json:"email_sendable"`
+	Dispatchable        bool                 `json:"dispatchable"`
+	EnrichmentStatus    string               `json:"enrichment_status"`
+	Warnings            []string             `json:"warnings,omitempty"`
+	SuggestedCopy       string               `json:"suggested_copy,omitempty"`
+	SuggestedCopyRoute  string               `json:"suggested_copy_route,omitempty"`
+	SuggestedCopyReview string               `json:"suggested_copy_review"`
+	Latency             InboundLatency       `json:"latency"`
+	AlertID             string               `json:"alert_id,omitempty"`
+	AlertState          string               `json:"alert_state,omitempty"`
+	AlertBand           string               `json:"alert_band,omitempty"`
+	Synthetic           bool                 `json:"synthetic,omitempty"`
+	AcknowledgedAt      string               `json:"acknowledged_at,omitempty"`
+	AcknowledgedBy      string               `json:"acknowledged_by,omitempty"`
+	ReceivedAgo         string               `json:"received_ago,omitempty"`
+	AlertFailureCode    string               `json:"alert_failure_code,omitempty"`
+	FirstActionType     string               `json:"first_action_type,omitempty"`
+	ResolutionReason    string               `json:"resolution_reason,omitempty"`
+	AlertLatency        OperatorAlertLatency `json:"alert_latency,omitempty"`
 }
 
 // InboundLatency is the commercial-latency baseline. No minute SLA.
@@ -67,8 +79,12 @@ type InboundLatency struct {
 	CloseAt               string `json:"close_at,omitempty"`
 }
 
-// CollectInboundNow projects the inbound work queue.
+// CollectInboundNow projects the inbound work queue. Default excludes synthetic.
 func (s *service) CollectInboundNow(ctx context.Context, orgID uuid.UUID) ([]InboundNowItem, *errx.Error) {
+	return s.CollectInboundNowFiltered(ctx, orgID, false)
+}
+
+func (s *service) CollectInboundNowFiltered(ctx context.Context, orgID uuid.UUID, includeSynthetic bool) ([]InboundNowItem, *errx.Error) {
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, xerr
 	}
@@ -81,9 +97,18 @@ func (s *service) CollectInboundNow(ctx context.Context, orgID uuid.UUID) ([]Inb
 		return nil, errx.New(errx.Internal, "list inbound leads: "+err.Error())
 	}
 	now := time.Now().UTC()
+	alerts := map[string]models.OutreachOperatorAlert{}
+	if ast := s.alertStore(); ast != nil {
+		if listed, lerr := ast.ListOperatorAlerts(ctx, orgID, true, 400); lerr == nil {
+			for i := range listed {
+				alerts[listed[i].LeadID] = listed[i]
+			}
+		}
+	}
 	out := make([]InboundNowItem, 0, len(leads))
 	for i := range leads {
-		if reason := InboundCommercialSkipReason(leads[i]); reason != "" {
+		skip := InboundCommercialSkipReason(leads[i])
+		if skip != "" && !includeSynthetic {
 			continue
 		}
 		var acc *models.OutreachAccount
@@ -103,9 +128,55 @@ func (s *service) CollectInboundNow(ctx context.Context, orgID uuid.UUID) ([]Inb
 				item.NextAction = action.NextActionType
 			}
 		}
+		if skip != "" {
+			item.Synthetic = true
+		}
+		if a, ok := alerts[leads[i].LeadID]; ok {
+			attachOperatorAlert(&item, leads[i], a, now)
+		}
 		out = append(out, item)
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		ri := operatorAlertUrgencyRank(firstNonEmpty(out[i].AlertBand, out[i].AlertState))
+		rj := operatorAlertUrgencyRank(firstNonEmpty(out[j].AlertBand, out[j].AlertState))
+		if ri != rj {
+			return ri < rj
+		}
+		return out[i].LeadAgeSeconds > out[j].LeadAgeSeconds
+	})
 	return out, nil
+}
+
+func attachOperatorAlert(item *InboundNowItem, lead models.OutreachInboundLead, a models.OutreachOperatorAlert, now time.Time) {
+	state := ProjectOperatorAlertState(a, now)
+	item.AlertID = a.ID.String()
+	item.AlertState = state
+	item.AlertBand = state
+	item.AcknowledgedAt = rfc3339Ptr(a.AcknowledgedAt)
+	item.AcknowledgedBy = a.AcknowledgedBy
+	item.AlertFailureCode = a.FailureCode
+	item.FirstActionType = a.FirstActionType
+	item.ResolutionReason = a.ResolutionReason
+	item.AlertLatency = MeasureOperatorAlertLatency(lead, a)
+	if item.Owner == inboundUnknown || item.Owner == "" {
+		item.Owner = firstNonEmpty(a.Owner, item.Owner)
+	}
+}
+
+func countUnacknowledgedReal(items []InboundNowItem) int {
+	n := 0
+	for i := range items {
+		if items[i].Synthetic {
+			continue
+		}
+		switch items[i].AlertState {
+		case AlertStateAcknowledged, AlertStateActionRecorded, AlertStateResolvedNoAction:
+			continue
+		default:
+			n++
+		}
+	}
+	return n
 }
 
 // ProjectInboundNowItem is the shipped projector used by tests and the cockpit.
@@ -163,6 +234,7 @@ func ProjectInboundNowItem(lead models.OutreachInboundLead, acc *models.Outreach
 		Warnings:            append([]string{}, lead.Warnings...),
 		SuggestedCopyReview: "human_review_required",
 		Latency:             projectInboundLatency(lead),
+		ReceivedAgo:         formatLeadAge(age),
 	}
 	if lead.ActionID != nil {
 		item.ActionID = lead.ActionID.String()
@@ -335,6 +407,9 @@ func (s *service) RecordInboundOutcome(ctx context.Context, orgID, userID uuid.U
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, xerr
 	}
+	if xerr := requireAlertActor(userID, req.Actor); xerr != nil {
+		return nil, xerr
+	}
 	st := s.inboundStore()
 	if st == nil {
 		return nil, errx.New(errx.Internal, "inbound lead store unavailable")
@@ -388,6 +463,7 @@ func (s *service) RecordInboundOutcome(ctx context.Context, orgID, userID uuid.U
 		s.enqueueInboundHumanOutcome(ctx, orgID, row, code)
 	}
 	s.emitInboundLearning(ctx, orgID, row, code)
+	s.stampAlertFirstAction(ctx, orgID, userID, row, code, req.Now)
 	return &applied, nil
 }
 

@@ -239,6 +239,16 @@ export type ConfengeInboundNowItem = {
     suggested_copy_route?: string;
     suggested_copy_review?: string;
     latency: ConfengeInboundLatency;
+    alert_id?: string;
+    alert_state?: string;
+    alert_band?: string;
+    synthetic?: boolean;
+    acknowledged_at?: string;
+    acknowledged_by?: string;
+    received_ago?: string;
+    alert_failure_code?: string;
+    first_action_type?: string;
+    resolution_reason?: string;
 };
 
 export type ConfengeExecutiveFamily = {
@@ -445,6 +455,7 @@ export type ConfengeCockpit = {
     today?: ConfengeToday;
     metrics?: ConfengeActionMetrics;
     inbound_now?: ConfengeInboundNowItem[];
+    unacknowledged_real?: number;
 };
 
 export type ConfengeAccount = {

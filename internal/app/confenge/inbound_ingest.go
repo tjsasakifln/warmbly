@@ -71,6 +71,7 @@ func (s *service) IngestInboundLead(ctx context.Context, orgID uuid.UUID, raw []
 					res.Action = a
 				}
 			}
+			s.ensureOperatorAlert(ctx, orgID, existing, now)
 			return res, nil
 		}
 		// Persist landed, later step 5xx'd. Same lead_id retry completes the row.
@@ -91,6 +92,7 @@ func (s *service) IngestInboundLead(ctx context.Context, orgID uuid.UUID, raw []
 		res.EnrichmentStatus = row.EnrichmentStatus
 		res.NextAction = row.NextAction
 		s.enqueueInboundImported(ctx, orgID, row)
+		s.ensureOperatorAlert(ctx, orgID, row, now)
 		return res, nil
 	}
 
@@ -117,6 +119,7 @@ func (s *service) IngestInboundLead(ctx context.Context, orgID uuid.UUID, raw []
 			}
 		}
 		s.enqueueInboundImported(ctx, orgID, row)
+		s.ensureOperatorAlert(ctx, orgID, row, now)
 		return res, nil
 	}
 
@@ -148,6 +151,7 @@ func (s *service) IngestInboundLead(ctx context.Context, orgID uuid.UUID, raw []
 	res.EnrichmentStatus = row.EnrichmentStatus
 	res.NextAction = row.NextAction
 	s.enqueueInboundImported(ctx, orgID, row)
+	s.ensureOperatorAlert(ctx, orgID, row, now)
 	if s.audit != nil {
 		eid := row.ID
 		s.audit.LogAction(ctx, orgID, uuid.Nil, models.AuditActionCreate, models.AuditEntityOutreachInboundLead, &eid, "", "",

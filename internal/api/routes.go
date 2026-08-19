@@ -588,6 +588,8 @@ func Run(
 					confengeWrite.POST("/actions/:id/start", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.StartConfengeCommercialAction)
 					confengeWrite.POST("/actions/:id/outcome", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.RecordConfengeCommercialOutcome)
 					confengeWrite.POST("/inbound/:leadId/outcome", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.RecordConfengeInboundOutcome)
+					confengeWrite.POST("/inbound/:leadId/acknowledge", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.AcknowledgeConfengeInboundAlert)
+					confengeWrite.POST("/inbound/:leadId/resolve", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ResolveConfengeInboundNoAction)
 					confengeWrite.POST("/intel/learning", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.RecordConfengeIntelLearning)
 					confengeWrite.POST("/intel/human-outcomes", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.RecordConfengeHumanOutcome)
 					confengeWrite.POST("/intel/events", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.IngestConfengeIntelEvent)

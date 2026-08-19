@@ -37,6 +37,8 @@ import {
   useResolveConfengeIntelException,
   useRecordConfengeActionOutcome,
   useRecordConfengeInboundOutcome,
+  useAcknowledgeConfengeInboundAlert,
+  useResolveConfengeInboundNoAction,
   useConfengeWorkingOverview,
   useConfengeWorkingQueue,
   useDncConfengeAccount,
@@ -66,6 +68,7 @@ import type {
 } from "@/lib/api/models/app/confenge/Confenge";
 import type { AppError } from "@/lib/api/client/normalizeError";
 import { channelLabel, formatFeedAge, formatPtBrDate, intentLabel, purposeLabel, reasonLabel, stateLabel } from "./labels";
+import { formatReceivedAgoSaoPaulo, formatSaoPauloClock, notifyOperatorAlert, shouldNotifyOperatorAlert } from "./operatorNotify";
 import { buildPilotGate, type PilotGate } from "./pilotGate";
 import { isAuthorizeReady } from "./reviewReady";
 
@@ -88,6 +91,11 @@ export default function ConfengePage() {
   const manualAction = useApplyConfengeManualAction();
   const recordOutcome = useRecordConfengeActionOutcome();
   const recordInbound = useRecordConfengeInboundOutcome();
+  const acknowledgeInbound = useAcknowledgeConfengeInboundAlert();
+  const resolveInbound = useResolveConfengeInboundNoAction();
+  const [showSyntheticInbound, setShowSyntheticInbound] = useState(false);
+  const [lastInboundNotifyCount, setLastInboundNotifyCount] = useState(-1);
+  const [inboundNotifyFallback, setInboundNotifyFallback] = useState(false);
   const agoraQueue = useConfengeWorkingQueue("agora", enabled);
   const needsContactQueue = useConfengeWorkingQueue("needs_contact", enabled);
   const ready = useConfengeAccounts("READY_TO_GENERATE", enabled);
@@ -149,6 +157,43 @@ export default function ConfengePage() {
       setSelectedId(list[0].account_id);
     }
   }, [attention.data, selectedId]);
+
+  useEffect(() => {
+    const n = cockpit.data?.unacknowledged_real ?? 0;
+    if (!shouldNotifyOperatorAlert(n, lastInboundNotifyCount)) return;
+    const permission = typeof Notification === "undefined" ? "unsupported" : Notification.permission;
+    const result = notifyOperatorAlert({
+      permission,
+      unacknowledgedReal: n,
+      notify: (title, body) => {
+        try {
+          new Notification(title, { body, silent: false });
+        } catch {
+          setInboundNotifyFallback(true);
+        }
+      },
+      fallback: () => {
+        setInboundNotifyFallback(true);
+        try {
+          const ctx = new AudioContext();
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.frequency.value = 880;
+          gain.gain.value = 0.03;
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start();
+          osc.stop(ctx.currentTime + 0.12);
+        } catch {
+          /* visual badge remains */
+        }
+      },
+    });
+    if (result !== "noop") setLastInboundNotifyCount(n);
+    if (permission === "default" && typeof Notification !== "undefined") {
+      void Notification.requestPermission();
+    }
+  }, [cockpit.data?.unacknowledged_real, lastInboundNotifyCount]);
 
   const item = detail.data ?? (attention.data ?? []).find((a) => a.account_id === selectedId);
 
@@ -360,29 +405,17 @@ export default function ConfengePage() {
         </section>
 
         {cockpit.data && (
-          <section id="inbound-agora" data-testid="confenge-inbound-now" className="rounded-md border border-sky-200 bg-white">
-            <div className="px-3 h-10 flex items-center border-b border-slate-200">
-              <span className="text-[12.5px] font-medium text-slate-900">INBOUND NOW</span>
-              <span className="ml-2 text-[12.5px] text-slate-500 tabular-nums">{cockpit.data?.inbound_now?.length ?? 0}</span>
-            </div>
-            <p className="px-3 pt-2 text-[11.5px] text-slate-500">
-              Leads inbound do web-cfg. Sem copiar dados. Sem auto-envio.
-            </p>
-            <ul className="divide-y divide-slate-100">
-              {(cockpit.data?.inbound_now ?? []).map((item) => (
-                <li key={item.lead_id}>
-                  <InboundNowCard
-                    item={item}
-                    submitting={recordInbound.isPending}
-                    onOutcome={(payload) => recordInbound.mutate({ leadId: item.lead_id, ...payload })}
-                  />
-                </li>
-              ))}
-              {!(cockpit.data?.inbound_now?.length) && (
-                <li className="px-3 py-8 text-center text-slate-400 text-[12.5px]">Nenhum lead inbound real na fila. Synthetic/qa/internal ficam de fora.</li>
-              )}
-            </ul>
-          </section>
+          <InboundNowPanel
+            items={(cockpit.data.inbound_now ?? []).filter((item) => showSyntheticInbound || !item.synthetic)}
+            unacknowledgedReal={cockpit.data.unacknowledged_real ?? 0}
+            showSynthetic={showSyntheticInbound}
+            onToggleSynthetic={setShowSyntheticInbound}
+            fallbackPulse={inboundNotifyFallback}
+            submitting={recordInbound.isPending || acknowledgeInbound.isPending || resolveInbound.isPending}
+            onOutcome={(leadId, payload) => recordInbound.mutate({ leadId, ...payload })}
+            onAcknowledge={(leadId) => acknowledgeInbound.mutate(leadId)}
+            onResolve={(leadId, reason) => resolveInbound.mutate({ leadId, reason })}
+          />
         )}
 
         {scoreboard.data && (
@@ -1347,42 +1380,123 @@ function WorkingLaneList({
 }
 
 const INBOUND_OUTCOME_OPTIONS = [
+  "ATTEMPTED",
   "CONTACTED",
-  "QUALIFIED_CONVERSATION",
   "FOLLOW_UP",
-  "MEETING_SCHEDULED",
-  "PROPOSAL",
   "NO_RESPONSE",
   "DNC",
-  "LOST",
-  "WON",
-  "CLIENT",
 ];
+
+const INBOUND_RESOLVE_REASONS = ["DUPLICATE", "NOT_A_LEAD", "SPAM", "TEST", "OTHER"];
+
+const ALERT_BAND_CLASS: Record<string, string> = {
+  NEW: "bg-sky-50 text-sky-800 border-sky-200",
+  ATTENTION: "bg-amber-50 text-amber-900 border-amber-200",
+  AGED: "bg-rose-50 text-rose-800 border-rose-200",
+  ALERT_FAILED: "bg-rose-100 text-rose-900 border-rose-300",
+  ACKNOWLEDGED: "bg-slate-50 text-slate-700 border-slate-200",
+  ACTION_RECORDED: "bg-emerald-50 text-emerald-800 border-emerald-200",
+  RESOLVED_NO_ACTION: "bg-slate-100 text-slate-600 border-slate-200",
+};
+
+function InboundNowPanel({
+  items,
+  unacknowledgedReal,
+  showSynthetic,
+  onToggleSynthetic,
+  fallbackPulse,
+  submitting,
+  onOutcome,
+  onAcknowledge,
+  onResolve,
+}: {
+  items: ConfengeInboundNowItem[];
+  unacknowledgedReal: number;
+  showSynthetic: boolean;
+  onToggleSynthetic: (v: boolean) => void;
+  fallbackPulse: boolean;
+  submitting: boolean;
+  onOutcome: (leadId: string, payload: { outcome_code: string; notes?: string }) => void;
+  onAcknowledge: (leadId: string) => void;
+  onResolve: (leadId: string, reason: string) => void;
+}) {
+  return (
+    <section id="inbound-agora" data-testid="confenge-inbound-now" className="rounded-md border border-sky-200 bg-white">
+      <div className="px-3 min-h-10 py-1.5 flex flex-wrap items-center gap-2 border-b border-slate-200">
+        <span className="text-[12.5px] font-medium text-slate-900">INBOUND NOW</span>
+        <span className="text-[12.5px] text-slate-500 tabular-nums" data-testid="confenge-inbound-real-count">{items.filter((i) => !i.synthetic).length}</span>
+        <span
+          data-testid="confenge-inbound-unacked-badge"
+          className={`inline-flex items-center h-6 px-2 rounded-md text-[11px] font-medium border ${unacknowledgedReal > 0 ? "bg-sky-50 text-sky-800 border-sky-200" : "bg-slate-50 text-slate-500 border-slate-200"} ${fallbackPulse && unacknowledgedReal > 0 ? "ring-2 ring-sky-400" : ""}`}
+        >
+          {unacknowledgedReal} sem reconhecer
+        </span>
+        <label className="ml-auto inline-flex items-center gap-1.5 text-[11.5px] text-slate-600">
+          <Checkbox checked={showSynthetic} onCheckedChange={(v) => onToggleSynthetic(!!v)} />
+          Mostrar synthetic
+        </label>
+      </div>
+      <p className="px-3 pt-2 text-[11.5px] text-slate-500">
+        Leads inbound do web-cfg. Sem copiar dados. Sem auto-envio. Horários em America/Sao_Paulo; persistência em UTC.
+      </p>
+      <ul className="divide-y divide-slate-100">
+        {items.map((item) => (
+          <li key={item.lead_id}>
+            <InboundNowCard
+              item={item}
+              submitting={submitting}
+              onOutcome={(payload) => onOutcome(item.lead_id, payload)}
+              onAcknowledge={() => onAcknowledge(item.lead_id)}
+              onResolve={(reason) => onResolve(item.lead_id, reason)}
+            />
+          </li>
+        ))}
+        {!items.length && (
+          <li className="px-3 py-8 text-center text-slate-400 text-[12.5px]">Nenhum lead inbound real na fila. Synthetic/qa/internal ficam de fora.</li>
+        )}
+      </ul>
+    </section>
+  );
+}
 
 function InboundNowCard({
   item,
   submitting,
   onOutcome,
+  onAcknowledge,
+  onResolve,
 }: {
   item: ConfengeInboundNowItem;
   submitting: boolean;
   onOutcome: (payload: { outcome_code: string; notes?: string }) => void;
+  onAcknowledge: () => void;
+  onResolve: (reason: string) => void;
 }) {
   const [outcome, setOutcome] = useState("");
+  const [resolveReason, setResolveReason] = useState("");
+  const band = item.alert_band || item.alert_state || "";
+  const acked = !!item.acknowledged_at || band === "ACKNOWLEDGED" || band === "ACTION_RECORDED" || band === "RESOLVED_NO_ACTION";
   return (
     <article data-testid="confenge-inbound-card" className="px-3 py-3 text-[12.5px] space-y-1.5">
       <div className="flex flex-wrap items-baseline gap-2">
         <div className="font-medium text-slate-900">{item.company}</div>
         {item.person ? <span className="text-slate-700">{item.person}</span> : <span className="text-slate-400">Pessoa UNKNOWN</span>}
         <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">{stateLabel(item.next_action)}</span>
+        {band && (
+          <span data-testid="confenge-inbound-band" className={`inline-flex items-center h-5 px-1.5 rounded border text-[10px] uppercase tracking-[0.14em] ${ALERT_BAND_CLASS[band] || "border-slate-200 text-slate-600"}`}>
+            {stateLabel(band)}
+          </span>
+        )}
+        {item.synthetic && <span className="text-[10px] uppercase tracking-[0.14em] text-amber-700">synthetic</span>}
       </div>
       <div data-testid="confenge-inbound-lead-id">lead_id: {item.lead_id}</div>
       <div data-testid="confenge-inbound-receipt">receipt_id: {item.receipt_id || item.lead_id}</div>
       <div data-testid="confenge-inbound-enrichment">Enrichment: {item.enrichment_status || "UNKNOWN"}</div>
       <div data-testid="confenge-inbound-latency">
-        Capturado: {item.latency?.lead_created_at || "UNKNOWN"} · Ingerido: {item.latency?.warmbly_ingested_at || "UNKNOWN"}
-        {item.latency?.enrichment_completed_at ? ` · Enriquecido: ${item.latency.enrichment_completed_at}` : ""}
+        Capturado: {formatSaoPauloClock(item.latency?.lead_created_at)} · Ingerido: {formatSaoPauloClock(item.latency?.warmbly_ingested_at)}
+        {item.latency?.enrichment_completed_at ? ` · Enriquecido: ${formatSaoPauloClock(item.latency.enrichment_completed_at)}` : ""}
       </div>
+      <div data-testid="confenge-inbound-received-ago">Recebido {item.received_ago || formatReceivedAgoSaoPaulo(item.latency?.warmbly_ingested_at) || item.lead_age}</div>
       {item.contract_context && <div>Contrato/contexto: {item.contract_context}</div>}
       <div>Origem: {item.origin || "UNKNOWN"}{item.asset ? ` · Asset: ${item.asset}` : " · Asset: UNKNOWN"}</div>
       <div data-testid="confenge-inbound-query">Query: {item.query || "UNKNOWN"} · CTA: {item.cta || "UNKNOWN"}</div>
@@ -1404,21 +1518,30 @@ function InboundNowCard({
         </div>
       )}
       {item.evidence && item.evidence.length > 0 && <div className="text-[11px] text-slate-400">Evidências: {item.evidence.join(", ")}</div>}
-      <div>Owner: {item.owner} · Idade: {item.lead_age} · Status: {stateLabel(item.status)}</div>
+      <div data-testid="confenge-inbound-owner">Owner: {item.owner} · Idade: {item.lead_age} · Status: {stateLabel(item.status)}</div>
       <div>Próxima ação: {stateLabel(item.next_action)}</div>
       {item.warnings?.map((w) => (
         <div key={w} className="text-amber-800">{w}</div>
       ))}
       <div className="flex flex-wrap items-end gap-1.5 pt-1">
+        <button
+          type="button"
+          data-testid="confenge-inbound-acknowledge"
+          disabled={acked || submitting}
+          className="h-7 px-2.5 rounded-md border border-slate-200 bg-white text-[12.5px] text-slate-800 disabled:opacity-50"
+          onClick={onAcknowledge}
+        >
+          Reconhecer
+        </button>
         <label className="text-[11px] text-slate-500">
-          Outcome
+          Primeira ação
           <select
             data-testid="confenge-inbound-outcome"
             className="mt-0.5 h-7 block min-w-[180px] rounded-md border border-slate-200 bg-white px-2 text-[12.5px]"
             value={outcome}
             onChange={(e) => setOutcome(e.target.value)}
           >
-            <option value="">Registrar resultado</option>
+            <option value="">Registrar ação humana</option>
             {INBOUND_OUTCOME_OPTIONS.map((code) => (
               <option key={code} value={code}>{stateLabel(code)}</option>
             ))}
@@ -1432,6 +1555,29 @@ function InboundNowCard({
           onClick={() => onOutcome({ outcome_code: outcome })}
         >
           Registrar
+        </button>
+        <label className="text-[11px] text-slate-500">
+          Resolver sem ação
+          <select
+            data-testid="confenge-inbound-resolve-reason"
+            className="mt-0.5 h-7 block min-w-[160px] rounded-md border border-slate-200 bg-white px-2 text-[12.5px]"
+            value={resolveReason}
+            onChange={(e) => setResolveReason(e.target.value)}
+          >
+            <option value="">Motivo</option>
+            {INBOUND_RESOLVE_REASONS.map((code) => (
+              <option key={code} value={code}>{stateLabel(code)}</option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          data-testid="confenge-inbound-resolve"
+          disabled={!resolveReason || submitting}
+          className="h-7 px-2.5 rounded-md border border-slate-200 bg-white text-[12.5px] text-slate-800 disabled:opacity-50"
+          onClick={() => onResolve(resolveReason)}
+        >
+          Resolver
         </button>
       </div>
     </article>

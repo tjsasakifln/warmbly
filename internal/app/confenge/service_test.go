@@ -38,9 +38,11 @@ type memRepo struct {
 	upsertDraftErr     error
 	inboundInsertErr   error
 	inboundUpdateErr   error
+	alertInsertErr     error
 	actions            map[uuid.UUID]*models.OutreachCommercialAction
 	actionByIdem       map[string]*models.OutreachCommercialAction
 	inbound            map[string]*models.OutreachInboundLead
+	alerts             map[string]*models.OutreachOperatorAlert
 }
 
 func newMemRepo() *memRepo {
@@ -57,6 +59,7 @@ func newMemRepo() *memRepo {
 		actions:          map[uuid.UUID]*models.OutreachCommercialAction{},
 		actionByIdem:     map[string]*models.OutreachCommercialAction{},
 		inbound:          map[string]*models.OutreachInboundLead{},
+		alerts:           map[string]*models.OutreachOperatorAlert{},
 	}
 }
 
@@ -1436,4 +1439,83 @@ func (m *memRepo) FindRecentInboundByIdentity(_ context.Context, orgID uuid.UUID
 		}
 	}
 	return best, nil
+}
+
+func alertKey(org uuid.UUID, leadID string) string { return org.String() + "|" + leadID }
+
+func (m *memRepo) ensureAlerts() {
+	if m.alerts == nil {
+		m.alerts = map[string]*models.OutreachOperatorAlert{}
+	}
+}
+
+func cloneMemAlert(a *models.OutreachOperatorAlert) *models.OutreachOperatorAlert {
+	if a == nil {
+		return nil
+	}
+	cp := *a
+	if a.ChannelStates != nil {
+		cp.ChannelStates = make(map[string]string, len(a.ChannelStates))
+		for k, v := range a.ChannelStates {
+			cp.ChannelStates[k] = v
+		}
+	}
+	return &cp
+}
+
+func (m *memRepo) UpsertOperatorAlert(_ context.Context, alert *models.OutreachOperatorAlert) (bool, *models.OutreachOperatorAlert, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureAlerts()
+	if m.alertInsertErr != nil {
+		return false, nil, m.alertInsertErr
+	}
+	k := alertKey(alert.OrganizationID, alert.LeadID)
+	if existing := m.alerts[k]; existing != nil {
+		return false, cloneMemAlert(existing), nil
+	}
+	if alert.ID == uuid.Nil {
+		alert.ID = uuid.New()
+	}
+	m.alerts[k] = cloneMemAlert(alert)
+	return true, cloneMemAlert(alert), nil
+}
+
+func (m *memRepo) UpdateOperatorAlert(_ context.Context, alert *models.OutreachOperatorAlert) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureAlerts()
+	k := alertKey(alert.OrganizationID, alert.LeadID)
+	if m.alerts[k] == nil {
+		return fmt.Errorf("operator alert not found")
+	}
+	m.alerts[k] = cloneMemAlert(alert)
+	return nil
+}
+
+func (m *memRepo) GetOperatorAlertByLead(_ context.Context, orgID uuid.UUID, leadID string) (*models.OutreachOperatorAlert, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureAlerts()
+	return cloneMemAlert(m.alerts[alertKey(orgID, leadID)]), nil
+}
+
+func (m *memRepo) ListOperatorAlerts(_ context.Context, orgID uuid.UUID, includeSynthetic bool, limit int) ([]models.OutreachOperatorAlert, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureAlerts()
+	var out []models.OutreachOperatorAlert
+	for _, a := range m.alerts {
+		if a.OrganizationID != orgID {
+			continue
+		}
+		if !includeSynthetic && a.Synthetic {
+			continue
+		}
+		out = append(out, *cloneMemAlert(a))
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
 }
