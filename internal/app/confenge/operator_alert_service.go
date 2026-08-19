@@ -252,7 +252,14 @@ func actorRef(userID uuid.UUID, fallback string) string {
 }
 
 func requireAlertActor(userID uuid.UUID, fallback string) *errx.Error {
-	if userID == uuid.Nil && strings.TrimSpace(fallback) == "" {
+	if userID != uuid.Nil {
+		return nil
+	}
+	fb := strings.TrimSpace(fallback)
+	if fb == "" || fb == uuid.Nil.String() {
+		return errx.New(errx.Unauthorized, "actor required")
+	}
+	if parsed, err := uuid.Parse(fb); err == nil && parsed == uuid.Nil {
 		return errx.New(errx.Unauthorized, "actor required")
 	}
 	return nil

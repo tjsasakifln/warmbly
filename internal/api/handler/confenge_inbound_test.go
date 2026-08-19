@@ -234,3 +234,22 @@ func TestConfengeInboundHealthReadyBlockedNoPII(t *testing.T) {
 	}
 	fmt.Printf("HTTP_HEALTH_BLOCKED status=%s reasons=%v\n", blockedProbe.Status, blockedProbe.Reasons)
 }
+
+func TestConfengeActorUUIDParsesJWTString(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	actor := uuid.MustParse("11111111-0000-0000-0000-000000000001")
+	c.Set("user_id", actor.String())
+	if got := confengeActorUUID(c); got != actor {
+		t.Fatalf("string user_id: got %s want %s", got, actor)
+	}
+	c.Set("user_id", actor)
+	if got := confengeActorUUID(c); got != actor {
+		t.Fatalf("uuid user_id: got %s want %s", got, actor)
+	}
+	c.Set("user_id", "")
+	if got := confengeActorUUID(c); got != uuid.Nil {
+		t.Fatalf("empty user_id: got %s", got)
+	}
+}

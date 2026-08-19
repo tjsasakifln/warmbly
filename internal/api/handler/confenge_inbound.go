@@ -110,8 +110,7 @@ func (h *Handler) RecordConfengeInboundOutcome(c *gin.Context) {
 		errx.JSON(c, errx.New(errx.BadRequest, "lead_id is required"))
 		return
 	}
-	userID, _ := c.Get("user_id")
-	uid, _ := userID.(uuid.UUID)
+	uid := confengeActorUUID(c)
 	var body struct {
 		OutcomeCode    string `json:"outcome_code"`
 		Notes          string `json:"notes"`
@@ -147,8 +146,7 @@ func (h *Handler) AcknowledgeConfengeInboundAlert(c *gin.Context) {
 		errx.JSON(c, errx.New(errx.BadRequest, "lead_id is required"))
 		return
 	}
-	userID, _ := c.Get("user_id")
-	uid, _ := userID.(uuid.UUID)
+	uid := confengeActorUUID(c)
 	alert, xerr := h.ConfengeService.AcknowledgeInboundAlert(c.Request.Context(), orgID, uid, leadID, time.Now().UTC())
 	if xerr != nil {
 		errx.JSON(c, xerr)
@@ -168,8 +166,7 @@ func (h *Handler) ResolveConfengeInboundNoAction(c *gin.Context) {
 		errx.JSON(c, errx.New(errx.BadRequest, "lead_id is required"))
 		return
 	}
-	userID, _ := c.Get("user_id")
-	uid, _ := userID.(uuid.UUID)
+	uid := confengeActorUUID(c)
 	var body struct {
 		Reason string `json:"reason"`
 	}
@@ -183,6 +180,20 @@ func (h *Handler) ResolveConfengeInboundNoAction(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": alert})
+}
+
+func confengeActorUUID(c *gin.Context) uuid.UUID {
+	if s := strings.TrimSpace(c.GetString("user_id")); s != "" {
+		if id, err := uuid.Parse(s); err == nil {
+			return id
+		}
+	}
+	if v, ok := c.Get("user_id"); ok {
+		if id, ok := v.(uuid.UUID); ok {
+			return id
+		}
+	}
+	return uuid.Nil
 }
 
 func firstNonEmptyHeader(c *gin.Context, names ...string) string {
