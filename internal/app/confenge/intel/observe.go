@@ -144,7 +144,8 @@ func ObserveFromInbound(lead models.OutreachInboundLead, acc *models.OutreachAcc
 		}
 	}
 	in.Qualified = in.OutcomeType == OutcomeQualifiedConversation
-	in.PipelineOpen = lead.Status == models.InboundStatusOpen
+	// Inbound OPEN is a work-queue state, not commercial pipeline.
+	in.PipelineOpen = false
 	return in
 }
 
@@ -200,7 +201,8 @@ func ObserveFromAction(action models.OutreachCommercialAction, acc *models.Outre
 		in.Keys.EventIDs = append([]string{}, acc.MomentEvidenceIDs...)
 	}
 	in.Qualified = in.OutcomeType == OutcomeQualifiedConversation
-	in.PipelineOpen = !isWonType(in.OutcomeType) && !isLostType(in.OutcomeType)
+	// An action is not pipeline. Only EventPipelineCreated / evidenced pipeline opens it.
+	in.PipelineOpen = false
 	return in
 }
 
