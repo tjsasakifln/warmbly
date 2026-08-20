@@ -148,6 +148,9 @@ func TestMigration106CHECKContainsOrganicExceptionCodes(t *testing.T) {
 	if !strings.Contains(string(upRaw), "CREATE TABLE IF NOT EXISTS outreach_intel_search_observations") {
 		t.Fatal("000106 up missing search observations table")
 	}
+	if !strings.Contains(string(upRaw), `"window"`) {
+		t.Fatal("000106 must quote reserved column window")
+	}
 	if !strings.Contains(string(upRaw), "UNIQUE INDEX IF NOT EXISTS outreach_intel_search_obs_org_event_uidx") &&
 		!strings.Contains(string(upRaw), "outreach_intel_search_obs_org_event_uidx") {
 		t.Fatal("000106 up missing unique (org,event)")

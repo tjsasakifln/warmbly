@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS outreach_intel_search_observations (
     event_id            text NOT NULL,
     receipt_id          text NOT NULL DEFAULT '',
     payload_hash        text NOT NULL,
-    window              text NOT NULL,
+    "window"            text NOT NULL,
     organic_source      text NOT NULL DEFAULT 'UNKNOWN',
     asset_family        text NOT NULL DEFAULT '',
     asset_id            text NOT NULL DEFAULT '',
@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS outreach_intel_search_observations (
     out_of_order        boolean NOT NULL DEFAULT false,
     payload             jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at          timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT outreach_intel_search_obs_window_check CHECK (window IN (
+    CONSTRAINT outreach_intel_search_obs_window_check CHECK ("window" IN (
         '7d_complete', '28d_complete', '90d', 'open_censored')),
     CONSTRAINT outreach_intel_search_obs_source_check CHECK (organic_source IN (
         'organic_search', 'direct', 'referral', 'ai_referral', 'partner', 'outbound', 'UNKNOWN')),
@@ -116,7 +116,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS outreach_intel_search_obs_org_event_uidx
     ON outreach_intel_search_observations (organization_id, event_id);
 
 CREATE INDEX IF NOT EXISTS outreach_intel_search_obs_org_window_idx
-    ON outreach_intel_search_observations (organization_id, window, measurement_at DESC);
+    ON outreach_intel_search_observations (organization_id, "window", measurement_at DESC);
 
 COMMENT ON TABLE outreach_intel_search_observations IS
 'Aggregated search observations (confenge.search_observation.v1). Counts nullable. No individual query/query_hash. Not a lead.';

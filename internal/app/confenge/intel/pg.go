@@ -530,7 +530,7 @@ func (s *PGStore) PutSearchObservation(obs SearchObservation) (SearchObservation
 	}
 	_, err = s.db.Exec(context.Background(), `
 		INSERT INTO outreach_intel_search_observations (
-			id, organization_id, event_id, receipt_id, payload_hash, window,
+			id, organization_id, event_id, receipt_id, payload_hash, "window",
 			organic_source, asset_family, asset_id, landing_path, intent_class, query_class,
 			eligible, appeared, clicked, engaged, coverage, freshness,
 			producer_source, producer_sha, synthetic, record_kind, consent_policy,
@@ -596,7 +596,7 @@ func (s *PGStore) ListSearchObservations(orgID, window string) ([]SearchObservat
 	} else {
 		rows, err = s.db.Query(context.Background(), `
 			SELECT payload FROM outreach_intel_search_observations
-			WHERE organization_id = $1::uuid AND window = $2
+			WHERE organization_id = $1::uuid AND "window" = $2
 			ORDER BY measurement_at, event_id`, org, window)
 	}
 	if err != nil {
