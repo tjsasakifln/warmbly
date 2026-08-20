@@ -59,6 +59,18 @@ func TestObserveFromInboundMarksOfficialSyntheticPreflight(t *testing.T) {
 	fmt.Printf("OBSERVE_SYNTHETIC official_preflight=SYNTHETIC real_label=%s\n", real.Label)
 }
 
+func TestObserveFromInboundOpenStatusIsNotPipeline(t *testing.T) {
+	facts := ObserveFromInbound(models.OutreachInboundLead{
+		LeadID: "webcfg-open-1", ReceiptID: "rcpt-open-1", Source: "organic_search",
+		AssetID: "landing-segunda-leitura", Status: models.InboundStatusOpen,
+		RouteFamily: FamilyInbound,
+	}, nil, nil, nil)
+	if facts.PipelineOpen {
+		t.Fatal("inbound OPEN must not become commercial pipeline")
+	}
+	fmt.Printf("OBSERVE_OPEN_NOT_PIPELINE status=OPEN pipeline=%v\n", facts.PipelineOpen)
+}
+
 func TestUtmQueryNeverReadsCampaign(t *testing.T) {
 	cases := []struct {
 		name string
