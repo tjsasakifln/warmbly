@@ -91,6 +91,28 @@ func (h *Handler) ConfengeInboundWebhook(c *gin.Context) {
 		c.JSON(status, gin.H{"data": rec})
 		return
 	}
+	if intel.IsCommercialEventEnvelope(body) {
+		ev, err := intel.ParseProducerCommercialEvent(body)
+		if err != nil {
+			errx.JSON(c, errx.New(errx.BadRequest, err.Error()))
+			return
+		}
+		res, xerr := h.ConfengeService.IngestCommercialEvent(c.Request.Context(), orgID, ev)
+		if xerr != nil {
+			errx.JSON(c, xerr)
+			return
+		}
+		if intel.JoinUnavailable(res) && !res.Replay {
+			errx.JSON(c, errx.New(errx.ServiceUnavailable, "commercial event store unavailable"))
+			return
+		}
+		status := http.StatusCreated
+		if res.Replay {
+			status = http.StatusOK
+		}
+		c.JSON(status, gin.H{"data": res})
+		return
+	}
 	res, xerr := h.ConfengeService.IngestInboundLead(c.Request.Context(), orgID, body, confenge.IngestOptions{
 		Now:   time.Now().UTC(),
 		Query: c.Request.URL.Query(),

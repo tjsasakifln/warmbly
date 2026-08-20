@@ -48,7 +48,7 @@ func ClassifyExceptions(in ObservedFacts, existing *Chain) []Exception {
 	if hasOutcome && !hasAction && !in.NotALead {
 		add(ExceptionOrphan, "outcome without action", "hold on exception queue until action arrives", true)
 	}
-	if normalizeFamily(in.Keys.RouteFamily) == FamilyInbound && strings.TrimSpace(in.Keys.LeadID) == "" && strings.TrimSpace(in.Keys.ReceiptID) == "" && !in.NotALead && !isNonLeadEvent(in.EventType) {
+	if normalizeFamily(in.Keys.RouteFamily) == FamilyInbound && strings.TrimSpace(in.Keys.LeadID) == "" && strings.TrimSpace(in.Keys.ReceiptID) == "" && !in.NotALead && !isNonLeadEvent(in.EventType) && !isCommercialEvent(in.EventType) && strings.TrimSpace(in.Keys.ExternalReference) == "" {
 		add(ExceptionOrphan, "inbound family missing lead_id/receipt_id", "hold until the web-cfg receipt IDs arrive", true)
 	}
 

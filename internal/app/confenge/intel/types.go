@@ -594,41 +594,42 @@ type Freshness struct {
 
 // ExecutiveView is the monthly query payload. Not a CRM board.
 type ExecutiveView struct {
-	SchemaVersion            string           `json:"schema_version"`
-	Month                    string           `json:"month"`
-	IncludeSynthetic         bool             `json:"include_synthetic"`
-	InboundQualifiedPipeline int              `json:"inbound_qualified_pipeline"`
-	QCO                      int              `json:"qco"`
-	Conversations            int              `json:"conversations"`
-	Meetings                 int              `json:"meetings"`
-	Proposals                int              `json:"proposals"`
-	Pipeline                 int              `json:"pipeline"`
-	Won                      int              `json:"won"`
-	Lost                     int              `json:"lost"`
-	Unknown                  int              `json:"unknown"`
-	Families                 []FamilyCounts   `json:"families"`
-	BySource                 []Breakdown      `json:"by_source"`
-	ByAsset                  []Breakdown      `json:"by_asset"`
-	ByTrigger                []Breakdown      `json:"by_trigger"`
-	ByOffer                  []Breakdown      `json:"by_offer"`
-	ByRoute                  []Breakdown      `json:"by_route"`
-	ByIntent                 []Breakdown      `json:"by_intent,omitempty"`
-	MarketAnswer             AssetSlice       `json:"market_answer"`
-	ContractAnalysis         AssetSlice       `json:"contract_analysis"`
-	B2GXRay                  AssetSlice       `json:"b2g_xray"`
-	CustomerProof            int              `json:"customer_proof"`
-	RevenueCents             int64            `json:"revenue_cents"`
-	RevenueStatus            string           `json:"revenue_status"`
-	Commercial               CommercialCounts `json:"commercial"`
-	ByTerms                  []Breakdown      `json:"by_terms,omitempty"`
-	ByCTA                    []Breakdown      `json:"by_cta,omitempty"`
-	Denominators             Denominators     `json:"denominators"`
-	Latency                  LatencyMS        `json:"latency"`
-	Freshness                Freshness        `json:"freshness"`
-	AttributionKind          string           `json:"attribution_kind"`
-	CausalProof              bool             `json:"causal_proof"`
-	RealEmpty                bool             `json:"real_empty"`
-	ChainCount               int              `json:"chain_count"`
+	SchemaVersion            string              `json:"schema_version"`
+	Month                    string              `json:"month"`
+	IncludeSynthetic         bool                `json:"include_synthetic"`
+	InboundQualifiedPipeline int                 `json:"inbound_qualified_pipeline"`
+	QCO                      int                 `json:"qco"`
+	Conversations            int                 `json:"conversations"`
+	Meetings                 int                 `json:"meetings"`
+	Proposals                int                 `json:"proposals"`
+	Pipeline                 int                 `json:"pipeline"`
+	Won                      int                 `json:"won"`
+	Lost                     int                 `json:"lost"`
+	Unknown                  int                 `json:"unknown"`
+	Families                 []FamilyCounts      `json:"families"`
+	BySource                 []Breakdown         `json:"by_source"`
+	ByAsset                  []Breakdown         `json:"by_asset"`
+	ByTrigger                []Breakdown         `json:"by_trigger"`
+	ByOffer                  []Breakdown         `json:"by_offer"`
+	ByRoute                  []Breakdown         `json:"by_route"`
+	ByIntent                 []Breakdown         `json:"by_intent,omitempty"`
+	MarketAnswer             AssetSlice          `json:"market_answer"`
+	ContractAnalysis         AssetSlice          `json:"contract_analysis"`
+	B2GXRay                  AssetSlice          `json:"b2g_xray"`
+	CustomerProof            int                 `json:"customer_proof"`
+	RevenueCents             int64               `json:"revenue_cents"`
+	RevenueStatus            string              `json:"revenue_status"`
+	Commercial               CommercialCounts    `json:"commercial"`
+	ByTerms                  []Breakdown         `json:"by_terms,omitempty"`
+	ByCTA                    []Breakdown         `json:"by_cta,omitempty"`
+	ByOfferVersion           []OfferExecutiveRow `json:"by_offer_version,omitempty"`
+	Denominators             Denominators        `json:"denominators"`
+	Latency                  LatencyMS           `json:"latency"`
+	Freshness                Freshness           `json:"freshness"`
+	AttributionKind          string              `json:"attribution_kind"`
+	CausalProof              bool                `json:"causal_proof"`
+	RealEmpty                bool                `json:"real_empty"`
+	ChainCount               int                 `json:"chain_count"`
 }
 
 // AssetSlice is one assisted-asset lane. It is not a CRM stage.
@@ -751,6 +752,19 @@ type CommercialEvent struct {
 	QueryClass        string           `json:"query_class,omitempty"`
 	ReferrerClass     string           `json:"referrer_class,omitempty"`
 	CallbackOnly      bool             `json:"callback_only,omitempty"`
+
+	// Producer aliases from web-cfg scripts/offers/events.cjs. Claims
+	// (financial_confirmation / received_revenue / revenue) are never cash.
+	ProducerOfferVersion    string `json:"offer_version,omitempty"`
+	ProducerTermsVersion    string `json:"terms_version,omitempty"`
+	ProducerScopeVersion    string `json:"scope_version,omitempty"`
+	ProducerAmountCents     int64  `json:"amount_cents,omitempty"`
+	ProducerCurrency        string `json:"currency,omitempty"`
+	ProducerCanonicalStatus string `json:"canonical_status,omitempty"`
+	ProducerExceptionCode   string `json:"exception_code,omitempty"`
+	FinancialConfirmation   bool   `json:"financial_confirmation,omitempty"`
+	ReceivedRevenueClaim    bool   `json:"received_revenue,omitempty"`
+	RevenueClaim            bool   `json:"revenue,omitempty"`
 
 	Medium         string     `json:"medium,omitempty"`
 	Campaign       string     `json:"campaign,omitempty"`

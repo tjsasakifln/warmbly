@@ -130,6 +130,26 @@ is a private historical exception, never a catalog row. The provider adapter is
 sandbox/disabled only. Manual-first writes go through
 `POST /confenge/intel/commercial`.
 
+HMAC `POST /api/v1/webhooks/confenge/inbound` also consumes the web-cfg
+producer body (`scripts/offers/events.cjs`) when `schema` or `version` is
+`confenge.commercial_event.v1`. Same `provider_event_id` (or `event_id`
+when that is the provider id) is a replay. Invalid secret is 401.
+Unavailable store is 503. Unknown types stay UNKNOWN and are held.
+`financial_confirmation`, `received_revenue`, and `revenue` on the
+producer body are claims, not cash. Cash moves only on
+`payment_received`. Checkout created, subscription created, and callback
+success do not start delivery.
+
+Each chain has one onboarding decision:
+`ONBOARDING_BLOCKED` | `ONBOARDING_ELIGIBLE` | `ONBOARDING_STARTED` |
+`SERVICE_ACTIVE`. Eligible requires a coherent offer/terms snapshot,
+received payment, capacity approved/reserved/held, and no material open
+exception. The executive view adds `by_offer_version` with selected,
+checkout, pending, received, onboarding, service active, overdue/refund/cancel,
+qualified pipeline, received revenue, exceptions, UNKNOWN, and stage
+timestamps for #55. No SLA is invented. `include_synthetic=0` stays
+zeros/UNKNOWN until a non-synthetic receipt exists.
+
 ## What this is not
 
 No CRM board, forecast, magic score, auto-send, or second truth plane.

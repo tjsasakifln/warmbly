@@ -1969,6 +1969,38 @@ function ExecutiveIntelPanel({ view }: { view: ConfengeExecutiveView }) {
           </span>
         ))}
       </div>
+      <div className="px-3 pb-3 grid gap-2 sm:grid-cols-4 text-[12px]" data-testid="confenge-offer-revenue">
+        <Metric label="Checkout criado" value={view.commercial?.checkout_created ?? 0} />
+        <Metric label="Pagamento pendente" value={view.commercial?.payment_pending ?? 0} />
+        <Metric label="Pagamento recebido" value={view.commercial?.payment_received ?? 0} />
+        <Metric label="Onboarding" value={view.commercial?.onboarding ?? 0} />
+        <Metric label="Serviço ativo" value={view.commercial?.service_active ?? 0} />
+        <Metric label="Pipeline qualificado" value={view.commercial?.qualified_pipeline ?? 0} />
+        <Metric label="Receita recebida (cents)" value={view.commercial?.received_revenue_cents ?? 0} />
+        <Metric label="Receita contratada (cents)" value={view.commercial?.contracted_revenue_cents ?? 0} />
+        <Metric label="MRR (cents)" value={view.commercial?.mrr_cents ?? 0} />
+        <Metric label="Exceções" value={view.commercial?.exception_count ?? 0} />
+      </div>
+      {(view.by_offer_version ?? []).length > 0 ? (
+        <div className="px-3 pb-3 space-y-1.5" data-testid="confenge-offer-executive">
+          <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Por offer_id / version</div>
+          {(view.by_offer_version ?? []).map((row) => (
+            <div key={`${row.offer_id}:${row.offer_version}`} className="rounded-md border border-slate-200 px-2 py-1.5 text-[11.5px] text-slate-700">
+              <div className="font-medium text-slate-900">
+                {row.offer_id} {row.offer_version}
+              </div>
+              <div>
+                selected {row.selected} · checkout {row.checkout_created} · pending {row.payment_pending} · received {row.payment_received} · onboard {row.onboarding_started} · active {row.service_active}
+              </div>
+              <div>
+                pipeline {row.qualified_pipeline} · received_cents {row.received_revenue_cents} · overdue {row.overdue} · refund {row.refund} · cancel {row.cancel} · UNKNOWN {row.unknown} · denom {row.denominator_chains}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="px-3 pb-3 text-[11.5px] text-slate-500">Nenhuma oferta reconciliada. include_synthetic=0 permanece UNKNOWN até um recibo real.</p>
+      )}
     </section>
   );
 }

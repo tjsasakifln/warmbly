@@ -50,6 +50,20 @@ func (s *inboundHTTPStub) IngestSearchObservation(_ context.Context, _ uuid.UUID
 	return &rec, nil
 }
 
+func (s *inboundHTTPStub) IngestCommercialEvent(_ context.Context, orgID uuid.UUID, ev intel.CommercialEvent) (intel.JoinResult, *errx.Error) {
+	if s.obsStore == nil {
+		s.obsStore = intel.NewMemoryStore()
+	}
+	if ev.OrganizationID == "" {
+		ev.OrganizationID = orgID.String()
+	}
+	res := intel.IngestEvent(s.obsStore, ev)
+	if intel.JoinUnavailable(res) && !res.Replay {
+		return res, errx.New(errx.ServiceUnavailable, "commercial intel store unavailable")
+	}
+	return res, nil
+}
+
 func (s *inboundHTTPStub) IngestInboundLead(_ context.Context, _ uuid.UUID, raw []byte, opts confenge.IngestOptions) (*confenge.InboundIngestResult, *errx.Error) {
 	if xerr := confenge.RejectInboundQueryPII(opts.Query); xerr != nil {
 		return nil, xerr
@@ -399,6 +413,80 @@ func TestConfengeInboundWebhookAutoSendRefused(t *testing.T) {
 		t.Fatalf("auto-send status=%d body=%s", w.Code, w.Body.String())
 	}
 	fmt.Printf("HTTP_AUTOSEND refused=%d\n", w.Code)
+}
+
+func TestConfengeInboundWebhookCommercialEventHMAC(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	org := uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+	secret := "inbound-http-secret"
+	stub := &inboundHTTPStub{cfg: confenge.Config{
+		Enabled: true, InboundWebhookSecret: secret, InboundOrgID: org, AutoSendEnabled: false,
+	}, obsStore: intel.NewMemoryStore()}
+	h := &Handler{ConfengeService: stub}
+
+	now := time.Now().UTC()
+	bodyMap := map[string]any{
+		"schema":             intel.EventSchemaV1,
+		"event_id":           "evt_SYNTHETIC_http_sel",
+		"type":               intel.EventOfferSelected,
+		"occurred_at":        now.Format(time.RFC3339),
+		"offer_id":           intel.OfferDiagnostico,
+		"offer_version":      "v1",
+		"terms_version":      "CFG-TERMS-B2B-2026-08-17-v1",
+		"external_reference": "SYNTHETIC-HTTP-1",
+		"provider_event_id":  "asaas_SYNTHETIC_http_sel",
+		"amount_cents":       800000,
+		"currency":           "BRL",
+		"source":             "CONFENGE_WEB",
+		"revenue":            false,
+		"received_revenue":   false,
+		"synthetic":          true,
+	}
+	body, _ := json.Marshal(bodyMap)
+	post := func(raw []byte, sig string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/confenge/inbound", bytes.NewReader(raw))
+		req.Header.Set("X-Warmbly-Signature", sig)
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = req
+		h.ConfengeInboundWebhook(c)
+		return w
+	}
+
+	bad := post(body, confenge.SignOutcomeHMAC("wrong-secret", now, body))
+	if bad.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid secret status=%d body=%s", bad.Code, bad.Body.String())
+	}
+
+	ok := post(body, confenge.SignOutcomeHMAC(secret, now, body))
+	if ok.Code != http.StatusCreated && ok.Code != http.StatusOK {
+		t.Fatalf("commercial ingest status=%d body=%s", ok.Code, ok.Body.String())
+	}
+	replay := post(body, confenge.SignOutcomeHMAC(secret, time.Now().UTC(), body))
+	if replay.Code != http.StatusOK {
+		t.Fatalf("commercial replay status=%d body=%s", replay.Code, replay.Body.String())
+	}
+	var wrap struct {
+		Data intel.JoinResult `json:"data"`
+	}
+	if err := json.Unmarshal(replay.Body.Bytes(), &wrap); err != nil {
+		t.Fatal(err)
+	}
+	if !wrap.Data.Replay {
+		t.Fatal("replay flag false")
+	}
+
+	unkMap := cloneMap(bodyMap)
+	unkMap["event_id"] = "evt_SYNTHETIC_http_unk"
+	unkMap["provider_event_id"] = "asaas_SYNTHETIC_http_unk"
+	unkMap["type"] = "TELEPORTED"
+	unkMap["provider_raw_status"] = "TELEPORTED"
+	unkRaw, _ := json.Marshal(unkMap)
+	unk := post(unkRaw, confenge.SignOutcomeHMAC(secret, time.Now().UTC(), unkRaw))
+	if unk.Code != http.StatusCreated && unk.Code != http.StatusOK {
+		t.Fatalf("unknown type status=%d body=%s", unk.Code, unk.Body.String())
+	}
+	fmt.Printf("HTTP_COMMERCIAL invalid_secret=%d created=%d replay=%d unknown=%d\n", bad.Code, ok.Code, replay.Code, unk.Code)
 }
 
 func cloneMap(in map[string]any) map[string]any {

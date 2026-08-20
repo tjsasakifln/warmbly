@@ -317,6 +317,10 @@ func ApplyCommercialTransition(existing *Chain, ev CommercialEvent) TransitionRe
 			st.Capacity.State = CapacityStateOK
 			st.Capacity.Eligibility = EligibilityEligible
 		}
+	case EventCommercialExceptionOpen, EventCommercialException:
+		reason := firstNonEmpty(ev.EvidenceRef, ev.ProducerExceptionCode, "producer commercial exception")
+		add(ExceptionUnknownProviderEvent, reason, "review; do not infer revenue or onboarding", true)
+		res.Held = true
 	}
 
 	if ev.Correction {
@@ -331,6 +335,7 @@ func ApplyCommercialTransition(existing *Chain, ev CommercialEvent) TransitionRe
 	}
 
 	st.Timeline = appendReceipt(st.Timeline, ev, canonical)
+	st.Delivery.OnboardingDecision = decideOnboardingState(st, res.Held)
 	res.Facts.Commercial = st
 	copyCommercialKeys(&res.Facts, st)
 	return res
@@ -901,7 +906,7 @@ func NormalizeEventType(t string) (canonical, raw string, unknown bool) {
 		EventOnboardingStarted, EventServiceActivated, EventServicePaused,
 		EventServiceEnded, EventRenewalDue, EventRenewed,
 		EventCommercialExceptionOpen, EventCommercialExceptionRes,
-		EventUnknownProvider:
+		EventCommercialException, EventUnknownProvider:
 		return low, raw, false
 	}
 	switch strings.ToUpper(strings.ReplaceAll(raw, "-", "_")) {
@@ -965,10 +970,12 @@ func NormalizeEventType(t string) (canonical, raw string, unknown bool) {
 		return EventRenewalDue, raw, false
 	case "RENEWED":
 		return EventRenewed, raw, false
-	case "COMMERCIAL_EXCEPTION_OPENED":
+	case "COMMERCIAL_EXCEPTION_OPENED", "COMMERCIAL_EXCEPTION":
 		return EventCommercialExceptionOpen, raw, false
 	case "COMMERCIAL_EXCEPTION_RESOLVED":
 		return EventCommercialExceptionRes, raw, false
+	case "PAYMENT_UNKNOWN":
+		return EventUnknownProvider, raw, false
 	case "UNKNOWN_PROVIDER_EVENT":
 		return EventUnknownProvider, raw, false
 	}
@@ -995,7 +1002,7 @@ func isCommercialEvent(t string) bool {
 		EventOnboardingStarted, EventServiceActivated, EventServicePaused,
 		EventServiceEnded, EventRenewalDue, EventRenewed,
 		EventCommercialExceptionOpen, EventCommercialExceptionRes,
-		EventUnknownProvider:
+		EventCommercialException, EventUnknownProvider:
 		return true
 	default:
 		return false
