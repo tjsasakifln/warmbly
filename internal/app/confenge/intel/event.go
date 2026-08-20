@@ -17,6 +17,11 @@ func ParseCommercialEvent(raw []byte) (CommercialEvent, error) {
 	if err := json.Unmarshal(raw, &ev); err != nil {
 		return ev, err
 	}
+	var env producerEnvelope
+	if err := json.Unmarshal(raw, &env); err == nil {
+		ev = overlayProducerEnvelope(ev, env)
+	}
+	ev = NormalizeProducerCommercialEvent(ev)
 	return ev, ValidateCommercialEvent(ev)
 }
 
@@ -337,6 +342,7 @@ func knownAssetFamily(v string) bool {
 // is a replay. Search observations persist on the observation table,
 // never as a commercial chain.
 func IngestEvent(store Store, ev CommercialEvent) JoinResult {
+	ev = NormalizeProducerCommercialEvent(ev)
 	if isSearchObservationType(ev.Type, ev.Version, ev.Schema) {
 		return ingestSearchObservationEvent(store, ev)
 	}
@@ -491,6 +497,9 @@ func ingestCommercial(store Store, ev CommercialEvent) JoinResult {
 	identity := ChainIdentity(JoinKeys{
 		LeadID: ev.LeadID, ReceiptID: ev.ReceiptID, ActionID: ev.ActionID,
 		IdempotencyKey: ev.IdempotencyKey, OrganizationID: ev.OrganizationID,
+		ExternalReference: firstNonEmpty(ev.ExternalReference, ev.Provider.ExternalRef),
+		CorrelationID:     ev.CorrelationID,
+		EventID:           ev.EventID,
 	})
 	var existing *Chain
 	if store != nil && identity != "" {
@@ -514,13 +523,14 @@ func ingestCommercial(store Store, ev CommercialEvent) JoinResult {
 		}
 	}
 	tr := ApplyCommercialTransition(existing, ev)
-	if store != nil && ev.ProviderEventID != "" {
+	receiptKey := firstNonEmpty(ev.ProviderEventID, ev.EventID)
+	if store != nil && receiptKey != "" {
 		if rs, ok := store.(interface {
 			PutEventReceipt(EventReceipt) (EventReceipt, bool, error)
 		}); ok {
 			rec, created, err := rs.PutEventReceipt(EventReceipt{
 				OrganizationID:  ev.OrganizationID,
-				ProviderEventID: ev.ProviderEventID,
+				ProviderEventID: receiptKey,
 				ExternalRef:     firstNonEmpty(ev.ExternalReference, ev.Provider.ExternalRef),
 				EventID:         ev.EventID,
 				Identity:        identity,
@@ -590,10 +600,21 @@ func ingestCommercial(store Store, ev CommercialEvent) JoinResult {
 	res.Held = res.Held || tr.Held
 	if rs, ok := store.(interface {
 		MarkReceiptProcessed(string, string)
-	}); ok && ev.ProviderEventID != "" {
-		rs.MarkReceiptProcessed(ev.OrganizationID, ev.ProviderEventID)
+	}); ok && receiptKey != "" {
+		rs.MarkReceiptProcessed(ev.OrganizationID, receiptKey)
 	}
 	return res
+}
+
+// JoinUnavailable reports a fail-closed store error the HMAC edge should
+// retry (HTTP 5xx). Replays are not 5xx.
+func JoinUnavailable(res JoinResult) bool {
+	for _, ex := range res.Exceptions {
+		if ex.Code == ExceptionUnavailable {
+			return true
+		}
+	}
+	return false
 }
 
 func storeGet(store Store, orgID, identity string) (*Chain, error) {

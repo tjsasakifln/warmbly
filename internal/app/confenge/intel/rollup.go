@@ -41,6 +41,7 @@ func Rollup(chains []Chain, month string, includeSynthetic bool) ExecutiveView {
 	byRoute := map[string]int{}
 	byTerms := map[string]int{}
 	byCTA := map[string]int{}
+	byOfferVersion := map[string]*OfferExecutiveRow{}
 	comm := CommercialCounts{}
 	exCount := 0
 	manual := 0
@@ -72,6 +73,7 @@ func Rollup(chains []Chain, month string, includeSynthetic bool) ExecutiveView {
 		incBreakdown(byCTA, firstNonEmpty(c.CTAID, c.Keys.CTAID))
 		incBreakdown(byIntent, firstNonEmpty(c.IntentClass, c.Keys.IntentClass))
 		addCommercialCounts(&comm, c)
+		addOfferExecutive(byOfferVersion, c)
 		if c.Held {
 			exCount++
 		}
@@ -239,6 +241,7 @@ func Rollup(chains []Chain, month string, includeSynthetic bool) ExecutiveView {
 	view.ByIntent = mapBreakdown(byIntent)
 	view.ByTerms = mapBreakdown(byTerms)
 	view.ByCTA = mapBreakdown(byCTA)
+	view.ByOfferVersion = mapOfferExecutive(byOfferVersion)
 	comm.ExceptionCount = exCount
 	comm.ManualTouches = manual
 	view.Commercial = comm

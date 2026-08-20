@@ -373,6 +373,53 @@ export type ConfengeExecutiveView = {
     causal_proof: boolean;
     real_empty: boolean;
     chain_count: number;
+    commercial?: {
+        offer_viewed?: number;
+        checkout_created?: number;
+        payment_pending?: number;
+        payment_received?: number;
+        onboarding?: number;
+        service_active?: number;
+        payment_overdue?: number;
+        payment_refunded?: number;
+        canceled?: number;
+        qualified_pipeline?: number;
+        received_revenue_cents?: number;
+        contracted_revenue_cents?: number;
+        mrr_cents?: number;
+        exception_count?: number;
+    };
+    by_offer_version?: Array<{
+        offer_id: string;
+        offer_version: string;
+        selected: number;
+        checkout_created: number;
+        payment_pending: number;
+        payment_received: number;
+        onboarding_started: number;
+        service_active: number;
+        overdue: number;
+        refund: number;
+        cancel: number;
+        qualified_pipeline: number;
+        received_revenue_cents: number;
+        contracted_revenue_cents: number;
+        mrr_cents: number;
+        exceptions: number;
+        unknown: number;
+        onboarding_blocked: number;
+        onboarding_eligible: number;
+        denominator_chains: number;
+        stage_timestamps?: {
+            eligibility_submitted_at?: string;
+            capacity_decision_at?: string;
+            terms_accepted_at?: string;
+            checkout_created_at?: string;
+            payment_received_at?: string;
+            onboarding_started_at?: string;
+            service_activated_at?: string;
+        };
+    }>;
 };
 
 export type ConfengeScoreboardStage = {

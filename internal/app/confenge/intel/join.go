@@ -24,6 +24,12 @@ func ChainIdentity(k JoinKeys) string {
 	if id := strings.TrimSpace(k.IdempotencyKey); id != "" {
 		return "idem:" + id
 	}
+	if id := strings.TrimSpace(k.ExternalReference); id != "" {
+		return "ext:" + id
+	}
+	if id := strings.TrimSpace(k.CorrelationID); id != "" {
+		return "corr:" + id
+	}
 	if id := strings.TrimSpace(k.EventID); id != "" {
 		return "event:" + id
 	}

@@ -34,6 +34,9 @@ steps: [inbound-incident-runbook.md](./inbound-incident-runbook.md).
 | `CONFENGE_AUTO_SEND_ENABLED` | Must stay `false` |
 
 `Idempotency-Key` is optional. The durable key is `lead_id` / `receipt_id`.
+A `confenge.commercial_event.v1` body on this same HMAC route is a
+commercial receipt (not a lead). Dedupe is `provider_event_id` or
+`event_id`. Invalid secret is 401. Store unavailable is 503.
 
 ## Body
 

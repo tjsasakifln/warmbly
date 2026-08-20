@@ -34,6 +34,7 @@ const (
 	EventRenewed                 = "renewed"
 	EventCommercialExceptionOpen = "commercial_exception_opened"
 	EventCommercialExceptionRes  = "commercial_exception_resolved"
+	EventCommercialException     = "commercial_exception"
 	EventUnknownProvider         = "unknown_provider_event"
 
 	OfferDiagnostico = "CFG-DIAG-EXP-v1"
@@ -225,6 +226,7 @@ type DeliveryState struct {
 	SLAMaxBusinessDays  int        `json:"sla_max_business_days,omitempty"`
 	SLABusinessHours    int        `json:"sla_business_hours,omitempty"`
 	ServiceStatus       string     `json:"service_status,omitempty"`
+	OnboardingDecision  string     `json:"onboarding_decision,omitempty"`
 }
 
 // GateStates record external approvals. Warmbly never self-approves them.

@@ -110,7 +110,11 @@ func (s *service) IngestCommercialEvent(_ context.Context, orgID uuid.UUID, ev i
 	if err := intel.RejectUnsupportedEnvelope(ev); err != nil {
 		return intel.JoinResult{}, errx.New(errx.BadRequest, err.Error())
 	}
-	return intel.IngestEvent(s.intelStore(), ev), nil
+	res := intel.IngestEvent(s.intelStore(), ev)
+	if intel.JoinUnavailable(res) && !res.Replay {
+		return res, errx.New(errx.ServiceUnavailable, "commercial intel store unavailable")
+	}
+	return res, nil
 }
 
 // CommercialIntelReport is the executive observability payload.
