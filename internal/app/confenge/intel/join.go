@@ -347,8 +347,30 @@ func mergeIntoChain(existing Chain, in ObservedFacts, closeBlocked, held bool) (
 	fill(&merged.IntentClass, in.Keys.IntentClass)
 	fill(&merged.Keys.CTAID, in.Keys.CTAID)
 	fill(&merged.CTAID, in.Keys.CTAID)
+	fill(&merged.Keys.OrganicSource, in.Keys.OrganicSource)
+	fill(&merged.Keys.Medium, in.Keys.Medium)
+	fill(&merged.Keys.Campaign, in.Keys.Campaign)
+	fill(&merged.Keys.LandingPath, in.Keys.LandingPath)
+	fill(&merged.Keys.AssetVersion, in.Keys.AssetVersion)
+	fill(&merged.Keys.CTAVersion, in.Keys.CTAVersion)
+	fill(&merged.Keys.RecordKind, in.Keys.RecordKind)
+	fill(&merged.Keys.ConsentVersion, in.Keys.ConsentVersion)
+	fill(&merged.Keys.PageVersion, in.Keys.PageVersion)
+	fill(&merged.Keys.ContentVersion, in.Keys.ContentVersion)
+	fill(&merged.Keys.QueryClass, in.Keys.QueryClass)
+	fill(&merged.Keys.ReferrerClass, in.Keys.ReferrerClass)
 	if !held {
 		fill(&merged.Keys.RevenueDocumentID, in.Keys.RevenueDocumentID)
+	}
+	if merged.Keys.FirstTouchAt == nil && in.Keys.FirstTouchAt != nil {
+		merged.Keys.FirstTouchAt = in.Keys.FirstTouchAt
+		changed = true
+	}
+	if in.Keys.LastTouchAt != nil {
+		if merged.Keys.LastTouchAt == nil || in.Keys.LastTouchAt.After(*merged.Keys.LastTouchAt) {
+			merged.Keys.LastTouchAt = in.Keys.LastTouchAt
+			changed = true
+		}
 	}
 	if !conflictAccount(existing.Keys, in.Keys) {
 		fill(&merged.Keys.AccountID, in.Keys.AccountID)

@@ -256,7 +256,10 @@ func ProjectInboundNowItem(lead models.OutreachInboundLead, acc *models.Outreach
 const inboundUnknown = "UNKNOWN"
 
 func inboundQueryOf(lead models.OutreachInboundLead) string {
-	if q := strings.TrimSpace(utmField(lead.UTMJSON, "query", "search_query", "q", "utm_term", "term")); q != "" {
+	if q := strings.TrimSpace(utmField(lead.UTMJSON, "query_class", "intent_class")); inboundQueryClassOK(q) {
+		return q
+	}
+	if q := strings.TrimSpace(utmField(lead.UTMJSON, "query")); inboundQueryClassOK(q) {
 		return q
 	}
 	return inboundUnknown

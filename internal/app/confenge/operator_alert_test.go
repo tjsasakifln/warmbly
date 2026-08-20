@@ -535,6 +535,77 @@ func TestRequireAlertActorRejectsNilUUIDString(t *testing.T) {
 	}
 }
 
+func TestOperatorAlertSyntheticNeverSendsEmailAndOrganicContextOnReal(t *testing.T) {
+	svc, repo, org := inboundTestService(t)
+	svc.cfg.OperatorAlertEmailEnabled = true
+	svc.cfg.OperatorAlertEmailKillSwitch = false
+	svc.cfg.OperatorAlertEmail = "ops@confenge.com.br"
+	sent := 0
+	var lastBody string
+	svc.operatorMail = func(to, subject, body string) error {
+		sent++
+		lastBody = body
+		if to != "ops@confenge.com.br" {
+			t.Fatalf("to=%s", to)
+		}
+		return nil
+	}
+	now := time.Date(2026, 8, 19, 15, 0, 0, 0, time.UTC)
+	organicBody := []byte(`{
+		"lead_id":"webcfg-organic-1",
+		"receipt_id":"rcpt-webcfg-organic-1",
+		"created_at":"2026-08-19T12:00:00Z",
+		"source":"organic_search",
+		"organic_source":"organic_search",
+		"route_family":"inbound",
+		"asset_id":"segunda-leitura",
+		"cta_id":"segunda-leitura-contrato",
+		"email":"ana.souza@norte.example",
+		"company":"Construtora Norte",
+		"consent":{"granted":true,"consent_source":"web-cfg-consent-v1"}
+	}`)
+	real, xerr := svc.IngestInboundLead(context.Background(), org, organicBody, IngestOptions{Now: now})
+	if xerr != nil || real.Lead == nil {
+		t.Fatalf("real ingest: %v %+v", xerr, real)
+	}
+	if sent != 1 {
+		t.Fatalf("real organic must notify once, sent=%d", sent)
+	}
+	if !strings.Contains(lastBody, "organic_search") || !strings.Contains(lastBody, "segunda-leitura") {
+		t.Fatalf("alert missing organic source/asset: %s", lastBody)
+	}
+	if real.DispatchAttempted || svc.cfg.AutoSendEnabled {
+		t.Fatal("auto-send/dispatch attempted")
+	}
+
+	synSent := sent
+	canary, xerr := svc.IngestInboundLead(context.Background(), org, syntheticInboundBody("synthetic-organic-canary"), IngestOptions{Now: now})
+	if xerr != nil || canary.Lead == nil {
+		t.Fatalf("synthetic must persist: %v %+v", xerr, canary)
+	}
+	if sent != synSent {
+		t.Fatalf("synthetic notified operator: sent=%d", sent)
+	}
+	synAlert, _ := repo.GetOperatorAlertByLead(context.Background(), org, "synthetic-organic-canary")
+	if synAlert == nil || synAlert.ChannelStates[AlertChannelEmail] != AlertEmailSyntheticSkipped {
+		t.Fatalf("synthetic email channel=%v", synAlert)
+	}
+	if !synAlert.Synthetic {
+		t.Fatal("canary alert not labeled synthetic")
+	}
+
+	actor := uuid.MustParse("11111111-2222-4333-8444-555555555555")
+	ack, xerr := svc.AcknowledgeInboundAlert(context.Background(), org, actor, "webcfg-organic-1", now.Add(2*time.Minute))
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if ack.AcknowledgedBy != actor.String() {
+		t.Fatalf("ack actor=%s", ack.AcknowledgedBy)
+	}
+	fmt.Printf("ALERT_ORGANIC sent=%d synthetic_skipped=1 actor=%s source=organic_search asset=segunda-leitura auto_send=%v\n",
+		sent, ack.AcknowledgedBy, svc.cfg.AutoSendEnabled)
+}
+
 func TestOperatorAlertEventsDoNotOpenPipeline(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{"ok": true})
 	_ = raw

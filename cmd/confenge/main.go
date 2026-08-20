@@ -44,6 +44,8 @@ func main() {
 		os.Exit(cmdResumeSending())
 	case "intel-report":
 		os.Exit(cmdIntelReport(os.Args[2:]))
+	case "intel-organic":
+		os.Exit(cmdIntelOrganic(os.Args[2:]))
 	case "intel-exceptions":
 		os.Exit(cmdIntelExceptions(os.Args[2:]))
 	case "help", "-h", "--help":
@@ -66,6 +68,7 @@ Usage:
   confenge stop-sending
   confenge resume-sending
   confenge intel-report [--month YYYY-MM] [--include-synthetic] [--json PATH] [--md PATH]
+  confenge intel-organic [--include-synthetic] [--scoreboard PATH] [--feedback PATH]
   confenge intel-exceptions list|show|resolve [flags]
 
 Env: PRIMARY_DB, CONFENGE_*, REDIS, NATS_URL (see .env.confenge.example).
@@ -103,6 +106,56 @@ func cmdIntelReport(args []string) int {
 		fmt.Fprintf(os.Stderr, "intel-report recommendation=%s iqp=%d baseline=%s\n",
 			rep.Recommendation, rep.InboundQualifiedPipeline, rep.Latency.Baseline)
 	}
+	return 0
+}
+
+func cmdIntelOrganic(args []string) int {
+	fs := flag.NewFlagSet("intel-organic", flag.ExitOnError)
+	include := fs.Bool("include-synthetic", true, "include labeled SYNTHETIC fixtures")
+	scoreboardPath := fs.String("scoreboard", "", "write organic scoreboard JSON to PATH")
+	feedbackPath := fs.String("feedback", "", "write organic feedback JSON to PATH")
+	orgStr := fs.String("org-id", "org-inbound-learning-47", "organization id for fixture ingest")
+	_ = fs.Parse(args)
+
+	st := intel.NewMemoryStore()
+	intel.LoadNamedEventFixtures(st, *orgStr)
+	now := time.Date(2026, 8, 19, 15, 0, 0, 0, time.UTC)
+	board := intel.ProjectOrganicScoreboard(intel.OrganicScoreboardSources{
+		Now: now, IncludeSynthetic: *include,
+	})
+	chains, _ := st.ListChains(*orgStr)
+	board = intel.ProjectOrganicScoreboard(intel.OrganicScoreboardSources{
+		Now: now, IncludeSynthetic: *include, Chains: chains,
+	})
+	exp := intel.ExportOrganicFeedback(st, *orgStr, now, *include)
+	sb, err := intel.OrganicScoreboardJSON(board)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "intel-organic scoreboard: %v\n", err)
+		return 1
+	}
+	fb, err := intel.OrganicFeedbackJSON(exp)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "intel-organic feedback: %v\n", err)
+		return 1
+	}
+	if *scoreboardPath != "" && *scoreboardPath != "-" {
+		if err := os.WriteFile(*scoreboardPath, sb, 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "intel-organic scoreboard write: %v\n", err)
+			return 1
+		}
+	} else {
+		fmt.Println(string(sb))
+	}
+	if *feedbackPath != "" && *feedbackPath != "-" {
+		if err := os.WriteFile(*feedbackPath, fb, 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "intel-organic feedback write: %v\n", err)
+			return 1
+		}
+	} else if *scoreboardPath != "" {
+		fmt.Println(string(fb))
+	}
+	fmt.Fprintf(os.Stderr, "intel-organic recommendation=%s windows=%d rows=%d real_empty=%v causal_proof=%v\n",
+		board.Recommendation, len(board.Windows), len(exp.Rows), board.RealEmpty, board.CausalProof)
 	return 0
 }
 

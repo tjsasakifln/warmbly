@@ -315,6 +315,16 @@ func (s *scoreboardHTTPStub) TruthScoreboard(_ context.Context, _ uuid.UUID, _ s
 	b.IncludeSynthetic = includeSynthetic
 	return &b, nil
 }
+func (s *scoreboardHTTPStub) OrganicScoreboard(_ context.Context, _ uuid.UUID, includeSynthetic bool) (*intel.OrganicScoreboard, *errx.Error) {
+	board := intel.ProjectOrganicScoreboard(intel.OrganicScoreboardSources{
+		Now: time.Date(2026, 8, 19, 15, 0, 0, 0, time.UTC), IncludeSynthetic: includeSynthetic,
+	})
+	return &board, nil
+}
+func (s *scoreboardHTTPStub) OrganicFeedback(_ context.Context, _ uuid.UUID, includeSynthetic bool) (*intel.OrganicFeedbackExport, *errx.Error) {
+	exp := intel.ExportOrganicFeedback(intel.NewMemoryStore(), "org", time.Date(2026, 8, 19, 15, 0, 0, 0, time.UTC), includeSynthetic)
+	return &exp, nil
+}
 func (s *scoreboardHTTPStub) HumanOutcomeEnvelopes() []intel.HumanOutcomeEnvelope {
 	return intel.EmptyEnvelopes()
 }
@@ -355,6 +365,69 @@ func TestGetConfengeTruthScoreboardBody(t *testing.T) {
 		t.Fatal("HTTP scoreboard leaked synthetic or causal_proof")
 	}
 	fmt.Printf("HTTP_SCOREBOARD status=%d stages=%d path=%s\n", w.Code, len(wrap.Data.Stages), wrap.Data.ProductionPath)
+}
+
+func TestGetConfengeOrganicScoreboardAndFeedbackBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	org := uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+	h := &Handler{ConfengeService: &scoreboardHTTPStub{}}
+	req := httptest.NewRequest(http.MethodGet, "/confenge/intel/organic-scoreboard?include_synthetic=0", nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Set(middleware.OrganizationIDKey, org)
+	h.GetConfengeOrganicScoreboard(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("scoreboard status=%d body=%s", w.Code, w.Body.String())
+	}
+	var boardWrap struct {
+		Data intel.OrganicScoreboard `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &boardWrap); err != nil {
+		t.Fatal(err)
+	}
+	if boardWrap.Data.SchemaVersion != intel.OrganicScoreboardSchemaV1 || boardWrap.Data.CausalProof {
+		t.Fatalf("board=%+v", boardWrap.Data)
+	}
+	if len(boardWrap.Data.Windows) != 4 {
+		t.Fatalf("windows=%d", len(boardWrap.Data.Windows))
+	}
+	unknownVisible := false
+	for _, sl := range boardWrap.Data.Windows[0].BySource {
+		if sl.OrganicSource == intel.Unknown {
+			unknownVisible = true
+		}
+		if sl.ROAS != intel.TruthBlocked {
+			t.Fatal("HTTP invented organic ROAS")
+		}
+	}
+	if !unknownVisible {
+		t.Fatal("UNKNOWN source slice missing")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/confenge/intel/organic-feedback?include_synthetic=0", nil)
+	w = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(w)
+	c.Request = req
+	c.Set(middleware.OrganizationIDKey, org)
+	h.GetConfengeOrganicFeedback(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("feedback status=%d body=%s", w.Code, w.Body.String())
+	}
+	var fbWrap struct {
+		Data intel.OrganicFeedbackExport `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &fbWrap); err != nil {
+		t.Fatal(err)
+	}
+	if fbWrap.Data.SchemaVersion != intel.OrganicFeedbackSchemaV1 || fbWrap.Data.CausalProof || len(fbWrap.Data.UpstreamWrites) != 0 {
+		t.Fatalf("feedback=%+v", fbWrap.Data)
+	}
+	if len(fbWrap.Data.Rows) == 0 || fbWrap.Data.Rows[0].Verdict != intel.LearningNeedMore {
+		t.Fatalf("rows=%+v", fbWrap.Data.Rows)
+	}
+	fmt.Printf("HTTP_ORGANIC scoreboard=%s windows=%d feedback=%s verdict=%s unknown=%v\n",
+		boardWrap.Data.SchemaVersion, len(boardWrap.Data.Windows), fbWrap.Data.SchemaVersion, fbWrap.Data.Rows[0].Verdict, unknownVisible)
 }
 
 func TestListConfengeHumanEnvelopes(t *testing.T) {

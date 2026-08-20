@@ -43,6 +43,14 @@ type InboundLeadV1 struct {
 	Message        string
 	CorrelationID  string
 	Query          string
+	QueryClass     string
+	IntentClass    string
+	OrganicSource  string
+	LandingPath    string
+	AssetVersion   string
+	CTAVersion     string
+	RecordKind     string
+	ConsentVersion string
 	Consent        InboundConsent
 	UTM            map[string]string
 	HighIntentHint bool
@@ -106,27 +114,46 @@ func ParseInboundLead(raw []byte, now time.Time) (InboundLeadV1, *errx.Error) {
 		return InboundLeadV1{}, errx.New(errx.BadRequest, "inbound body must be JSON")
 	}
 	lead := InboundLeadV1{
-		LeadID:        firstNonEmpty(strAny(m, "lead_id", "id"), strAny(m, "receipt_id", "receipt")),
-		ReceiptID:     firstNonEmpty(strAny(m, "receipt_id", "receipt"), strAny(m, "lead_id", "id")),
-		Source:        SanitizeText(strAny(m, "source"), 120),
-		RouteFamily:   SanitizeText(strAny(m, "route_family", "route"), 80),
-		AssetID:       SanitizeText(strAny(m, "asset_id", "asset"), 120),
-		CTAID:         SanitizeText(strAny(m, "cta_id", "cta"), 120),
-		LandingURL:    sanitizeInboundURL(strAny(m, "landing_url", "url", "page_url")),
-		ContractID:    SanitizeText(strAny(m, "contract_public_id", "contract_id", "contrato_id"), 120),
-		EntityID:      SanitizeText(strAny(m, "entity_public_id", "entity_id", "account_public_id"), 120),
-		CompanyName:   SanitizeText(strAny(m, "company_name", "company", "empresa", "razao_social"), 200),
-		Name:          SanitizeText(strAny(m, "name", "nome", "lead_name"), 160),
-		Email:         strings.ToLower(strings.TrimSpace(strAny(m, "email", "lead_email"))),
-		Phone:         SanitizeText(strAny(m, "phone", "telefone", "tel", "lead_phone"), 40),
-		Referrer:      sanitizeInboundURL(strAny(m, "referrer", "referer")),
-		Message:       SanitizeText(strAny(m, "message", "contexto", "notes", "context"), 4000),
-		CorrelationID: SanitizeText(strAny(m, "correlation_id", "attribution_correlation_id"), 160),
-		Query:         SanitizeText(strAny(m, "query", "search_query", "q"), 200),
-		UTM:           parseUTM(m),
+		LeadID:         firstNonEmpty(strAny(m, "lead_id", "id"), strAny(m, "receipt_id", "receipt")),
+		ReceiptID:      firstNonEmpty(strAny(m, "receipt_id", "receipt"), strAny(m, "lead_id", "id")),
+		Source:         SanitizeText(strAny(m, "source"), 120),
+		RouteFamily:    SanitizeText(strAny(m, "route_family", "route"), 80),
+		AssetID:        SanitizeText(strAny(m, "asset_id", "asset"), 120),
+		CTAID:          SanitizeText(strAny(m, "cta_id", "cta"), 120),
+		LandingURL:     sanitizeInboundURL(strAny(m, "landing_url", "url", "page_url")),
+		ContractID:     SanitizeText(strAny(m, "contract_public_id", "contract_id", "contrato_id"), 120),
+		EntityID:       SanitizeText(strAny(m, "entity_public_id", "entity_id", "account_public_id"), 120),
+		CompanyName:    SanitizeText(strAny(m, "company_name", "company", "empresa", "razao_social"), 200),
+		Name:           SanitizeText(strAny(m, "name", "nome", "lead_name"), 160),
+		Email:          strings.ToLower(strings.TrimSpace(strAny(m, "email", "lead_email"))),
+		Phone:          SanitizeText(strAny(m, "phone", "telefone", "tel", "lead_phone"), 40),
+		Referrer:       sanitizeInboundURL(strAny(m, "referrer", "referer")),
+		Message:        SanitizeText(strAny(m, "message", "contexto", "notes", "context"), 4000),
+		CorrelationID:  SanitizeText(strAny(m, "correlation_id", "attribution_correlation_id"), 160),
+		QueryClass:     SanitizeText(strAny(m, "query_class", "intent_class"), 80),
+		IntentClass:    SanitizeText(strAny(m, "intent_class"), 80),
+		OrganicSource:  SanitizeText(strAny(m, "organic_source", "attribution_source"), 80),
+		LandingPath:    SanitizeText(strAny(m, "landing_path"), 200),
+		AssetVersion:   SanitizeText(strAny(m, "asset_version"), 80),
+		CTAVersion:     SanitizeText(strAny(m, "cta_version"), 80),
+		RecordKind:     SanitizeText(strAny(m, "record_kind"), 40),
+		ConsentVersion: SanitizeText(strAny(m, "consent_version"), 80),
+		UTM:            parseUTM(m),
 	}
-	if lead.Query == "" && lead.UTM != nil {
-		lead.Query = firstNonEmpty(lead.UTM["term"], lead.UTM["query"])
+	// Individual GSC/search queries are not a lead attribute. query_class may stay.
+	rawQuery := SanitizeText(strAny(m, "query", "search_query", "q"), 200)
+	if inboundQueryClassOK(rawQuery) {
+		lead.Query = rawQuery
+		if lead.QueryClass == "" {
+			lead.QueryClass = rawQuery
+		}
+	}
+	if lead.QueryClass == "" && lead.UTM != nil && inboundQueryClassOK(lead.UTM["query"]) {
+		lead.QueryClass = lead.UTM["query"]
+		lead.Query = lead.UTM["query"]
+	}
+	if lead.LandingPath == "" {
+		lead.LandingPath = lead.LandingURL
 	}
 	lead.CNPJ = NormalizeCNPJ14(strAny(m, "cnpj14", "cnpj"))
 	if ts := parseFlexibleTime(strAny(m, "created_at", "lead_created_at")); !ts.IsZero() {
@@ -209,6 +236,14 @@ func inboundHighIntent(lead InboundLeadV1) bool {
 		}
 	}
 	return false
+}
+
+func inboundQueryClassOK(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" || strings.ContainsAny(v, " \t\n@/?#") || len(v) > 80 {
+		return false
+	}
+	return true
 }
 
 func sanitizeInboundURL(raw string) string {

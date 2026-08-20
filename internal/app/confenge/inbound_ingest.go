@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/warmbly/warmbly/internal/app/confenge/intel"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/repository"
@@ -311,8 +312,37 @@ func inboundRowFromParsed(orgID uuid.UUID, lead InboundLeadV1, raw []byte, now t
 	if utmMap == nil {
 		utmMap = map[string]string{}
 	}
-	if q := strings.TrimSpace(lead.Query); q != "" {
+	if q := strings.TrimSpace(lead.QueryClass); inboundQueryClassOK(q) {
+		utmMap["query_class"] = q
+	}
+	if q := strings.TrimSpace(lead.Query); inboundQueryClassOK(q) {
 		utmMap["query"] = q
+	}
+	delete(utmMap, "search_query")
+	delete(utmMap, "q")
+	delete(utmMap, "term")
+	delete(utmMap, "utm_term")
+	delete(utmMap, "query_hash")
+	if v := strings.TrimSpace(lead.OrganicSource); v != "" {
+		utmMap["organic_source"] = v
+	}
+	if v := strings.TrimSpace(lead.IntentClass); v != "" {
+		utmMap["intent_class"] = v
+	}
+	if v := strings.TrimSpace(lead.AssetVersion); v != "" {
+		utmMap["asset_version"] = v
+	}
+	if v := strings.TrimSpace(lead.CTAVersion); v != "" {
+		utmMap["cta_version"] = v
+	}
+	if v := strings.TrimSpace(lead.RecordKind); v != "" {
+		utmMap["record_kind"] = v
+	}
+	if v := strings.TrimSpace(lead.ConsentVersion); v != "" {
+		utmMap["consent_version"] = v
+	}
+	if v := strings.TrimSpace(lead.LandingPath); v != "" {
+		utmMap["landing_path"] = v
 	}
 	utm, _ := json.Marshal(utmMap)
 	if len(utm) == 0 {
@@ -334,7 +364,7 @@ func inboundRowFromParsed(orgID uuid.UUID, lead InboundLeadV1, raw []byte, now t
 		RouteFamily:       lead.RouteFamily,
 		AssetID:           lead.AssetID,
 		CTAID:             lead.CTAID,
-		LandingURL:        lead.LandingURL,
+		LandingURL:        firstNonEmpty(lead.LandingURL, lead.LandingPath),
 		ContractID:        lead.ContractID,
 		EntityID:          lead.EntityID,
 		CNPJ14:            lead.CNPJ,
@@ -442,4 +472,65 @@ func (s *service) enqueueInboundImported(ctx context.Context, orgID uuid.UUID, r
 		OccurredAt:     row.WarmblyIngestedAt,
 		Payload:        meta,
 	})
+	intel.IngestEvent(s.intelStore(), inboundLeadToCommercialEvent(orgID, row))
+}
+
+func inboundLeadToCommercialEvent(orgID uuid.UUID, row *models.OutreachInboundLead) intel.CommercialEvent {
+	if row == nil {
+		return intel.CommercialEvent{}
+	}
+	synthetic := InboundCommercialSkipReason(*row) != ""
+	ev := intel.CommercialEvent{
+		EventID:        "inbound_imported:" + row.LeadID,
+		Version:        "1",
+		Schema:         intel.EventSchemaV1,
+		Type:           intel.EventLeadReceived,
+		OccurredAt:     row.LeadCreatedAt,
+		IngestedAt:     row.WarmblyIngestedAt,
+		Timezone:       "UTC",
+		CorrelationID:  row.CorrelationID,
+		IdempotencyKey: "inbound_imported:" + row.LeadID,
+		Source:         row.Source,
+		OrganicSource:  utmField(row.UTMJSON, "organic_source"),
+		Medium:         utmField(row.UTMJSON, "medium"),
+		Campaign:       utmField(row.UTMJSON, "campaign"),
+		Referrer:       row.Referrer,
+		ReferrerClass:  utmField(row.UTMJSON, "referrer_class"),
+		QueryClass:     utmField(row.UTMJSON, "query_class", "intent_class"),
+		IntentClass:    utmField(row.UTMJSON, "intent_class"),
+		CTAID:          row.CTAID,
+		CTAVersion:     utmField(row.UTMJSON, "cta_version"),
+		AssetID:        row.AssetID,
+		AssetVersion:   utmField(row.UTMJSON, "asset_version"),
+		LandingPath:    firstNonEmpty(utmField(row.UTMJSON, "landing_path"), row.LandingURL),
+		LeadID:         row.LeadID,
+		ReceiptID:      firstNonEmpty(row.ReceiptID, row.LeadID),
+		RouteFamily:    firstNonEmpty(row.RouteFamily, intel.FamilyInbound),
+		OrganizationID: orgID.String(),
+		Synthetic:      synthetic,
+		RecordKind:     utmField(row.UTMJSON, "record_kind"),
+		ConsentVersion: utmField(row.UTMJSON, "consent_version"),
+		Consent:        inboundConsentRef(row.ConsentJSON),
+	}
+	if inboundQueryClassOK(utmField(row.UTMJSON, "query")) {
+		ev.Query = utmField(row.UTMJSON, "query")
+	}
+	return ev
+}
+
+func inboundConsentRef(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return ""
+	}
+	if v, ok := m["source"].(string); ok && strings.TrimSpace(v) != "" {
+		return strings.TrimSpace(v)
+	}
+	if granted, ok := m["granted"].(bool); ok && granted {
+		return "granted"
+	}
+	return ""
 }

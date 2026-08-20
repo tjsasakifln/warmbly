@@ -65,11 +65,13 @@ func TestUtmQueryNeverReadsCampaign(t *testing.T) {
 		raw  string
 		want string
 	}{
-		{"real query", `{"query":"segunda leitura contrato","campaign":"brand"}`, "segunda leitura contrato"},
-		{"search_query", `{"search_query":"leitura contrato"}`, "leitura contrato"},
-		{"q", `{"q":"obra norte"}`, "obra norte"},
-		{"utm_term", `{"utm_term":"segunda-leitura","utm_campaign":"brand-aug"}`, "segunda-leitura"},
-		{"term", `{"term":"contrato","campaign":"ignored"}`, "contrato"},
+		{"gsc phrase stripped", `{"query":"segunda leitura contrato","campaign":"brand"}`, ""},
+		{"search_query stripped", `{"search_query":"leitura contrato"}`, ""},
+		{"q stripped", `{"q":"obra norte"}`, ""},
+		{"utm_term stripped", `{"utm_term":"segunda-leitura","utm_campaign":"brand-aug"}`, ""},
+		{"term stripped", `{"term":"contrato","campaign":"ignored"}`, ""},
+		{"query_class kept", `{"query_class":"segunda-leitura-preco","utm_campaign":"brand"}`, "segunda-leitura-preco"},
+		{"slug query kept", `{"query":"segunda-leitura-preco"}`, "segunda-leitura-preco"},
 		{"campaign only", `{"utm_campaign":"brand-aug","campaign":"brand-aug","utm_source":"google"}`, ""},
 		{"empty", `{}`, ""},
 	}
@@ -87,5 +89,16 @@ func TestUtmQueryNeverReadsCampaign(t *testing.T) {
 	if facts.Keys.Query != "" {
 		t.Fatalf("campaign-only Observe query=%q want empty", facts.Keys.Query)
 	}
-	fmt.Printf("UTM_QUERY campaign_only=empty query_keys=query,search_query,q,utm_term,term\n")
+	gscLead := models.OutreachInboundLead{
+		LeadID: "webcfg-utm-gsc", ReceiptID: "rcpt-utm-gsc", Source: "CONFENGE_WEB",
+		UTMJSON: []byte(`{"query":"segunda leitura contrato","search_query":"obra norte"}`),
+	}
+	gscFacts := ObserveFromInbound(gscLead, nil, nil, nil)
+	if gscFacts.Keys.Query != "" {
+		t.Fatalf("GSC Observe query=%q", gscFacts.Keys.Query)
+	}
+	if !gscFacts.StrippedGSCQuery {
+		t.Fatal("Observe must flag stripped GSC query")
+	}
+	fmt.Printf("UTM_QUERY campaign_only=empty gsc_stripped=true query_class_keys=query_class,intent_class\n")
 }

@@ -115,6 +115,55 @@ const (
 	ExceptionMissingAttribution   = "missing_attribution"
 	ExceptionAlertStoreFailed     = "alert_store_failed"
 
+	ExceptionLeadWithoutAssetID      = "lead_without_asset_id"
+	ExceptionUnknownAssetVersion     = "unknown_asset_version"
+	ExceptionContradictorySource     = "contradictory_source"
+	ExceptionSyntheticTreatedAsReal  = "synthetic_treated_as_real"
+	ExceptionMissingConsent          = "missing_consent"
+	ExceptionPipelineWithoutEvidence = "pipeline_without_evidence"
+	ExceptionRevenueWithoutFinancial = "revenue_without_financial_event"
+	ExceptionGSCQueryOnLead          = "gsc_query_on_lead"
+	ExceptionQueryHashOnLead         = "query_hash_on_lead"
+
+	SourceOrganicSearch = "organic_search"
+	SourceDirect        = "direct"
+	SourceReferral      = "referral"
+	SourceAIReferral    = "ai_referral"
+	SourcePartner       = "partner"
+	SourceOutbound      = "outbound"
+
+	RecordKindReal      = "real"
+	RecordKindSynthetic = "synthetic"
+
+	OrganicAttributionV1      = "confenge.organic_attribution.v1"
+	OrganicScoreboardSchemaV1 = "confenge.organic_learning_scoreboard.v1"
+	OrganicFeedbackSchemaV1   = "confenge.organic_editorial_feedback.v1"
+	OrganicDiscoveryContract  = "confenge.search_observation.v1"
+
+	EventSearchObservation = "search_observation"
+
+	LayerEligible          = "ELIGIBLE"
+	LayerAppeared          = "APPEARED"
+	LayerClicked           = "CLICKED"
+	LayerEngaged           = "ENGAGED"
+	LayerLeadValid         = "LEAD_VALID"
+	LayerQualifiedLead     = "QUALIFIED_LEAD"
+	LayerAcknowledged      = "ACKNOWLEDGED"
+	LayerConversation      = "CONVERSATION"
+	LayerMeeting           = "MEETING"
+	LayerProposal          = "PROPOSAL"
+	LayerQualifiedPipeline = "QUALIFIED_PIPELINE"
+	LayerWonLostUnknown    = "WON_LOST_UNKNOWN"
+	LayerRevenue           = "REVENUE"
+
+	Window7dComplete  = "7d_complete"
+	Window28dComplete = "28d_complete"
+	Window90d         = "90d"
+	WindowOpen        = "open_censored"
+
+	AttributionDirect   = "direct"
+	AttributionAssisted = "assisted"
+
 	BaselineSynthetic = "BASELINE_SYNTHETIC"
 	BaselineObserved  = "BASELINE_OBSERVED"
 	BaselineNone      = "insufficient_data"
@@ -189,6 +238,22 @@ type JoinKeys struct {
 	HoldID            string `json:"hold_id,omitempty"`
 	QueryClass        string `json:"query_class,omitempty"`
 	ReferrerClass     string `json:"referrer_class,omitempty"`
+
+	// Organic attribution contract (confenge.organic_attribution.v1).
+	// OrganicSource is the unmixed taxonomy. Source may remain a producer
+	// identity (web-cfg / CONFENGE_WEB). Query hash is never stored here.
+	OrganicSource  string     `json:"organic_source,omitempty"`
+	Medium         string     `json:"medium,omitempty"`
+	Campaign       string     `json:"campaign,omitempty"`
+	LandingPath    string     `json:"landing_path,omitempty"`
+	AssetVersion   string     `json:"asset_version,omitempty"`
+	CTAVersion     string     `json:"cta_version,omitempty"`
+	RecordKind     string     `json:"record_kind,omitempty"`
+	ConsentVersion string     `json:"consent_version,omitempty"`
+	PageVersion    string     `json:"page_version,omitempty"`
+	ContentVersion string     `json:"content_version,omitempty"`
+	FirstTouchAt   *time.Time `json:"first_touch_at,omitempty"`
+	LastTouchAt    *time.Time `json:"last_touch_at,omitempty"`
 }
 
 // ObservedFacts is one observed commercial record. Missing optional IDs
@@ -233,6 +298,14 @@ type ObservedFacts struct {
 
 	Synthetic bool   `json:"synthetic,omitempty"`
 	Label     string `json:"label,omitempty"`
+
+	RecordKind           string `json:"record_kind,omitempty"`
+	ConsentValid         bool   `json:"consent_valid,omitempty"`
+	StrippedGSCQuery     bool   `json:"stripped_gsc_query,omitempty"`
+	StrippedQueryHash    bool   `json:"stripped_query_hash,omitempty"`
+	ContradictorySource  bool   `json:"contradictory_source,omitempty"`
+	SyntheticLabeledReal bool   `json:"synthetic_labeled_real,omitempty"`
+	InvalidAssetVersion  bool   `json:"invalid_asset_version,omitempty"`
 }
 
 // Chain is one reconstructed observed path. Replay of the same IDs
@@ -668,6 +741,22 @@ type CommercialEvent struct {
 	QueryClass        string           `json:"query_class,omitempty"`
 	ReferrerClass     string           `json:"referrer_class,omitempty"`
 	CallbackOnly      bool             `json:"callback_only,omitempty"`
+
+	Medium         string     `json:"medium,omitempty"`
+	Campaign       string     `json:"campaign,omitempty"`
+	LandingPath    string     `json:"landing_path,omitempty"`
+	LandingURL     string     `json:"landing_url,omitempty"`
+	AssetVersion   string     `json:"asset_version,omitempty"`
+	CTAVersion     string     `json:"cta_version,omitempty"`
+	RecordKind     string     `json:"record_kind,omitempty"`
+	ConsentVersion string     `json:"consent_version,omitempty"`
+	PageVersion    string     `json:"page_version,omitempty"`
+	ContentVersion string     `json:"content_version,omitempty"`
+	FirstTouchAt   *time.Time `json:"first_touch_at,omitempty"`
+	LastTouchAt    *time.Time `json:"last_touch_at,omitempty"`
+	OrganicSource  string     `json:"organic_source,omitempty"`
+	QueryHash      string     `json:"-"`
+	GSCQuery       string     `json:"-"`
 }
 
 // ObservabilityReport is the executive JSON/MD payload for the learning loop.

@@ -135,6 +135,8 @@ type Service interface {
 	IngestProviderWebhook(ctx context.Context, orgID uuid.UUID, secret, previous, header string, body []byte) (intel.WebhookAck, *errx.Error)
 	ReopenIntelException(ctx context.Context, orgID uuid.UUID, id, actor, reason string) (intel.ResolveResult, *errx.Error)
 	TruthScoreboard(ctx context.Context, orgID uuid.UUID, month string, includeSynthetic bool) (*intel.Scoreboard, *errx.Error)
+	OrganicScoreboard(ctx context.Context, orgID uuid.UUID, includeSynthetic bool) (*intel.OrganicScoreboard, *errx.Error)
+	OrganicFeedback(ctx context.Context, orgID uuid.UUID, includeSynthetic bool) (*intel.OrganicFeedbackExport, *errx.Error)
 	RegisterHumanOutcome(ctx context.Context, orgID uuid.UUID, in intel.HumanOutcomeEntry) (intel.JoinResult, *errx.Error)
 	HumanOutcomeEnvelopes() []intel.HumanOutcomeEnvelope
 }
