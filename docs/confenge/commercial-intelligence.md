@@ -78,8 +78,9 @@ are `separate_metrics`. Default excludes synthetic.
 of this plane (`confenge.organic_attribution.v1`). Source taxonomy is
 `organic_search|direct|referral|ai_referral|partner|outbound|unknown`.
 Individual GSC queries never join a lead. Discovery layers stay BLOCKED
-without a web-cfg aggregate. Feedback is REPEAT/CHANGE/STOP/NEED_MORE_DATA
-with empty `upstream_writes`. This does not close #47.
+without a persisted `confenge.search_observation.v1` aggregate. Feedback is
+REPEAT/CHANGE/STOP/NEED_MORE_DATA with empty `upstream_writes`. This does
+not close #47.
 
 `GET /confenge/intel/executive?month=YYYY-MM&include_synthetic=0`
 

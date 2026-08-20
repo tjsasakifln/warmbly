@@ -111,7 +111,7 @@ func cmdIntelReport(args []string) int {
 
 func cmdIntelOrganic(args []string) int {
 	fs := flag.NewFlagSet("intel-organic", flag.ExitOnError)
-	include := fs.Bool("include-synthetic", true, "include labeled SYNTHETIC fixtures")
+	include := fs.Bool("include-synthetic", false, "include labeled SYNTHETIC fixtures (default excludes canaries from real)")
 	scoreboardPath := fs.String("scoreboard", "", "write organic scoreboard JSON to PATH")
 	feedbackPath := fs.String("feedback", "", "write organic feedback JSON to PATH")
 	orgStr := fs.String("org-id", "org-inbound-learning-47", "organization id for fixture ingest")
@@ -124,8 +124,10 @@ func cmdIntelOrganic(args []string) int {
 		Now: now, IncludeSynthetic: *include,
 	})
 	chains, _ := st.ListChains(*orgStr)
+	obs, _ := st.ListSearchObservations(*orgStr, "")
 	board = intel.ProjectOrganicScoreboard(intel.OrganicScoreboardSources{
 		Now: now, IncludeSynthetic: *include, Chains: chains,
+		Discovery: intel.SearchObservationsToDiscovery(obs),
 	})
 	exp := intel.ExportOrganicFeedback(st, *orgStr, now, *include)
 	sb, err := intel.OrganicScoreboardJSON(board)

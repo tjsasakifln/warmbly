@@ -2,6 +2,7 @@ package confenge
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -88,6 +89,26 @@ func (s *service) IngestCommercialEvent(_ context.Context, orgID uuid.UUID, ev i
 	}
 	if ev.OrganizationID == "" {
 		ev.OrganizationID = orgID.String()
+	}
+	if strings.EqualFold(strings.TrimSpace(ev.Type), intel.EventSearchObservation) ||
+		strings.TrimSpace(ev.Version) == intel.OrganicDiscoveryContract {
+		raw, err := json.Marshal(ev)
+		if err != nil {
+			return intel.JoinResult{}, errx.New(errx.BadRequest, "invalid search observation")
+		}
+		rec, xerr := s.IngestSearchObservation(context.Background(), orgID, raw, IngestOptions{})
+		if xerr != nil {
+			return intel.JoinResult{}, xerr
+		}
+		return intel.JoinResult{
+			Replay: rec.Replay, Created: rec.Persisted && !rec.Replay,
+			EventID: rec.EventID, AcceptedVersion: rec.AcceptedVersion,
+			ReceiptID: rec.ReceiptID, Persisted: rec.Persisted,
+			RecordKind: rec.RecordKind, NotALead: true,
+		}, nil
+	}
+	if err := intel.RejectUnsupportedEnvelope(ev); err != nil {
+		return intel.JoinResult{}, errx.New(errx.BadRequest, err.Error())
 	}
 	return intel.IngestEvent(s.intelStore(), ev), nil
 }
@@ -258,6 +279,7 @@ func (s *service) OrganicScoreboard(ctx context.Context, orgID uuid.UUID, includ
 	}
 	board := intel.ProjectOrganicScoreboard(intel.OrganicScoreboardSources{
 		Now: time.Now().UTC(), IncludeSynthetic: includeSynthetic, Chains: chains,
+		Discovery: intel.SearchObservationsToDiscovery(mustListObservations(s.intelStore(), orgID.String())),
 	})
 	return &board, nil
 }

@@ -105,7 +105,7 @@ func TestOrganicScoreboardSeparatesLayersAndSources(t *testing.T) {
 		Discovery: []OrganicDiscoveryAggregate{{
 			OrganicSource: SourceOrganicSearch, AssetID: "asset-sl",
 			LandingPath: "/guias/segunda-leitura", Window: Window28dComplete,
-			Eligible: 100, Appeared: 40, Clicked: 8, Engaged: 3,
+			Eligible: IntPtr(100), Appeared: IntPtr(40), Clicked: IntPtr(8), Engaged: IntPtr(3),
 			Freshness: "gsc-top-rows",
 		}},
 	})
@@ -221,4 +221,32 @@ func TestOrganicLatencyCensoredWhenNTooSmall(t *testing.T) {
 		t.Fatalf("latency with n=3 must stay UNKNOWN: %+v", sl.LeadToAction)
 	}
 	fmt.Printf("LATENCY_CENSOR n=%d median=%s\n", sl.LeadToAction.N, sl.LeadToAction.Median)
+}
+
+func TestOrganicScoreboardBothDiscoveryAndRealLeadIsReadyForIntegration(t *testing.T) {
+	now := time.Date(2026, 8, 19, 15, 0, 0, 0, time.UTC)
+	leadAt := now.AddDate(0, 0, -3)
+	st := NewMemoryStore()
+	IngestEvent(st, CommercialEvent{
+		EventID: "ev-both-lead", Version: "1", Schema: EventSchemaV1,
+		Type: EventLeadReceived, OccurredAt: leadAt, OrganizationID: "org-both",
+		LeadID: "lead-both", ReceiptID: "rcpt-both", Source: SourceOrganicSearch,
+		OrganicSource: SourceOrganicSearch, AssetID: "asset-sl", RouteFamily: FamilyInbound,
+		Consent: "c1", RecordKind: RecordKindReal,
+	})
+	chains, _ := st.ListChains("org-both")
+	board := ProjectOrganicScoreboard(OrganicScoreboardSources{
+		Now: now, Chains: chains,
+		Discovery: []OrganicDiscoveryAggregate{{
+			OrganicSource: SourceOrganicSearch, AssetID: "asset-sl", Window: Window28dComplete,
+			Eligible: IntPtr(4), Appeared: IntPtr(2), Clicked: IntPtr(1), Coverage: CoverageObserved,
+		}},
+	})
+	if board.Recommendation != RecommendReadyInteg {
+		t.Fatalf("recommendation=%s", board.Recommendation)
+	}
+	if board.CausalProof {
+		t.Fatal("causal_proof must stay false")
+	}
+	fmt.Printf("SCOREBOARD_BOTH rec=%s real_empty=%v causal=%v\n", board.Recommendation, board.RealEmpty, board.CausalProof)
 }

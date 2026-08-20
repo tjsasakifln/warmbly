@@ -68,7 +68,7 @@ func ExportOrganicFeedback(store Store, orgID string, now time.Time, includeSynt
 		CausalProof:      false,
 		UpstreamWrites:   []string{},
 		Rows:             []OrganicFeedbackRow{},
-		Recommendation:   "NEEDS_WEB_CFG_EVENT",
+		Recommendation:   RecommendNeedsWebCfg,
 	}
 	if store == nil {
 		out.RealEmpty = true
@@ -76,7 +76,7 @@ func ExportOrganicFeedback(store Store, orgID string, now time.Time, includeSynt
 	}
 	chains, _ := store.ListChains(orgID)
 	board := ProjectOrganicScoreboard(OrganicScoreboardSources{
-		Now: now, IncludeSynthetic: includeSynthetic, Chains: chains,
+		Now: now, IncludeSynthetic: includeSynthetic, Chains: chains, Discovery: loadDiscovery(store, orgID),
 	})
 	out.RealEmpty = board.RealEmpty
 	var w90 *OrganicWindow

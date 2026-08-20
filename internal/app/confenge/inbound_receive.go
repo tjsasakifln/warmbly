@@ -4,6 +4,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+
+	"github.com/warmbly/warmbly/internal/app/confenge/intel"
 )
 
 const (
@@ -21,20 +23,22 @@ const (
 // unreachable). This body is never 401 and never leaks configuration
 // values. A lying READY when secret/org/auto-send are wrong is a defect.
 type InboundReceiveProbe struct {
-	Status            string   `json:"status"`
-	AutoSendEnabled   bool     `json:"auto_send_enabled"`
-	Reasons           []string `json:"reasons"`
-	DispatchAttempted bool     `json:"dispatch_attempted"`
+	Status                string   `json:"status"`
+	AutoSendEnabled       bool     `json:"auto_send_enabled"`
+	Reasons               []string `json:"reasons"`
+	DispatchAttempted     bool     `json:"dispatch_attempted"`
+	AcceptedEventVersions []string `json:"accepted_event_versions"`
 }
 
 // EvaluateInboundReceive is the single READY/BLOCKED source for the
 // public health surface, operator readiness, and preflight.
 func EvaluateInboundReceive(cfg Config) InboundReceiveProbe {
 	p := InboundReceiveProbe{
-		Status:            InboundReceiveBlocked,
-		AutoSendEnabled:   cfg.AutoSendEnabled,
-		Reasons:           nil,
-		DispatchAttempted: false,
+		Status:                InboundReceiveBlocked,
+		AutoSendEnabled:       cfg.AutoSendEnabled,
+		Reasons:               nil,
+		DispatchAttempted:     false,
+		AcceptedEventVersions: intel.AcceptedEventVersions(),
 	}
 	if !cfg.Enabled {
 		p.Reasons = append(p.Reasons, InboundReasonOutreachOff)

@@ -105,6 +105,19 @@ func TestExportOrganicFeedbackSchemaAndVerdicts(t *testing.T) {
 		exp.SchemaVersion, len(exp.Rows), exp.Rows[0].Verdict, exp.CausalProof, len(exp.UpstreamWrites))
 }
 
+func TestOrganicFeedbackSourceHasNoUpstreamClients(t *testing.T) {
+	src, err := os.ReadFile("organic_feedback.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	low := strings.ToLower(string(src))
+	for _, tok := range []string{"http.post", "http.newrequest", "os.writefile", "sql.exec"} {
+		if strings.Contains(low, tok) {
+			t.Fatalf("feedback source talks to upstream (%s)", tok)
+		}
+	}
+}
+
 func TestMigration106CHECKContainsOrganicExceptionCodes(t *testing.T) {
 	up := filepath.Join("..", "..", "..", "infrastructure", "db", "migrations", "000106_outreach_intel_organic_learning.up.sql")
 	down := filepath.Join("..", "..", "..", "infrastructure", "db", "migrations", "000106_outreach_intel_organic_learning.down.sql")
@@ -132,5 +145,15 @@ func TestMigration106CHECKContainsOrganicExceptionCodes(t *testing.T) {
 	if !strings.Contains(string(downRaw), "'alert_store_failed'") {
 		t.Fatal("000106 down must keep alert_store_failed")
 	}
-	fmt.Printf("MIGRATION_106 up=%d down=%d organic_codes=9\n", len(upRaw), len(downRaw))
+	if !strings.Contains(string(upRaw), "CREATE TABLE IF NOT EXISTS outreach_intel_search_observations") {
+		t.Fatal("000106 up missing search observations table")
+	}
+	if !strings.Contains(string(upRaw), "UNIQUE INDEX IF NOT EXISTS outreach_intel_search_obs_org_event_uidx") &&
+		!strings.Contains(string(upRaw), "outreach_intel_search_obs_org_event_uidx") {
+		t.Fatal("000106 up missing unique (org,event)")
+	}
+	if !strings.Contains(string(downRaw), "DROP TABLE IF EXISTS outreach_intel_search_observations") {
+		t.Fatal("000106 down missing drop of search observations")
+	}
+	fmt.Printf("MIGRATION_106 up=%d down=%d organic_codes=9 search_observations=true\n", len(upRaw), len(downRaw))
 }

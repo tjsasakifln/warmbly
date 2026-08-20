@@ -334,8 +334,30 @@ func knownAssetFamily(v string) bool {
 
 // IngestEvent is the shipped entry for versioned events. Fixtures and
 // future real events share this path. Same event_id or idempotency key
-// is a replay.
+// is a replay. Search observations persist on the observation table,
+// never as a commercial chain.
 func IngestEvent(store Store, ev CommercialEvent) JoinResult {
+	if isSearchObservationType(ev.Type, ev.Version, ev.Schema) {
+		return ingestSearchObservationEvent(store, ev)
+	}
+	if err := RejectUnsupportedEnvelope(ev); err != nil {
+		now := time.Now().UTC()
+		ex := Exception{
+			Code:       ExceptionOrphan,
+			Reason:     err.Error(),
+			NextAction: "fix the event and retry; do not invent a chain",
+			At:         now,
+			Synthetic:  ev.Synthetic,
+			Held:       true,
+			Owner:      OwnerInboundOps,
+			Severity:   SeverityHigh,
+			Status:     StatusOpen,
+		}
+		if store != nil {
+			_ = store.PutException(ex)
+		}
+		return JoinResult{Exceptions: []Exception{ex}, Held: true}
+	}
 	if err := ValidateCommercialEvent(ev); err != nil {
 		now := time.Now().UTC()
 		ex := Exception{

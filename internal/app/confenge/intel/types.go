@@ -172,6 +172,10 @@ const (
 	RecommendAdjust = "ADJUST"
 	RecommendNoGo   = "NO_GO"
 
+	RecommendNeedsWebCfg = "NEEDS_WEB_CFG_EVENT"
+	RecommendNeedsReal   = "NEEDS_REAL_EVENT"
+	RecommendReadyInteg  = "READY_FOR_INTEGRATION"
+
 	ReportSchemaV1 = "confenge.inbound_learning_report.v1"
 )
 
@@ -476,11 +480,17 @@ type Exception struct {
 
 // JoinResult is the shipped reconcile outcome.
 type JoinResult struct {
-	Chain      Chain       `json:"chain"`
-	Exceptions []Exception `json:"exceptions,omitempty"`
-	Created    bool        `json:"created"`
-	Replay     bool        `json:"replay"`
-	Held       bool        `json:"held"`
+	Chain           Chain       `json:"chain"`
+	Exceptions      []Exception `json:"exceptions,omitempty"`
+	Created         bool        `json:"created"`
+	Replay          bool        `json:"replay"`
+	Held            bool        `json:"held"`
+	EventID         string      `json:"event_id,omitempty"`
+	AcceptedVersion string      `json:"accepted_version,omitempty"`
+	ReceiptID       string      `json:"receipt_id,omitempty"`
+	Persisted       bool        `json:"persisted,omitempty"`
+	RecordKind      string      `json:"record_kind,omitempty"`
+	NotALead        bool        `json:"not_a_lead,omitempty"`
 }
 
 // LearningCandidate stays inside this capability. It never writes extra-cli,
@@ -757,6 +767,16 @@ type CommercialEvent struct {
 	OrganicSource  string     `json:"organic_source,omitempty"`
 	QueryHash      string     `json:"-"`
 	GSCQuery       string     `json:"-"`
+
+	Window        string     `json:"window,omitempty"`
+	Coverage      string     `json:"coverage,omitempty"`
+	Freshness     string     `json:"freshness,omitempty"`
+	Eligible      *int       `json:"eligible,omitempty"`
+	Appeared      *int       `json:"appeared,omitempty"`
+	Clicked       *int       `json:"clicked,omitempty"`
+	Engaged       *int       `json:"engaged,omitempty"`
+	MeasurementAt *time.Time `json:"measurement_at,omitempty"`
+	ConsentPolicy string     `json:"consent_policy,omitempty"`
 }
 
 // ObservabilityReport is the executive JSON/MD payload for the learning loop.

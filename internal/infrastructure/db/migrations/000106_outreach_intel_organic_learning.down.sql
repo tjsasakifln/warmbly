@@ -1,5 +1,8 @@
 -- Restore the 000105 exception CHECK (operator-alert era). Organic
--- attribution codes are dropped from the allowed set.
+-- attribution codes are dropped from the allowed set. Search observation
+-- rows are dropped with the table; receipts on other tables stay.
+
+DROP TABLE IF EXISTS outreach_intel_search_observations;
 
 ALTER TABLE outreach_intel_exceptions
     DROP CONSTRAINT IF EXISTS outreach_intel_exceptions_code_check;

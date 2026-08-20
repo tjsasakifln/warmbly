@@ -19,10 +19,11 @@ type OrganicDiscoveryAggregate struct {
 	IntentClass   string    `json:"intent_class,omitempty"`
 	QueryClass    string    `json:"query_class,omitempty"`
 	Window        string    `json:"window,omitempty"`
-	Eligible      int       `json:"eligible,omitempty"`
-	Appeared      int       `json:"appeared,omitempty"`
-	Clicked       int       `json:"clicked,omitempty"`
-	Engaged       int       `json:"engaged,omitempty"`
+	Eligible      *int      `json:"eligible"`
+	Appeared      *int      `json:"appeared"`
+	Clicked       *int      `json:"clicked"`
+	Engaged       *int      `json:"engaged"`
+	Coverage      string    `json:"coverage,omitempty"`
 	Freshness     string    `json:"freshness,omitempty"`
 	At            time.Time `json:"at,omitempty"`
 	Synthetic     bool      `json:"synthetic,omitempty"`
@@ -114,7 +115,7 @@ func ProjectOrganicScoreboard(src OrganicScoreboardSources) OrganicScoreboard {
 		IncludeSynthetic: src.IncludeSynthetic,
 		CausalProof:      false,
 		Sources:          OrganicSources(),
-		Recommendation:   "NEEDS_WEB_CFG_EVENT",
+		Recommendation:   RecommendNeedsWebCfg,
 	}
 	chains := filterOrganicChains(src.Chains, src.IncludeSynthetic)
 	realN := 0
@@ -128,14 +129,13 @@ func ProjectOrganicScoreboard(src OrganicScoreboardSources) OrganicScoreboard {
 	for _, spec := range specs {
 		board.Windows = append(board.Windows, projectOrganicWindow(spec, chains, src.Discovery, src.IncludeSynthetic))
 	}
-	if hasDiscovery(src.Discovery, src.IncludeSynthetic) && !board.RealEmpty {
-		board.Recommendation = "NEEDS_REAL_EVENT"
-	}
-	if hasDiscovery(src.Discovery, src.IncludeSynthetic) && realN > 0 {
-		board.Recommendation = "READY_FOR_INTEGRATION"
-	}
-	if board.RealEmpty && !hasDiscovery(src.Discovery, src.IncludeSynthetic) {
-		board.Recommendation = "NEEDS_WEB_CFG_EVENT"
+	switch {
+	case hasDiscovery(src.Discovery, src.IncludeSynthetic) && realN > 0:
+		board.Recommendation = RecommendReadyInteg
+	case hasDiscovery(src.Discovery, src.IncludeSynthetic):
+		board.Recommendation = RecommendNeedsReal
+	default:
+		board.Recommendation = RecommendNeedsWebCfg
 	}
 	return board
 }
@@ -181,9 +181,7 @@ func hasDiscovery(rows []OrganicDiscoveryAggregate, includeSynthetic bool) bool 
 		if !includeSynthetic && r.Synthetic {
 			continue
 		}
-		if r.Eligible+r.Appeared+r.Clicked+r.Engaged > 0 {
-			return true
-		}
+		return true
 	}
 	return false
 }
@@ -380,10 +378,10 @@ func projectOrganicSlice(key string, chains []Chain, discovery []OrganicDiscover
 	sl.OpenCensored = open
 	sl.LeadToAction = organicLatencyOf(latencies)
 	sl.Layers = []OrganicLayer{
-		discoveryLayer(LayerEligible, disc, func(d *OrganicDiscoveryAggregate) int { return d.Eligible }, leads),
-		discoveryLayer(LayerAppeared, disc, func(d *OrganicDiscoveryAggregate) int { return d.Appeared }, leads),
-		discoveryLayer(LayerClicked, disc, func(d *OrganicDiscoveryAggregate) int { return d.Clicked }, leads),
-		discoveryLayer(LayerEngaged, disc, func(d *OrganicDiscoveryAggregate) int { return d.Engaged }, leads),
+		discoveryLayer(LayerEligible, disc, func(d *OrganicDiscoveryAggregate) *int { return d.Eligible }, leads),
+		discoveryLayer(LayerAppeared, disc, func(d *OrganicDiscoveryAggregate) *int { return d.Appeared }, leads),
+		discoveryLayer(LayerClicked, disc, func(d *OrganicDiscoveryAggregate) *int { return d.Clicked }, leads),
+		discoveryLayer(LayerEngaged, disc, func(d *OrganicDiscoveryAggregate) *int { return d.Engaged }, leads),
 		countLayer(LayerLeadValid, leads, leads, unk),
 		countLayer(LayerQualifiedLead, qualified, leads, 0),
 		countLayer(LayerAcknowledged, acked, leads, 0),
@@ -424,10 +422,10 @@ func emptySourceSlice(src string, spec organicWindowSpec, discovery []OrganicDis
 		sl.DiscoveryFreshness = firstNonEmpty(disc.Freshness, "snapshot")
 	}
 	sl.Layers = []OrganicLayer{
-		discoveryLayer(LayerEligible, disc, func(d *OrganicDiscoveryAggregate) int { return d.Eligible }, 0),
-		discoveryLayer(LayerAppeared, disc, func(d *OrganicDiscoveryAggregate) int { return d.Appeared }, 0),
-		discoveryLayer(LayerClicked, disc, func(d *OrganicDiscoveryAggregate) int { return d.Clicked }, 0),
-		discoveryLayer(LayerEngaged, disc, func(d *OrganicDiscoveryAggregate) int { return d.Engaged }, 0),
+		discoveryLayer(LayerEligible, disc, func(d *OrganicDiscoveryAggregate) *int { return d.Eligible }, 0),
+		discoveryLayer(LayerAppeared, disc, func(d *OrganicDiscoveryAggregate) *int { return d.Appeared }, 0),
+		discoveryLayer(LayerClicked, disc, func(d *OrganicDiscoveryAggregate) *int { return d.Clicked }, 0),
+		discoveryLayer(LayerEngaged, disc, func(d *OrganicDiscoveryAggregate) *int { return d.Engaged }, 0),
 		countLayer(LayerLeadValid, 0, 0, 0),
 		countLayer(LayerQualifiedLead, 0, 0, 0),
 		countLayer(LayerAcknowledged, 0, 0, 0),
@@ -467,7 +465,7 @@ func matchDiscovery(rows []OrganicDiscoveryAggregate, src, family, asset, landin
 	return nil
 }
 
-func discoveryLayer(id string, disc *OrganicDiscoveryAggregate, pick func(*OrganicDiscoveryAggregate) int, leadHint int) OrganicLayer {
+func discoveryLayer(id string, disc *OrganicDiscoveryAggregate, pick func(*OrganicDiscoveryAggregate) *int, leadHint int) OrganicLayer {
 	ly := OrganicLayer{
 		ID:          id,
 		Status:      TruthBlocked,
@@ -477,14 +475,29 @@ func discoveryLayer(id string, disc *OrganicDiscoveryAggregate, pick func(*Organ
 	if disc == nil {
 		return ly
 	}
-	n := pick(disc)
-	ly.Count = n
-	ly.Denominator = n
-	if n > 0 {
-		ly.Status = TruthTrue
-	} else {
+	switch strings.ToUpper(strings.TrimSpace(disc.Coverage)) {
+	case CoverageAbsent:
+		ly.Status = CoverageAbsent
+		ly.Observation = "web-cfg aggregate ABSENT"
+		return ly
+	case CoverageBlocked:
+		ly.Status = TruthBlocked
+		ly.Observation = "web-cfg aggregate BLOCKED"
+		return ly
+	case CoverageUnknown:
 		ly.Status = TruthUnknown
+		ly.Observation = "web-cfg aggregate UNKNOWN"
+		return ly
 	}
+	n := pick(disc)
+	if n == nil {
+		ly.Status = TruthUnknown
+		ly.Observation = "web-cfg aggregate " + OrganicDiscoveryContract + " count UNKNOWN"
+		return ly
+	}
+	ly.Count = *n
+	ly.Denominator = *n
+	ly.Status = TruthTrue
 	ly.Observation = "web-cfg aggregate " + OrganicDiscoveryContract
 	return ly
 }

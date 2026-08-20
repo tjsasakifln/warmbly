@@ -1,0 +1,13 @@
+{
+  "source_pr": 98,
+  "source_repo": "tjsasakifln/warmbly",
+  "source_url": "https://github.com/tjsasakifln/warmbly/pull/98",
+  "source_head": "campaign/confenge-warmbly-seo-revenue-learning-02",
+  "source_sha": "b81e8c888a5f390209daa6be5525a7f71ccb194b",
+  "source_base_sha": "ec8647e211605329a414094e0fd1df1846947f93",
+  "transplant": "cherry-pick 321b181b then b81e8c88 onto origin/main",
+  "disposition": "supersede after convergence PR is in production; do not merge #98 separately",
+  "go_ci_failure": "TestInboundCommercialSkipKeepsRealInQueue expected raw query phrase; sanitizer keeps UNKNOWN",
+  "product_acceptance": "success",
+  "security_scan": "success"
+}

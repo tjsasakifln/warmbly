@@ -74,6 +74,7 @@ type Service interface {
 	HandleClassifiedReplyFull(ctx context.Context, orgID, actorID uuid.UUID, contactEmail, replyClass string, warmblyContactID *uuid.UUID, subject, bodyText string, headers map[string][]string) *errx.Error
 	ProcessInboundHandoff(ctx context.Context, orgID uuid.UUID, in InboundHandoff) (*HandoffResult, *errx.Error)
 	IngestInboundLead(ctx context.Context, orgID uuid.UUID, raw []byte, opts IngestOptions) (*InboundIngestResult, *errx.Error)
+	IngestSearchObservation(ctx context.Context, orgID uuid.UUID, raw []byte, opts IngestOptions) (*intel.SearchObservationReceipt, *errx.Error)
 	CollectInboundNow(ctx context.Context, orgID uuid.UUID) ([]InboundNowItem, *errx.Error)
 	CollectInboundNowFiltered(ctx context.Context, orgID uuid.UUID, includeSynthetic bool) ([]InboundNowItem, *errx.Error)
 	RecordInboundOutcome(ctx context.Context, orgID, userID uuid.UUID, leadID string, req OutcomeRequest) (*OutcomeApply, *errx.Error)
