@@ -247,6 +247,30 @@ func (s *service) HumanOutcomeEnvelopes() []intel.HumanOutcomeEnvelope {
 	return intel.EmptyEnvelopes()
 }
 
+func (s *service) OrganicScoreboard(ctx context.Context, orgID uuid.UUID, includeSynthetic bool) (*intel.OrganicScoreboard, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return nil, xerr
+	}
+	s.observeExisting(ctx, orgID)
+	chains, err := s.intelStore().ListChains(orgID.String())
+	if err != nil {
+		return nil, errx.New(errx.Internal, "organic scoreboard list: "+err.Error())
+	}
+	board := intel.ProjectOrganicScoreboard(intel.OrganicScoreboardSources{
+		Now: time.Now().UTC(), IncludeSynthetic: includeSynthetic, Chains: chains,
+	})
+	return &board, nil
+}
+
+func (s *service) OrganicFeedback(ctx context.Context, orgID uuid.UUID, includeSynthetic bool) (*intel.OrganicFeedbackExport, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return nil, xerr
+	}
+	s.observeExisting(ctx, orgID)
+	exp := intel.ExportOrganicFeedback(s.intelStore(), orgID.String(), time.Now().UTC(), includeSynthetic)
+	return &exp, nil
+}
+
 func (s *service) observeExisting(ctx context.Context, orgID uuid.UUID) {
 	st := s.intelStore()
 	seenActions := map[string]bool{}

@@ -112,8 +112,11 @@ func (s *service) emitOperatorChannels(ctx context.Context, orgID uuid.UUID, row
 	if emailReason == "" {
 		emailReason = AlertEmailBlockedNoTransport
 	}
-	if s.operatorMail != nil && emailReason == AlertEmailBlockedNoTransport {
-		mail := BuildOperatorAlertEmail(now, row.Source, row.AssetID, now.Sub(row.WarmblyIngestedAt), "/app/confenge#inbound-agora")
+	if alert.Synthetic {
+		emailReason = AlertEmailSyntheticSkipped
+	} else if s.operatorMail != nil && emailReason == AlertEmailBlockedNoTransport {
+		origin := firstNonEmpty(utmField(row.UTMJSON, "organic_source"), row.Source)
+		mail := BuildOperatorAlertEmail(now, origin, row.AssetID, now.Sub(row.WarmblyIngestedAt), "/app/confenge#inbound-agora")
 		to := strings.TrimSpace(s.cfg.OperatorAlertEmail)
 		if OperatorAlertContainsPII(mail.Subject, *row) || OperatorAlertContainsPII(mail.Body, *row) {
 			emailReason = "pii_blocked"

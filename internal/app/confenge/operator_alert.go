@@ -38,6 +38,7 @@ const (
 	AlertEmailBlockedNoTransport = "blocked_no_isolated_transport"
 	AlertEmailSendFailed         = "send_failed"
 	AlertEmailDisabled           = "disabled"
+	AlertEmailSyntheticSkipped   = "synthetic_skipped"
 )
 
 type OperatorAlert = models.OutreachOperatorAlert

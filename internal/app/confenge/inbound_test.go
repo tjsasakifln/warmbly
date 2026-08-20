@@ -284,19 +284,27 @@ func TestParseInboundLeadQueryVsCampaign(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if realQ.Query != "segunda leitura contrato" {
-		t.Fatalf("real query=%q", realQ.Query)
+	if realQ.Query != "" {
+		t.Fatalf("GSC phrase must not join the lead: query=%q", realQ.Query)
 	}
 	if realQ.UTM["campaign"] != "brand-aug" {
 		t.Fatalf("campaign not preserved: %+v", realQ.UTM)
+	}
+
+	classQ, err := ParseInboundLead([]byte(`{"lead_id":"q1c","source":"CONFENGE_WEB","query_class":"segunda-leitura-preco","utm_campaign":"brand-aug"}`), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if classQ.QueryClass != "segunda-leitura-preco" {
+		t.Fatalf("query_class=%q", classQ.QueryClass)
 	}
 
 	term, err := ParseInboundLead([]byte(`{"lead_id":"q2","source":"CONFENGE_WEB","utm_term":"segunda-leitura","utm_campaign":"brand-aug"}`), now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if term.Query != "segunda-leitura" {
-		t.Fatalf("utm_term query=%q", term.Query)
+	if term.Query != "" {
+		t.Fatalf("utm_term must not become a lead query: %q", term.Query)
 	}
 	if term.UTM["campaign"] != "brand-aug" {
 		t.Fatalf("campaign lost on utm_term: %+v", term.UTM)
@@ -328,16 +336,21 @@ func TestParseInboundLeadQueryVsCampaign(t *testing.T) {
 
 	realRow := inboundRowFromParsed(uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"), realQ, []byte(`{"lead_id":"q1","query":"segunda leitura contrato"}`), now)
 	realItem := ProjectInboundNowItem(*realRow, nil, nil, now)
-	if realItem.Query != "segunda leitura contrato" {
-		t.Fatalf("real query projection=%q", realItem.Query)
+	if realItem.Query != inboundUnknown {
+		t.Fatalf("GSC phrase leaked into INBOUND NOW: %q", realItem.Query)
+	}
+	classRow := inboundRowFromParsed(uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"), classQ, []byte(`{"lead_id":"q1c","query_class":"segunda-leitura-preco"}`), now)
+	classItem := ProjectInboundNowItem(*classRow, nil, nil, now)
+	if classItem.Query != "segunda-leitura-preco" {
+		t.Fatalf("query_class projection=%q", classItem.Query)
 	}
 	termRow := inboundRowFromParsed(uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"), term, []byte(`{"lead_id":"q2","utm_term":"segunda-leitura"}`), now)
 	termItem := ProjectInboundNowItem(*termRow, nil, nil, now)
-	if termItem.Query != "segunda-leitura" {
-		t.Fatalf("utm_term projection=%q", termItem.Query)
+	if termItem.Query != inboundUnknown {
+		t.Fatalf("utm_term projection leaked: %q", termItem.Query)
 	}
-	fmt.Printf("QUERY_VS_CAMPAIGN query=%q utm_term=%q campaign_only=%s campaign=%s\n",
-		realItem.Query, termItem.Query, item.Query, utm["campaign"])
+	fmt.Printf("QUERY_VS_CAMPAIGN gsc=%q class=%q utm_term=%q campaign_only=%s campaign=%s\n",
+		realItem.Query, classItem.Query, termItem.Query, item.Query, utm["campaign"])
 }
 
 func TestParseInboundLeadRequiresReceipt(t *testing.T) {

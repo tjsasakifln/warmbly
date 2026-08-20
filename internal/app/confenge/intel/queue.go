@@ -84,9 +84,13 @@ func isAllowedResolve(action string) bool {
 func severityFor(code string) string {
 	switch strings.TrimSpace(code) {
 	case ExceptionOrphan, ExceptionConflictingAccount, ExceptionOutOfOrder,
-		ExceptionUnconfirmedWon, ExceptionUnconfirmedLost, ExceptionUnavailable:
+		ExceptionUnconfirmedWon, ExceptionUnconfirmedLost, ExceptionUnavailable,
+		ExceptionSyntheticTreatedAsReal, ExceptionGSCQueryOnLead, ExceptionQueryHashOnLead,
+		ExceptionContradictorySource, ExceptionMissingConsent, ExceptionRevenueWithoutFinancial:
 		return SeverityHigh
-	case ExceptionMissingVersion, ExceptionStaleAttribution:
+	case ExceptionMissingVersion, ExceptionStaleAttribution,
+		ExceptionLeadWithoutAssetID, ExceptionUnknownAssetVersion,
+		ExceptionPipelineWithoutEvidence:
 		return SeverityMedium
 	case ExceptionDuplicate:
 		return SeverityLow
@@ -229,6 +233,12 @@ func enrichException(ex *Exception, in ObservedFacts) {
 	}
 	if strings.TrimSpace(ex.Owner) == "" {
 		ex.Owner = ExceptionOwner(ex.Code)
+	}
+	if strings.TrimSpace(ex.RetryState) == "" {
+		ex.RetryState = "pending"
+	}
+	if ex.OpenedAt.IsZero() {
+		ex.OpenedAt = ex.At
 	}
 	if strings.TrimSpace(ex.NextAction) == "" {
 		ex.NextAction = nextActionFor(ex.Status, "")

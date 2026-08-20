@@ -87,6 +87,8 @@ All paths below are relative to the versioned base URL `https://api.warmbly.com/
 | POST | `/confenge/inbound/:leadId/resolve` | `WRITE_CONTACTS` |
 | GET | `/confenge/intel/executive` | `READ_CONTACTS` |
 | GET | `/confenge/intel/scoreboard` | `READ_CONTACTS` |
+| GET | `/confenge/intel/organic-scoreboard` | `READ_CONTACTS` |
+| GET | `/confenge/intel/organic-feedback` | `READ_CONTACTS` |
 | GET | `/confenge/intel/human-envelopes` | `READ_CONTACTS` |
 | POST | `/confenge/intel/human-outcomes` | `WRITE_CONTACTS` |
 | GET | `/confenge/intel/report` | `READ_CONTACTS` |
@@ -108,6 +110,10 @@ All paths below are relative to the versioned base URL `https://api.warmbly.com/
 `GET /confenge/intel/executive` is the monthly commercial-intelligence query (not a CRM board). Families stay separate. Real counts stay empty or `UNKNOWN` until a human-approved action exists. `include_synthetic=1` is the labeled fixture path. WON is never inferred. `causal_proof` is always false.
 
 `GET /confenge/intel/scoreboard` is the seven-stage inbound truth placar (URLs live/indexable, non-branded impressions/clicks, CTA completed, lead persisted, qualified conversation, proposal emitted, revenue received). Default `include_synthetic=0`. Pipeline contracted, MRR, charge created, and cash received stay on `separate_metrics`. Missing GSC or URL-index ingest stays `BLOCKED`. `POST /confenge/intel/human-outcomes` records a founder action/outcome. WON, LOST, and received revenue require human/document evidence. `GET /confenge/intel/human-envelopes` returns empty EXTRA / ACCOUNT_1 / ACCOUNT_2 / ACCOUNT_3 slots with blank IDs.
+
+`GET /confenge/intel/organic-scoreboard` is the organic cohort/asset/landing placar (`confenge.organic_learning_scoreboard.v1`). Layers stay separate: discovery (ELIGIBLE/APPEARED/CLICKED/ENGAGED only when web-cfg aggregates arrive, otherwise BLOCKED), lead, qualification, first action, conversation, meeting, proposal, pipeline, WON/LOST/UNKNOWN, contracted vs received revenue. Windows are complete 7d, complete 28d, 90d, and open/censored cohorts. `organic_search`, `ai_referral`, `direct`, `partner`, `outbound`, `referral`, and `unknown` never mix. Individual GSC queries are not stored. Organic ROAS/CAC stay BLOCKED without complete cost and observed received revenue.
+
+`GET /confenge/intel/organic-feedback` is the versioned editorial export (`confenge.organic_editorial_feedback.v1`) with `REPEAT` / `CHANGE` / `STOP` / `NEED_MORE_DATA`, denominators, freshness, reason codes, and explicit uncertainty. `causal_proof` is always false. `upstream_writes` is always empty. Warmbly does not write web-cfg.
 
 `POST /confenge/intel/events` ingests one versioned commercial event (`confenge.commercial_event.v1`). Same `event_id` or idempotency key is a replay. Lead, page view, citation, and X-Ray completion never become pipeline. Pipeline never becomes revenue. Checkout, payment, subscription, and provider object creation are not received revenue. Onboarding starts only after a reconciled financial confirmation.
 
