@@ -1,0 +1,34 @@
+{
+  "host": "v2202607385716487230",
+  "checkout": "/opt/warmbly-confenge",
+  "previous_sha": "ab37782632922f6f150756c9686f0869df4add19",
+  "deployed_sha": "93dd039d7b9b310458beff8a6bd8819a61da6399",
+  "origin_main": "93dd039d7b9b310458beff8a6bd8819a61da6399",
+  "merged_pr": 101,
+  "backup": "/opt/warmbly-confenge/data/backups/confenge-vps/warmbly-confenge-20260820T154831Z.tar.gz",
+  "backend_image": "sha256:59997cf92a66079d01053c9e87eeffa2e69dfb287522bcf2a8aa2643fec207b6",
+  "profile": "GO_TAGS=minprofile",
+  "kill_switch": "paused reason=deploy_preflight",
+  "flags": {
+    "CONFENGE_AUTO_SEND_ENABLED": false,
+    "CONFENGE_GREEN_AUTORUN_ENABLED": false,
+    "CONFENGE_WHATSAPP_ENABLED": false,
+    "CONFENGE_REQUIRE_HUMAN_APPROVAL": true
+  },
+  "health": "ok",
+  "live": true,
+  "ready": true,
+  "inbound_health": "READY",
+  "accepted_event_versions": [
+    "confenge.commercial_event.v1",
+    "confenge.search_observation.v1"
+  ],
+  "schema_migrations": 106,
+  "schema_dirty": false,
+  "issue_47": "open",
+  "issue_47_residual": "FIRST_REAL_CONSENTED_COMMERCIAL_EVENT",
+  "hostinger_touch": false,
+  "self_smoke_email": false,
+  "dispatch": "paused",
+  "verdict": "COMMERCIAL_EVENT_CONSUMER_LIVE_WAITING_PRODUCER_CANARY"
+}
