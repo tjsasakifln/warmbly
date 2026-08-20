@@ -1,0 +1,56 @@
+{
+  "deployed_sha": "ab37782632922f6f150756c9686f0869df4add19",
+  "at": "2026-08-20T04:15:38Z",
+  "inbound_health": {
+    "status": "READY",
+    "auto_send_enabled": false,
+    "dispatch_attempted": false,
+    "accepted_event_versions": [
+      "confenge.commercial_event.v1",
+      "confenge.search_observation.v1"
+    ]
+  },
+  "search_observation": {
+    "create_http": 201,
+    "replay_http": 200,
+    "persisted": true,
+    "not_a_lead": true,
+    "record_kind": "synthetic",
+    "accepted_version": "confenge.search_observation.v1",
+    "event_id": "canary-so-convergence-03"
+  },
+  "invalid": {
+    "unsigned_http": 401,
+    "invalid_hmac_http": 401,
+    "unsupported_version_http": 400,
+    "raw_query_http": 400
+  },
+  "synthetic_lead": {
+    "lead_id": "synthetic-inbound-cfg-convergence-03",
+    "http": 201,
+    "dispatch_attempted": false,
+    "in_default_inbound_now": false,
+    "operator_mailpit_new_messages": 0
+  },
+  "scoreboard": {
+    "include_synthetic_0": {
+      "recommendation": "NEEDS_WEB_CFG_EVENT",
+      "causal_proof": false,
+      "include_synthetic": false
+    },
+    "include_synthetic_1": {
+      "recommendation": "READY_FOR_INTEGRATION",
+      "causal_proof": false,
+      "include_synthetic": true
+    },
+    "feedback_include_synthetic_0": {
+      "recommendation": "NEEDS_WEB_CFG_EVENT",
+      "causal_proof": false,
+      "upstream_writes": [],
+      "verdict": "NEED_MORE_DATA"
+    }
+  },
+  "privacy": {
+    "raw_query_or_hash_in_scoreboard_feedback_inbound_now": false
+  }
+}

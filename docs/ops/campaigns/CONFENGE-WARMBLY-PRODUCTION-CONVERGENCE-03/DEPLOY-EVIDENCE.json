@@ -1,0 +1,31 @@
+{
+  "host": "v2202607385716487230",
+  "checkout": "/opt/warmbly-confenge",
+  "previous_sha": "63b866df86431460dbb8cc07249d69c6188aab50",
+  "deployed_sha": "ab37782632922f6f150756c9686f0869df4add19",
+  "origin_main": "ab37782632922f6f150756c9686f0869df4add19",
+  "merged_pr": 99,
+  "source_pr_superseded": 98,
+  "backup": "/opt/warmbly-confenge/data/backups/confenge-vps/warmbly-confenge-20260820T041407Z.tar.gz",
+  "profile": "GO_TAGS=minprofile",
+  "kill_switch": "paused reason=deploy_preflight",
+  "flags": {
+    "CONFENGE_AUTO_SEND_ENABLED": false,
+    "CONFENGE_GREEN_AUTORUN_ENABLED": false,
+    "CONFENGE_WHATSAPP_ENABLED": false,
+    "CONFENGE_REQUIRE_HUMAN_APPROVAL": true
+  },
+  "health": "ok",
+  "live": true,
+  "ready": true,
+  "inbound_health": "READY",
+  "accepted_event_versions": [
+    "confenge.commercial_event.v1",
+    "confenge.search_observation.v1"
+  ],
+  "schema_migrations": 106,
+  "issue_47": "open",
+  "hostinger_touch": false,
+  "self_smoke_email": false,
+  "dispatch": "paused"
+}
