@@ -1,0 +1,36 @@
+{
+  "deployed_sha": "93dd039d7b9b310458beff8a6bd8819a61da6399",
+  "at": "2026-08-20T15:54:35Z",
+  "label": "SYNTHETIC",
+  "hmac_rounds": [
+    {"invalid_http": 401, "created_http": 201, "replay_http": 200, "unknown_http": 201, "unknown_held": true, "unknown_canonical": "UNKNOWN"}
+  ],
+  "clean_sequence": {
+    "external_reference_class": "SYNTHETIC-CANARY-CE-SEQ-*",
+    "offer_selected": {"http": 201, "onboarding": "ONBOARDING_BLOCKED", "received_amount_cents": null},
+    "checkout_created": {"http": 201, "onboarding": "ONBOARDING_BLOCKED", "received_amount_cents": null},
+    "payment_pending": {"http": 201, "status": "pending", "received_amount_cents": null},
+    "payment_received": {"http": 201, "onboarding": "ONBOARDING_ELIGIBLE", "received_amount_cents": 800000, "received_count": 1},
+    "replay": {"http": 200, "replay": true, "received_amount_cents": 800000, "received_count": 1},
+    "refund": {"http": 201, "status": "refunded", "received_amount_cents": 800000, "onboarding": "ONBOARDING_BLOCKED"}
+  },
+  "capacity_rejected": {"held": true, "checkout_after": "no_capacity"},
+  "out_of_order": {"held": true, "code": "out_of_order"},
+  "inbound_now_default": {"count": 0, "commercial_canary_leads": 0},
+  "executive": {
+    "include_synthetic_0": {"cfg_diag_present": false, "inbound_qualified_pipeline": 0},
+    "include_synthetic_1": {
+      "offer_id": "CFG-DIAG-EXP-v1",
+      "selected": 3,
+      "checkout_created": 2,
+      "payment_received": 2,
+      "onboarding_eligible": 1,
+      "refund": 1,
+      "received_revenue_cents": 800000,
+      "unknown": 0,
+      "exceptions": 3,
+      "denominator_chains": 4,
+      "stage_timestamps": ["eligibility_submitted_at", "capacity_decision_at", "terms_accepted_at", "checkout_created_at", "payment_received_at"]
+    }
+  }
+}

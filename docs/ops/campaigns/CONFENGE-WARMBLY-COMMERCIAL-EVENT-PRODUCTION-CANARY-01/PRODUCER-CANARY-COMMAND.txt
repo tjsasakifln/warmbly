@@ -1,0 +1,35 @@
+# Producer canary command — web-cfg has NOT announced a production POST of
+# confenge.commercial_event.v1 on the real transport.
+# inbound-handoff.cjs still posts confenge.inbound.v1 leads only.
+# scripts/offers/events.cjs::commercialEvent() is the body factory (read-only).
+#
+# When the producer is live, POST a SYNTHETIC envelope on the HMAC route.
+# Do not insert rows in SQL. Do not edit web-cfg from this campaign.
+#
+# Canonical URL:
+#   https://api.confenge.com.br/api/v1/webhooks/confenge/inbound
+# Loopback on the VPS (preferred for signed canaries):
+#   http://127.0.0.1:8080/api/v1/webhooks/confenge/inbound
+#
+# Header:
+#   X-Warmbly-Signature: t=<unix>,v1=<hex(hmac_sha256(secret, "<unix>." + body))>
+#   Content-Type: application/json
+#
+# Body (schema/version must be confenge.commercial_event.v1; mark synthetic):
+
+BODY='{"schema":"confenge.commercial_event.v1","version":"confenge.commercial_event.v1","event_id":"evt_SYNTHETIC_producer_canary_1","type":"offer_selected","occurred_at":"2026-08-20T16:00:00Z","offer_id":"CFG-DIAG-EXP-v1","offer_version":"v1","terms_version":"CFG-TERMS-B2B-2026-08-17-v1","external_reference":"SYNTHETIC-PRODUCER-CANARY-1","provider_event_id":"asaas_SYNTHETIC_producer_canary_1","amount_cents":800000,"currency":"BRL","source":"CONFENGE_WEB","revenue":false,"received_revenue":false,"synthetic":true}'
+T=$(date +%s)
+SIG=$(printf '%s.%s' "$T" "$BODY" | openssl dgst -sha256 -hmac "$CONFENGE_INBOUND_WEBHOOK_SECRET" | awk '{print $2}')
+curl -sS -D- -X POST "https://api.confenge.com.br/api/v1/webhooks/confenge/inbound" \
+  -H 'Content-Type: application/json' \
+  -H "X-Warmbly-Signature: t=$T,v1=$SIG" \
+  --data "$BODY"
+
+# Expect: 201 created, replay of the same body 200 with replay=true.
+# Follow with terms_accepted, checkout_created, payment_pending, payment_received
+# using the same external_reference and unique event_id / provider_event_id.
+# Then GET /v1/confenge/intel/executive?include_synthetic=1 and confirm by_offer_version.
+# GET ...?include_synthetic=0 must not count it. Default INBOUND NOW must stay empty.
+#
+# Producer event_id -> HTTP receipt -> durable store -> reconciliation -> by_offer_version
+# is NOT proven from web-cfg in this campaign.

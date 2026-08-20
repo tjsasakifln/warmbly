@@ -1,0 +1,12 @@
+{
+  "campaign": "CONFENGE-WARMBLY-COMMERCIAL-EVENT-PRODUCTION-CANARY-01",
+  "verdict": "COMMERCIAL_EVENT_CONSUMER_LIVE_WAITING_PRODUCER_CANARY",
+  "pr101": "merged",
+  "deployed_sha": "93dd039d7b9b310458beff8a6bd8819a61da6399",
+  "issue_47": "open",
+  "residual": "FIRST_REAL_CONSENTED_COMMERCIAL_EVENT",
+  "producer_canary": "waiting",
+  "auto_send": false,
+  "sla": false,
+  "issue_55_baseline": false
+}
