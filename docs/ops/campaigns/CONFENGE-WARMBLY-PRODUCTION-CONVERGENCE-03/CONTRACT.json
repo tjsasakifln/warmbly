@@ -1,0 +1,40 @@
+{
+  "envelope_schema": "confenge.commercial_event.v1",
+  "search_observation_version": "confenge.search_observation.v1",
+  "type": "search_observation",
+  "source": "CONFENGE_WEB",
+  "accepted_event_versions": [
+    "confenge.commercial_event.v1",
+    "confenge.search_observation.v1"
+  ],
+  "counts": "nullable",
+  "coverage_freshness": "explicit",
+  "query": "forbidden",
+  "query_hash": "forbidden",
+  "not_a_lead": true,
+  "consent_policy": ["not_applicable", "aggregate"],
+  "organic_sources": [
+    "organic_search",
+    "direct",
+    "referral",
+    "ai_referral",
+    "partner",
+    "outbound",
+    "unknown"
+  ],
+  "recommendations": [
+    "NEEDS_WEB_CFG_EVENT",
+    "NEEDS_REAL_EVENT",
+    "READY_FOR_INTEGRATION"
+  ],
+  "never": ["LIVE_PROVEN"],
+  "accept_echo": [
+    "event_id",
+    "accepted_version",
+    "receipt_id",
+    "persisted",
+    "replay",
+    "record_kind",
+    "not_a_lead"
+  ]
+}

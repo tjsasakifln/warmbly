@@ -87,6 +87,8 @@ All paths below are relative to the versioned base URL `https://api.warmbly.com/
 | POST | `/confenge/inbound/:leadId/resolve` | `WRITE_CONTACTS` |
 | GET | `/confenge/intel/executive` | `READ_CONTACTS` |
 | GET | `/confenge/intel/scoreboard` | `READ_CONTACTS` |
+| GET | `/confenge/intel/organic-scoreboard` | `READ_CONTACTS` |
+| GET | `/confenge/intel/organic-feedback` | `READ_CONTACTS` |
 | GET | `/confenge/intel/human-envelopes` | `READ_CONTACTS` |
 | POST | `/confenge/intel/human-outcomes` | `WRITE_CONTACTS` |
 | GET | `/confenge/intel/report` | `READ_CONTACTS` |
@@ -109,7 +111,13 @@ All paths below are relative to the versioned base URL `https://api.warmbly.com/
 
 `GET /confenge/intel/scoreboard` is the seven-stage inbound truth placar (URLs live/indexable, non-branded impressions/clicks, CTA completed, lead persisted, qualified conversation, proposal emitted, revenue received). Default `include_synthetic=0`. Pipeline contracted, MRR, charge created, and cash received stay on `separate_metrics`. Missing GSC or URL-index ingest stays `BLOCKED`. `POST /confenge/intel/human-outcomes` records a founder action/outcome. WON, LOST, and received revenue require human/document evidence. `GET /confenge/intel/human-envelopes` returns empty EXTRA / ACCOUNT_1 / ACCOUNT_2 / ACCOUNT_3 slots with blank IDs.
 
-`POST /confenge/intel/events` ingests one versioned commercial event (`confenge.commercial_event.v1`). Same `event_id` or idempotency key is a replay. Lead, page view, citation, and X-Ray completion never become pipeline. Pipeline never becomes revenue. Checkout, payment, subscription, and provider object creation are not received revenue. Onboarding starts only after a reconciled financial confirmation.
+`GET /confenge/intel/organic-scoreboard` is the organic cohort/asset/landing placar (`confenge.organic_learning_scoreboard.v1`). Layers stay separate: discovery (ELIGIBLE/APPEARED/CLICKED/ENGAGED only when web-cfg aggregates arrive, otherwise BLOCKED), lead, qualification, first action, conversation, meeting, proposal, pipeline, WON/LOST/UNKNOWN, contracted vs received revenue. Windows are complete 7d, complete 28d, 90d, and open/censored cohorts. `organic_search`, `ai_referral`, `direct`, `partner`, `outbound`, `referral`, and `unknown` never mix. Individual GSC queries are not stored. Organic ROAS/CAC stay BLOCKED without complete cost and observed received revenue.
+
+`GET /confenge/intel/organic-feedback` is the versioned editorial export (`confenge.organic_editorial_feedback.v1`) with `REPEAT` / `CHANGE` / `STOP` / `NEED_MORE_DATA`, denominators, freshness, reason codes, and explicit uncertainty. `causal_proof` is always false. `upstream_writes` is always empty. Warmbly does not write web-cfg.
+
+`POST /confenge/intel/events` ingests one versioned commercial event (`confenge.commercial_event.v1`). Same `event_id` or idempotency key is a replay. Lead, page view, citation, and X-Ray completion never become pipeline. Pipeline never becomes revenue. Checkout, payment, subscription, and provider object creation are not received revenue. Onboarding starts only after a reconciled financial confirmation. `type=search_observation` with `version=confenge.search_observation.v1` persists an aggregated discovery snapshot (nullable counts, no individual query) and echoes `persisted`, `replay`, `not_a_lead=true`. Unknown versions return 4xx and do not persist a chain.
+
+Public `GET /api/v1/webhooks/confenge/inbound/health` advertises `accepted_event_versions` including `confenge.commercial_event.v1` and `confenge.search_observation.v1`. The HMAC inbound webhook accepts that observation envelope on the same route as lead handoff without creating a lead.
 
 `POST /confenge/intel/commercial` is the authenticated manual-first operator path (register offer/terms/capacity, attach already-created provider IDs, record a financial event with evidence and review status, start onboarding after the gate, or apply a HumanCorrection). It does not call Asaas. `GET /confenge/intel/commercial/:leadId` returns the canonical timeline. `POST /confenge/intel/commercial/provider-events` persist-first acks a signed sandbox provider event. `POST /confenge/intel/exceptions/:id/reopen` reopens a resolved exception. None of these routes are public.
 

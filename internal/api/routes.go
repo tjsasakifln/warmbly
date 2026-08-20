@@ -536,6 +536,8 @@ func Run(
 				confengeGroup.GET("/inbound", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeInboundNow)
 				confengeGroup.GET("/intel/executive", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeExecutiveIntel)
 				confengeGroup.GET("/intel/scoreboard", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeTruthScoreboard)
+				confengeGroup.GET("/intel/organic-scoreboard", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeOrganicScoreboard)
+				confengeGroup.GET("/intel/organic-feedback", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeOrganicFeedback)
 				confengeGroup.GET("/intel/human-envelopes", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeHumanEnvelopes)
 				confengeGroup.GET("/intel/report", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeIntelReport)
 				confengeGroup.GET("/intel/exceptions", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeIntelExceptions)

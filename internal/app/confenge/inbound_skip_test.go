@@ -2,10 +2,13 @@ package confenge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/warmbly/warmbly/internal/app/confenge/intel"
 	"github.com/warmbly/warmbly/internal/models"
 )
 
@@ -34,8 +37,8 @@ func TestInboundCommercialSkipKeepsRealInQueue(t *testing.T) {
 	if queue[0].Dispatchable || queue[0].EmailSendable {
 		t.Fatal("real card must stay a human queue row")
 	}
-	if queue[0].Query != "segunda leitura contrato" {
-		t.Fatalf("query=%q", queue[0].Query)
+	if queue[0].Query != inboundUnknown {
+		t.Fatalf("individual query must stay UNKNOWN, query=%q", queue[0].Query)
 	}
 	if queue[0].CTA != "segunda-leitura-contrato" {
 		t.Fatalf("cta=%q", queue[0].CTA)
@@ -43,7 +46,31 @@ func TestInboundCommercialSkipKeepsRealInQueue(t *testing.T) {
 	if queue[0].Origin != "CONFENGE_WEB" {
 		t.Fatalf("origin=%q", queue[0].Origin)
 	}
-	fmt.Printf("INBOUND_NOW_SKIP synthetic=skipped qa=skipped internal=skipped real=%s dispatch=false\n", queue[0].LeadID)
+	assertNoRawQueryLeak(t, "INBOUND NOW", mustJSONBytes(queue))
+	board, xerr := svc.OrganicScoreboard(context.Background(), org, false)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	fb, xerr := svc.OrganicFeedback(context.Background(), org, false)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	rep, xerr := svc.CommercialIntelReport(context.Background(), org, "2026-08", false)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	assertNoRawQueryLeak(t, "scoreboard", mustJSONBytes(board))
+	assertNoRawQueryLeak(t, "feedback", mustJSONBytes(fb))
+	assertNoRawQueryLeak(t, "report", mustJSONBytes(rep))
+	chains, err := svc.intelStore().ListChains(org.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoRawQueryLeak(t, "chain", mustJSONBytes(chains))
+	if alert, _ := svc.alertStore().GetOperatorAlertByLead(context.Background(), org, "webcfg-real-1"); alert != nil {
+		assertNoRawQueryLeak(t, "operator alert", mustJSONBytes(alert))
+	}
+	fmt.Printf("INBOUND_NOW_SKIP synthetic=skipped qa=skipped internal=skipped real=%s query=%s dispatch=false\n", queue[0].LeadID, queue[0].Query)
 
 	qaCo := []byte(`{"lead_id":"webcfg-obra-norte-1","receipt_id":"rcpt-obra-norte-1","source":"CONFENGE_WEB","company":"QA Engenharia","phone":"41990001111","message":"equipe de QA na obra"}`)
 	if _, xerr := svc.IngestInboundLead(context.Background(), org, qaCo, IngestOptions{Now: now.Add(time.Minute)}); xerr != nil {
@@ -140,4 +167,19 @@ func TestInboundCommercialSkipKeepsFreeTextQANameEmail(t *testing.T) {
 		t.Fatalf("include_synthetic=0 lost real leads: %+v", view)
 	}
 	fmt.Printf("INBOUND_NOW_KEEP name=Joaquim email=joaquim.qa@norte.example official=skipped include_synthetic=0 leads=%d\n", view.Denominators.Leads)
+}
+
+func assertNoRawQueryLeak(t *testing.T, surface string, raw []byte) {
+	t.Helper()
+	if intel.ContainsForbiddenQuery(raw) || strings.Contains(strings.ToLower(string(raw)), "segunda leitura contrato") {
+		t.Fatalf("%s leaked raw query/GSCQuery/query_hash: %s", surface, string(raw))
+	}
+}
+
+func mustJSONBytes(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return b
 }

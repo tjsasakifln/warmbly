@@ -15,18 +15,41 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/warmbly/warmbly/internal/app/confenge"
+	"github.com/warmbly/warmbly/internal/app/confenge/intel"
 	"github.com/warmbly/warmbly/internal/errx"
 )
 
 type inboundHTTPStub struct {
 	confenge.Service
-	cfg    confenge.Config
-	gotRaw []byte
-	ingest func(raw []byte, opts confenge.IngestOptions) (*confenge.InboundIngestResult, *errx.Error)
+	cfg      confenge.Config
+	gotRaw   []byte
+	ingest   func(raw []byte, opts confenge.IngestOptions) (*confenge.InboundIngestResult, *errx.Error)
+	obsStore *intel.MemoryStore
 }
 
 func (s *inboundHTTPStub) Enabled() bool           { return true }
 func (s *inboundHTTPStub) Config() confenge.Config { return s.cfg }
+func (s *inboundHTTPStub) IngestSearchObservation(_ context.Context, _ uuid.UUID, raw []byte, opts confenge.IngestOptions) (*intel.SearchObservationReceipt, *errx.Error) {
+	if xerr := confenge.RejectInboundQueryPII(opts.Query); xerr != nil {
+		return nil, xerr
+	}
+	if s.cfg.AutoSendEnabled {
+		return nil, errx.New(errx.Forbidden, "inbound receive is refused while auto_send is enabled")
+	}
+	obs, err := intel.ParseSearchObservation(raw, s.cfg.InboundOrgID.String(), time.Now().UTC())
+	if err != nil {
+		return nil, errx.New(errx.BadRequest, err.Error())
+	}
+	if s.obsStore == nil {
+		s.obsStore = intel.NewMemoryStore()
+	}
+	rec, err := intel.PersistSearchObservation(s.obsStore, obs, time.Now().UTC())
+	if err != nil {
+		return nil, errx.New(errx.BadRequest, err.Error())
+	}
+	return &rec, nil
+}
+
 func (s *inboundHTTPStub) IngestInboundLead(_ context.Context, _ uuid.UUID, raw []byte, opts confenge.IngestOptions) (*confenge.InboundIngestResult, *errx.Error) {
 	if xerr := confenge.RejectInboundQueryPII(opts.Query); xerr != nil {
 		return nil, xerr
@@ -214,6 +237,10 @@ func TestConfengeInboundHealthReadyBlockedNoPII(t *testing.T) {
 	if probe.Status != confenge.InboundReceiveReady || probe.AutoSendEnabled {
 		t.Fatalf("health READY: %+v", probe)
 	}
+	joined := strings.Join(probe.AcceptedEventVersions, ",")
+	if !strings.Contains(joined, intel.EventSchemaV1) || !strings.Contains(joined, intel.OrganicDiscoveryContract) {
+		t.Fatalf("accepted_event_versions=%v", probe.AcceptedEventVersions)
+	}
 	if strings.Contains(w.Body.String(), "inbound-http-secret") || strings.Contains(w.Body.String(), org.String()) {
 		t.Fatalf("health leaked secret or org: %s", w.Body.String())
 	}
@@ -252,4 +279,132 @@ func TestConfengeActorUUIDParsesJWTString(t *testing.T) {
 	if got := confengeActorUUID(c); got != uuid.Nil {
 		t.Fatalf("empty user_id: got %s", got)
 	}
+}
+
+func TestConfengeInboundWebhookUnsignedIs401(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	org := uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+	stub := &inboundHTTPStub{cfg: confenge.Config{
+		Enabled: true, InboundWebhookSecret: "inbound-http-secret", InboundOrgID: org, AutoSendEnabled: false,
+	}}
+	h := &Handler{ConfengeService: stub}
+	body := []byte(`{"lead_id":"http-unsigned-1","source":"CONFENGE_WEB"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/confenge/inbound", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	h.ConfengeInboundWebhook(c)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("unsigned status=%d body=%s", w.Code, w.Body.String())
+	}
+	fmt.Printf("HTTP_HMAC unsigned=401\n")
+}
+
+func TestConfengeInboundWebhookSearchObservationEchoAndRejects(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	org := uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+	secret := "inbound-http-secret"
+	stub := &inboundHTTPStub{cfg: confenge.Config{
+		Enabled: true, InboundWebhookSecret: secret, InboundOrgID: org, AutoSendEnabled: false,
+	}}
+	h := &Handler{ConfengeService: stub}
+	now := time.Now().UTC().Add(-time.Minute)
+	bodyMap := map[string]any{
+		"schema": intel.EventSchemaV1, "version": intel.OrganicDiscoveryContract,
+		"type": intel.EventSearchObservation, "source": intel.ProducerCONFENGEWeb,
+		"event_id": "http-so-1", "organic_source": intel.SourceOrganicSearch,
+		"asset_id": "landing-segunda-leitura", "landing_path": "/guias/segunda-leitura",
+		"window": intel.Window28dComplete, "eligible": 11, "appeared": 4, "clicked": 1,
+		"measurement_at": now.Format(time.RFC3339), "synthetic": true,
+		"record_kind": intel.RecordKindSynthetic, "consent_policy": intel.ConsentPolicyNotApplicable,
+	}
+	body, _ := json.Marshal(bodyMap)
+	sig := confenge.SignOutcomeHMAC(secret, time.Now().UTC(), body)
+	post := func(raw []byte, signature string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/confenge/inbound", bytes.NewReader(raw))
+		if signature != "" {
+			req.Header.Set("X-Warmbly-Signature", signature)
+		}
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = req
+		h.ConfengeInboundWebhook(c)
+		return w
+	}
+	w := post(body, sig)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("search observation status=%d body=%s", w.Code, w.Body.String())
+	}
+	var wrap struct {
+		Data intel.SearchObservationReceipt `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &wrap); err != nil {
+		t.Fatal(err)
+	}
+	if !wrap.Data.Persisted || !wrap.Data.NotALead || wrap.Data.AcceptedVersion != intel.OrganicDiscoveryContract {
+		t.Fatalf("echo=%+v", wrap.Data)
+	}
+	if intel.ContainsForbiddenQuery(w.Body.Bytes()) {
+		t.Fatal("HTTP echo leaked query")
+	}
+	w2 := post(body, sig)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("replay status=%d body=%s", w2.Code, w2.Body.String())
+	}
+	if err := json.Unmarshal(w2.Body.Bytes(), &wrap); err != nil {
+		t.Fatal(err)
+	}
+	if !wrap.Data.Replay || !wrap.Data.Persisted {
+		t.Fatalf("replay echo=%+v", wrap.Data)
+	}
+
+	badVer := cloneMap(bodyMap)
+	badVer["version"] = "confenge.search_observation.v9"
+	badVer["event_id"] = "http-so-bad-ver"
+	rawBad, _ := json.Marshal(badVer)
+	w3 := post(rawBad, confenge.SignOutcomeHMAC(secret, time.Now().UTC(), rawBad))
+	if w3.Code < 400 || w3.Code >= 500 {
+		t.Fatalf("unsupported version status=%d body=%s", w3.Code, w3.Body.String())
+	}
+
+	withQuery := cloneMap(bodyMap)
+	withQuery["event_id"] = "http-so-query"
+	withQuery["query"] = "segunda leitura contrato"
+	rawQ, _ := json.Marshal(withQuery)
+	w4 := post(rawQ, confenge.SignOutcomeHMAC(secret, time.Now().UTC(), rawQ))
+	if w4.Code < 400 || w4.Code >= 500 {
+		t.Fatalf("query literal status=%d body=%s", w4.Code, w4.Body.String())
+	}
+	fmt.Printf("HTTP_SEARCH_OBS created=%d replay=%d unsupported=%d query=%d not_a_lead=%v\n",
+		w.Code, w2.Code, w3.Code, w4.Code, wrap.Data.NotALead)
+}
+
+func TestConfengeInboundWebhookAutoSendRefused(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	org := uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+	secret := "inbound-http-secret"
+	stub := &inboundHTTPStub{cfg: confenge.Config{
+		Enabled: true, InboundWebhookSecret: secret, InboundOrgID: org, AutoSendEnabled: true,
+	}}
+	h := &Handler{ConfengeService: stub}
+	body := []byte(`{"lead_id":"http-autosend-1","source":"CONFENGE_WEB"}`)
+	sig := confenge.SignOutcomeHMAC(secret, time.Now().UTC(), body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/confenge/inbound", bytes.NewReader(body))
+	req.Header.Set("X-Warmbly-Signature", sig)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	h.ConfengeInboundWebhook(c)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("auto-send status=%d body=%s", w.Code, w.Body.String())
+	}
+	fmt.Printf("HTTP_AUTOSEND refused=%d\n", w.Code)
+}
+
+func cloneMap(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

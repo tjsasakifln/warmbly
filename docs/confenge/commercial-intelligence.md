@@ -73,6 +73,15 @@ ingest exists. CTA, lead, conversation, proposal, and receita stay
 distinct. Contracted pipeline, MRR, charge created, and cash received
 are `separate_metrics`. Default excludes synthetic.
 
+`GET /confenge/intel/organic-scoreboard` and
+`GET /confenge/intel/organic-feedback` are the organic learning residual
+of this plane (`confenge.organic_attribution.v1`). Source taxonomy is
+`organic_search|direct|referral|ai_referral|partner|outbound|unknown`.
+Individual GSC queries never join a lead. Discovery layers stay BLOCKED
+without a persisted `confenge.search_observation.v1` aggregate. Feedback is
+REPEAT/CHANGE/STOP/NEED_MORE_DATA with empty `upstream_writes`. This does
+not close #47.
+
 `GET /confenge/intel/executive?month=YYYY-MM&include_synthetic=0`
 
 Monthly payload, families kept separate (`inbound` / `outbound` /

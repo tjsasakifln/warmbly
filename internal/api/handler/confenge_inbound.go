@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/warmbly/warmbly/internal/app/confenge"
+	"github.com/warmbly/warmbly/internal/app/confenge/intel"
 	"github.com/warmbly/warmbly/internal/errx"
 )
 
@@ -28,10 +29,11 @@ func (h *Handler) ConfengeInboundHealth(c *gin.Context) {
 	}
 	probe := confenge.EvaluateInboundReceive(cfg)
 	c.JSON(http.StatusOK, gin.H{
-		"status":             probe.Status,
-		"auto_send_enabled":  probe.AutoSendEnabled,
-		"reasons":            probe.Reasons,
-		"dispatch_attempted": probe.DispatchAttempted,
+		"status":                  probe.Status,
+		"auto_send_enabled":       probe.AutoSendEnabled,
+		"reasons":                 probe.Reasons,
+		"dispatch_attempted":      probe.DispatchAttempted,
+		"accepted_event_versions": probe.AcceptedEventVersions,
 	})
 }
 
@@ -47,6 +49,10 @@ func (h *Handler) ConfengeInboundWebhook(c *gin.Context) {
 		return
 	}
 	cfg := h.ConfengeService.Config()
+	if cfg.AutoSendEnabled {
+		errx.JSON(c, errx.New(errx.Forbidden, "inbound receive is refused while auto_send is enabled"))
+		return
+	}
 	if strings.TrimSpace(cfg.InboundWebhookSecret) == "" {
 		errx.JSON(c, errx.New(errx.Unauthorized, "inbound webhook secret is not configured"))
 		return
@@ -67,6 +73,22 @@ func (h *Handler) ConfengeInboundWebhook(c *gin.Context) {
 	sig := firstNonEmptyHeader(c, "X-Warmbly-Signature", "X-Confenge-Signature")
 	if !confenge.VerifyOutcomeHMAC(cfg.InboundWebhookSecret, sig, body, time.Now().UTC(), inboundHMACSkew) {
 		errx.JSON(c, errx.New(errx.Unauthorized, "invalid inbound signature"))
+		return
+	}
+	if intel.IsSearchObservationEnvelope(body) {
+		rec, xerr := h.ConfengeService.IngestSearchObservation(c.Request.Context(), orgID, body, confenge.IngestOptions{
+			Now:   time.Now().UTC(),
+			Query: c.Request.URL.Query(),
+		})
+		if xerr != nil {
+			errx.JSON(c, xerr)
+			return
+		}
+		status := http.StatusCreated
+		if rec.Replay {
+			status = http.StatusOK
+		}
+		c.JSON(status, gin.H{"data": rec})
 		return
 	}
 	res, xerr := h.ConfengeService.IngestInboundLead(c.Request.Context(), orgID, body, confenge.IngestOptions{

@@ -473,10 +473,15 @@ func ExceptionOwner(code string) string {
 		return OwnerFounder
 	case ExceptionConflictingAccount, ExceptionMissingVersion:
 		return OwnerExtraCLI
-	case ExceptionStaleAttribution, ExceptionMissingAttribution:
+	case ExceptionStaleAttribution, ExceptionMissingAttribution,
+		ExceptionLeadWithoutAssetID, ExceptionUnknownAssetVersion,
+		ExceptionContradictorySource, ExceptionGSCQueryOnLead, ExceptionQueryHashOnLead:
 		return OwnerWebCfg
-	case ExceptionCreatedAsRevenue, ExceptionOnboardingBeforePay, ExceptionNfseManualQueue, ExceptionChargeback, ExceptionPaymentRefund:
+	case ExceptionCreatedAsRevenue, ExceptionOnboardingBeforePay, ExceptionNfseManualQueue, ExceptionChargeback, ExceptionPaymentRefund,
+		ExceptionRevenueWithoutFinancial:
 		return OwnerFinance
+	case ExceptionPipelineWithoutEvidence:
+		return OwnerFounder
 	case ExceptionCounselReviewDue:
 		return OwnerFounder
 	case ExceptionUnknownProviderEvent:

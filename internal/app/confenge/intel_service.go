@@ -2,6 +2,7 @@ package confenge
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -88,6 +89,26 @@ func (s *service) IngestCommercialEvent(_ context.Context, orgID uuid.UUID, ev i
 	}
 	if ev.OrganizationID == "" {
 		ev.OrganizationID = orgID.String()
+	}
+	if strings.EqualFold(strings.TrimSpace(ev.Type), intel.EventSearchObservation) ||
+		strings.TrimSpace(ev.Version) == intel.OrganicDiscoveryContract {
+		raw, err := json.Marshal(ev)
+		if err != nil {
+			return intel.JoinResult{}, errx.New(errx.BadRequest, "invalid search observation")
+		}
+		rec, xerr := s.IngestSearchObservation(context.Background(), orgID, raw, IngestOptions{})
+		if xerr != nil {
+			return intel.JoinResult{}, xerr
+		}
+		return intel.JoinResult{
+			Replay: rec.Replay, Created: rec.Persisted && !rec.Replay,
+			EventID: rec.EventID, AcceptedVersion: rec.AcceptedVersion,
+			ReceiptID: rec.ReceiptID, Persisted: rec.Persisted,
+			RecordKind: rec.RecordKind, NotALead: true,
+		}, nil
+	}
+	if err := intel.RejectUnsupportedEnvelope(ev); err != nil {
+		return intel.JoinResult{}, errx.New(errx.BadRequest, err.Error())
 	}
 	return intel.IngestEvent(s.intelStore(), ev), nil
 }
@@ -245,6 +266,31 @@ func (s *service) RegisterHumanOutcome(_ context.Context, orgID uuid.UUID, in in
 
 func (s *service) HumanOutcomeEnvelopes() []intel.HumanOutcomeEnvelope {
 	return intel.EmptyEnvelopes()
+}
+
+func (s *service) OrganicScoreboard(ctx context.Context, orgID uuid.UUID, includeSynthetic bool) (*intel.OrganicScoreboard, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return nil, xerr
+	}
+	s.observeExisting(ctx, orgID)
+	chains, err := s.intelStore().ListChains(orgID.String())
+	if err != nil {
+		return nil, errx.New(errx.Internal, "organic scoreboard list: "+err.Error())
+	}
+	board := intel.ProjectOrganicScoreboard(intel.OrganicScoreboardSources{
+		Now: time.Now().UTC(), IncludeSynthetic: includeSynthetic, Chains: chains,
+		Discovery: intel.SearchObservationsToDiscovery(mustListObservations(s.intelStore(), orgID.String())),
+	})
+	return &board, nil
+}
+
+func (s *service) OrganicFeedback(ctx context.Context, orgID uuid.UUID, includeSynthetic bool) (*intel.OrganicFeedbackExport, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return nil, xerr
+	}
+	s.observeExisting(ctx, orgID)
+	exp := intel.ExportOrganicFeedback(s.intelStore(), orgID.String(), time.Now().UTC(), includeSynthetic)
+	return &exp, nil
 }
 
 func (s *service) observeExisting(ctx context.Context, orgID uuid.UUID) {

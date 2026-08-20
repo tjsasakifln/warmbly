@@ -283,6 +283,38 @@ func (h *Handler) ReopenConfengeIntelException(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": res})
 }
 
+// GetConfengeOrganicScoreboard — GET /confenge/intel/organic-scoreboard
+// Ten-layer organic cohort/asset/landing placar. Default excludes synthetic.
+func (h *Handler) GetConfengeOrganicScoreboard(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	includeSynthetic := queryBool(c, "include_synthetic")
+	board, xerr := h.ConfengeService.OrganicScoreboard(c.Request.Context(), orgID, includeSynthetic)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": board})
+}
+
+// GetConfengeOrganicFeedback — GET /confenge/intel/organic-feedback
+// Versioned REPEAT|CHANGE|STOP|NEED_MORE_DATA export. No upstream write.
+func (h *Handler) GetConfengeOrganicFeedback(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	includeSynthetic := queryBool(c, "include_synthetic")
+	exp, xerr := h.ConfengeService.OrganicFeedback(c.Request.Context(), orgID, includeSynthetic)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": exp})
+}
+
 // GetConfengeTruthScoreboard — GET /confenge/intel/scoreboard
 // Seven-stage executive placar. Default excludes synthetic.
 func (h *Handler) GetConfengeTruthScoreboard(c *gin.Context) {

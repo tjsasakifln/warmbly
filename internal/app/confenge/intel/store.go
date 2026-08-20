@@ -22,22 +22,31 @@ type Store interface {
 	ListExceptions(orgID string) ([]Exception, error)
 	PutLearning(c LearningCandidate) (LearningCandidate, error)
 	ListLearning(orgID string) ([]LearningCandidate, error)
+	PutSearchObservation(obs SearchObservation) (SearchObservation, bool, error)
+	GetSearchObservation(orgID, eventID string) (*SearchObservation, error)
+	ListSearchObservations(orgID, window string) ([]SearchObservation, error)
 }
 
 // MemoryStore is the shipped in-process store. Tests drive Reconcile
 // and Rollup through this type.
 type MemoryStore struct {
-	mu         sync.Mutex
-	chains     map[string]Chain
-	exceptions []Exception
-	learning   []LearningCandidate
-	receipts   map[string]EventReceipt
-	holds      map[string]CapacityHold
-	failPuts   bool
+	mu           sync.Mutex
+	chains       map[string]Chain
+	exceptions   []Exception
+	learning     []LearningCandidate
+	receipts     map[string]EventReceipt
+	holds        map[string]CapacityHold
+	observations map[string]SearchObservation
+	failPuts     bool
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{chains: map[string]Chain{}, receipts: map[string]EventReceipt{}, holds: map[string]CapacityHold{}}
+	return &MemoryStore{
+		chains:       map[string]Chain{},
+		receipts:     map[string]EventReceipt{},
+		holds:        map[string]CapacityHold{},
+		observations: map[string]SearchObservation{},
+	}
 }
 
 // SetUnavailable makes PutChain/PutException fail closed (consumer down).
@@ -308,3 +317,72 @@ type unavailableError struct{ op string }
 func (e unavailableError) Error() string { return e.op + ": commercial intelligence store unavailable" }
 
 func errUnavailable(op string) error { return unavailableError{op: op} }
+
+func observationKey(orgID, eventID string) string {
+	return strings.TrimSpace(orgID) + "\x00" + strings.TrimSpace(eventID)
+}
+
+func (m *MemoryStore) PutSearchObservation(obs SearchObservation) (SearchObservation, bool, error) {
+	if m == nil {
+		return obs, false, errUnavailable("put search observation")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.failPuts {
+		return obs, false, errUnavailable("put search observation")
+	}
+	if m.observations == nil {
+		m.observations = map[string]SearchObservation{}
+	}
+	key := observationKey(obs.OrganizationID, obs.EventID)
+	if existing, ok := m.observations[key]; ok {
+		existing.Replay = true
+		return existing, false, nil
+	}
+	if obs.CreatedAt.IsZero() {
+		obs.CreatedAt = time.Now().UTC()
+	}
+	m.observations[key] = obs
+	return obs, true, nil
+}
+
+func (m *MemoryStore) GetSearchObservation(orgID, eventID string) (*SearchObservation, error) {
+	if m == nil {
+		return nil, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	obs, ok := m.observations[observationKey(orgID, eventID)]
+	if !ok {
+		return nil, nil
+	}
+	cp := obs
+	return &cp, nil
+}
+
+func (m *MemoryStore) ListSearchObservations(orgID, window string) ([]SearchObservation, error) {
+	if m == nil {
+		return nil, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	orgID = strings.TrimSpace(orgID)
+	window = strings.TrimSpace(window)
+	out := make([]SearchObservation, 0, len(m.observations))
+	for _, obs := range m.observations {
+		if orgID != "" && obs.OrganizationID != orgID {
+			continue
+		}
+		if window != "" && obs.Window != window {
+			continue
+		}
+		out = append(out, obs)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].MeasurementAt.Equal(out[j].MeasurementAt) {
+			return out[i].EventID < out[j].EventID
+		}
+		return out[i].MeasurementAt.Before(out[j].MeasurementAt)
+	})
+	return out, nil
+}

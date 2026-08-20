@@ -51,7 +51,7 @@ func knownEventType(t string) bool {
 		EventPipelineCreated, EventPipelineUpdated,
 		EventWon, EventLost, EventUnknownState, EventRevenueEvidenced,
 		EventLearningCandidate, EventXRayCompleted, EventPageView,
-		EventCitation, EventCorrection,
+		EventCitation, EventCorrection, EventSearchObservation,
 		EventOperatorAlertCreated, EventOperatorAlertEmitted, EventOperatorAlertFailed,
 		EventOperatorAlertAcknowledged, EventFirstHumanActionRecorded, EventInboundResolvedNoAction:
 		return true
@@ -63,6 +63,12 @@ func knownEventType(t string) bool {
 // EventToFacts maps one envelope onto ObservedFacts. PIIPointer is
 // discarded. Pipeline and revenue flags are set only from their events.
 func EventToFacts(ev CommercialEvent) ObservedFacts {
+	strippedQuery := LooksLikeIndividualSearchQuery(ev.Query) || LooksLikeIndividualSearchQuery(ev.GSCQuery)
+	strippedHash := strings.TrimSpace(ev.QueryHash) != "" || LooksLikeQueryHash(ev.Query)
+	producerKind := strings.ToLower(strings.TrimSpace(ev.RecordKind))
+	producerSaidReal := producerKind == RecordKindReal || producerKind == "live" || producerKind == strings.ToLower(LabelReal)
+	invalidVersion := strings.TrimSpace(ev.AssetVersion) != "" && !validAssetVersion(ev.AssetVersion)
+	ev = SanitizeCommercialEvent(ev)
 	typ, _, _ := NormalizeEventType(ev.Type)
 	if typ == "" {
 		typ = strings.ToLower(strings.TrimSpace(ev.Type))
@@ -114,23 +120,41 @@ func EventToFacts(ev CommercialEvent) ObservedFacts {
 			HoldID:            strings.TrimSpace(ev.Capacity.HoldID),
 			QueryClass:        strings.TrimSpace(ev.QueryClass),
 			ReferrerClass:     strings.TrimSpace(ev.ReferrerClass),
+			OrganicSource:     ev.OrganicSource,
+			Medium:            strings.TrimSpace(ev.Medium),
+			Campaign:          strings.TrimSpace(ev.Campaign),
+			LandingPath:       ev.LandingPath,
+			AssetVersion:      strings.TrimSpace(ev.AssetVersion),
+			CTAVersion:        strings.TrimSpace(ev.CTAVersion),
+			RecordKind:        ev.RecordKind,
+			ConsentVersion:    strings.TrimSpace(ev.ConsentVersion),
+			PageVersion:       strings.TrimSpace(ev.PageVersion),
+			ContentVersion:    strings.TrimSpace(ev.ContentVersion),
+			FirstTouchAt:      ev.FirstTouchAt,
+			LastTouchAt:       ev.LastTouchAt,
 		},
-		LeadCreatedAt:     leadStamp(typ, occurred),
-		IngestedAt:        ingested,
-		ActionOccurredAt:  actionStamp(typ, occurred),
-		OutcomeOccurredAt: outcomeStamp(typ, occurred),
-		EventType:         typ,
-		Qualified:         ev.Qualified || typ == EventLeadValidated,
-		HumanConfirmed:    ev.HumanConfirmed,
-		Correction:        ev.Correction || typ == EventCorrection,
-		HandRaise:         ev.HandRaise,
-		Suppression:       ev.Suppression,
-		Timezone:          firstNonEmpty(ev.Timezone, "UTC"),
-		PublishedAt:       ev.PublishedAt,
-		DetectedAt:        ev.DetectedAt,
-		FollowUpAt:        ev.FollowUpAt,
-		Synthetic:         ev.Synthetic,
-		Label:             labelFor(ev.Synthetic),
+		LeadCreatedAt:        leadStamp(typ, occurred),
+		IngestedAt:           ingested,
+		ActionOccurredAt:     actionStamp(typ, occurred),
+		OutcomeOccurredAt:    outcomeStamp(typ, occurred),
+		EventType:            typ,
+		Qualified:            ev.Qualified || typ == EventLeadValidated,
+		HumanConfirmed:       ev.HumanConfirmed,
+		Correction:           ev.Correction || typ == EventCorrection,
+		HandRaise:            ev.HandRaise,
+		Suppression:          ev.Suppression,
+		Timezone:             firstNonEmpty(ev.Timezone, "UTC"),
+		PublishedAt:          ev.PublishedAt,
+		DetectedAt:           ev.DetectedAt,
+		FollowUpAt:           ev.FollowUpAt,
+		Synthetic:            ev.Synthetic,
+		Label:                labelFor(ev.Synthetic),
+		RecordKind:           ev.RecordKind,
+		ConsentValid:         strings.TrimSpace(ev.Consent) != "",
+		StrippedGSCQuery:     strippedQuery,
+		StrippedQueryHash:    strippedHash,
+		SyntheticLabeledReal: ev.Synthetic && producerSaidReal,
+		InvalidAssetVersion:  invalidVersion,
 	}
 	if ev.Synthetic {
 		in.Label = LabelSynthetic
@@ -186,7 +210,7 @@ func EventToFacts(ev CommercialEvent) ObservedFacts {
 			in.RevenueEvidenced = true
 			in.RevenueCents = ev.RevenueCents
 		}
-	case EventXRayCompleted, EventPageView, EventCitation:
+	case EventXRayCompleted, EventPageView, EventCitation, EventSearchObservation:
 		in.NotALead = true
 		in.PipelineOpen = false
 		in.Qualified = false
@@ -310,8 +334,30 @@ func knownAssetFamily(v string) bool {
 
 // IngestEvent is the shipped entry for versioned events. Fixtures and
 // future real events share this path. Same event_id or idempotency key
-// is a replay.
+// is a replay. Search observations persist on the observation table,
+// never as a commercial chain.
 func IngestEvent(store Store, ev CommercialEvent) JoinResult {
+	if isSearchObservationType(ev.Type, ev.Version, ev.Schema) {
+		return ingestSearchObservationEvent(store, ev)
+	}
+	if err := RejectUnsupportedEnvelope(ev); err != nil {
+		now := time.Now().UTC()
+		ex := Exception{
+			Code:       ExceptionOrphan,
+			Reason:     err.Error(),
+			NextAction: "fix the event and retry; do not invent a chain",
+			At:         now,
+			Synthetic:  ev.Synthetic,
+			Held:       true,
+			Owner:      OwnerInboundOps,
+			Severity:   SeverityHigh,
+			Status:     StatusOpen,
+		}
+		if store != nil {
+			_ = store.PutException(ex)
+		}
+		return JoinResult{Exceptions: []Exception{ex}, Held: true}
+	}
 	if err := ValidateCommercialEvent(ev); err != nil {
 		now := time.Now().UTC()
 		ex := Exception{
@@ -599,7 +645,7 @@ func hasFinancialType(t string) bool {
 
 func isNonLeadEvent(typ string) bool {
 	switch strings.ToLower(strings.TrimSpace(typ)) {
-	case EventXRayCompleted, EventPageView, EventCitation,
+	case EventXRayCompleted, EventPageView, EventCitation, EventSearchObservation,
 		EventOperatorAlertCreated, EventOperatorAlertEmitted, EventOperatorAlertFailed,
 		EventOperatorAlertAcknowledged, EventFirstHumanActionRecorded, EventInboundResolvedNoAction:
 		return true

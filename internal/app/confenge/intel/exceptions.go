@@ -89,7 +89,34 @@ func ClassifyExceptions(in ObservedFacts, existing *Chain) []Exception {
 		add(ExceptionInvalidAssetFamily, "asset_family is not market_answer, contract_analysis, or b2g_xray", "exclude from assisted slices; do not invent a family", false)
 	}
 	if missingInboundAttribution(in) {
-		add(ExceptionMissingAttribution, "inbound path missing source/query/asset", "keep UNKNOWN attribution; do not invent a source or asset", false)
+		add(ExceptionMissingAttribution, "inbound path missing source/asset", "keep UNKNOWN attribution; do not invent a source or asset", false)
+	}
+	if inboundLeadMissingAsset(in) {
+		add(ExceptionLeadWithoutAssetID, "inbound lead missing asset_id", "keep UNKNOWN asset; do not invent an asset from the landing", false)
+	}
+	if unknownAssetVersion(in) {
+		add(ExceptionUnknownAssetVersion, "asset_version is not a usable version token", "leave version UNKNOWN; do not invent a catalog version", false)
+	}
+	if contradictoryOrganicSource(in, existing) {
+		add(ExceptionContradictorySource, "incoming organic source disagrees with the first chain", "keep the first observed source; do not mix slices", true)
+	}
+	if syntheticTreatedAsReal(in) {
+		add(ExceptionSyntheticTreatedAsReal, "synthetic/test record labeled real", "hold; do not notify or mix into real denominators", true)
+	}
+	if missingConsentForAction(in) {
+		add(ExceptionMissingConsent, "inbound action without a valid consent ref", "hold commercial action; operator may still see the receipt", true)
+	}
+	if pipelineWithoutEvidence(in, existing) {
+		add(ExceptionPipelineWithoutEvidence, "pipeline/outcome without evidence", "hold; do not invent pipeline from a lead or page view", true)
+	}
+	if revenueWithoutFinancial(in) {
+		add(ExceptionRevenueWithoutFinancial, "revenue claimed without a reconciled financial event", "hold; contracted and received stay distinct and UNKNOWN", true)
+	}
+	if in.StrippedGSCQuery || LooksLikeIndividualSearchQuery(in.Keys.Query) {
+		add(ExceptionGSCQueryOnLead, "individual GSC/search query cannot join a person/lead", "strip the query; keep query_class aggregate only", true)
+	}
+	if in.StrippedQueryHash || LooksLikeQueryHash(in.Keys.Query) {
+		add(ExceptionQueryHashOnLead, "query_hash is not an individually queryable lead attribute", "keep hash off the lead; aggregate/k-anonymous only", true)
 	}
 	if outboundLabeledInbound(in) {
 		add(ExceptionOutboundAsInbound, "outbound action labeled inbound without a receipt", "hold off inbound denominators", true)
@@ -111,7 +138,114 @@ func missingInboundAttribution(in ObservedFacts) bool {
 	if isNonLeadEvent(in.EventType) {
 		return false
 	}
-	return knownID(in.Keys.Source) == "" || knownID(in.Keys.Query) == "" || knownID(in.Keys.AssetID) == ""
+	return knownID(in.Keys.Source) == "" && organicSourceOf(in.Keys) == Unknown
+}
+
+func inboundLeadMissingAsset(in ObservedFacts) bool {
+	if normalizeFamily(in.Keys.RouteFamily) != FamilyInbound || in.NotALead {
+		return false
+	}
+	if isNonLeadEvent(in.EventType) {
+		return false
+	}
+	typ := strings.ToLower(strings.TrimSpace(in.EventType))
+	if typ != "" && typ != EventLeadReceived && typ != EventLeadValidated && typ != EventLeadRejected {
+		return false
+	}
+	return knownID(in.Keys.AssetID) == ""
+}
+
+func unknownAssetVersion(in ObservedFacts) bool {
+	if in.InvalidAssetVersion {
+		return true
+	}
+	v := strings.TrimSpace(in.Keys.AssetVersion)
+	if v == "" {
+		return false
+	}
+	return !validAssetVersion(v)
+}
+
+func contradictoryOrganicSource(in ObservedFacts, existing *Chain) bool {
+	if existing == nil {
+		return false
+	}
+	a := organicSourceOf(existing.Keys)
+	b := organicSourceOf(in.Keys)
+	if a == Unknown || b == Unknown {
+		return false
+	}
+	return a != b
+}
+
+func syntheticTreatedAsReal(in ObservedFacts) bool {
+	if in.SyntheticLabeledReal {
+		return true
+	}
+	kind := recordKindOf(in)
+	if in.Synthetic && (kind == RecordKindReal || strings.EqualFold(in.Label, LabelReal)) {
+		return true
+	}
+	if !in.Synthetic && kind == RecordKindSynthetic && strings.EqualFold(in.Label, LabelReal) {
+		return true
+	}
+	return false
+}
+
+func missingConsentForAction(in ObservedFacts) bool {
+	typ := strings.ToLower(strings.TrimSpace(in.EventType))
+	switch typ {
+	case EventActionApproved, EventActionExecuted, EventFirstHumanActionRecorded:
+	default:
+		return false
+	}
+	if normalizeFamily(in.Keys.RouteFamily) != FamilyInbound {
+		return false
+	}
+	if in.NotALead || in.Synthetic {
+		return false
+	}
+	return strings.TrimSpace(in.Keys.Consent) == "" && !in.ConsentValid
+}
+
+func pipelineWithoutEvidence(in ObservedFacts, existing *Chain) bool {
+	typ := strings.ToLower(strings.TrimSpace(in.EventType))
+	if typ != EventPipelineCreated && typ != EventPipelineUpdated && !in.PipelineOpen {
+		return false
+	}
+	if !in.PipelineOpen && typ != EventPipelineCreated && typ != EventPipelineUpdated {
+		return false
+	}
+	if in.NotALead {
+		return true
+	}
+	hasEvidence := strings.TrimSpace(in.Keys.EvidenceRef) != "" || in.HumanConfirmed
+	hasAction := knownID(in.Keys.ActionID) != "" || chainHasAction(existing)
+	hasLead := knownID(in.Keys.LeadID) != "" || knownID(in.Keys.ReceiptID) != ""
+	if existing != nil && (knownID(existing.LeadID) != "" || knownID(existing.Keys.LeadID) != "") {
+		hasLead = true
+	}
+	if typ == EventPipelineCreated || typ == EventPipelineUpdated {
+		return !hasEvidence && !hasAction
+	}
+	return in.PipelineOpen && !hasLead && !hasAction && !hasEvidence
+}
+
+func revenueWithoutFinancial(in ObservedFacts) bool {
+	typ := strings.ToLower(strings.TrimSpace(in.EventType))
+	claimed := in.RevenueEvidenced || in.RevenueCents > 0 || typ == EventRevenueEvidenced
+	if !claimed {
+		return false
+	}
+	hasDoc := strings.TrimSpace(in.Keys.RevenueDocumentID) != ""
+	financial := typ == EventRevenueEvidenced || hasFinancialType(typ)
+	if typ == EventRevenueEvidenced && (!hasDoc || in.RevenueCents <= 0) {
+		return true
+	}
+	if in.RevenueCents > 0 && !financial && !hasDoc {
+		return true
+	}
+	return false
 }
 
 func outboundLabeledInbound(in ObservedFacts) bool {

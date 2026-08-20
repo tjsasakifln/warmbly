@@ -17,6 +17,10 @@ func TestEvaluateInboundReceiveReadyAndBlocked(t *testing.T) {
 	if ready.Status != InboundReceiveReady {
 		t.Fatalf("want READY got %+v", ready)
 	}
+	joinedVer := strings.Join(ready.AcceptedEventVersions, ",")
+	if !strings.Contains(joinedVer, "confenge.commercial_event.v1") || !strings.Contains(joinedVer, "confenge.search_observation.v1") {
+		t.Fatalf("accepted_event_versions=%v", ready.AcceptedEventVersions)
+	}
 	if ready.AutoSendEnabled || ready.DispatchAttempted {
 		t.Fatalf("auto-send leaked: %+v", ready)
 	}

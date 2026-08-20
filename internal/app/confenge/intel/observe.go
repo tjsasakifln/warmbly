@@ -16,7 +16,8 @@ func ObserveFromInbound(lead models.OutreachInboundLead, acc *models.OutreachAcc
 		Keys: JoinKeys{
 			OrganizationID: lead.OrganizationID.String(),
 			Source:         strings.TrimSpace(lead.Source),
-			Query:          utmQuery(lead.UTMJSON),
+			Query:          utmQueryClass(lead.UTMJSON),
+			QueryClass:     utmQueryClass(lead.UTMJSON),
 			AssetID:        strings.TrimSpace(lead.AssetID),
 			CTAID:          strings.TrimSpace(lead.CTAID),
 			CorrelationID:  strings.TrimSpace(lead.CorrelationID),
@@ -26,6 +27,19 @@ func ObserveFromInbound(lead models.OutreachInboundLead, acc *models.OutreachAcc
 			PersonID:       strings.TrimSpace(lead.PersonID),
 			EventIDs:       append([]string{}, lead.Evidence...),
 			RouteFamily:    strings.TrimSpace(lead.RouteFamily),
+			LandingPath:    CanonicalLandingPath(lead.LandingURL),
+			OrganicSource:  ComposeOrganicSource(utmFieldAny(lead.UTMJSON, "organic_source"), lead.Source, utmFieldAny(lead.UTMJSON, "medium", "utm_medium")),
+			Medium:         utmFieldAny(lead.UTMJSON, "medium", "utm_medium"),
+			Campaign:       utmFieldAny(lead.UTMJSON, "campaign", "utm_campaign"),
+			AssetVersion:   utmFieldAny(lead.UTMJSON, "asset_version"),
+			CTAVersion:     utmFieldAny(lead.UTMJSON, "cta_version"),
+			ConsentVersion: utmFieldAny(lead.UTMJSON, "consent_version"),
+			PageVersion:    utmFieldAny(lead.UTMJSON, "page_version"),
+			ContentVersion: utmFieldAny(lead.UTMJSON, "content_version"),
+			ReferrerClass:  ClassifyReferrerClass(lead.Referrer, utmFieldAny(lead.UTMJSON, "referrer_class")),
+			IntentClass:    utmFieldAny(lead.UTMJSON, "intent_class"),
+			Consent:        inboundConsentRef(lead.ConsentJSON),
+			RecordKind:     NormalizeRecordKind(utmFieldAny(lead.UTMJSON, "record_kind"), false),
 		},
 		LeadCreatedAt:  lead.LeadCreatedAt,
 		IngestedAt:     lead.WarmblyIngestedAt,
@@ -39,6 +53,18 @@ func ObserveFromInbound(lead models.OutreachInboundLead, acc *models.OutreachAcc
 	if InboundCommercialSkipReason(lead) != "" {
 		in.Synthetic = true
 		in.Label = LabelSynthetic
+		in.RecordKind = RecordKindSynthetic
+		in.Keys.RecordKind = RecordKindSynthetic
+	} else if in.Keys.RecordKind == "" {
+		in.RecordKind = RecordKindReal
+		in.Keys.RecordKind = RecordKindReal
+	}
+	in.ConsentValid = strings.TrimSpace(in.Keys.Consent) != ""
+	if raw := utmFieldAny(lead.UTMJSON, "query", "search_query", "q", "utm_term", "term"); LooksLikeIndividualSearchQuery(raw) {
+		in.StrippedGSCQuery = true
+	}
+	if raw := utmFieldAny(lead.UTMJSON, "query_hash"); raw != "" || LooksLikeQueryHash(utmFieldAny(lead.UTMJSON, "query")) {
+		in.StrippedQueryHash = true
 	}
 	if acc != nil {
 		if in.Keys.AccountID == "" {
@@ -118,7 +144,8 @@ func ObserveFromInbound(lead models.OutreachInboundLead, acc *models.OutreachAcc
 		}
 	}
 	in.Qualified = in.OutcomeType == OutcomeQualifiedConversation
-	in.PipelineOpen = lead.Status == models.InboundStatusOpen
+	// Inbound OPEN is a work-queue state, not commercial pipeline.
+	in.PipelineOpen = false
 	return in
 }
 
@@ -174,11 +201,16 @@ func ObserveFromAction(action models.OutreachCommercialAction, acc *models.Outre
 		in.Keys.EventIDs = append([]string{}, acc.MomentEvidenceIDs...)
 	}
 	in.Qualified = in.OutcomeType == OutcomeQualifiedConversation
-	in.PipelineOpen = !isWonType(in.OutcomeType) && !isLostType(in.OutcomeType)
+	// An action is not pipeline. Only EventPipelineCreated / evidenced pipeline opens it.
+	in.PipelineOpen = false
 	return in
 }
 
 func utmQuery(raw []byte) string {
+	return utmQueryClass(raw)
+}
+
+func utmQueryClass(raw []byte) string {
 	if len(raw) == 0 {
 		return ""
 	}
@@ -186,11 +218,56 @@ func utmQuery(raw []byte) string {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return ""
 	}
-	// Query is never backfilled from campaign or utm_source.
-	for _, key := range []string{"query", "search_query", "q", "utm_term", "term"} {
+	// Individual GSC/search terms never become a lead attribute.
+	for _, key := range []string{"query_class", "intent_class"} {
+		if v := strings.TrimSpace(asString(m[key])); IsAllowedQueryClass(v) {
+			return v
+		}
+	}
+	if v := strings.TrimSpace(asString(m["query"])); IsAllowedQueryClass(v) {
+		return v
+	}
+	return ""
+}
+
+func utmFieldAny(raw []byte, keys ...string) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		var sm map[string]string
+		if err2 := json.Unmarshal(raw, &sm); err2 != nil {
+			return ""
+		}
+		for _, key := range keys {
+			if v := strings.TrimSpace(sm[key]); v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+	for _, key := range keys {
 		if v := strings.TrimSpace(asString(m[key])); v != "" {
 			return v
 		}
+	}
+	return ""
+}
+
+func inboundConsentRef(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return ""
+	}
+	if v := strings.TrimSpace(asString(m["source"])); v != "" {
+		return v
+	}
+	if granted, ok := m["granted"].(bool); ok && granted {
+		return "granted"
 	}
 	return ""
 }

@@ -510,6 +510,114 @@ func (s *PGStore) listHolds(orgID string) ([]CapacityHold, error) {
 	return out, rows.Err()
 }
 
+func (s *PGStore) PutSearchObservation(obs SearchObservation) (SearchObservation, bool, error) {
+	if s == nil || s.db == nil {
+		return obs, false, errors.New("intel pg store unavailable")
+	}
+	org := firstNonEmpty(obs.OrganizationID, s.orgID)
+	if existing, err := s.GetSearchObservation(org, obs.EventID); err != nil {
+		return obs, false, err
+	} else if existing != nil {
+		existing.Replay = true
+		return *existing, false, nil
+	}
+	if obs.CreatedAt.IsZero() {
+		obs.CreatedAt = time.Now().UTC()
+	}
+	raw, err := json.Marshal(obs)
+	if err != nil {
+		return obs, false, err
+	}
+	_, err = s.db.Exec(context.Background(), `
+		INSERT INTO outreach_intel_search_observations (
+			id, organization_id, event_id, receipt_id, payload_hash, "window",
+			organic_source, asset_family, asset_id, landing_path, intent_class, query_class,
+			eligible, appeared, clicked, engaged, coverage, freshness,
+			producer_source, producer_sha, synthetic, record_kind, consent_policy,
+			measurement_at, replay, out_of_order, payload, created_at
+		) VALUES (
+			$1::uuid, $2::uuid, $3, $4, $5, $6,
+			$7, $8, $9, $10, $11, $12,
+			$13, $14, $15, $16, $17, $18,
+			$19, $20, $21, $22, $23,
+			$24, $25, $26, $27::jsonb, $28
+		)
+		ON CONFLICT (organization_id, event_id) DO NOTHING`,
+		uuid.New(), org, obs.EventID, obs.ReceiptID, obs.PayloadHash, obs.Window,
+		obs.OrganicSource, obs.AssetFamily, obs.AssetID, obs.LandingPath, obs.IntentClass, obs.QueryClass,
+		obs.Eligible, obs.Appeared, obs.Clicked, obs.Engaged, firstNonEmpty(obs.Coverage, CoverageUnknown), obs.Freshness,
+		obs.Source, obs.ProducerSHA, obs.Synthetic, obs.RecordKind, firstNonEmpty(obs.ConsentPolicy, ConsentPolicyNotApplicable),
+		obs.MeasurementAt, obs.Replay, obs.OutOfOrder, raw, obs.CreatedAt,
+	)
+	if err != nil {
+		return obs, false, err
+	}
+	if existing, gerr := s.GetSearchObservation(org, obs.EventID); gerr == nil && existing != nil {
+		return *existing, existing.PayloadHash == obs.PayloadHash && existing.CreatedAt.Equal(obs.CreatedAt), nil
+	}
+	return obs, true, nil
+}
+
+func (s *PGStore) GetSearchObservation(orgID, eventID string) (*SearchObservation, error) {
+	if s == nil || s.db == nil || strings.TrimSpace(eventID) == "" {
+		return nil, nil
+	}
+	org := firstNonEmpty(orgID, s.orgID)
+	var raw []byte
+	err := s.db.QueryRow(context.Background(), `
+		SELECT payload FROM outreach_intel_search_observations
+		WHERE organization_id = $1::uuid AND event_id = $2`, org, strings.TrimSpace(eventID)).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var obs SearchObservation
+	if err := json.Unmarshal(raw, &obs); err != nil {
+		return nil, err
+	}
+	return &obs, nil
+}
+
+func (s *PGStore) ListSearchObservations(orgID, window string) ([]SearchObservation, error) {
+	if s == nil || s.db == nil {
+		return nil, nil
+	}
+	org := firstNonEmpty(orgID, s.orgID)
+	window = strings.TrimSpace(window)
+	var rows pgx.Rows
+	var err error
+	if window == "" {
+		rows, err = s.db.Query(context.Background(), `
+			SELECT payload FROM outreach_intel_search_observations
+			WHERE organization_id = $1::uuid
+			ORDER BY measurement_at, event_id`, org)
+	} else {
+		rows, err = s.db.Query(context.Background(), `
+			SELECT payload FROM outreach_intel_search_observations
+			WHERE organization_id = $1::uuid AND "window" = $2
+			ORDER BY measurement_at, event_id`, org, window)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SearchObservation
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var obs SearchObservation
+		if err := json.Unmarshal(raw, &obs); err != nil {
+			return nil, err
+		}
+		out = append(out, obs)
+	}
+	return out, rows.Err()
+}
+
 func (s *PGStore) listHoldsTx(tx pgx.Tx, orgID string) ([]CapacityHold, error) {
 	rows, err := tx.Query(context.Background(), `
 		SELECT payload FROM outreach_intel_capacity_holds WHERE organization_id = $1::uuid`, orgID)

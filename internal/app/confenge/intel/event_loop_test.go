@@ -557,6 +557,9 @@ func fixtureByName(t *testing.T, name string) NamedFixture {
 }
 
 func TestWriteContractFixtures(t *testing.T) {
+	if os.Getenv("UPDATE_FIXTURES") != "1" {
+		t.Skip("set UPDATE_FIXTURES=1 to regenerate testdata/inbound_learning/events.v1.json")
+	}
 	raw, err := FixtureJSON(loopOrg)
 	if err != nil {
 		t.Fatal(err)
