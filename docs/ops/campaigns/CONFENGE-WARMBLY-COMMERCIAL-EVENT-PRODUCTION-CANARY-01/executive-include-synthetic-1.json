@@ -1,72 +1,310 @@
 {
+  "schema_version": "confenge.commercial_intel.v1",
+  "month": "2026-08",
   "include_synthetic": true,
-  "chain_count": 58,
-  "real_empty": false,
-  "causal_proof": false,
   "inbound_qualified_pipeline": 0,
-  "unknown": 58,
-  "denominators": {
-    "leads": 54,
-    "actions": 47,
-    "outcomes": 7,
+  "qco": 0,
+  "conversations": 0,
+  "meetings": 0,
+  "proposals": 0,
+  "pipeline": 47,
+  "won": 0,
+  "lost": 0,
+  "unknown": 68,
+  "families": [
+    {
+      "route_family": "inbound",
+      "inbound_qualified_pipeline": 0,
+      "qco": 0,
+      "conversations": 0,
+      "meetings": 0,
+      "proposals": 0,
+      "pipeline": 0,
+      "won": 0,
+      "lost": 0,
+      "unknown": 4
+    },
+    {
+      "route_family": "outbound",
+      "inbound_qualified_pipeline": 0,
+      "qco": 0,
+      "conversations": 0,
+      "meetings": 0,
+      "proposals": 0,
+      "pipeline": 0,
+      "won": 0,
+      "lost": 0,
+      "unknown": 0
+    },
+    {
+      "route_family": "partner",
+      "inbound_qualified_pipeline": 0,
+      "qco": 0,
+      "conversations": 0,
+      "meetings": 0,
+      "proposals": 0,
+      "pipeline": 0,
+      "won": 0,
+      "lost": 0,
+      "unknown": 0
+    },
+    {
+      "route_family": "expansion",
+      "inbound_qualified_pipeline": 0,
+      "qco": 0,
+      "conversations": 0,
+      "meetings": 0,
+      "proposals": 0,
+      "pipeline": 0,
+      "won": 0,
+      "lost": 0,
+      "unknown": 0
+    }
+  ],
+  "by_source": [
+    {
+      "key": "UNKNOWN",
+      "count": 47
+    },
+    {
+      "key": "CONFENGE_WEB",
+      "count": 18
+    },
+    {
+      "key": "infrastructure_canary",
+      "count": 2
+    },
+    {
+      "key": "founder-capture",
+      "count": 1
+    }
+  ],
+  "by_asset": [
+    {
+      "key": "UNKNOWN",
+      "count": 62
+    },
+    {
+      "key": "landing-SYNTHETIC",
+      "count": 2
+    },
+    {
+      "key": "speed-to-lead-canary",
+      "count": 2
+    },
+    {
+      "key": "closeout-01-inbound",
+      "count": 1
+    },
+    {
+      "key": "first-real-action-01",
+      "count": 1
+    }
+  ],
+  "by_trigger": [
+    {
+      "key": "UNKNOWN",
+      "count": 37
+    },
+    {
+      "key": "PUBLIC_PORTFOLIO",
+      "count": 21
+    },
+    {
+      "key": "OPERATOR_PROJECTION",
+      "count": 10
+    }
+  ],
+  "by_offer": [
+    {
+      "key": "gestao_monitoramento_contratual",
+      "count": 29
+    },
+    {
+      "key": "CFG-DIAG-EXP-v1",
+      "count": 12
+    },
+    {
+      "key": "reajuste_14133",
+      "count": 10
+    },
+    {
+      "key": "UNKNOWN",
+      "count": 8
+    },
+    {
+      "key": "apoio_licitacoes_propostas",
+      "count": 6
+    },
+    {
+      "key": "CFG-DIRB2G-180-v1",
+      "count": 1
+    },
+    {
+      "key": "CFG-EXTRA-HIST-10K",
+      "count": 1
+    },
+    {
+      "key": "medicoes_glosas_memoria",
+      "count": 1
+    }
+  ],
+  "by_route": [
+    {
+      "key": "GENERIC_EMAIL",
+      "count": 31
+    },
+    {
+      "key": "UNKNOWN",
+      "count": 21
+    },
+    {
+      "key": "R3_ROUTED_TO_NAMED_PERSON",
+      "count": 8
+    },
+    {
+      "key": "email",
+      "count": 7
+    },
+    {
+      "key": "R5_CORPORATE_ONLY",
+      "count": 1
+    }
+  ],
+  "by_intent": [
+    {
+      "key": "UNKNOWN",
+      "count": 68
+    }
+  ],
+  "market_answer": {
+    "asset_family": "market_answer",
+    "leads": 0,
     "qualified": 0,
-    "conversations": 0,
+    "actions": 0,
     "meetings": 0,
     "proposals": 0,
-    "closed": 0
+    "pipeline": 0,
+    "won": 0,
+    "lost": 0,
+    "unknown": 0,
+    "revenue_cents": 0,
+    "revenue_status": "UNKNOWN",
+    "missing_attribution": 0
   },
+  "contract_analysis": {
+    "asset_family": "contract_analysis",
+    "leads": 0,
+    "qualified": 0,
+    "actions": 0,
+    "meetings": 0,
+    "proposals": 0,
+    "pipeline": 0,
+    "won": 0,
+    "lost": 0,
+    "unknown": 0,
+    "revenue_cents": 0,
+    "revenue_status": "UNKNOWN",
+    "missing_attribution": 0
+  },
+  "b2g_xray": {
+    "asset_family": "b2g_xray",
+    "leads": 0,
+    "qualified": 0,
+    "actions": 0,
+    "meetings": 0,
+    "proposals": 0,
+    "pipeline": 0,
+    "won": 0,
+    "lost": 0,
+    "unknown": 0,
+    "revenue_cents": 0,
+    "revenue_status": "UNKNOWN",
+    "missing_attribution": 0
+  },
+  "customer_proof": 0,
+  "revenue_cents": 0,
+  "revenue_status": "UNKNOWN",
   "commercial": {
-    "offer_viewed": 1,
-    "eligibility": 1,
-    "capacity_approved": 1,
+    "offer_viewed": 7,
+    "eligibility": 4,
+    "capacity_approved": 4,
     "capacity_held": 0,
     "capacity_waitlisted": 0,
     "capacity_rejected": 0,
     "capacity_expired": 0,
     "capacity_used": 0,
     "capacity_available": 0,
-    "terms_accepted": 1,
-    "checkout_created": 1,
+    "terms_accepted": 4,
+    "checkout_created": 4,
     "payment_created": 0,
     "payment_pending": 0,
     "payment_confirmed": 0,
     "payment_received": 0,
     "payment_overdue": 0,
-    "payment_refunded": 1,
+    "payment_refunded": 2,
     "onboarding": 0,
     "service_active": 0,
     "renewal": 0,
     "canceled": 0,
     "expansion": 0,
-    "contracted_revenue_cents": 800000,
+    "contracted_revenue_cents": 11400000,
     "mrr_cents": 0,
-    "received_revenue_cents": 800000,
-    "exception_count": 9,
+    "received_revenue_cents": 1600000,
+    "exception_count": 13,
     "manual_touches": 0,
     "qualified_pipeline": 0
   },
+  "by_terms": [
+    {
+      "key": "UNKNOWN",
+      "count": 55
+    },
+    {
+      "key": "CFG-TERMS-B2B-2026-08-17-v1",
+      "count": 13
+    }
+  ],
+  "by_cta": [
+    {
+      "key": "UNKNOWN",
+      "count": 64
+    },
+    {
+      "key": "cta-SYNTHETIC",
+      "count": 2
+    },
+    {
+      "key": "controlled_owner_canary",
+      "count": 1
+    },
+    {
+      "key": "first_real_action_01_canary",
+      "count": 1
+    }
+  ],
   "by_offer_version": [
     {
       "offer_id": "CFG-DIAG-EXP-v1",
       "offer_version": "v1",
-      "selected": 3,
-      "checkout_created": 2,
+      "selected": 9,
+      "checkout_created": 4,
       "payment_pending": 0,
-      "payment_received": 2,
+      "payment_received": 3,
       "onboarding_started": 0,
       "service_active": 0,
       "overdue": 0,
-      "refund": 1,
+      "refund": 2,
       "cancel": 0,
-      "qualified_pipeline": 1,
-      "received_revenue_cents": 800000,
-      "contracted_revenue_cents": 800000,
+      "qualified_pipeline": 6,
+      "received_revenue_cents": 1600000,
+      "contracted_revenue_cents": 2400000,
       "mrr_cents": 0,
-      "exceptions": 3,
+      "exceptions": 6,
       "unknown": 0,
-      "onboarding_blocked": 3,
+      "onboarding_blocked": 11,
       "onboarding_eligible": 1,
-      "denominator_chains": 4,
+      "denominator_chains": 12,
       "stage_timestamps": {
         "eligibility_submitted_at": "2026-08-20T15:51:59Z",
         "capacity_decision_at": "2026-08-20T15:51:59Z",
@@ -74,6 +312,57 @@
         "checkout_created_at": "2026-08-20T15:51:59Z",
         "payment_received_at": "2026-08-20T15:51:59Z"
       }
+    },
+    {
+      "offer_id": "CFG-DIRB2G-180-v1",
+      "offer_version": "v1",
+      "selected": 1,
+      "checkout_created": 1,
+      "payment_pending": 0,
+      "payment_received": 0,
+      "onboarding_started": 0,
+      "service_active": 0,
+      "overdue": 0,
+      "refund": 0,
+      "cancel": 0,
+      "qualified_pipeline": 1,
+      "received_revenue_cents": 0,
+      "contracted_revenue_cents": 9000000,
+      "mrr_cents": 0,
+      "exceptions": 0,
+      "unknown": 0,
+      "onboarding_blocked": 1,
+      "onboarding_eligible": 0,
+      "denominator_chains": 1,
+      "stage_timestamps": {
+        "eligibility_submitted_at": "2026-08-20T21:29:44Z",
+        "capacity_decision_at": "2026-08-20T21:29:44Z",
+        "terms_accepted_at": "2026-08-20T21:29:44Z",
+        "checkout_created_at": "2026-08-20T21:29:44Z"
+      }
+    },
+    {
+      "offer_id": "CFG-EXTRA-HIST-10K",
+      "offer_version": "v1",
+      "selected": 0,
+      "checkout_created": 0,
+      "payment_pending": 0,
+      "payment_received": 0,
+      "onboarding_started": 0,
+      "service_active": 0,
+      "overdue": 0,
+      "refund": 0,
+      "cancel": 0,
+      "qualified_pipeline": 0,
+      "received_revenue_cents": 0,
+      "contracted_revenue_cents": 0,
+      "mrr_cents": 0,
+      "exceptions": 1,
+      "unknown": 0,
+      "onboarding_blocked": 1,
+      "onboarding_eligible": 0,
+      "denominator_chains": 1,
+      "stage_timestamps": {}
     },
     {
       "offer_id": "UNKNOWN",
@@ -190,5 +479,56 @@
       "denominator_chains": 10,
       "stage_timestamps": {}
     }
-  ]
+  ],
+  "denominators": {
+    "leads": 54,
+    "actions": 47,
+    "outcomes": 7,
+    "qualified": 0,
+    "conversations": 0,
+    "meetings": 0,
+    "proposals": 0,
+    "closed": 0
+  },
+  "latency": {
+    "published_to_detected_ms": 0,
+    "detected_to_lead_ms": 0,
+    "lead_to_ingest_ms": 12,
+    "lead_to_first_action_ms": 0,
+    "ingest_to_enrichment_ms": 0,
+    "enrichment_to_action_ms": 0,
+    "action_to_conversation_ms": 0,
+    "conversation_to_proposal_ms": 0,
+    "proposal_to_close_ms": 0,
+    "lead_to_payment_ms": 2,
+    "payment_to_onboarding_ms": 0,
+    "onboarding_to_activation_ms": 0,
+    "sampled_chains": 68,
+    "censored_cycles": 764,
+    "baseline": "BASELINE_OBSERVED"
+  },
+  "freshness": {
+    "target_fit_versions": [
+      "UNKNOWN",
+      "confenge-target-fit-v1",
+      "confenge-target-fit-v2"
+    ],
+    "activation_policy_versions": [
+      "UNKNOWN",
+      "confenge.activation.v1"
+    ],
+    "watermarks": [
+      "2026-08-05T09:18:41.438381Z",
+      "2026-08-10T09:15:08.649456Z",
+      "2026-08-12T09:14:38.263297Z",
+      "2026-08-13T00:47:17Z",
+      "UNKNOWN"
+    ],
+    "stale_chains": 30,
+    "missing_version_chains": 44
+  },
+  "attribution_kind": "observed_association",
+  "causal_proof": false,
+  "real_empty": false,
+  "chain_count": 68
 }

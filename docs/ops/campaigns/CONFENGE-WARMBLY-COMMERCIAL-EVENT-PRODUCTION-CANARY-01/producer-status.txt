@@ -1,0 +1,17 @@
+producer_status=NOT_ANNOUNCED
+producer_repo=tjsasakifln/web-cfg
+producer_factory=scripts/offers/events.cjs::commercialEvent
+producer_outbox=netlify/functions/lib/commercial-event.cjs
+producer_flag=CONFENGE_COMMERCIAL_EVENT_ENABLED default off
+producer_live_post=false
+inbound_handoff=still posts confenge.inbound.v1 leads only
+warmbly_health_field=accepted_event_versions
+warmbly_health_contains=confenge.commercial_event.v1
+producer_capability_fields_read=capabilities, accepted_versions, versions
+contract_note=producer capability probe does not currently read accepted_event_versions; do not edit web-cfg from this campaign
+verdict=COMMERCIAL_EVENT_CONSUMER_LIVE_WAITING_PRODUCER_CANARY
+canonical_url=https://api.confenge.com.br/api/v1/webhooks/confenge/inbound
+loopback_url=http://127.0.0.1:8080/api/v1/webhooks/confenge/inbound
+health_url=https://api.confenge.com.br/api/v1/webhooks/confenge/inbound/health
+hmac=X-Warmbly-Signature: t=<unix>,v1=<hex(hmac_sha256(secret, "<unix>." + body))>
+note=When the producer enables CONFENGE_COMMERCIAL_EVENT_ENABLED and POSTs a labeled SYNTHETIC envelope on this URL, this campaign becomes CROSS_SYSTEM_PROVEN. Do not SQL-insert to pass.

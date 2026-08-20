@@ -1,20 +1,186 @@
 {
+  "schema_version": "confenge.commercial_intel.v1",
+  "month": "2026-08",
   "include_synthetic": false,
-  "chain_count": 47,
-  "real_empty": false,
-  "causal_proof": false,
   "inbound_qualified_pipeline": 0,
+  "qco": 0,
+  "conversations": 0,
+  "meetings": 0,
+  "proposals": 0,
+  "pipeline": 47,
+  "won": 0,
+  "lost": 0,
   "unknown": 47,
-  "denominators": {
-    "leads": 47,
-    "actions": 47,
-    "outcomes": 1,
+  "families": [
+    {
+      "route_family": "inbound",
+      "inbound_qualified_pipeline": 0,
+      "qco": 0,
+      "conversations": 0,
+      "meetings": 0,
+      "proposals": 0,
+      "pipeline": 0,
+      "won": 0,
+      "lost": 0,
+      "unknown": 0
+    },
+    {
+      "route_family": "outbound",
+      "inbound_qualified_pipeline": 0,
+      "qco": 0,
+      "conversations": 0,
+      "meetings": 0,
+      "proposals": 0,
+      "pipeline": 0,
+      "won": 0,
+      "lost": 0,
+      "unknown": 0
+    },
+    {
+      "route_family": "partner",
+      "inbound_qualified_pipeline": 0,
+      "qco": 0,
+      "conversations": 0,
+      "meetings": 0,
+      "proposals": 0,
+      "pipeline": 0,
+      "won": 0,
+      "lost": 0,
+      "unknown": 0
+    },
+    {
+      "route_family": "expansion",
+      "inbound_qualified_pipeline": 0,
+      "qco": 0,
+      "conversations": 0,
+      "meetings": 0,
+      "proposals": 0,
+      "pipeline": 0,
+      "won": 0,
+      "lost": 0,
+      "unknown": 0
+    }
+  ],
+  "by_source": [
+    {
+      "key": "UNKNOWN",
+      "count": 47
+    }
+  ],
+  "by_asset": [
+    {
+      "key": "UNKNOWN",
+      "count": 47
+    }
+  ],
+  "by_trigger": [
+    {
+      "key": "PUBLIC_PORTFOLIO",
+      "count": 21
+    },
+    {
+      "key": "UNKNOWN",
+      "count": 16
+    },
+    {
+      "key": "OPERATOR_PROJECTION",
+      "count": 10
+    }
+  ],
+  "by_offer": [
+    {
+      "key": "gestao_monitoramento_contratual",
+      "count": 29
+    },
+    {
+      "key": "reajuste_14133",
+      "count": 10
+    },
+    {
+      "key": "apoio_licitacoes_propostas",
+      "count": 6
+    },
+    {
+      "key": "UNKNOWN",
+      "count": 1
+    },
+    {
+      "key": "medicoes_glosas_memoria",
+      "count": 1
+    }
+  ],
+  "by_route": [
+    {
+      "key": "GENERIC_EMAIL",
+      "count": 31
+    },
+    {
+      "key": "R3_ROUTED_TO_NAMED_PERSON",
+      "count": 8
+    },
+    {
+      "key": "email",
+      "count": 7
+    },
+    {
+      "key": "R5_CORPORATE_ONLY",
+      "count": 1
+    }
+  ],
+  "by_intent": [
+    {
+      "key": "UNKNOWN",
+      "count": 47
+    }
+  ],
+  "market_answer": {
+    "asset_family": "market_answer",
+    "leads": 0,
     "qualified": 0,
-    "conversations": 0,
+    "actions": 0,
     "meetings": 0,
     "proposals": 0,
-    "closed": 0
+    "pipeline": 0,
+    "won": 0,
+    "lost": 0,
+    "unknown": 0,
+    "revenue_cents": 0,
+    "revenue_status": "UNKNOWN",
+    "missing_attribution": 0
   },
+  "contract_analysis": {
+    "asset_family": "contract_analysis",
+    "leads": 0,
+    "qualified": 0,
+    "actions": 0,
+    "meetings": 0,
+    "proposals": 0,
+    "pipeline": 0,
+    "won": 0,
+    "lost": 0,
+    "unknown": 0,
+    "revenue_cents": 0,
+    "revenue_status": "UNKNOWN",
+    "missing_attribution": 0
+  },
+  "b2g_xray": {
+    "asset_family": "b2g_xray",
+    "leads": 0,
+    "qualified": 0,
+    "actions": 0,
+    "meetings": 0,
+    "proposals": 0,
+    "pipeline": 0,
+    "won": 0,
+    "lost": 0,
+    "unknown": 0,
+    "revenue_cents": 0,
+    "revenue_status": "UNKNOWN",
+    "missing_attribution": 0
+  },
+  "customer_proof": 0,
+  "revenue_cents": 0,
+  "revenue_status": "UNKNOWN",
   "commercial": {
     "offer_viewed": 0,
     "eligibility": 0,
@@ -45,6 +211,18 @@
     "manual_touches": 0,
     "qualified_pipeline": 0
   },
+  "by_terms": [
+    {
+      "key": "UNKNOWN",
+      "count": 47
+    }
+  ],
+  "by_cta": [
+    {
+      "key": "UNKNOWN",
+      "count": 47
+    }
+  ],
   "by_offer_version": [
     {
       "offer_id": "UNKNOWN",
@@ -161,5 +339,54 @@
       "denominator_chains": 10,
       "stage_timestamps": {}
     }
-  ]
+  ],
+  "denominators": {
+    "leads": 47,
+    "actions": 47,
+    "outcomes": 1,
+    "qualified": 0,
+    "conversations": 0,
+    "meetings": 0,
+    "proposals": 0,
+    "closed": 0
+  },
+  "latency": {
+    "published_to_detected_ms": 0,
+    "detected_to_lead_ms": 0,
+    "lead_to_ingest_ms": 0,
+    "lead_to_first_action_ms": 0,
+    "ingest_to_enrichment_ms": 0,
+    "enrichment_to_action_ms": 0,
+    "action_to_conversation_ms": 0,
+    "conversation_to_proposal_ms": 0,
+    "proposal_to_close_ms": 0,
+    "lead_to_payment_ms": 0,
+    "payment_to_onboarding_ms": 0,
+    "onboarding_to_activation_ms": 0,
+    "sampled_chains": 47,
+    "censored_cycles": 517,
+    "baseline": "BASELINE_OBSERVED"
+  },
+  "freshness": {
+    "target_fit_versions": [
+      "confenge-target-fit-v1",
+      "confenge-target-fit-v2"
+    ],
+    "activation_policy_versions": [
+      "UNKNOWN",
+      "confenge.activation.v1"
+    ],
+    "watermarks": [
+      "2026-08-05T09:18:41.438381Z",
+      "2026-08-10T09:15:08.649456Z",
+      "2026-08-12T09:14:38.263297Z",
+      "2026-08-13T00:47:17Z"
+    ],
+    "stale_chains": 9,
+    "missing_version_chains": 23
+  },
+  "attribution_kind": "observed_association",
+  "causal_proof": false,
+  "real_empty": false,
+  "chain_count": 47
 }

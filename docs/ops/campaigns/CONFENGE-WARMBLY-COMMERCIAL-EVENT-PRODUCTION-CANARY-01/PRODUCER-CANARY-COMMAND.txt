@@ -2,6 +2,18 @@
 # confenge.commercial_event.v1 on the real transport.
 # inbound-handoff.cjs still posts confenge.inbound.v1 leads only.
 # scripts/offers/events.cjs::commercialEvent() is the body factory (read-only).
+# netlify/functions/lib/commercial-event.cjs is gated by
+# CONFENGE_COMMERCIAL_EVENT_ENABLED (default off).
+#
+# Consumer health (this run, twice):
+#   GET https://api.confenge.com.br/api/v1/webhooks/confenge/inbound/health
+#   HTTP 200 status=READY auto_send_enabled=false
+#   accepted_event_versions includes confenge.commercial_event.v1
+#
+# Producer capability probe currently concatenates JSON fields
+# capabilities + accepted_versions + versions. It does not read
+# accepted_event_versions. Fix that on the producer side; do not edit
+# web-cfg from this Warmbly campaign.
 #
 # When the producer is live, POST a SYNTHETIC envelope on the HMAC route.
 # Do not insert rows in SQL. Do not edit web-cfg from this campaign.
@@ -17,7 +29,7 @@
 #
 # Body (schema/version must be confenge.commercial_event.v1; mark synthetic):
 
-BODY='{"schema":"confenge.commercial_event.v1","version":"confenge.commercial_event.v1","event_id":"evt_SYNTHETIC_producer_canary_1","type":"offer_selected","occurred_at":"2026-08-20T16:00:00Z","offer_id":"CFG-DIAG-EXP-v1","offer_version":"v1","terms_version":"CFG-TERMS-B2B-2026-08-17-v1","external_reference":"SYNTHETIC-PRODUCER-CANARY-1","provider_event_id":"asaas_SYNTHETIC_producer_canary_1","amount_cents":800000,"currency":"BRL","source":"CONFENGE_WEB","revenue":false,"received_revenue":false,"synthetic":true}'
+BODY='{"schema":"confenge.commercial_event.v1","version":"confenge.commercial_event.v1","event_id":"evt_SYNTHETIC_producer_canary_1","type":"offer_selected","occurred_at":"2026-08-20T21:35:00Z","offer_id":"CFG-DIAG-EXP-v1","offer_version":"v1","terms_version":"CFG-TERMS-B2B-2026-08-17-v1","external_reference":"SYNTHETIC-PRODUCER-CANARY-1","provider_event_id":"asaas_SYNTHETIC_producer_canary_1","amount_cents":800000,"currency":"BRL","source":"CONFENGE_WEB","revenue":false,"received_revenue":false,"synthetic":true}'
 T=$(date +%s)
 SIG=$(printf '%s.%s' "$T" "$BODY" | openssl dgst -sha256 -hmac "$CONFENGE_INBOUND_WEBHOOK_SECRET" | awk '{print $2}')
 curl -sS -D- -X POST "https://api.confenge.com.br/api/v1/webhooks/confenge/inbound" \

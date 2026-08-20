@@ -1,0 +1,9 @@
+issue=47
+state=OPEN
+residual=FIRST_REAL_CONSENTED_COMMERCIAL_EVENT
+real_commercial_receipts=0
+synthetic_commercial_receipts=52
+fabricated=false
+partial_close=false
+verdict=COMMERCIAL_EVENT_CONSUMER_LIVE_WAITING_PRODUCER_CANARY
+note=HMAC consumer is live on SHA 93dd039d. No real consented external commercial event exists in outreach_intel_event_receipts. Do not close #47.

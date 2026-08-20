@@ -23,7 +23,7 @@ Invalid `t=1,v1=deadbeef` must be 401.
 # on the VPS, with CONFENGE_INBOUND_WEBHOOK_SECRET already in deploy/confenge-vps/.env
 source /opt/warmbly-confenge/deploy/confenge-vps/.env
 URL=http://127.0.0.1:8080/api/v1/webhooks/confenge/inbound
-BODY='{"schema":"confenge.commercial_event.v1","version":"confenge.commercial_event.v1","event_id":"evt_SYNTHETIC_...","type":"offer_selected","occurred_at":"2026-08-20T16:00:00Z","offer_id":"CFG-DIAG-EXP-v1","offer_version":"v1","terms_version":"CFG-TERMS-B2B-2026-08-17-v1","external_reference":"SYNTHETIC-...","provider_event_id":"asaas_SYNTHETIC_...","amount_cents":800000,"currency":"BRL","source":"CONFENGE_WEB","revenue":false,"synthetic":true}'
+BODY='{"schema":"confenge.commercial_event.v1","version":"confenge.commercial_event.v1","event_id":"evt_SYNTHETIC_...","type":"offer_selected","occurred_at":"2026-08-20T21:35:00Z","offer_id":"CFG-DIAG-EXP-v1","offer_version":"v1","terms_version":"CFG-TERMS-B2B-2026-08-17-v1","external_reference":"SYNTHETIC-...","provider_event_id":"asaas_SYNTHETIC_...","amount_cents":800000,"currency":"BRL","source":"CONFENGE_WEB","revenue":false,"synthetic":true}'
 T=$(date +%s)
 SIG=$(printf '%s.%s' "$T" "$BODY" | openssl dgst -sha256 -hmac "$CONFENGE_INBOUND_WEBHOOK_SECRET" | awk '{print $2}')
 curl -sS -D- -X POST "$URL" -H 'Content-Type: application/json' -H "X-Warmbly-Signature: t=$T,v1=$SIG" --data "$BODY"
