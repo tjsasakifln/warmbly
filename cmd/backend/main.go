@@ -1093,6 +1093,10 @@ func main() {
 			confengeServiceForHandler.WireIntel(primaryDB.Pool)
 			// CAMPAIGN_POLICY_AUTHORIZATION store is persist-only. It cannot transport.
 			confengeServiceForHandler.WirePolicyAuth(repository.NewConfengePolicyRepository(primaryDB.Pool))
+			if primaryDB == nil || primaryDB.Pool == nil {
+				log.Fatalf("confenge: postgres required for bounded cohort authority")
+			}
+			confengeServiceForHandler.WireCohortAuth(confenge.NewPostgresCohortStore(primaryDB.Pool))
 		}
 		if confengeServiceForHandler != nil && aiProvider != nil {
 			confengeServiceForHandler.SetAI(aiProvider)

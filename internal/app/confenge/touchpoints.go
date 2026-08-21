@@ -196,7 +196,7 @@ func (s *service) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, li
 					Strategy: &st, Playbook: pb, PromptVersion: promptVer,
 				})
 			}
-			if rec.State != RecipientValidated || plan.Messageability != MessageabilityReady {
+			if !RecipientStateAuthorizable(rec.State) || plan.Messageability != MessageabilityReady {
 				val.OK = false
 			}
 			if d := list[i].Draft; d != nil && d.ValidationOK != nil && !*d.ValidationOK {
@@ -349,7 +349,7 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	}
 	recent := recentDraftBodies(ctx, s, orgID, tp.AccountID, tp.Channel)
 	var composed DraftOutput
-	if plan.Messageability != MessageabilityReady || rec.State != RecipientValidated {
+	if plan.Messageability != MessageabilityReady || !RecipientStateAuthorizable(rec.State) {
 		subject, body = "", ""
 		factUsed = ""
 	} else {
@@ -385,7 +385,7 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 		}
 	}
 	val.Recipient = &rec
-	if rec.State != RecipientValidated {
+	if !RecipientStateAuthorizable(rec.State) {
 		val.OK = false
 		if rec.Reason != "" {
 			val.Errors = appendUnique(val.Errors, rec.Reason)
@@ -397,7 +397,7 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 		flags = appendUnique(flags, "messageability_"+strings.ToLower(plan.Messageability))
 		flags = appendUnique(flags, plan.ReasonCodes...)
 	}
-	if rec.State != RecipientValidated {
+	if !RecipientStateAuthorizable(rec.State) {
 		risk = "RED"
 		flags = appendUnique(flags, "recipient_"+strings.ToLower(rec.State))
 		flags = appendUnique(flags, rec.ReasonCodes...)
@@ -437,7 +437,7 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	case rec.State == RecipientBlocked || plan.Messageability == MessageabilityBlocked:
 		draftStatus = models.OutreachDraftBlocked
 		subject, body = "", ""
-	case rec.State != RecipientValidated || plan.Messageability != MessageabilityReady:
+	case !RecipientStateAuthorizable(rec.State) || plan.Messageability != MessageabilityReady:
 		draftStatus = models.OutreachDraftSkipped
 		subject, body = "", ""
 	default:

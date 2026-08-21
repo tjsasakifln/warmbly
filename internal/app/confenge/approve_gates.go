@@ -118,8 +118,8 @@ func StructuralApproveBlockers(
 		resolved := ResolveRecipient(acc, cands, time.Now().UTC())
 		rec = &resolved
 	}
-	if rec == nil || rec.State != RecipientValidated {
-		reason := "recipient identity is not VALIDATED"
+	if rec == nil || (rec.State != RecipientValidated && rec.State != RecipientControlledEligible) {
+		reason := "recipient identity is not VALIDATED or CONTROLLED_ELIGIBLE"
 		if rec != nil {
 			reason = "recipient is " + rec.State
 			if rec.Reason != "" {
@@ -128,7 +128,7 @@ func StructuralApproveBlockers(
 		}
 		add("recipient_not_validated", reason)
 	}
-	if cand != nil && isGenericRecipient(cand) {
+	if cand != nil && isGenericRecipient(cand) && !CandidateControlledEligible(cand) {
 		add("generic_mailbox", "generic mailbox cannot be approved")
 	}
 	if containsAnyFlag(flags, "incomplete_copy_context") {

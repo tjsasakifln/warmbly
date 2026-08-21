@@ -130,7 +130,7 @@ func PlanCommercialAction(in PlanInput) PlannedAction {
 	pb := MustPlaybook()
 	_, plan := BuildOutboundPlan(pb, acc, c, in.Evidence, 1)
 	body := ""
-	if cls.Tier == ContactTierA && rec.State == RecipientValidated && plan.Messageability == MessageabilityReady {
+	if (cls.Tier == ContactTierA && rec.State == RecipientValidated || rec.State == RecipientControlledEligible) && plan.Messageability == MessageabilityReady {
 		composed := ComposeFromPlan(plan, acc, c, ChannelEmailInitial)
 		body = composed.BodyText
 	}
@@ -172,11 +172,11 @@ func planR1(out models.OutreachCommercialAction, rec RecipientResolution, cls Co
 	out.ActionType = models.ActionDirectEmail
 	out.RouteType = firstNonEmpty(out.RouteType, "email")
 	out.RouteRelation = firstNonEmpty(out.RouteRelation, models.RouteRelBelongsToNamedPerson)
-	sendable := rec.State == RecipientValidated && cls.Tier == ContactTierA &&
+	sendable := RecipientStateAuthorizable(rec.State) && (cls.Tier == ContactTierA || rec.State == RecipientControlledEligible) &&
 		plan.Messageability == MessageabilityReady && strings.TrimSpace(body) != ""
 	out.EmailSendable = sendable
 	out.Dispatchable = false
-	out.Actionable = sendable || rec.State == RecipientValidated
+	out.Actionable = sendable || RecipientStateAuthorizable(rec.State)
 	if sendable {
 		out.Lane = models.LaneEmailNeedsReview
 		out.State = models.ActionStateReady
@@ -235,11 +235,15 @@ func planR4(out models.OutreachCommercialAction, rec RecipientResolution) Planne
 	out.Lane = models.LaneRoleEmailQueue
 	out.State = models.ActionStateReady
 	out.Actionable = true
-	out.EmailSendable = false
+	out.EmailSendable = rec.State == RecipientControlledEligible
 	out.Dispatchable = false
 	out.PersonName = "" // never invent a person for a role mailbox
 	out.RecommendedAction = "Escrever para a caixa funcional. Nao tratar como e-mail pessoal."
 	out.Warnings = append(out.Warnings, "Caixa funcional oficial. Nao e uma pessoa nomeada.")
+	if rec.State == RecipientControlledEligible {
+		out.Lane = models.LaneEmailNeedsReview
+		out.RecommendedAction = "Revisar e autorizar o e-mail de setor. Envio so apos aprovacao humana ou cohort bounded."
+	}
 	return finalizePlan(out, rec.State)
 }
 
@@ -258,11 +262,15 @@ func planR5(out models.OutreachCommercialAction, c *models.OutreachContactCandid
 	out.RouteRelation = firstNonEmpty(out.RouteRelation, models.RouteRelCorporateGeneric)
 	out.State = models.ActionStateReady
 	out.Actionable = true
-	out.EmailSendable = false
+	out.EmailSendable = rec.State == RecipientControlledEligible
 	out.Dispatchable = false
 	out.PersonName = ""
 	out.RecommendedAction = "Abordagem manual de baixa confianca. Nunca mascarar como pessoa."
 	out.Warnings = append(out.Warnings, "Rota corporativa generica. Nao e destinatario nominal.")
+	if rec.State == RecipientControlledEligible {
+		out.Lane = models.LaneEmailNeedsReview
+		out.RecommendedAction = "Revisar e autorizar o e-mail institucional. Nao inventar pessoa."
+	}
 	return finalizePlan(out, rec.State)
 }
 

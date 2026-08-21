@@ -91,6 +91,14 @@ const (
 	EventOperatorAlertEmitted      = "operator_alert_emitted"
 	EventOperatorAlertFailed       = "operator_alert_failed"
 	EventOperatorAlertAcknowledged = "operator_alert_acknowledged"
+	EventEmailAttempted            = "email_attempted"
+	EventProviderAccepted          = "provider_accepted"
+	EventDelivered                 = "delivered"
+	EventHardBounce                = "hard_bounce"
+	EventSoftBounce                = "soft_bounce"
+	EventOptOut                    = "opt_out"
+	EventSpamComplaint             = "spam_complaint"
+	EventNoReply                   = "no_reply"
 	EventFirstHumanActionRecorded  = "first_human_action_recorded"
 	EventInboundResolvedNoAction   = "inbound_resolved_no_action"
 
@@ -791,54 +799,63 @@ type CommercialEvent struct {
 	Engaged       *int       `json:"engaged,omitempty"`
 	MeasurementAt *time.Time `json:"measurement_at,omitempty"`
 	ConsentPolicy string     `json:"consent_policy,omitempty"`
+
+	// Controlled email observability slices. UNKNOWN stays UNKNOWN.
+	EmailRouteClass string `json:"email_route_class,omitempty"`
+	CohortID        string `json:"cohort_id,omitempty"`
+	PolicyVersion   string `json:"policy_version,omitempty"`
+	ProviderName    string `json:"provider_name,omitempty"`
+	BounceClass     string `json:"bounce_class,omitempty"`
+	ReplyClass      string `json:"reply_class,omitempty"`
 }
 
 // ObservabilityReport is the executive JSON/MD payload for the learning loop.
 type ObservabilityReport struct {
-	SchemaVersion            string            `json:"schema_version"`
-	Month                    string            `json:"month"`
-	IncludeSynthetic         bool              `json:"include_synthetic"`
-	InboundQualifiedPipeline int               `json:"inbound_qualified_pipeline"`
-	ValidLeads               int               `json:"valid_leads"`
-	QualifiedLeads           int               `json:"qualified_leads"`
-	Actions                  int               `json:"actions"`
-	Outcomes                 int               `json:"outcomes"`
-	Meetings                 int               `json:"meetings"`
-	Proposals                int               `json:"proposals"`
-	Pipeline                 int               `json:"pipeline"`
-	Won                      int               `json:"won"`
-	Lost                     int               `json:"lost"`
-	Unknown                  int               `json:"unknown"`
-	Missing                  int               `json:"missing"`
-	Lanes                    map[string]int    `json:"lanes"`
-	BySource                 []Breakdown       `json:"by_source"`
-	ByAsset                  []Breakdown       `json:"by_asset"`
-	ByIntent                 []Breakdown       `json:"by_intent"`
-	ByOffer                  []Breakdown       `json:"by_offer"`
-	ByRoute                  []Breakdown       `json:"by_route"`
-	MarketAnswer             AssetSlice        `json:"market_answer"`
-	ContractAnalysis         AssetSlice        `json:"contract_analysis"`
-	B2GXRay                  AssetSlice        `json:"b2g_xray"`
-	CustomerProof            int               `json:"customer_proof"`
-	Denominators             Denominators      `json:"denominators"`
-	ExceptionCounts          map[string]int    `json:"exception_counts"`
-	EventsConsumed           int               `json:"events_consumed"`
-	Joins                    int               `json:"joins"`
-	Orphans                  int               `json:"orphans"`
-	Conflicts                int               `json:"conflicts"`
-	AttributionCompleteness  float64           `json:"attribution_completeness"`
-	Latency                  LatencyMS         `json:"latency"`
-	RevenueCents             int64             `json:"revenue_cents"`
-	RevenueStatus            string            `json:"revenue_status"`
-	Freshness                Freshness         `json:"freshness"`
-	LearningCandidates       []LearningSummary `json:"learning_candidates"`
-	Blockers                 []string          `json:"blockers"`
-	Recommendation           string            `json:"recommendation"`
-	CausalProof              bool              `json:"causal_proof"`
-	UpstreamWrites           []string          `json:"upstream_writes"`
-	RealEmpty                bool              `json:"real_empty"`
-	AutoSend                 bool              `json:"auto_send"`
-	EmailSideEffects         bool              `json:"email_side_effects"`
+	SchemaVersion            string                        `json:"schema_version"`
+	Month                    string                        `json:"month"`
+	IncludeSynthetic         bool                          `json:"include_synthetic"`
+	InboundQualifiedPipeline int                           `json:"inbound_qualified_pipeline"`
+	ValidLeads               int                           `json:"valid_leads"`
+	QualifiedLeads           int                           `json:"qualified_leads"`
+	Actions                  int                           `json:"actions"`
+	Outcomes                 int                           `json:"outcomes"`
+	Meetings                 int                           `json:"meetings"`
+	Proposals                int                           `json:"proposals"`
+	Pipeline                 int                           `json:"pipeline"`
+	Won                      int                           `json:"won"`
+	Lost                     int                           `json:"lost"`
+	Unknown                  int                           `json:"unknown"`
+	Missing                  int                           `json:"missing"`
+	Lanes                    map[string]int                `json:"lanes"`
+	BySource                 []Breakdown                   `json:"by_source"`
+	ByAsset                  []Breakdown                   `json:"by_asset"`
+	ByIntent                 []Breakdown                   `json:"by_intent"`
+	ByOffer                  []Breakdown                   `json:"by_offer"`
+	ByRoute                  []Breakdown                   `json:"by_route"`
+	MarketAnswer             AssetSlice                    `json:"market_answer"`
+	ContractAnalysis         AssetSlice                    `json:"contract_analysis"`
+	B2GXRay                  AssetSlice                    `json:"b2g_xray"`
+	CustomerProof            int                           `json:"customer_proof"`
+	Denominators             Denominators                  `json:"denominators"`
+	ExceptionCounts          map[string]int                `json:"exception_counts"`
+	EventsConsumed           int                           `json:"events_consumed"`
+	Joins                    int                           `json:"joins"`
+	Orphans                  int                           `json:"orphans"`
+	Conflicts                int                           `json:"conflicts"`
+	AttributionCompleteness  float64                       `json:"attribution_completeness"`
+	Latency                  LatencyMS                     `json:"latency"`
+	RevenueCents             int64                         `json:"revenue_cents"`
+	RevenueStatus            string                        `json:"revenue_status"`
+	Freshness                Freshness                     `json:"freshness"`
+	LearningCandidates       []LearningSummary             `json:"learning_candidates"`
+	Blockers                 []string                      `json:"blockers"`
+	Recommendation           string                        `json:"recommendation"`
+	CausalProof              bool                          `json:"causal_proof"`
+	UpstreamWrites           []string                      `json:"upstream_writes"`
+	RealEmpty                bool                          `json:"real_empty"`
+	AutoSend                 bool                          `json:"auto_send"`
+	EmailSideEffects         bool                          `json:"email_side_effects"`
+	ControlledEmail          []ControlledEmailOutcomeSlice `json:"controlled_email,omitempty"`
 }
 
 // LearningSummary is the PII-free learning row on the report.

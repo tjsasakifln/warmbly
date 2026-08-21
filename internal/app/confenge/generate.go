@@ -242,11 +242,13 @@ func draftUserPrompt(in GenerateInput) string {
 		contact = map[string]any{
 			"name": cand.Name, "role": cand.Role, "email": cand.Email,
 			"verification_status": cand.VerificationStatus, "generic_recipient": false,
+			"person_unknown": CandidatePersonUnknown(cand),
+			"route_class":    CandidateRouteClass(cand),
 		}
-		if isGenericRecipient(cand) {
+		if isGenericRecipient(cand) || !composerMaySeePersonName(cand) {
 			contact["name"] = ""
 			contact["role"] = ""
-			contact["generic_recipient"] = true
+			contact["generic_recipient"] = isGenericRecipient(cand)
 		}
 	}
 	ev := make([]map[string]any, 0, len(evidence))

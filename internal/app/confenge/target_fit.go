@@ -75,14 +75,23 @@ func RequireEmailOutbound(acc *models.OutreachAccount, cand *models.OutreachCont
 	if acc.DoNotContact || acc.Blocked {
 		return fmt.Errorf("account blocked or DNC")
 	}
-	if !acc.EmailSendReady {
-		return fmt.Errorf("company EMAIL_SEND_READY is false")
-	}
 	if cand == nil {
 		return fmt.Errorf("contact candidate is missing")
 	}
 	if !cand.CanEnroll() {
 		return fmt.Errorf("contact is not enrollable")
+	}
+	if CandidateControlledEligible(cand) && ControlledRouteAllowed(cand, nil) {
+		if cand.DoNotContact || cand.Bounced || cand.Blocked {
+			return fmt.Errorf("contact suppressed")
+		}
+		if CandidateRouteClass(cand) == RouteClassProbabilisticOrRisky {
+			return fmt.Errorf("risky route class is outside default pilot")
+		}
+		return nil
+	}
+	if !acc.EmailSendReady {
+		return fmt.Errorf("company EMAIL_SEND_READY is false")
 	}
 	if !cand.EmailSendReady {
 		return fmt.Errorf("contact EMAIL_SEND_READY is false")

@@ -78,17 +78,19 @@ func BuildConsultantSendabilityPack(
 	pack.Warnings = append(pack.Warnings, rec.ReasonCodes...)
 
 	sendable := val.OK &&
-		rec.State == RecipientValidated &&
+		RecipientStateAuthorizable(rec.State) &&
 		plan.Messageability == MessageabilityReady &&
 		strings.TrimSpace(out.BodyText) != "" &&
 		strings.TrimSpace(out.Subject) != "" &&
-		!isGenericRecipient(cand)
+		(!isGenericRecipient(cand) || CandidateControlledEligible(cand)) &&
+		CandidateRouteClass(cand) != RouteClassProbabilisticOrRisky
 	pack.HardGates["validation_ok"] = val.OK
 	pack.HardGates["recipient_validated"] = rec.State == RecipientValidated
+	pack.HardGates["recipient_authorizable"] = RecipientStateAuthorizable(rec.State)
 	pack.HardGates["messageability_ready"] = plan.Messageability == MessageabilityReady
 	pack.HardGates["body_present"] = strings.TrimSpace(out.BodyText) != ""
 	pack.HardGates["subject_present"] = strings.TrimSpace(out.Subject) != ""
-	pack.HardGates["not_generic"] = !isGenericRecipient(cand)
+	pack.HardGates["not_generic"] = !isGenericRecipient(cand) || CandidateControlledEligible(cand)
 	pack.HardGates["not_inferred"] = pack.Derivation != "INFERRED"
 	if sendable {
 		pack.SendWithoutEditing = "sim"

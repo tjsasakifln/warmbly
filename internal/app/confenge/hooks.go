@@ -53,6 +53,16 @@ func (s *service) NoteReply(ctx context.Context, orgID uuid.UUID, contactEmail s
 		}
 	}
 	s.cancelQueuedForRecipient(ctx, orgID, email, phone, "reply")
+	replyClass := ""
+	if meta != nil {
+		if v, ok := meta["reply_class"].(string); ok {
+			replyClass = v
+		}
+		if v, ok := meta["classification"].(string); ok && replyClass == "" {
+			replyClass = v
+		}
+	}
+	s.observeControlledEmail(ctx, orgID, "reply", nil, cand, ControlledEmailContext{ReplyClass: replyClass})
 	return s.enqueueErr(ctx, orgID, models.OutreachOutcome{
 		IdempotencyKey: fmt.Sprintf("replied:%s:%s:%d", orgID, email, time.Now().UTC().Truncate(time.Minute).Unix()),
 		SourceLeadID:   acc.SourceLeadID,
@@ -96,6 +106,12 @@ func (s *service) NoteBounce(ctx context.Context, orgID uuid.UUID, contactEmail,
 		}
 	}
 	s.cancelQueuedForRecipient(ctx, orgID, email, phone, "bounce")
+	bounceClass := ClassifyBounceClass(reason)
+	typ := "hard_bounce"
+	if bounceClass == "SOFT" {
+		typ = "soft_bounce"
+	}
+	s.observeControlledEmail(ctx, orgID, typ, nil, cand, ControlledEmailContext{BounceClass: bounceClass})
 	return s.enqueueErr(ctx, orgID, models.OutreachOutcome{
 		IdempotencyKey: fmt.Sprintf("bounced:%s:%s", orgID, email),
 		SourceLeadID:   lead,
@@ -103,7 +119,7 @@ func (s *service) NoteBounce(ctx context.Context, orgID uuid.UUID, contactEmail,
 		ContactEmail:   email,
 		EventType:      OutcomeBounced,
 		OccurredAt:     time.Now().UTC(),
-		Payload:        mustJSON(map[string]any{"reason": reason}),
+		Payload:        mustJSON(map[string]any{"reason": reason, "bounce_class": bounceClass}),
 	})
 }
 
@@ -140,6 +156,7 @@ func (s *service) NoteDNC(ctx context.Context, orgID uuid.UUID, contactEmail, re
 		}
 	}
 	s.cancelQueuedForRecipient(ctx, orgID, email, phone, "DO_NOT_CONTACT")
+	s.observeControlledEmail(ctx, orgID, "opt_out", nil, cand, ControlledEmailContext{})
 	return s.enqueueErr(ctx, orgID, models.OutreachOutcome{
 		IdempotencyKey: fmt.Sprintf("dnc:%s:%s", orgID, email),
 		SourceLeadID:   lead,

@@ -2,6 +2,7 @@ package confenge
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -15,6 +16,22 @@ import (
 // WirePolicyAuth attaches the durable campaign policy store.
 func (s *service) WirePolicyAuth(store repository.ConfengePolicyRepository) {
 	s.policyStore = store
+}
+
+func (s *service) WireCohortAuth(store BoundedCohortStore) {
+	// Nil is fail-closed. Production must pass NewPostgresCohortStore.
+	// NewService still installs a memory store for unit tests only.
+	s.cohortStore = store
+}
+
+func (s *service) BindBoundedCohortGrant(auth *BoundedCohortAuthorization) error {
+	if s == nil || s.cohortStore == nil {
+		return fmt.Errorf("bounded cohort store not wired")
+	}
+	if auth == nil || auth.ID == uuid.Nil {
+		return fmt.Errorf("bounded cohort grant missing")
+	}
+	return s.cohortStore.PutGrant(context.Background(), auth)
 }
 
 // AuthorizeCampaignPolicy mints an auditable CAMPAIGN_POLICY_AUTHORIZATION grant.

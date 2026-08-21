@@ -9,10 +9,15 @@ import (
 
 // Recipient terminal states. Every target ends in exactly one of these.
 const (
-	RecipientValidated = "VALIDATED"
-	RecipientException = "EXCEPTION"
-	RecipientBlocked   = "BLOCKED"
+	RecipientValidated          = "VALIDATED"
+	RecipientControlledEligible = "CONTROLLED_ELIGIBLE"
+	RecipientException          = "EXCEPTION"
+	RecipientBlocked            = "BLOCKED"
 )
+
+func RecipientStateAuthorizable(state string) bool {
+	return state == RecipientValidated || state == RecipientControlledEligible
+}
 
 // RecipientPolicyVersion stamps the identity/provenance policy.
 const RecipientPolicyVersion = "confenge.recipient.v1"
@@ -115,6 +120,7 @@ func ResolveRecipient(acc *models.OutreachAccount, candidates []models.OutreachC
 
 	views := make([]RecipientCandidateView, 0, len(candidates))
 	var validated []models.OutreachContactCandidate
+	var controlled []models.OutreachContactCandidate
 	var exceptions []models.OutreachContactCandidate
 	var lastBlock *pilotBlock
 	for i := range candidates {
@@ -131,6 +137,16 @@ func ResolveRecipient(acc *models.OutreachAccount, candidates []models.OutreachC
 		}
 		if provenRole(&c) {
 			view.Role = strings.TrimSpace(c.Role)
+		}
+		if CandidateControlledEligible(&c) && ControlledRouteAllowed(&c, nil) && CandidateRouteClass(&c) != RouteClassDirectPerson {
+			if blk := classifyControlledRecipient(acc, &c, now); blk != nil {
+				view.BlockCode = blk.Code
+				lastBlock = blk
+			} else {
+				controlled = append(controlled, c)
+			}
+			views = append(views, view)
+			continue
 		}
 		if blk := classifyRecipientCandidate(acc, &c, now); blk != nil {
 			view.BlockCode = blk.Code
@@ -160,6 +176,9 @@ func ResolveRecipient(acc *models.OutreachAccount, candidates []models.OutreachC
 	}
 	if len(validated) == 1 {
 		return fillValidated(res, acc, &validated[0], now)
+	}
+	if selected := pickControlledRecipient(controlled); selected != nil {
+		return fillControlledEligible(res, acc, selected, now)
 	}
 
 	// No VALIDATED candidate. Prefer EXCEPTION for honest human ambiguity.
@@ -213,6 +232,63 @@ func fillValidated(res RecipientResolution, acc *models.OutreachAccount, c *mode
 	res.DNC = c.DoNotContact || (acc != nil && acc.DoNotContact)
 	res.ValidatedAt = now
 	return res
+}
+
+func fillControlledEligible(res RecipientResolution, acc *models.OutreachAccount, c *models.OutreachContactCandidate, now time.Time) RecipientResolution {
+	res.State = RecipientControlledEligible
+	res.CanonicalContactID = strings.TrimSpace(c.SourceContactID)
+	res.Email = canonicalPilotEmail(c.Email)
+	res.Domain = emailDomain(c.Email)
+	if CandidateRouteClass(c) == RouteClassDirectPerson && provenPersonName(c) {
+		res.Name = strings.TrimSpace(c.Name)
+		res.Role = strings.TrimSpace(c.Role)
+	}
+	res.SourceURL = strings.TrimSpace(c.SourceURL)
+	res.SourceDocument = strings.TrimSpace(c.SourceDocument)
+	res.EvidenceDate = c.SourceDate
+	res.Provenance = firstNonEmpty(c.SourceURL, c.SourceDocument, c.VerificationStatus)
+	res.Confidence = c.Confidence
+	res.Suitability = c.RecipientCommercialSuitability
+	res.Suppressed = c.Blocked
+	res.Bounced = c.Bounced
+	res.OptOut = c.DoNotContact
+	res.DNC = c.DoNotContact || (acc != nil && acc.DoNotContact)
+	res.ValidatedAt = now
+	res.ReasonCodes = appendUnique(res.ReasonCodes, "controlled_email_eligible")
+	res.ReasonCodes = appendUnique(res.ReasonCodes, "route_class:"+CandidateRouteClass(c))
+	if CandidatePersonUnknown(c) {
+		res.ReasonCodes = appendUnique(res.ReasonCodes, "person_unknown")
+	}
+	return res
+}
+
+func pickControlledRecipient(controlled []models.OutreachContactCandidate) *models.OutreachContactCandidate {
+	got, _ := SelectInitialRoute(controlled, nil, time.Now().UTC())
+	return got
+}
+
+func classifyControlledRecipient(acc *models.OutreachAccount, c *models.OutreachContactCandidate, now time.Time) *pilotBlock {
+	if c == nil {
+		return &pilotBlock{Code: "recipient_missing", Reason: "Candidato ausente.", Remediation: "Publique um contato no extra-cli."}
+	}
+	if c.DoNotContact {
+		return &pilotBlock{Code: "recipient_opt_out", Reason: "O destinatário solicitou não receber contato.", Remediation: "Mantenha a supressão."}
+	}
+	if c.Bounced {
+		return &pilotBlock{Code: "recipient_hard_bounce", Reason: "O destinatário possui hard bounce registrado.", Remediation: "Valide outro endereço corporativo."}
+	}
+	if c.Blocked {
+		return &pilotBlock{Code: "recipient_suppressed", Reason: "O destinatário está bloqueado.", Remediation: "Revise a fonte ou escolha outro contato."}
+	}
+	if CandidateRouteClass(c) == RouteClassProbabilisticOrRisky {
+		return &pilotBlock{Code: "risky_outside_default_pilot", Reason: "Rota probabilística permanece fora da policy default.", Remediation: "Não incluir no piloto controlado."}
+	}
+	if !ControlledRouteAllowed(c, nil) {
+		return &pilotBlock{Code: "route_class_outside_policy", Reason: "A classe da rota não está na policy default.", Remediation: "Use uma rota DIRECT_PERSON/ROLE/GENERIC/FREEMAIL associada."}
+	}
+	_ = acc
+	_ = now
+	return nil
 }
 
 func copyKnownIdentity(res *RecipientResolution, c *models.OutreachContactCandidate) {

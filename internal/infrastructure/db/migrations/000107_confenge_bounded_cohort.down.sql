@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS confenge_bounded_cohort_reservations;
+DROP TABLE IF EXISTS confenge_bounded_cohort_authorizations;

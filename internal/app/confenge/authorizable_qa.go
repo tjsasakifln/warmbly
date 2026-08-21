@@ -65,10 +65,13 @@ func ApplyAuthorizableHardQA(res *ValidationResult, out *DraftOutput, acc *model
 		fail("out-of-icp engineering language")
 	}
 	if cand != nil && !opts.SkipEmailRecipient && !IsWhatsAppChannel(channel) {
-		if models.OutreachUnenrollableVerification[cand.VerificationStatus] || cand.VerificationStatus == models.OutreachVerifyInstitutionalGeneric {
+		controlled := CandidateControlledEligible(cand) && ControlledRouteAllowed(cand, nil)
+		if controlled {
+			// ROLE/GENERIC/FREEMAIL may enter NEEDS_REVIEW as CONTROLLED_ELIGIBLE,
+			// never as person VALIDATED.
+		} else if models.OutreachUnenrollableVerification[cand.VerificationStatus] || cand.VerificationStatus == models.OutreachVerifyInstitutionalGeneric {
 			fail("recipient fails the email lane gate")
-		}
-		if isGenericRecipient(cand) || isRoleMailbox(cand) {
+		} else if isGenericRecipient(cand) || isRoleMailbox(cand) {
 			fail("generic or role mailbox is not send-NEEDS_REVIEW")
 		}
 	}

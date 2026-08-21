@@ -116,6 +116,7 @@ type Service interface {
 
 	// CAMPAIGN_POLICY_AUTHORIZATION + GREEN autorun (no fake approved_by).
 	WirePolicyAuth(store repository.ConfengePolicyRepository)
+	WireCohortAuth(store BoundedCohortStore)
 	AuthorizeCampaignPolicy(ctx context.Context, orgID, userID uuid.UUID, auth *models.CampaignPolicyAuthorization) (*models.CampaignPolicyAuthorization, *errx.Error)
 	GetActiveCampaignPolicy(ctx context.Context, orgID, campaignID uuid.UUID) (*models.CampaignPolicyAuthorization, *errx.Error)
 	TryGreenAutorun(ctx context.Context, orgID, actorID, touchpointID uuid.UUID) (*models.OutreachTouchpoint, GreenAutorunDecision, *errx.Error)
@@ -154,20 +155,22 @@ type ApprovalOptions struct {
 }
 
 type service struct {
-	cfg          Config
-	repo         repository.OutreachRepository
-	audit        AuditLogger
-	fetch        *FeedFetcher
-	ai           generation.Provider
-	campaigns    CampaignAPI
-	contacts     ContactAPI
-	crm          CRMAPI
-	wa           WhatsAppSender
-	waStore      WhatsAppStateStore
-	governor     *dispatch.Governor
-	policyStore  repository.ConfengePolicyRepository
-	intel        intel.Store
-	operatorMail func(to, subject, body string) error
+	cfg            Config
+	repo           repository.OutreachRepository
+	audit          AuditLogger
+	fetch          *FeedFetcher
+	ai             generation.Provider
+	campaigns      CampaignAPI
+	contacts       ContactAPI
+	crm            CRMAPI
+	wa             WhatsAppSender
+	waStore        WhatsAppStateStore
+	governor       *dispatch.Governor
+	policyStore    repository.ConfengePolicyRepository
+	cohortStore    BoundedCohortStore
+	intel          intel.Store
+	operatorMail   func(to, subject, body string) error
+	observedEvents []intel.CommercialEvent
 }
 
 // NewService wires confenge outreach. When cfg.Enabled is false, mutators return 404-style disabled errors.
@@ -184,6 +187,7 @@ func NewService(cfg Config, repo repository.OutreachRepository, audit AuditLogge
 			AllowFile:    !prod,
 			RequireHTTPS: prod,
 		},
+		cohortStore: NewMemoryCohortStore(), // tests/unit only; production boot wires NewPostgresCohortStore
 	}
 }
 
@@ -201,7 +205,8 @@ func NewServiceWithAI(cfg Config, repo repository.OutreachRepository, audit Audi
 			AllowFile:    !prod,
 			RequireHTTPS: prod,
 		},
-		ai: ai,
+		ai:          ai,
+		cohortStore: NewMemoryCohortStore(), // tests/unit only; production boot wires NewPostgresCohortStore
 	}
 	return svc
 }
@@ -622,7 +627,7 @@ func leadToCandidate(orgID, accountID, runID uuid.UUID, fc FeedContact) *models.
 		ChannelEpistemic:               SanitizeText(fc.ChannelEpistemic, 40),
 		RouteFreshness:                 SanitizeText(fc.RouteFreshness, 40),
 		RouteSuppression:               SanitizeText(fc.RouteSuppression, 40),
-		DiscoveryJSON:                  append([]byte(nil), fc.DiscoveryJSON...),
+		DiscoveryJSON:                  mergeControlledDiscovery(fc.DiscoveryJSON, fc),
 	}
 	if fc.EmailSendReady != nil {
 		cand.EmailSendReady = *fc.EmailSendReady

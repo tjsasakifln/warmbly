@@ -75,7 +75,7 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 		Status:             models.OutreachDraftGenerating,
 		PromptVersion:      PromptVersion,
 	}
-	if isGenericRecipient(cand) {
+	if isGenericRecipient(cand) || !composerMaySeePersonName(cand) {
 		draft.RecipientName = ""
 		draft.RecipientRole = ""
 	}
@@ -158,7 +158,7 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 		}
 	}
 	val.Recipient = &rec
-	if rec.State != RecipientValidated {
+	if rec.State != RecipientValidated && rec.State != RecipientControlledEligible {
 		flags = appendUnique(flags, "recipient_"+strings.ToLower(rec.State))
 		flags = appendUnique(flags, rec.ReasonCodes...)
 		risk = "RED"
@@ -198,7 +198,7 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 	case rec.State == RecipientBlocked || plan.Messageability == MessageabilityBlocked:
 		draft.Status = models.OutreachDraftBlocked
 		draft.Subject, draft.BodyText = "", ""
-	case rec.State != RecipientValidated || plan.Messageability != MessageabilityReady:
+	case !RecipientStateAuthorizable(rec.State) || plan.Messageability != MessageabilityReady:
 		draft.Status = models.OutreachDraftSkipped
 		draft.Subject, draft.BodyText = "", ""
 	default:

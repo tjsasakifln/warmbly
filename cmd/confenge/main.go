@@ -48,6 +48,10 @@ func main() {
 		os.Exit(cmdIntelOrganic(os.Args[2:]))
 	case "intel-exceptions":
 		os.Exit(cmdIntelExceptions(os.Args[2:]))
+	case "cohort":
+		os.Exit(cmdCohort(os.Args[2:]))
+	case "cohort-auth":
+		os.Exit(cmdCohortAuth(os.Args[2:]))
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -70,8 +74,16 @@ Usage:
   confenge intel-report [--month YYYY-MM] [--include-synthetic] [--json PATH] [--md PATH]
   confenge intel-organic [--include-synthetic] [--scoreboard PATH] [--feedback PATH]
   confenge intel-exceptions list|show|resolve [flags]
+  confenge cohort prepare --feed PATH [--out PATH] [--limit N] [--max-daily N] [--ttl 24h]
+  confenge cohort preview --manifest PATH
+  confenge cohort authorize --manifest PATH --actor UUID [--confirm]
+  confenge cohort review --id UUID --actor UUID [--verdict READY_FOR_CONTROLLED_EMAIL_GO_REVIEW|NO_GO] [--confirm]
+  confenge cohort report --events PATH
+  confenge cohort-auth create|show|revoke [flags]
 
 Env: PRIMARY_DB, CONFENGE_*, REDIS, NATS_URL (see .env.confenge.example).
+  CONFENGE_REPOSITORY_SHA, CONFENGE_FEED_SCHEMA_VERSION, CONFENGE_EVIDENCE_VERSION
+  bind the live transport gate (production fail-closed if SHA missing).
 `)
 }
 

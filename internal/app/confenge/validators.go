@@ -205,6 +205,10 @@ func ValidateDraft(out *DraftOutput, acc *models.OutreachAccount, cand *models.O
 		res.Errors = append(res.Errors, e)
 	}
 	res.Warnings = append(res.Warnings, lint.Warnings...)
+	for _, e := range ValidateCopyForRouteClass(CandidateRouteClass(cand), body, out.Subject, cand) {
+		res.OK = false
+		res.Errors = append(res.Errors, e)
+	}
 
 	knownIDs := evidenceIDSet(opts.Evidence, acc)
 	allClaimIDs := collectEvidenceIDs(out)

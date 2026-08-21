@@ -117,9 +117,13 @@ func (s *service) enrichOutcomePayload(ctx context.Context, orgID uuid.UUID, ev 
 	if cnpj := NormalizeCNPJ14(ev.CNPJ14); cnpj != "" {
 		acc, _ = s.repo.GetAccountByCNPJ(ctx, orgID, cnpj)
 	}
+	var cand *models.OutreachContactCandidate
 	if acc == nil && strings.TrimSpace(ev.ContactEmail) != "" {
-		_, found, _ := s.repo.FindCandidateByEmail(ctx, orgID, strings.TrimSpace(strings.ToLower(ev.ContactEmail)))
+		cand, found, _ := s.repo.FindCandidateByEmail(ctx, orgID, strings.TrimSpace(strings.ToLower(ev.ContactEmail)))
 		acc = found
+		_ = cand
+	} else if strings.TrimSpace(ev.ContactEmail) != "" {
+		cand, _, _ = s.repo.FindCandidateByEmail(ctx, orgID, strings.TrimSpace(strings.ToLower(ev.ContactEmail)))
 	}
 	if acc != nil {
 		if ev.CNPJ14 == "" {
@@ -139,15 +143,17 @@ func (s *service) enrichOutcomePayload(ctx context.Context, orgID uuid.UUID, ev 
 		}
 		putIfMissing(meta, "activation_source_hash", acc.ActivationSourceHash)
 		putIfMissing(meta, "message_context_hash", acc.MessageContextHash)
-		// Latest approved/sent touchpoint context if present
+		var tp *models.OutreachTouchpoint
 		if tps, err := s.repo.ListTouchpoints(ctx, orgID, acc.ID, "", 1, 0); err == nil && len(tps) > 0 {
-			tp := tps[0]
+			tp = &tps[0]
 			putIfMissing(meta, "generated_context_hash", tp.GeneratedContextHash)
 			if _, ok := meta["touchpoint_ordinal"]; !ok {
 				meta["touchpoint_ordinal"] = tp.Ordinal
 			}
 			putIfMissing(meta, "channel", tp.Channel)
 		}
+		c := s.liveControlledEmailContext(ctx, orgID, tp, cand, "")
+		mergeOutcomeControlledEmail(meta, c)
 	}
 	if len(meta) > 0 {
 		b, _ := json.Marshal(meta)
