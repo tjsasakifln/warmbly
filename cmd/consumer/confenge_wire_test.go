@@ -39,4 +39,7 @@ func TestConfengeReplyPathWiresCRM(t *testing.T) {
 	if strings.Contains(snippet, "CRM not wired on consumer") {
 		t.Fatal("stale comment: CRM must be wired on consumer for reply handoff")
 	}
+	if !strings.Contains(s, "WireCohortAuth") {
+		t.Fatal("consumer must WireCohortAuth so bounded cohort grants exist at transport")
+	}
 }

@@ -243,8 +243,27 @@ func CanTransportCohort(tp *models.OutreachTouchpoint, auth *BoundedCohortAuthor
 	return nil
 }
 
+func isBoundedCohortTouch(tp *models.OutreachTouchpoint) bool {
+	return tp != nil && strings.TrimSpace(tp.AuthorizationMode) == AuthorizationModeBoundedCohort
+}
+
+func checkTransitionTransport(tp *models.OutreachTouchpoint, auth *BoundedCohortAuthorization, in CohortTransportInput) error {
+	if isBoundedCohortTouch(tp) {
+		return CanTransportCohort(tp, auth, in)
+	}
+	return CanTransport(tp)
+}
+
 func TransitionToQueued(tp *models.OutreachTouchpoint, now time.Time) error {
-	if err := CanTransport(tp); err != nil {
+	return transitionToQueued(tp, now, nil, CohortTransportInput{})
+}
+
+func TransitionToQueuedCohort(tp *models.OutreachTouchpoint, now time.Time, auth *BoundedCohortAuthorization, in CohortTransportInput) error {
+	return transitionToQueued(tp, now, auth, in)
+}
+
+func transitionToQueued(tp *models.OutreachTouchpoint, now time.Time, auth *BoundedCohortAuthorization, in CohortTransportInput) error {
+	if err := checkTransitionTransport(tp, auth, in); err != nil {
 		return err
 	}
 	if tp.State == models.TouchpointQueued {
@@ -259,13 +278,21 @@ func TransitionToQueued(tp *models.OutreachTouchpoint, now time.Time) error {
 }
 
 func TransitionToSent(tp *models.OutreachTouchpoint, now time.Time, providerMsgID string) error {
+	return transitionToSent(tp, now, providerMsgID, nil, CohortTransportInput{})
+}
+
+func TransitionToSentCohort(tp *models.OutreachTouchpoint, now time.Time, providerMsgID string, auth *BoundedCohortAuthorization, in CohortTransportInput) error {
+	return transitionToSent(tp, now, providerMsgID, auth, in)
+}
+
+func transitionToSent(tp *models.OutreachTouchpoint, now time.Time, providerMsgID string, auth *BoundedCohortAuthorization, in CohortTransportInput) error {
 	if tp == nil {
 		return fmt.Errorf("nil touchpoint")
 	}
 	if tp.State != models.TouchpointQueued && tp.State != models.TouchpointApproved {
 		return fmt.Errorf("cannot mark sent from state %s", tp.State)
 	}
-	if err := CanTransport(tp); err != nil {
+	if err := checkTransitionTransport(tp, auth, in); err != nil {
 		return err
 	}
 	tp.State = models.TouchpointSent

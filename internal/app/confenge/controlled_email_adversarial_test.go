@@ -389,6 +389,118 @@ func TestIntelSliceKeepsUnknownAndNonReply(t *testing.T) {
 	}
 }
 
+func TestTransitionToSentAndQueuedRequireCohortGrant(t *testing.T) {
+	t.Setenv(EnvKillSwitchPath, filepath.Join(t.TempDir(), "absent"))
+	now := time.Now().UTC()
+	tp := &models.OutreachTouchpoint{
+		State: models.TouchpointApproved, Recipient: "contato@empresa.com.br",
+		Subject: "s", BodyText: "Olá, equipe,\n\nSou da CONFENGE.",
+		Channel: "EMAIL", Purpose: models.TouchpointPurposeInitial,
+	}
+	auth := &BoundedCohortAuthorization{
+		ID: uuid.New(), ActorID: uuid.New(), AuthorizedAt: now, MaxDailyVolume: 2,
+		AllowedRouteClasses: []string{RouteClassGenericCompany},
+		RepositorySHA:       "sha", FeedSchemaVersion: models.OutreachSchemaV1, CohortHash: "h",
+		PolicyVersion: BoundedCohortPolicyV1, RecipientSetHash: HashRecipientSet([]string{"contato@empresa.com.br"}),
+		ComposerVersion: ComposerVersion, EvidenceVersion: "ev1", ExpiresAt: now.Add(time.Hour),
+	}
+	if err := ApplyBoundedCohortAuthorization(tp, auth, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := TransitionToQueued(tp, now); err == nil {
+		t.Fatal("TransitionToQueued must not accept cohort without live grant")
+	}
+	if err := TransitionToSent(tp, now, "m1"); err == nil {
+		t.Fatal("TransitionToSent must not accept cohort without live grant")
+	}
+	in := CohortTransportInput{
+		Now: now, RepositorySHA: "sha", FeedSchemaVersion: models.OutreachSchemaV1, CohortHash: "h",
+		PolicyVersion: BoundedCohortPolicyV1, ComposerVersion: ComposerVersion, EvidenceVersion: "ev1",
+		RecipientSetHash: auth.RecipientSetHash, RouteClass: RouteClassGenericCompany,
+	}
+	queued := *tp
+	if err := TransitionToQueuedCohort(&queued, now, auth, in); err != nil {
+		t.Fatalf("TransitionToQueuedCohort: %v", err)
+	}
+	if queued.State != models.TouchpointQueued {
+		t.Fatalf("state=%s", queued.State)
+	}
+	sent := queued
+	if err := TransitionToSentCohort(&sent, now, "prov-1", auth, in); err != nil {
+		t.Fatalf("TransitionToSentCohort: %v", err)
+	}
+	if sent.State != models.TouchpointSent {
+		t.Fatalf("sent state=%s", sent.State)
+	}
+}
+
+func TestCompleteCampaignEmailCohortIncrementsDailyCap(t *testing.T) {
+	allowConfengeSendingForTest(t)
+	ctx := context.Background()
+	org, accID, candID := uuid.New(), uuid.New(), uuid.New()
+	repo := newMemRepoWithSettings()
+	now := time.Now().UTC()
+	acc := &models.OutreachAccount{
+		ID: accID, OrganizationID: org, CNPJ14: "12345678000190",
+		EmailSendReady: false, TargetFitClass: TargetFitConfirmed, TargetFitVersion: "v1",
+		TargetFitSourceWatermark: "wm", TargetFitObservedAt: &now, TargetFitFresh: true, TargetFitEligible: true,
+		MessageContextHash: "ctx", SourceRunID: "current-run",
+	}
+	importID := uuid.New()
+	acc.LastImportRunID = &importID
+	_, _ = repo.UpsertAccount(ctx, acc)
+	eligible := true
+	cand := &models.OutreachContactCandidate{
+		ID: candID, OrganizationID: org, AccountID: accID,
+		Email: "contato@empresa.com.br", OwnershipStatus: "COMPANY_OWNED",
+		MailboxPurpose: "GENERIC_CONTACT", VerificationStatus: models.OutreachVerifyInstitutionalGeneric,
+		DiscoveryJSON: discoveryJSON(t, controlledDiscovery{
+			RouteClass: RouteClassGenericCompany, ControlledEmailEligible: &eligible,
+		}),
+		LastImportRunID: &importID, CreatedAt: now.Add(-time.Hour),
+	}
+	_, _ = repo.UpsertCandidate(ctx, cand)
+	auth := &BoundedCohortAuthorization{
+		ID: uuid.New(), ActorID: uuid.New(), AuthorizedAt: now.Add(-time.Minute), MaxDailyVolume: 1,
+		AllowedRouteClasses: []string{RouteClassGenericCompany},
+		RepositorySHA:       "sha", FeedSchemaVersion: models.OutreachSchemaV1, CohortHash: "h",
+		PolicyVersion: BoundedCohortPolicyV1, RecipientSetHash: HashRecipientSet([]string{"contato@empresa.com.br"}),
+		ComposerVersion: ComposerVersion, EvidenceVersion: "ev1", ExpiresAt: now.Add(time.Hour),
+	}
+	tp := &models.OutreachTouchpoint{
+		OrganizationID: org, AccountID: accID, ContactCandidateID: &candID,
+		State: models.TouchpointApproved, Recipient: cand.Email, Subject: "s",
+		BodyText: "Olá, equipe,\n\nSou da CONFENGE.", Channel: models.OutreachChannelEmail,
+		Purpose: models.TouchpointPurposeInitial, GeneratedContextHash: "ctx",
+	}
+	if err := ApplyBoundedCohortAuthorization(tp, auth, now); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(Config{
+		Enabled: true, RepositorySHA: "sha", FeedSchemaVersion: models.OutreachSchemaV1,
+		EvidenceVersion: "ev1", RequireHumanApproval: true, DefaultDailyLimit: 50,
+	}, repo, nil).(*service)
+	if err := svc.BindBoundedCohortGrant(auth); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.transitionCompletedTouchpoint(ctx, org, tp, now, "prov-1"); err != nil {
+		t.Fatalf("first complete must succeed: %v", err)
+	}
+	if tp.State != models.TouchpointSent {
+		t.Fatalf("state=%s", tp.State)
+	}
+	day := now.UTC().Format("2006-01-02")
+	if got := svc.cohortStore.SentToday(auth.ID, day); got != 1 {
+		t.Fatalf("SentToday=%d want 1 — daily cap must increment on the send path", got)
+	}
+	tp2 := *tp
+	tp2.State = models.TouchpointApproved
+	tp2.ID = uuid.New()
+	if err := svc.transitionCompletedTouchpoint(ctx, org, &tp2, now, "prov-2"); err == nil {
+		t.Fatal("second complete must hit daily cap after RecordSent")
+	}
+}
+
 func TestCanTransportCohortEnforcesCapDriftAndSuppression(t *testing.T) {
 	t.Setenv(EnvKillSwitchPath, filepath.Join(t.TempDir(), "absent"))
 	now := time.Now().UTC()
@@ -499,8 +611,7 @@ func TestAssertTransportableAndGateCampaignEmailRunCohortValidator(t *testing.T)
 		t.Fatal("AssertTransportable must run cohort validator and reject copy drift")
 	}
 	store.Put(auth)
-	mem := store.(*memoryCohortStore)
-	mem.RecordSent(auth.ID, now.UTC().Format("2006-01-02"))
+	store.RecordSent(auth.ID, now.UTC().Format("2006-01-02"))
 	if err := svc.AssertTransportable(ctx, org, tp); err == nil {
 		t.Fatal("AssertTransportable must enforce daily cap")
 	}

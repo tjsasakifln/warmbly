@@ -348,6 +348,7 @@ func main() {
 	var confengeSink confenge.OutcomeSink
 	if confengeCfgC.Enabled {
 		confengeSvc = confenge.NewService(confengeCfgC, repository.NewOutreachRepository(primaryDB.Pool), nil)
+		confengeSvc.WireCohortAuth(confenge.NewMemoryCohortStore())
 		if sink, ok := confengeSvc.(confenge.OutcomeSink); ok {
 			confengeSink = sink
 		}

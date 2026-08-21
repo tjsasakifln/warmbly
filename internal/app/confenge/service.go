@@ -186,6 +186,7 @@ func NewService(cfg Config, repo repository.OutreachRepository, audit AuditLogge
 			AllowFile:    !prod,
 			RequireHTTPS: prod,
 		},
+		cohortStore: NewMemoryCohortStore(),
 	}
 }
 
@@ -203,7 +204,8 @@ func NewServiceWithAI(cfg Config, repo repository.OutreachRepository, audit Audi
 			AllowFile:    !prod,
 			RequireHTTPS: prod,
 		},
-		ai: ai,
+		ai:          ai,
+		cohortStore: NewMemoryCohortStore(),
 	}
 	return svc
 }

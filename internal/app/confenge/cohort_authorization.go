@@ -243,6 +243,7 @@ type BoundedCohortStore interface {
 	Put(auth *BoundedCohortAuthorization)
 	Get(id uuid.UUID) *BoundedCohortAuthorization
 	SentToday(id uuid.UUID, day string) int
+	RecordSent(id uuid.UUID, day string)
 }
 
 type memoryCohortStore struct {

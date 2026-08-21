@@ -438,31 +438,7 @@ func (s *service) assertBoundedCohortTransport(tp *models.OutreachTouchpoint, ca
 	if auth == nil {
 		return fmt.Errorf("bounded cohort grant missing at transport")
 	}
-	now := time.Now().UTC()
-	in := CohortTransportInput{
-		Now:                 now,
-		RepositorySHA:       s.cfg.RepositorySHA,
-		FeedSchemaVersion:   firstNonEmpty(s.cfg.FeedSchemaVersion, models.OutreachSchemaV1),
-		CohortHash:          auth.CohortHash,
-		PolicyVersion:       auth.PolicyVersion,
-		ComposerVersion:     ComposerVersion,
-		EvidenceVersion:     firstNonEmpty(s.cfg.EvidenceVersion, auth.EvidenceVersion),
-		RecipientSetHash:    auth.RecipientSetHash,
-		RecipientMailbox:    tp.Recipient,
-		SentToday:           s.cohortStore.SentToday(auth.ID, now.UTC().Format("2006-01-02")),
-		KillSwitchEngaged:   FileKillSwitchActive() || !s.cfg.SendingAllowed(),
-		AutoSendEnabled:     s.cfg.AutoSendEnabled,
-		GreenAutorunEnabled: s.cfg.GreenAutorunEnabled,
-	}
-	if cand != nil {
-		in.RouteClass = CandidateRouteClass(cand)
-		in.Suppressed = cand.Blocked || cand.Bounced
-		in.OptOut = cand.DoNotContact
-		if !auth.AuthorizedAt.IsZero() && !cand.CreatedAt.IsZero() && cand.CreatedAt.After(auth.AuthorizedAt) {
-			in.PostFreezeRecipient = true
-		}
-	}
-	return CanTransportCohort(tp, auth, in)
+	return CanTransportCohort(tp, auth, s.liveCohortInput(tp, cand))
 }
 
 func (s *service) assertAuthoritativeFeedForTransport(ctx context.Context, orgID uuid.UUID, acc *models.OutreachAccount) error {
@@ -514,11 +490,8 @@ func (s *service) CompleteCampaignEmail(ctx context.Context, orgID, campaignID, 
 		}
 		return s.releaseNextTouch(ctx, orgID, touchpoint)
 	}
-	// Preserve the provider-confirmed send fact even if live eligibility changed after SMTP accepted it.
-	if err := CanTransport(touchpoint); err != nil {
-		return err
-	}
-	if err := TransitionToSent(touchpoint, time.Now().UTC(), providerMessageID); err != nil {
+	now := time.Now().UTC()
+	if err := s.transitionCompletedTouchpoint(ctx, orgID, touchpoint, now, providerMessageID); err != nil {
 		return err
 	}
 	if err := s.repo.UpdateTouchpoint(ctx, touchpoint); err != nil {
@@ -528,6 +501,69 @@ func (s *service) CompleteCampaignEmail(ctx context.Context, orgID, campaignID, 
 		return err
 	}
 	return s.releaseNextTouch(ctx, orgID, touchpoint)
+}
+
+func (s *service) transitionCompletedTouchpoint(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint, now time.Time, providerMessageID string) error {
+	if isBoundedCohortTouch(tp) {
+		var cand *models.OutreachContactCandidate
+		if tp.ContactCandidateID != nil {
+			cand, _ = s.repo.GetCandidate(ctx, orgID, *tp.ContactCandidateID)
+		}
+		if err := s.assertBoundedCohortTransport(tp, cand); err != nil {
+			return err
+		}
+		auth := s.cohortStore.Get(*tp.CampaignPolicyAuthorizationID)
+		in := s.liveCohortInput(tp, cand)
+		if err := TransitionToSentCohort(tp, now, providerMessageID, auth, in); err != nil {
+			return err
+		}
+		s.recordCohortSend(tp, now)
+		return nil
+	}
+	return TransitionToSent(tp, now, providerMessageID)
+}
+
+func (s *service) liveCohortInput(tp *models.OutreachTouchpoint, cand *models.OutreachContactCandidate) CohortTransportInput {
+	now := time.Now().UTC()
+	in := CohortTransportInput{
+		Now:                 now,
+		RepositorySHA:       s.cfg.RepositorySHA,
+		FeedSchemaVersion:   firstNonEmpty(s.cfg.FeedSchemaVersion, models.OutreachSchemaV1),
+		ComposerVersion:     ComposerVersion,
+		EvidenceVersion:     s.cfg.EvidenceVersion,
+		RecipientMailbox:    tp.Recipient,
+		KillSwitchEngaged:   FileKillSwitchActive() || !s.cfg.SendingAllowed(),
+		AutoSendEnabled:     s.cfg.AutoSendEnabled,
+		GreenAutorunEnabled: s.cfg.GreenAutorunEnabled,
+	}
+	if s.cohortStore != nil && tp.CampaignPolicyAuthorizationID != nil {
+		if auth := s.cohortStore.Get(*tp.CampaignPolicyAuthorizationID); auth != nil {
+			in.CohortHash = auth.CohortHash
+			in.PolicyVersion = auth.PolicyVersion
+			in.RecipientSetHash = auth.RecipientSetHash
+			in.EvidenceVersion = firstNonEmpty(s.cfg.EvidenceVersion, auth.EvidenceVersion)
+			in.SentToday = s.cohortStore.SentToday(auth.ID, now.UTC().Format("2006-01-02"))
+		}
+	}
+	if cand != nil {
+		in.RouteClass = CandidateRouteClass(cand)
+		in.Suppressed = cand.Blocked || cand.Bounced
+		in.OptOut = cand.DoNotContact
+		if s.cohortStore != nil && tp.CampaignPolicyAuthorizationID != nil {
+			if auth := s.cohortStore.Get(*tp.CampaignPolicyAuthorizationID); auth != nil &&
+				!auth.AuthorizedAt.IsZero() && !cand.CreatedAt.IsZero() && cand.CreatedAt.After(auth.AuthorizedAt) {
+				in.PostFreezeRecipient = true
+			}
+		}
+	}
+	return in
+}
+
+func (s *service) recordCohortSend(tp *models.OutreachTouchpoint, now time.Time) {
+	if s == nil || s.cohortStore == nil || tp == nil || tp.CampaignPolicyAuthorizationID == nil {
+		return
+	}
+	s.cohortStore.RecordSent(*tp.CampaignPolicyAuthorizationID, now.UTC().Format("2006-01-02"))
 }
 
 // ReleaseCampaignEmail frees a lease after provider/worker publish failure.
