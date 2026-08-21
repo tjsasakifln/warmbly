@@ -622,7 +622,7 @@ func leadToCandidate(orgID, accountID, runID uuid.UUID, fc FeedContact) *models.
 		ChannelEpistemic:               SanitizeText(fc.ChannelEpistemic, 40),
 		RouteFreshness:                 SanitizeText(fc.RouteFreshness, 40),
 		RouteSuppression:               SanitizeText(fc.RouteSuppression, 40),
-		DiscoveryJSON:                  append([]byte(nil), fc.DiscoveryJSON...),
+		DiscoveryJSON:                  mergeControlledDiscovery(fc.DiscoveryJSON, fc),
 	}
 	if fc.EmailSendReady != nil {
 		cand.EmailSendReady = *fc.EmailSendReady

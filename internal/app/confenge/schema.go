@@ -193,6 +193,16 @@ type FeedContact struct {
 	RouteFreshness   string `json:"route_freshness,omitempty"`
 	RouteSuppression string `json:"route_suppression,omitempty"`
 	DiscoveryJSON    []byte `json:"discovery_json,omitempty"`
+	// Controlled email eligibility (extra-cli #370). Additive; never mint a person.
+	RouteClass                string `json:"route_class,omitempty"`
+	ControlledEmailEligible   *bool  `json:"controlled_email_eligible,omitempty"`
+	PreferredInitial          *bool  `json:"preferred_initial,omitempty"`
+	MailboxCompanyEvidence    string `json:"mailbox_company_evidence,omitempty"`
+	MailboxPersonEvidence     string `json:"mailbox_person_evidence,omitempty"`
+	MailboxDepartmentEvidence string `json:"mailbox_department_evidence,omitempty"`
+	PersonUnknown             *bool  `json:"person_unknown,omitempty"`
+	EmailValidated            *bool  `json:"email_validated,omitempty"`
+	RiskClass                 string `json:"risk_class,omitempty"`
 }
 
 // FeedEvidence is one evidence item (text only; HTML stripped on import).

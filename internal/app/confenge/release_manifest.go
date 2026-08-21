@@ -6,8 +6,10 @@ import (
 )
 
 const (
-	ReleaseGO   = "GO_FOR_CONTROLLED_PILOT"
-	ReleaseNOGO = "NO_GO"
+	ReleaseGO                            = "GO_FOR_CONTROLLED_PILOT"
+	ReleaseNOGO                          = "NO_GO"
+	ReleaseReadyForControlledEmailReview = "READY_FOR_CONTROLLED_EMAIL_GO_REVIEW"
+	ReleaseGOForControlledEmailPilot     = "GO_FOR_CONTROLLED_EMAIL_PILOT"
 )
 
 // ReleaseManifest binds the exact release a canary may use.
@@ -30,6 +32,13 @@ type ReleaseManifest struct {
 	AutoSend               bool      `json:"auto_send"`
 	RequireHumanApproval   bool      `json:"require_human_approval"`
 	EvaluatedAt            time.Time `json:"evaluated_at"`
+	AllowedRouteClasses    []string  `json:"allowed_route_classes,omitempty"`
+	VolumeCap              int       `json:"volume_cap,omitempty"`
+	SMTPReady              bool      `json:"smtp_ready,omitempty"`
+	ObservabilityReady     bool      `json:"observability_ready,omitempty"`
+	GreenAutorun           bool      `json:"green_autorun,omitempty"`
+	TTLValid               bool      `json:"ttl_valid,omitempty"`
+	SuppressionClear       bool      `json:"suppression_clear,omitempty"`
 }
 
 // ReleaseVerdict is exactly GO or NO_GO. Never "quase GO".
@@ -65,6 +74,48 @@ func EvaluateRelease(want, got ReleaseManifest) ReleaseVerdict {
 		return ReleaseVerdict{Verdict: ReleaseNOGO, Reasons: reasons}
 	}
 	return ReleaseVerdict{Verdict: ReleaseGO}
+}
+
+// EvaluateControlledEmailRelease never emits GO_FOR_CONTROLLED_EMAIL_PILOT.
+// Matching frozen manifests yield READY_FOR_CONTROLLED_EMAIL_GO_REVIEW.
+func EvaluateControlledEmailRelease(want, got ReleaseManifest) ReleaseVerdict {
+	var reasons []string
+	check := func(ok bool, code string) {
+		if !ok {
+			reasons = append(reasons, code)
+		}
+	}
+	check(got.RepositorySHA != "" && got.RepositorySHA == want.RepositorySHA, "sha_drift")
+	check(got.Schema != "" && got.Schema == want.Schema, "schema_drift")
+	check(got.FeedHash != "" && got.FeedHash == want.FeedHash, "feed_drift")
+	check(got.CohortHash != "" && got.CohortHash == want.CohortHash, "cohort_drift")
+	check(got.PolicyVersion != "" && got.PolicyVersion == want.PolicyVersion, "policy_drift")
+	check(sameStringSet(want.AllowedRouteClasses, got.AllowedRouteClasses), "route_class_drift")
+	check(got.VolumeCap > 0 && got.VolumeCap == want.VolumeCap, "volume_cap_drift")
+	check(got.ComposerVersion != "" && got.ComposerVersion == want.ComposerVersion, "composer_drift")
+	check(got.KillSwitch, "kill_switch_off")
+	check(!got.AutoSend, "auto_send_enabled")
+	check(!got.GreenAutorun, "green_autorun_enabled")
+	check(got.SMTPReady, "smtp_not_ready")
+	check(got.ObservabilityReady, "observability_not_ready")
+	check(got.TTLValid, "ttl_invalid")
+	check(got.SuppressionClear, "suppression_not_clear")
+	if containsRiskyClass(got.AllowedRouteClasses) {
+		reasons = append(reasons, "risky_in_allowed_classes")
+	}
+	if len(reasons) > 0 {
+		return ReleaseVerdict{Verdict: ReleaseNOGO, Reasons: reasons}
+	}
+	return ReleaseVerdict{Verdict: ReleaseReadyForControlledEmailReview}
+}
+
+func containsRiskyClass(classes []string) bool {
+	for _, c := range classes {
+		if strings.EqualFold(strings.TrimSpace(c), RouteClassProbabilisticOrRisky) {
+			return true
+		}
+	}
+	return false
 }
 
 func sameStringSet(a, b []string) bool {

@@ -791,6 +791,14 @@ type CommercialEvent struct {
 	Engaged       *int       `json:"engaged,omitempty"`
 	MeasurementAt *time.Time `json:"measurement_at,omitempty"`
 	ConsentPolicy string     `json:"consent_policy,omitempty"`
+
+	// Controlled email observability slices. UNKNOWN stays UNKNOWN.
+	EmailRouteClass string `json:"email_route_class,omitempty"`
+	CohortID        string `json:"cohort_id,omitempty"`
+	PolicyVersion   string `json:"policy_version,omitempty"`
+	ProviderName    string `json:"provider_name,omitempty"`
+	BounceClass     string `json:"bounce_class,omitempty"`
+	ReplyClass      string `json:"reply_class,omitempty"`
 }
 
 // ObservabilityReport is the executive JSON/MD payload for the learning loop.

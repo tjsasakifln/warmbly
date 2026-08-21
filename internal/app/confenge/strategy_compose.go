@@ -137,6 +137,9 @@ func composeInitialFromFacing(f RecipientFacingCopy) string {
 }
 
 func planGreeting(cand *models.OutreachContactCandidate) string {
+	if class := CandidateRouteClass(cand); class != "" {
+		return greetingForRouteClass(class, cand)
+	}
 	if isGenericRecipient(cand) || localLooksLikeCompanyMailbox(cand) {
 		return "Olá, equipe"
 	}

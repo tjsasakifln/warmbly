@@ -179,11 +179,26 @@ func CanTransport(tp *models.OutreachTouchpoint) error {
 	if want == "" || tp.ContentHash != want || tp.ApprovedContentHash != want {
 		return fmt.Errorf("approved_content_hash does not match live recipient/content/evidence versions")
 	}
+	if FileKillSwitchActive() {
+		return fmt.Errorf("kill switch engaged")
+	}
 	mode := strings.TrimSpace(tp.AuthorizationMode)
 	if mode == AuthorizationModeCampaignPolicy {
 		// CAMPAIGN_POLICY is not an individual approval record. Isolated env
 		// cannot reactivate bulk/green autorun as a transport authority.
 		return fmt.Errorf("campaign_policy cannot transport; individual approval required")
+	}
+	if mode == AuthorizationModeBoundedCohort {
+		if tp.ApprovedBy == nil || *tp.ApprovedBy == uuid.Nil {
+			return fmt.Errorf("bounded cohort requires human actor")
+		}
+		if tp.CampaignPolicyAuthorizationID == nil || *tp.CampaignPolicyAuthorizationID == uuid.Nil {
+			return fmt.Errorf("bounded cohort missing authorization binding")
+		}
+		if strings.TrimSpace(tp.AuthorizationPolicyHash) == "" {
+			return fmt.Errorf("bounded cohort missing authorization hash")
+		}
+		return nil
 	}
 	if tp.ApprovedBy == nil || *tp.ApprovedBy == uuid.Nil {
 		return fmt.Errorf("missing human approved_by")
