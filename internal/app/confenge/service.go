@@ -155,21 +155,22 @@ type ApprovalOptions struct {
 }
 
 type service struct {
-	cfg          Config
-	repo         repository.OutreachRepository
-	audit        AuditLogger
-	fetch        *FeedFetcher
-	ai           generation.Provider
-	campaigns    CampaignAPI
-	contacts     ContactAPI
-	crm          CRMAPI
-	wa           WhatsAppSender
-	waStore      WhatsAppStateStore
-	governor     *dispatch.Governor
-	policyStore  repository.ConfengePolicyRepository
-	cohortStore  BoundedCohortStore
-	intel        intel.Store
-	operatorMail func(to, subject, body string) error
+	cfg            Config
+	repo           repository.OutreachRepository
+	audit          AuditLogger
+	fetch          *FeedFetcher
+	ai             generation.Provider
+	campaigns      CampaignAPI
+	contacts       ContactAPI
+	crm            CRMAPI
+	wa             WhatsAppSender
+	waStore        WhatsAppStateStore
+	governor       *dispatch.Governor
+	policyStore    repository.ConfengePolicyRepository
+	cohortStore    BoundedCohortStore
+	intel          intel.Store
+	operatorMail   func(to, subject, body string) error
+	observedEvents []intel.CommercialEvent
 }
 
 // NewService wires confenge outreach. When cfg.Enabled is false, mutators return 404-style disabled errors.

@@ -58,7 +58,9 @@ func knownEventType(t string) bool {
 		EventLearningCandidate, EventXRayCompleted, EventPageView,
 		EventCitation, EventCorrection, EventSearchObservation,
 		EventOperatorAlertCreated, EventOperatorAlertEmitted, EventOperatorAlertFailed,
-		EventOperatorAlertAcknowledged, EventFirstHumanActionRecorded, EventInboundResolvedNoAction:
+		EventOperatorAlertAcknowledged, EventFirstHumanActionRecorded, EventInboundResolvedNoAction,
+		EventEmailAttempted, EventProviderAccepted, EventDelivered,
+		EventHardBounce, EventSoftBounce, EventOptOut, EventSpamComplaint, EventNoReply:
 		return true
 	default:
 		return isCommercialEvent(c)

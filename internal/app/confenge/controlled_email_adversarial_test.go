@@ -121,9 +121,16 @@ func TestCopyQARejectsInventionAndGmailCorporateClaim(t *testing.T) {
 }
 
 func TestGreetingByRouteClassNeverInventsPerson(t *testing.T) {
-	role := &models.OutreachContactCandidate{Email: "comercial@empresa.com.br"}
-	if g := greetingForRouteClass(RouteClassRoleOrDepartment, role); !strings.Contains(strings.ToLower(g), "comercial") {
+	role := &models.OutreachContactCandidate{Email: "comercial@empresa.com.br", MailboxPurpose: "COMERCIAL"}
+	g := greetingForRouteClass(RouteClassRoleOrDepartment, role)
+	if !strings.Contains(strings.ToLower(g), "comercial") {
 		t.Fatalf("role greeting=%s", g)
+	}
+	if g == "Olá, comercial" || strings.EqualFold(g, "Olá, comercial") {
+		t.Fatalf("role greeting must not be artificial %q", g)
+	}
+	if !strings.Contains(strings.ToLower(g), "equipe") {
+		t.Fatalf("role greeting should address a team, got %q", g)
 	}
 	gen := &models.OutreachContactCandidate{Email: "contato@empresa.com.br"}
 	if g := greetingForRouteClass(RouteClassGenericCompany, gen); g != "Olá, equipe" {

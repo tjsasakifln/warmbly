@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
+	"github.com/warmbly/warmbly/internal/app/confenge/intel"
 	"github.com/warmbly/warmbly/internal/models"
 )
 
@@ -291,6 +292,7 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 	if cohortAuthID != uuid.Nil && res.Reservation != nil {
 		_ = s.cohortStore.BindLeaseToken(ctx, cohortAuthID, key, res.Reservation.ID.String())
 	}
+	s.observeControlledEmail(ctx, orgID, intel.EventEmailAttempted, enrolledTouchpoint, cand, ControlledEmailContext{})
 	return CampaignGateResult{
 		Kind:          GateProceed,
 		ReservationID: res.Reservation.ID,
@@ -560,6 +562,7 @@ func (s *service) transitionCompletedTouchpointKeyed(ctx context.Context, orgID 
 		if err := s.commitCohortSlot(ctx, tp, now, messageKey); err != nil {
 			return err
 		}
+		s.observeControlledEmail(ctx, orgID, intel.EventProviderAccepted, tp, cand, ControlledEmailContext{ProviderName: "smtp"})
 		return nil
 	}
 	return TransitionToSent(tp, now, providerMessageID)

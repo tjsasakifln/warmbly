@@ -63,6 +63,13 @@ type BoundedCohortAuthorization struct {
 	RevokeActor         uuid.UUID
 	RevokeReason        string
 	FrozenHashValue     string
+	// FrozenManifest is the exact membership bound to this grant. Optional
+	// on legacy grants created before membership persistence.
+	FrozenManifest  *FrozenCohortSnapshot
+	GOReviewVerdict string
+	GOReviewActor   uuid.UUID
+	GOReviewAt      *time.Time
+	GOReviewReason  string
 }
 
 func (a *BoundedCohortAuthorization) FrozenHash() string {
@@ -310,6 +317,7 @@ type BoundedCohortStore interface {
 	ReleaseSlotByLease(ctx context.Context, leaseToken, reason string) error
 	BindLeaseToken(ctx context.Context, id uuid.UUID, messageKey, leaseToken string) error
 	HeldSlot(ctx context.Context, id uuid.UUID, messageKey string) (string, error)
+	RecordGOReview(ctx context.Context, id, actor uuid.UUID, verdict, reason string, now time.Time) error
 }
 
 type memoryCohortStore struct {
@@ -587,4 +595,28 @@ func (m *memoryCohortStore) HeldSlot(_ context.Context, id uuid.UUID, messageKey
 		return "", nil
 	}
 	return slot.state, nil
+}
+
+func (m *memoryCohortStore) RecordGOReview(_ context.Context, id, actor uuid.UUID, verdict, reason string, now time.Time) error {
+	if m == nil {
+		return ErrCohortStoreUnavailable
+	}
+	if actor == uuid.Nil {
+		return ErrCohortHumanActor
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	auth := m.byID[id]
+	if auth == nil {
+		return ErrCohortGrantMissing
+	}
+	auth.GOReviewVerdict = strings.TrimSpace(verdict)
+	auth.GOReviewActor = actor
+	ts := now.UTC()
+	auth.GOReviewAt = &ts
+	auth.GOReviewReason = strings.TrimSpace(reason)
+	return nil
 }

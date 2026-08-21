@@ -73,7 +73,10 @@ func EvaluateMessageability(
 		RecipientMode:    RecipientModeNamed,
 		SequencePosition: st.SequencePosition,
 	}
-	if isGenericRecipient(cand) {
+	if isGenericRecipient(cand) || CandidatePersonUnknown(cand) {
+		plan.RecipientMode = RecipientModeGenericInbox
+	}
+	if class := CandidateRouteClass(cand); class != "" && class != RouteClassDirectPerson {
 		plan.RecipientMode = RecipientModeGenericInbox
 	}
 

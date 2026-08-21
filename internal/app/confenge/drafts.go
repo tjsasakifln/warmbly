@@ -75,7 +75,7 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 		Status:             models.OutreachDraftGenerating,
 		PromptVersion:      PromptVersion,
 	}
-	if isGenericRecipient(cand) {
+	if isGenericRecipient(cand) || !composerMaySeePersonName(cand) {
 		draft.RecipientName = ""
 		draft.RecipientRole = ""
 	}

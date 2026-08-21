@@ -46,13 +46,15 @@ func applyBoundedCohortSchema(t *testing.T, ctx context.Context, pool *pgxpool.P
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
-	up := filepath.Join(filepath.Dir(thisFile), "..", "..", "infrastructure", "db", "migrations", "000107_confenge_bounded_cohort.up.sql")
-	b, err := os.ReadFile(up)
-	if err != nil {
-		t.Fatalf("read migration: %v", err)
-	}
-	if _, err := pool.Exec(ctx, string(b)); err != nil {
-		t.Fatalf("apply cohort schema: %v", err)
+	dir := filepath.Join(filepath.Dir(thisFile), "..", "..", "infrastructure", "db", "migrations")
+	for _, name := range []string{"000107_confenge_bounded_cohort.up.sql", "000108_confenge_cohort_membership.up.sql"} {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("read migration %s: %v", name, err)
+		}
+		if _, err := pool.Exec(ctx, string(b)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
 	}
 }
 
@@ -71,6 +73,44 @@ func sampleGrant(t *testing.T, max int) *BoundedCohortAuthorization {
 	}
 	auth.FrozenHashValue = auth.FrozenHash()
 	return auth
+}
+
+func TestPostgresGrantMembershipSurvivesNewStoreInstance(t *testing.T) {
+	ctx := context.Background()
+	pool, store := openCohortPG(t)
+	now := time.Now().UTC()
+	snap := &FrozenCohortSnapshot{
+		SchemaVersion: FrozenCohortSchemaV1, CohortID: "controlled-mem", CohortHash: "memhash",
+		RecipientSetHash: HashRecipientSet([]string{"contato@empresa.com.br"}),
+		RepositorySHA:    "sha-live", FeedSchemaVersion: models.OutreachSchemaV1,
+		PolicyVersion: BoundedCohortPolicyV1, ComposerVersion: ComposerVersion,
+		EvidenceVersion: DefaultEvidenceVersion, AllowedRouteClasses: []string{RouteClassGenericCompany},
+		MaxDailyVolume: 5, Members: []FrozenCohortMember{{
+			AccountRef: "acc-1", CandidateRef: "c-1", Mailbox: "contato@empresa.com.br",
+			RouteClass: RouteClassGenericCompany, ContentHash: "ch", Subject: "s",
+			BodyText: "Olá, equipe,\n\nSou da CONFENGE.",
+		}},
+	}
+	auth := sampleGrant(t, 5)
+	auth.FrozenManifest = snap
+	if err := store.PutGrant(ctx, auth); err != nil {
+		t.Fatal(err)
+	}
+	store2 := NewPostgresCohortStore(pool)
+	got, err := store2.GetGrant(ctx, auth.ID)
+	if err != nil || got == nil || got.FrozenManifest == nil {
+		t.Fatalf("restart must restore membership: %v %+v", err, got)
+	}
+	if len(got.FrozenManifest.Members) != 1 || got.FrozenManifest.Members[0].Mailbox != "contato@empresa.com.br" {
+		t.Fatalf("membership %+v", got.FrozenManifest)
+	}
+	if err := store2.RecordGOReview(ctx, auth.ID, auth.ActorID, ReleaseReadyForControlledEmailReview, "ok", now); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = store2.GetGrant(ctx, auth.ID)
+	if got.GOReviewVerdict != ReleaseReadyForControlledEmailReview {
+		t.Fatalf("go review=%s", got.GOReviewVerdict)
+	}
 }
 
 func TestPostgresGrantSurvivesNewStoreInstance(t *testing.T) {

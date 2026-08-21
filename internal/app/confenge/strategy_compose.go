@@ -353,8 +353,8 @@ func draftUserPromptWithPlan(in GenerateInput, plan OutboundMessagePlan) string 
 	if in.Account != nil {
 		identity["company"] = firstNonEmpty(in.Account.NomeFantasia, in.Account.RazaoSocial)
 	}
-	if plan.RecipientMode == RecipientModeNamed && in.Contact != nil {
-		if name := strings.TrimSpace(in.Contact.Name); name != "" && !isGenericRecipient(in.Contact) {
+	if plan.RecipientMode == RecipientModeNamed && in.Contact != nil && composerMaySeePersonName(in.Contact) {
+		if name := strings.TrimSpace(in.Contact.Name); name != "" {
 			identity["first_name"] = firstName(name)
 		}
 	}

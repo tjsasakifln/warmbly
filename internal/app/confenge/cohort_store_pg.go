@@ -2,6 +2,7 @@ package confenge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -94,17 +95,22 @@ func (s *postgresCohortStore) PutGrant(ctx context.Context, auth *BoundedCohortA
 	auth.FrozenHashValue = frozen
 	ttlSec := int64(auth.TTL / time.Second)
 	now := time.Now().UTC()
-	_, err := s.db.Exec(ctx, `
+	manifest, err := marshalFrozenManifest(auth.FrozenManifest)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx, `
 		INSERT INTO confenge_bounded_cohort_authorizations (
 			id, organization_id, actor_id, authorized_at,
 			repository_sha, feed_schema_version, cohort_id, cohort_hash,
 			policy_version, allowed_route_classes, max_daily_volume,
 			recipient_set_hash, composer_version, evidence_version,
 			ttl_seconds, expires_at, frozen_hash,
-			revoked_at, revoke_actor, revoke_reason, created_at, updated_at
+			revoked_at, revoke_actor, revoke_reason, created_at, updated_at,
+			frozen_manifest, go_review_verdict, go_review_actor, go_review_at, go_review_reason
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
-			$18,$19,$20,$21,$21
+			$18,$19,$20,$21,$21,$22,$23,$24,$25,$26
 		)
 		ON CONFLICT (id) DO UPDATE SET
 			updated_at = EXCLUDED.updated_at`,
@@ -115,6 +121,8 @@ func (s *postgresCohortStore) PutGrant(ctx context.Context, auth *BoundedCohortA
 		strings.TrimSpace(auth.RecipientSetHash), strings.TrimSpace(auth.ComposerVersion),
 		strings.TrimSpace(auth.EvidenceVersion), ttlSec, auth.ExpiresAt.UTC(), frozen,
 		auth.RevokedAt, nilUUID(auth.RevokeActor), strings.TrimSpace(auth.RevokeReason), now,
+		manifest, strings.TrimSpace(auth.GOReviewVerdict), nilUUID(auth.GOReviewActor),
+		auth.GOReviewAt, strings.TrimSpace(auth.GOReviewReason),
 	)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrCohortStoreUnavailable, err)
@@ -142,7 +150,8 @@ func (s *postgresCohortStore) GetGrant(ctx context.Context, id uuid.UUID) (*Boun
 			policy_version, allowed_route_classes, max_daily_volume,
 			recipient_set_hash, composer_version, evidence_version,
 			ttl_seconds, expires_at, frozen_hash,
-			revoked_at, revoke_actor, revoke_reason
+			revoked_at, revoke_actor, revoke_reason,
+			frozen_manifest, go_review_verdict, go_review_actor, go_review_at, go_review_reason
 		FROM confenge_bounded_cohort_authorizations WHERE id=$1`, id)
 	return scanCohortGrant(row)
 }
@@ -151,6 +160,8 @@ func scanCohortGrant(row pgx.Row) (*BoundedCohortAuthorization, error) {
 	var a BoundedCohortAuthorization
 	var ttlSec int64
 	var revokeActor *uuid.UUID
+	var manifest []byte
+	var goActor *uuid.UUID
 	err := row.Scan(
 		&a.ID, &a.OrganizationID, &a.ActorID, &a.AuthorizedAt,
 		&a.RepositorySHA, &a.FeedSchemaVersion, &a.CohortID, &a.CohortHash,
@@ -158,6 +169,7 @@ func scanCohortGrant(row pgx.Row) (*BoundedCohortAuthorization, error) {
 		&a.RecipientSetHash, &a.ComposerVersion, &a.EvidenceVersion,
 		&ttlSec, &a.ExpiresAt, &a.FrozenHashValue,
 		&a.RevokedAt, &revokeActor, &a.RevokeReason,
+		&manifest, &a.GOReviewVerdict, &goActor, &a.GOReviewAt, &a.GOReviewReason,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -169,7 +181,62 @@ func scanCohortGrant(row pgx.Row) (*BoundedCohortAuthorization, error) {
 	if revokeActor != nil {
 		a.RevokeActor = *revokeActor
 	}
+	if goActor != nil {
+		a.GOReviewActor = *goActor
+	}
+	a.FrozenManifest = unmarshalFrozenManifest(manifest)
 	return &a, nil
+}
+
+func marshalFrozenManifest(snap *FrozenCohortSnapshot) ([]byte, error) {
+	if snap == nil {
+		return []byte("null"), nil
+	}
+	b, err := json.Marshal(snap)
+	if err != nil {
+		return nil, fmt.Errorf("frozen manifest: %w", err)
+	}
+	return b, nil
+}
+
+func unmarshalFrozenManifest(raw []byte) *FrozenCohortSnapshot {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return nil
+	}
+	var snap FrozenCohortSnapshot
+	if err := json.Unmarshal([]byte(s), &snap); err != nil {
+		return nil
+	}
+	return &snap
+}
+
+func (s *postgresCohortStore) RecordGOReview(ctx context.Context, id, actor uuid.UUID, verdict, reason string, now time.Time) error {
+	if err := s.unavailable(); err != nil {
+		return err
+	}
+	if id == uuid.Nil {
+		return ErrCohortGrantMissing
+	}
+	if actor == uuid.Nil {
+		return ErrCohortHumanActor
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tag, err := s.db.Exec(ctx, `
+		UPDATE confenge_bounded_cohort_authorizations
+		SET go_review_verdict=$2, go_review_actor=$3, go_review_at=$4, go_review_reason=$5, updated_at=$4
+		WHERE id=$1`,
+		id, strings.TrimSpace(verdict), actor, now.UTC(), strings.TrimSpace(reason),
+	)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrCohortStoreUnavailable, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrCohortGrantMissing
+	}
+	return nil
 }
 
 func (s *postgresCohortStore) RevokeGrant(ctx context.Context, id, actor uuid.UUID, reason string, now time.Time) error {

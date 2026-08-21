@@ -44,6 +44,9 @@ at `http://localhost:18025`. Nothing real is sent.
 | `make confenge-bootstrap` | Workspace settings without raw SQL |
 | `make confenge-import FEED=... [DRY_RUN=true]` | Import feed; prints creates/updates/blocked |
 | `go run ./cmd/confenge reconcile-target-fit [--dry-run] --org-id UUID` | Reconcile historical target-fit and revoke ineligible unsent work |
+| `go run ./cmd/confenge cohort prepare --feed PATH --out PATH` | Derive hashes, select one route/account, print a reconciling preview |
+| `go run ./cmd/confenge cohort authorize --manifest PATH --actor UUID --confirm` | Persist the frozen grant and apply it fail-closed to touchpoints |
+| `go run ./cmd/confenge cohort review --id UUID --actor UUID --verdict READY_FOR_CONTROLLED_EMAIL_GO_REVIEW --confirm` | Record the human GO review (not a live GO) |
 | `make confenge-stop-sending` | Operational kill switch (enroll/send refuse) |
 | `make confenge-resume-sending` | Clear kill-switch file |
 | `make confenge-db-backup` | `pg_dump` into `data/backups/` |

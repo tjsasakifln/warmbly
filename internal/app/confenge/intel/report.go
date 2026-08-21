@@ -306,6 +306,10 @@ func ReportMarkdown(rep ObservabilityReport) string {
 			fmt.Fprintf(&b, "- %s\n", bl)
 		}
 	}
+	if len(rep.ControlledEmail) > 0 {
+		fmt.Fprintf(&b, "\n## Controlled email\n\n")
+		fmt.Fprintf(&b, "%s", FormatControlledEmailReport(ControlledEmailExecutiveReport{Rows: rep.ControlledEmail}))
+	}
 	fmt.Fprintf(&b, "\nThis is not a CRM and not a forecast.\n")
 	return b.String()
 }

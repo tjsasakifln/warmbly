@@ -1,6 +1,11 @@
 package intel
 
-import "strings"
+import (
+	"bytes"
+	"fmt"
+	"sort"
+	"strings"
+)
 
 // ControlledEmailOutcomeSlice is one (route class, source, provider, cohort, policy) bucket.
 type ControlledEmailOutcomeSlice struct {
@@ -110,4 +115,42 @@ func SliceControlledEmailOutcomes(events []CommercialEvent) []ControlledEmailOut
 func NonReplyDoesNotInvalidateMailbox(ev CommercialEvent) bool {
 	typ := strings.ToLower(strings.TrimSpace(ev.Type))
 	return typ == "no_reply" || typ == EventUnknownState
+}
+
+// ControlledEmailExecutiveReport is the founder-facing table. No composite score.
+type ControlledEmailExecutiveReport struct {
+	Rows []ControlledEmailOutcomeSlice `json:"rows"`
+}
+
+func BuildControlledEmailExecutiveReport(events []CommercialEvent) ControlledEmailExecutiveReport {
+	return ControlledEmailExecutiveReport{Rows: SliceControlledEmailOutcomes(events)}
+}
+
+func AttachControlledEmail(rep *ObservabilityReport, events []CommercialEvent) {
+	if rep == nil {
+		return
+	}
+	rep.ControlledEmail = SliceControlledEmailOutcomes(events)
+}
+
+func FormatControlledEmailReport(rep ControlledEmailExecutiveReport) string {
+	var b bytes.Buffer
+	fmt.Fprintf(&b, "route_class\tcohort_id\tattempted\tprovider_accepted\tdelivered\thard_bounce\tsoft_bounce\treply\tpositive_reply\trouted_or_forwarded\topt_out\tspam_complaint\tmeeting\tproposal\tqualified_pipeline\tobserved_revenue\tunknown\n")
+	rows := append([]ControlledEmailOutcomeSlice{}, rep.Rows...)
+	sort.Slice(rows, func(i, j int) bool { return rows[i].RouteClass < rows[j].RouteClass })
+	for _, r := range rows {
+		fmt.Fprintf(&b, "%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
+			orUnknown(r.RouteClass), orUnknown(r.CohortID), r.Attempted, r.ProviderAccepted, r.Delivered,
+			r.HardBounce, r.SoftBounce, r.Reply, r.PositiveReply, r.RoutedForwarded,
+			r.OptOut, r.SpamComplaint, r.Meeting, r.Proposal, r.QualifiedPipeline, r.ObservedRevenue, r.Unknown)
+	}
+	for _, r := range rows {
+		if r.Attempted > 0 && r.Reply > 0 {
+			fmt.Fprintf(&b, "rate reply/attempted %s=%d/%d\n", orUnknown(r.RouteClass), r.Reply, r.Attempted)
+		}
+		if r.ProviderAccepted > 0 && r.HardBounce > 0 {
+			fmt.Fprintf(&b, "rate hard_bounce/accepted %s=%d/%d\n", orUnknown(r.RouteClass), r.HardBounce, r.ProviderAccepted)
+		}
+	}
+	return b.String()
 }

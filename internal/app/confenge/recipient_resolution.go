@@ -263,15 +263,8 @@ func fillControlledEligible(res RecipientResolution, acc *models.OutreachAccount
 }
 
 func pickControlledRecipient(controlled []models.OutreachContactCandidate) *models.OutreachContactCandidate {
-	if len(controlled) == 0 {
-		return nil
-	}
-	for i := range controlled {
-		if CandidatePreferredInitial(&controlled[i]) {
-			return &controlled[i]
-		}
-	}
-	return &controlled[0]
+	got, _ := SelectInitialRoute(controlled, nil, time.Now().UTC())
+	return got
 }
 
 func classifyControlledRecipient(acc *models.OutreachAccount, c *models.OutreachContactCandidate, now time.Time) *pilotBlock {

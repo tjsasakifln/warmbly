@@ -210,7 +210,7 @@ func ValidateCopyForRouteClass(class, body, subject string, cand *models.Outreac
 				add("invented_name")
 			}
 		}
-		if looksInventedPersonGreeting(blob) && CandidatePersonUnknown(cand) {
+		if CandidatePersonUnknown(cand) && looksInventedPersonGreeting(blob) {
 			add("invented_name")
 		}
 		if strings.Contains(blob, "diretor comprovado") || strings.Contains(blob, "você é o gerente") {
@@ -231,38 +231,6 @@ func ValidateCopyForRouteClass(class, body, subject string, cand *models.Outreac
 		}
 	}
 	return errs
-}
-
-func looksInventedPersonGreeting(blob string) bool {
-	// "olá, ana" / "prezado joão" without a proven person is invention.
-	for _, p := range []string{"olá, ana", "ola, ana", "prezado joão", "prezado joao", "dear john"} {
-		if strings.Contains(blob, p) {
-			return true
-		}
-	}
-	return false
-}
-
-func greetingForRouteClass(class string, cand *models.OutreachContactCandidate) string {
-	switch class {
-	case RouteClassDirectPerson:
-		if cand != nil && provenPersonName(cand) {
-			return "Olá, " + titleFirstName(firstName(cand.Name))
-		}
-		return "Olá"
-	case RouteClassRoleOrDepartment:
-		local := emailLocal(candEmail(cand))
-		if local == "" {
-			return "Olá, equipe"
-		}
-		return "Olá, " + local
-	case RouteClassGenericCompany:
-		return "Olá, equipe"
-	case RouteClassPublicCompanyFreemail:
-		return "Olá, equipe"
-	default:
-		return "Olá"
-	}
 }
 
 func candEmail(c *models.OutreachContactCandidate) string {
