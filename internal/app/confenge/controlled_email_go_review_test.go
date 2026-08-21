@@ -280,6 +280,47 @@ func TestLiveCollectorUnknownBlocksReady(t *testing.T) {
 	}
 }
 
+func TestFormatReleaseComparisonUnprovenSMTPPrintsUnknown(t *testing.T) {
+	t.Setenv("SMTP_HOST", "")
+	t.Setenv(EnvKillSwitchPath, filepath.Join(t.TempDir(), "absent-kill"))
+	now := time.Now().UTC()
+	store := NewMemoryCohortStore()
+	auth := sampleGOReviewGrant(t, now)
+	if err := store.PutGrant(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{
+		RepositorySHA: auth.RepositorySHA, FeedSchemaVersion: auth.FeedSchemaVersion,
+		EvidenceVersion: auth.EvidenceVersion,
+	}
+	live := CollectLiveReleaseManifest(context.Background(), LiveReleaseInput{
+		Now: now, Config: &cfg, Store: store, Auth: auth,
+	})
+	if live.SMTPReady.IsPass() || live.SMTPReady.IsFail() {
+		t.Fatalf("unproven SMTP must be UNKNOWN, got %s", live.SMTPReady.Label())
+	}
+	cmp := CompareControlledEmailRelease(expectedReleaseFromGrant(auth), live)
+	cmp.AuthorizationID = auth.ID
+	text := FormatReleaseComparison(&cmp)
+	if !strings.Contains(text, "smtp_ready=UNKNOWN") {
+		t.Fatalf("unproven SMTP must print smtp_ready=UNKNOWN\n%s", text)
+	}
+	if strings.Contains(text, "smtp_ready=FAIL") {
+		t.Fatalf("unproven SMTP must not print smtp_ready=FAIL\n%s", text)
+	}
+	for _, name := range []string{"observability_ready", "db_cohort_authority", "suppression_clear"} {
+		if strings.Contains(text, name+"=FAIL") && !strings.Contains(text, name+"=UNKNOWN") {
+			t.Fatalf("unproven %s printed FAIL without UNKNOWN\n%s", name, text)
+		}
+	}
+	if cmp.Verdict.Verdict != ReleaseNOGO {
+		t.Fatalf("verdict=%s", cmp.Verdict.Verdict)
+	}
+	if !containsStr(cmp.Verdict.Reasons, "smtp_readiness_not_proven") {
+		t.Fatalf("reasons=%v", cmp.Verdict.Reasons)
+	}
+}
+
 func TestLiveCollectorSMTPDialPassAndJSONBoolUnknown(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -374,10 +415,10 @@ func TestCLIReviewFormatterPreviewNotPersisted(t *testing.T) {
 		"authorization_id=" + auth.ID.String(),
 		"repository_sha.expected=",
 		"repository_sha.live=",
-		"smtp_ready=",
+		"smtp_ready=UNKNOWN",
 		"observability_ready=",
-		"db_cohort_authority=",
-		"suppression_clear=",
+		"db_cohort_authority=UNKNOWN",
+		"suppression_clear=UNKNOWN",
 		"ttl_valid=",
 		"kill_switch_available=",
 		"auto_send=false",
@@ -387,6 +428,9 @@ func TestCLIReviewFormatterPreviewNotPersisted(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in\n%s", want, text)
 		}
+	}
+	if strings.Contains(text, "smtp_ready=FAIL") {
+		t.Fatalf("unproven SMTP must not print FAIL\n%s", text)
 	}
 	if strings.Contains(text, ReleaseGOForControlledEmailPilot) {
 		t.Fatal("formatter must not emit live GO")

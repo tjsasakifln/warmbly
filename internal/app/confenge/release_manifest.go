@@ -20,7 +20,7 @@ const (
 type CheckState string
 
 const (
-	EvidenceUnknown CheckState = ""
+	EvidenceUnknown CheckState = "UNKNOWN"
 	EvidencePass    CheckState = "PASS"
 	EvidenceFail    CheckState = "FAIL"
 )
@@ -31,6 +31,8 @@ func (s CheckState) Normalized() CheckState {
 		return EvidencePass
 	case "FAIL":
 		return EvidenceFail
+	case "UNKNOWN", "":
+		return EvidenceUnknown
 	default:
 		return EvidenceUnknown
 	}
@@ -190,14 +192,21 @@ func CompareControlledEmailRelease(want, got ReleaseManifest) ReleaseComparison 
 	var reasons []string
 	var checks []ReleaseCheck
 	add := func(ch ReleaseCheck, ok bool) {
-		if ch.State == "" {
-			if ok {
-				ch.State = EvidencePass
-			} else if strings.TrimSpace(ch.Live) == "" {
-				ch.State = EvidenceUnknown
-			} else {
-				ch.State = EvidenceFail
-			}
+		n := ch.State.Normalized()
+		switch {
+		case n == EvidencePass:
+			ch.State = EvidencePass
+		case n == EvidenceFail:
+			ch.State = EvidenceFail
+		case ch.State != "" || strings.EqualFold(strings.TrimSpace(ch.Live), "UNKNOWN"):
+			// readyCheck already decided UNKNOWN. Never rewrite Live="UNKNOWN" to FAIL.
+			ch.State = EvidenceUnknown
+		case ok:
+			ch.State = EvidencePass
+		case strings.TrimSpace(ch.Live) == "":
+			ch.State = EvidenceUnknown
+		default:
+			ch.State = EvidenceFail
 		}
 		if !ok && ch.Reason != "" {
 			reasons = append(reasons, ch.Reason)
