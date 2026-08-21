@@ -23,7 +23,10 @@ func TestBackendWiresCohortAuthAtBoot(t *testing.T) {
 	if cohort < policy {
 		t.Fatal("WireCohortAuth must be called with the rest of CONFENGE boot wiring")
 	}
-	if !strings.Contains(s, "NewMemoryCohortStore") {
-		t.Fatal("backend must construct a cohort store at boot")
+	if !strings.Contains(s, "NewPostgresCohortStore") {
+		t.Fatal("backend production boot must construct NewPostgresCohortStore")
+	}
+	if strings.Contains(s, "NewMemoryCohortStore") {
+		t.Fatal("backend production boot must not use NewMemoryCohortStore as cohort authority")
 	}
 }

@@ -1,0 +1,110 @@
+{
+  "schema_version": "confenge.outreach.v1",
+  "generated_at": "2026-08-21T00:00:00Z",
+  "synthetic": true,
+  "smtp": "none",
+  "source": {
+    "system": "extra-cli",
+    "run_id": "controlled-email-canary-synthetic",
+    "snapshot_hash": "synthetic-five-class-canary",
+    "profile_id": "confenge",
+    "profile_version": "1"
+  },
+  "leads": [
+    {
+      "source_lead_id": "canary-empresa-exemplo",
+      "company": {
+        "cnpj14": "12345678000190",
+        "cnpj_root": "12345678",
+        "razao_social": "EMPRESA EXEMPLO ENGENHARIA LTDA",
+        "nome_fantasia": "Empresa Exemplo",
+        "website": "https://empresaexemplo.com.br"
+      },
+      "priority": {"rank": 1, "score": 80, "tier": "HIGH", "confidence": "HIGH"},
+      "moment": {
+        "code": "CONTRACT_EXTENSION",
+        "summary": "Aditivo publicado",
+        "observed_at": "2026-08-01",
+        "confidence": "HIGH",
+        "evidence_ids": ["ev-1"]
+      },
+      "offer": {
+        "service_code": "REAJUSTE_14133",
+        "service_name": "Reajuste",
+        "entry_offer": "Leitura",
+        "rationale": "Contrato ativo"
+      },
+      "messaging_context": {
+        "fact_to_mention": "Aditivo publicado no portal oficial",
+        "question_to_ask": "Faz sentido revisar o reajuste?",
+        "cta": "Posso enviar o recorte?"
+      },
+      "target_fit_class": "TARGET_CONFIRMED",
+      "email_send_ready": false,
+      "contacts": [
+        {
+          "source_contact_id": "c-ana",
+          "name": "ANA SOUZA",
+          "role": "Gerente de Contratos",
+          "email": "ana.souza@empresaexemplo.com.br",
+          "source_url": "https://empresaexemplo.com.br/contato",
+          "verification_status": "OFFICIAL_SOURCE",
+          "ownership_status": "COMPANY_OWNED",
+          "route_class": "DIRECT_PERSON",
+          "controlled_email_eligible": true,
+          "preferred_initial": true,
+          "person_unknown": false,
+          "email_validated": true,
+          "mailbox_person_evidence": "OBSERVED"
+        },
+        {
+          "source_contact_id": "c-comercial",
+          "email": "comercial@empresaexemplo.com.br",
+          "source_url": "https://empresaexemplo.com.br/contato",
+          "verification_status": "INSTITUTIONAL_GENERIC",
+          "ownership_status": "COMPANY_OWNED",
+          "mailbox_purpose": "COMERCIAL",
+          "route_class": "ROLE_OR_DEPARTMENT",
+          "controlled_email_eligible": true,
+          "preferred_initial": false,
+          "person_unknown": true,
+          "email_validated": false
+        },
+        {
+          "source_contact_id": "c-contato",
+          "email": "contato@empresaexemplo.com.br",
+          "source_url": "https://empresaexemplo.com.br/contato",
+          "verification_status": "INSTITUTIONAL_GENERIC",
+          "ownership_status": "COMPANY_OWNED",
+          "mailbox_purpose": "GENERIC_CONTACT",
+          "route_class": "GENERIC_COMPANY",
+          "controlled_email_eligible": true,
+          "preferred_initial": false,
+          "person_unknown": true,
+          "email_validated": false
+        },
+        {
+          "source_contact_id": "c-gmail",
+          "email": "empresa@gmail.com",
+          "source_url": "https://empresaexemplo.com.br/contato",
+          "ownership_status": "COMPANY_OWNED",
+          "route_class": "PUBLIC_COMPANY_FREEMAIL",
+          "controlled_email_eligible": true,
+          "preferred_initial": false,
+          "person_unknown": true,
+          "email_validated": false,
+          "mailbox_company_evidence": "OBSERVED"
+        },
+        {
+          "source_contact_id": "c-inferred",
+          "email": "joao.silva@empresaexemplo.com.br",
+          "email_derivation": "INFERRED",
+          "route_class": "PROBABILISTIC_OR_RISKY",
+          "controlled_email_eligible": false,
+          "preferred_initial": false,
+          "risk_class": "RISKY"
+        }
+      ]
+    }
+  ]
+}

@@ -19,9 +19,8 @@ func (s *service) WirePolicyAuth(store repository.ConfengePolicyRepository) {
 }
 
 func (s *service) WireCohortAuth(store BoundedCohortStore) {
-	if store == nil {
-		store = NewMemoryCohortStore()
-	}
+	// Nil is fail-closed. Production must pass NewPostgresCohortStore.
+	// NewService still installs a memory store for unit tests only.
 	s.cohortStore = store
 }
 
@@ -32,8 +31,7 @@ func (s *service) BindBoundedCohortGrant(auth *BoundedCohortAuthorization) error
 	if auth == nil || auth.ID == uuid.Nil {
 		return fmt.Errorf("bounded cohort grant missing")
 	}
-	s.cohortStore.Put(auth)
-	return nil
+	return s.cohortStore.PutGrant(context.Background(), auth)
 }
 
 // AuthorizeCampaignPolicy mints an auditable CAMPAIGN_POLICY_AUTHORIZATION grant.

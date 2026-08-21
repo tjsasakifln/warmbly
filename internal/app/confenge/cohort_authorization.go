@@ -1,11 +1,14 @@
 package confenge
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,12 +19,29 @@ import (
 const (
 	AuthorizationModeBoundedCohort = "BOUNDED_COHORT_AUTHORIZATION"
 	BoundedCohortPolicyV1          = "bounded-cohort-policy.v1"
+	DefaultEvidenceVersion         = "controlled-email-policy.v1"
+
+	CohortSlotReserved = "reserved"
+	CohortSlotSent     = "sent"
+	CohortSlotReleased = "released"
+)
+
+var (
+	ErrCohortStoreUnavailable = errors.New("bounded cohort store unavailable")
+	ErrCohortGrantMissing     = errors.New("bounded cohort grant missing")
+	ErrCohortGrantRevoked     = errors.New("authorization revoked")
+	ErrCohortGrantExpired     = errors.New("authorization expired")
+	ErrCohortDailyCap         = errors.New("daily cap exceeded")
+	ErrCohortSlotNotHeld      = errors.New("cohort slot is not reserved")
+	ErrCohortHumanActor       = errors.New("human actor required")
+	ErrCohortNotConfirmed     = errors.New("bounded cohort create requires explicit confirmation")
 )
 
 // BoundedCohortAuthorization is a frozen, hashed, TTL'd human grant.
 // It is not auto-send and not CAMPAIGN_POLICY.
 type BoundedCohortAuthorization struct {
 	ID                  uuid.UUID
+	OrganizationID      uuid.UUID
 	ActorID             uuid.UUID
 	AuthorizedAt        time.Time
 	RepositorySHA       string
@@ -40,6 +60,9 @@ type BoundedCohortAuthorization struct {
 	AutoSendEnabled     bool
 	GreenAutorunEnabled bool
 	RevokedAt           *time.Time
+	RevokeActor         uuid.UUID
+	RevokeReason        string
+	FrozenHashValue     string
 }
 
 func (a *BoundedCohortAuthorization) FrozenHash() string {
@@ -48,6 +71,11 @@ func (a *BoundedCohortAuthorization) FrozenHash() string {
 	}
 	classes := append([]string{}, a.AllowedRouteClasses...)
 	sort.Strings(classes)
+	exp := a.ExpiresAt.UTC()
+	if exp.IsZero() && a.TTL > 0 && !a.AuthorizedAt.IsZero() {
+		exp = a.AuthorizedAt.UTC().Add(a.TTL)
+	}
+	ttlSec := int64(a.TTL / time.Second)
 	var b strings.Builder
 	b.WriteString(a.ActorID.String())
 	b.WriteByte(0)
@@ -70,8 +98,25 @@ func (a *BoundedCohortAuthorization) FrozenHash() string {
 	b.WriteString(strings.TrimSpace(a.ComposerVersion))
 	b.WriteByte(0)
 	b.WriteString(strings.TrimSpace(a.EvidenceVersion))
+	b.WriteByte(0)
+	b.WriteString(fmt.Sprintf("%d", exp.Unix()))
+	b.WriteByte(0)
+	b.WriteString(fmt.Sprintf("%d", ttlSec))
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:])
+}
+
+func (a *BoundedCohortAuthorization) EffectiveExpiry() time.Time {
+	if a == nil {
+		return time.Time{}
+	}
+	if !a.ExpiresAt.IsZero() {
+		return a.ExpiresAt.UTC()
+	}
+	if a.TTL > 0 && !a.AuthorizedAt.IsZero() {
+		return a.AuthorizedAt.UTC().Add(a.TTL)
+	}
+	return time.Time{}
 }
 
 func HashRecipientSet(mailboxes []string) string {
@@ -238,48 +283,290 @@ func EnforceDailyCap(sentToday, maxDaily int) error {
 	return nil
 }
 
+// CohortReserveResult is the outcome of an atomic slot reservation.
+type CohortReserveResult struct {
+	State    string
+	Already  bool
+	Occupied int
+}
+
 // BoundedCohortStore is the live grant + daily-volume authority used at transport.
+// Production must use PostgreSQL. Memory is tests/unit/dev only.
 type BoundedCohortStore interface {
 	Put(auth *BoundedCohortAuthorization)
 	Get(id uuid.UUID) *BoundedCohortAuthorization
 	SentToday(id uuid.UUID, day string) int
 	RecordSent(id uuid.UUID, day string)
+	PutGrant(ctx context.Context, auth *BoundedCohortAuthorization) error
+	GetGrant(ctx context.Context, id uuid.UUID) (*BoundedCohortAuthorization, error)
+	RevokeGrant(ctx context.Context, id, actor uuid.UUID, reason string, now time.Time) error
+	ReserveSlot(ctx context.Context, id uuid.UUID, messageKey string, now time.Time) (CohortReserveResult, error)
+	CommitSlot(ctx context.Context, id uuid.UUID, messageKey string, now time.Time) error
+	ReleaseSlot(ctx context.Context, id uuid.UUID, messageKey, reason string) error
+	ReleaseSlotByLease(ctx context.Context, leaseToken, reason string) error
+	BindLeaseToken(ctx context.Context, id uuid.UUID, messageKey, leaseToken string) error
 }
 
 type memoryCohortStore struct {
-	byID map[uuid.UUID]*BoundedCohortAuthorization
-	sent map[string]int
+	mu    sync.Mutex
+	byID  map[uuid.UUID]*BoundedCohortAuthorization
+	slots map[string]memorySlot // authID|messageKey
+}
+
+type memorySlot struct {
+	day         string
+	state       string
+	leaseToken  string
+	reservedAt  time.Time
+	committedAt time.Time
 }
 
 func NewMemoryCohortStore() BoundedCohortStore {
-	return &memoryCohortStore{byID: map[uuid.UUID]*BoundedCohortAuthorization{}, sent: map[string]int{}}
+	return &memoryCohortStore{
+		byID:  map[uuid.UUID]*BoundedCohortAuthorization{},
+		slots: map[string]memorySlot{},
+	}
+}
+
+func memorySlotKey(id uuid.UUID, messageKey string) string {
+	return id.String() + "|" + messageKey
 }
 
 func (m *memoryCohortStore) Put(auth *BoundedCohortAuthorization) {
-	if m == nil || auth == nil || auth.ID == uuid.Nil {
-		return
-	}
-	cp := *auth
-	m.byID[auth.ID] = &cp
+	_ = m.PutGrant(context.Background(), auth)
 }
 
 func (m *memoryCohortStore) Get(id uuid.UUID) *BoundedCohortAuthorization {
-	if m == nil {
+	auth, err := m.GetGrant(context.Background(), id)
+	if err != nil {
 		return nil
 	}
-	return m.byID[id]
+	return auth
 }
 
 func (m *memoryCohortStore) SentToday(id uuid.UUID, day string) int {
 	if m == nil {
 		return 0
 	}
-	return m.sent[id.String()+"|"+day]
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.occupiedLocked(id, day)
 }
 
 func (m *memoryCohortStore) RecordSent(id uuid.UUID, day string) {
-	if m == nil {
+	if m == nil || id == uuid.Nil {
 		return
 	}
-	m.sent[id.String()+"|"+day]++
+	now := time.Now().UTC()
+	key := fmt.Sprintf("legacy-record:%s:%d", id, now.UnixNano())
+	_, _ = m.ReserveSlot(context.Background(), id, key, now)
+	_ = m.CommitSlot(context.Background(), id, key, now)
+}
+
+func (m *memoryCohortStore) PutGrant(_ context.Context, auth *BoundedCohortAuthorization) error {
+	if m == nil {
+		return ErrCohortStoreUnavailable
+	}
+	if auth == nil || auth.ID == uuid.Nil {
+		return ErrCohortGrantMissing
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := *auth
+	if len(auth.AllowedRouteClasses) > 0 {
+		cp.AllowedRouteClasses = append([]string{}, auth.AllowedRouteClasses...)
+	}
+	if cp.RevokedAt != nil {
+		ts := *cp.RevokedAt
+		cp.RevokedAt = &ts
+	}
+	cp.FrozenHashValue = cp.FrozenHash()
+	m.byID[auth.ID] = &cp
+	return nil
+}
+
+func (m *memoryCohortStore) GetGrant(_ context.Context, id uuid.UUID) (*BoundedCohortAuthorization, error) {
+	if m == nil {
+		return nil, ErrCohortStoreUnavailable
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	auth := m.byID[id]
+	if auth == nil {
+		return nil, nil
+	}
+	cp := *auth
+	if len(auth.AllowedRouteClasses) > 0 {
+		cp.AllowedRouteClasses = append([]string{}, auth.AllowedRouteClasses...)
+	}
+	if auth.RevokedAt != nil {
+		ts := *auth.RevokedAt
+		cp.RevokedAt = &ts
+	}
+	return &cp, nil
+}
+
+func (m *memoryCohortStore) RevokeGrant(_ context.Context, id, actor uuid.UUID, reason string, now time.Time) error {
+	if m == nil {
+		return ErrCohortStoreUnavailable
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	auth := m.byID[id]
+	if auth == nil {
+		return ErrCohortGrantMissing
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if auth.RevokedAt == nil {
+		ts := now.UTC()
+		auth.RevokedAt = &ts
+		auth.RevokeActor = actor
+		auth.RevokeReason = strings.TrimSpace(reason)
+	}
+	return nil
+}
+
+func (m *memoryCohortStore) occupiedLocked(id uuid.UUID, day string) int {
+	n := 0
+	prefix := id.String() + "|"
+	for k, slot := range m.slots {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		if slot.day == day && (slot.state == CohortSlotReserved || slot.state == CohortSlotSent) {
+			n++
+		}
+	}
+	return n
+}
+
+func (m *memoryCohortStore) ReserveSlot(_ context.Context, id uuid.UUID, messageKey string, now time.Time) (CohortReserveResult, error) {
+	out := CohortReserveResult{}
+	if m == nil {
+		return out, ErrCohortStoreUnavailable
+	}
+	if id == uuid.Nil || strings.TrimSpace(messageKey) == "" {
+		return out, ErrCohortGrantMissing
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	now = now.UTC()
+	day := now.Format("2006-01-02")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	auth := m.byID[id]
+	if auth == nil {
+		return out, ErrCohortGrantMissing
+	}
+	if auth.RevokedAt != nil && !auth.RevokedAt.After(now) {
+		return out, ErrCohortGrantRevoked
+	}
+	exp := auth.EffectiveExpiry()
+	if !exp.IsZero() && !now.Before(exp) {
+		return out, ErrCohortGrantExpired
+	}
+	k := memorySlotKey(id, messageKey)
+	if existing, ok := m.slots[k]; ok {
+		if existing.state == CohortSlotReserved || existing.state == CohortSlotSent {
+			out.State = existing.state
+			out.Already = true
+			out.Occupied = m.occupiedLocked(id, day)
+			return out, nil
+		}
+	}
+	occupied := m.occupiedLocked(id, day)
+	if occupied >= auth.MaxDailyVolume {
+		return out, ErrCohortDailyCap
+	}
+	m.slots[k] = memorySlot{day: day, state: CohortSlotReserved, reservedAt: now}
+	out.State = CohortSlotReserved
+	out.Occupied = occupied + 1
+	return out, nil
+}
+
+func (m *memoryCohortStore) CommitSlot(_ context.Context, id uuid.UUID, messageKey string, now time.Time) error {
+	if m == nil {
+		return ErrCohortStoreUnavailable
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := memorySlotKey(id, messageKey)
+	slot, ok := m.slots[k]
+	if !ok {
+		return ErrCohortSlotNotHeld
+	}
+	if slot.state == CohortSlotSent {
+		return nil
+	}
+	if slot.state != CohortSlotReserved {
+		return ErrCohortSlotNotHeld
+	}
+	slot.state = CohortSlotSent
+	slot.committedAt = now.UTC()
+	m.slots[k] = slot
+	return nil
+}
+
+func (m *memoryCohortStore) ReleaseSlot(_ context.Context, id uuid.UUID, messageKey, reason string) error {
+	if m == nil {
+		return ErrCohortStoreUnavailable
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := memorySlotKey(id, messageKey)
+	slot, ok := m.slots[k]
+	if !ok {
+		return nil
+	}
+	if slot.state == CohortSlotSent {
+		return nil // never release after provider accept
+	}
+	if slot.state != CohortSlotReserved {
+		return nil
+	}
+	slot.state = CohortSlotReleased
+	m.slots[k] = slot
+	_ = reason
+	return nil
+}
+
+func (m *memoryCohortStore) ReleaseSlotByLease(_ context.Context, leaseToken, reason string) error {
+	if m == nil {
+		return ErrCohortStoreUnavailable
+	}
+	if strings.TrimSpace(leaseToken) == "" {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k, slot := range m.slots {
+		if slot.leaseToken == leaseToken && slot.state == CohortSlotReserved {
+			slot.state = CohortSlotReleased
+			m.slots[k] = slot
+		}
+	}
+	_ = reason
+	return nil
+}
+
+func (m *memoryCohortStore) BindLeaseToken(_ context.Context, id uuid.UUID, messageKey, leaseToken string) error {
+	if m == nil {
+		return ErrCohortStoreUnavailable
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := memorySlotKey(id, messageKey)
+	slot, ok := m.slots[k]
+	if !ok || slot.state != CohortSlotReserved {
+		return nil
+	}
+	slot.leaseToken = leaseToken
+	m.slots[k] = slot
+	return nil
 }

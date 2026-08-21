@@ -39,6 +39,8 @@ type ReleaseManifest struct {
 	GreenAutorun           bool      `json:"green_autorun,omitempty"`
 	TTLValid               bool      `json:"ttl_valid,omitempty"`
 	SuppressionClear       bool      `json:"suppression_clear,omitempty"`
+	DBCohortAuthority      bool      `json:"db_cohort_authority,omitempty"`
+	EvidenceVersion        string    `json:"evidence_version,omitempty"`
 }
 
 // ReleaseVerdict is exactly GO or NO_GO. Never "quase GO".
@@ -100,6 +102,8 @@ func EvaluateControlledEmailRelease(want, got ReleaseManifest) ReleaseVerdict {
 	check(got.ObservabilityReady, "observability_not_ready")
 	check(got.TTLValid, "ttl_invalid")
 	check(got.SuppressionClear, "suppression_not_clear")
+	check(got.DBCohortAuthority, "db_cohort_authority_missing")
+	check(got.EvidenceVersion != "" && got.EvidenceVersion == want.EvidenceVersion, "evidence_drift")
 	if containsRiskyClass(got.AllowedRouteClasses) {
 		reasons = append(reasons, "risky_in_allowed_classes")
 	}

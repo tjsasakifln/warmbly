@@ -186,7 +186,7 @@ func NewService(cfg Config, repo repository.OutreachRepository, audit AuditLogge
 			AllowFile:    !prod,
 			RequireHTTPS: prod,
 		},
-		cohortStore: NewMemoryCohortStore(),
+		cohortStore: NewMemoryCohortStore(), // tests/unit only; production boot wires NewPostgresCohortStore
 	}
 }
 
@@ -205,7 +205,7 @@ func NewServiceWithAI(cfg Config, repo repository.OutreachRepository, audit Audi
 			RequireHTTPS: prod,
 		},
 		ai:          ai,
-		cohortStore: NewMemoryCohortStore(),
+		cohortStore: NewMemoryCohortStore(), // tests/unit only; production boot wires NewPostgresCohortStore
 	}
 	return svc
 }

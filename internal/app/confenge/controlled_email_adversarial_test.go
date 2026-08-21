@@ -232,6 +232,45 @@ func TestKillSwitchBlocksIndividualAndCohort(t *testing.T) {
 	}
 }
 
+func TestLoadConfigBindsRuntimeSHASchemaEvidence(t *testing.T) {
+	t.Setenv(EnvRepositorySHA, "abc123deadbeef")
+	t.Setenv(EnvFeedSchemaVersion, "confenge.outreach.v1")
+	t.Setenv(EnvEvidenceVersion, DefaultEvidenceVersion)
+	t.Setenv(EnvEnabled, "true")
+	t.Setenv(EnvAutoSend, "false")
+	t.Setenv(EnvGreenAutorun, "false")
+	t.Setenv(EnvRequireHuman, "true")
+	cfg := LoadConfig()
+	if cfg.RepositorySHA != "abc123deadbeef" {
+		t.Fatalf("RepositorySHA=%q", cfg.RepositorySHA)
+	}
+	if cfg.FeedSchemaVersion != "confenge.outreach.v1" {
+		t.Fatalf("FeedSchemaVersion=%q", cfg.FeedSchemaVersion)
+	}
+	if cfg.EvidenceVersion != DefaultEvidenceVersion {
+		t.Fatalf("EvidenceVersion=%q", cfg.EvidenceVersion)
+	}
+	t.Setenv(EnvRepositorySHA, "")
+	t.Setenv("GIT_SHA", "from-git-sha")
+	cfg = LoadConfig()
+	if cfg.RepositorySHA != "from-git-sha" {
+		t.Fatalf("GIT_SHA fallback=%q", cfg.RepositorySHA)
+	}
+}
+
+func TestProductionStartupRequiresRepositorySHA(t *testing.T) {
+	cfg := Config{Enabled: true, RequireHumanApproval: true, DefaultDailyLimit: 50, MaxInitialEmailWords: 120}
+	if err := cfg.ValidateStartup("production"); err == nil {
+		t.Fatal("production must fail closed without repository SHA")
+	}
+	cfg.RepositorySHA = "deployed-sha"
+	cfg.FeedSchemaVersion = models.OutreachSchemaV1
+	cfg.EvidenceVersion = DefaultEvidenceVersion
+	if err := cfg.ValidateStartup("production"); err != nil {
+		t.Fatalf("complete production bindings must start: %v", err)
+	}
+}
+
 func TestAutoSendAndGreenAutorunRemainProhibited(t *testing.T) {
 	t.Setenv(EnvAutoSend, "true")
 	t.Setenv(EnvGreenAutorun, "true")
@@ -356,6 +395,7 @@ func TestReleaseEvaluatorNeverEmitsLiveEmailGO(t *testing.T) {
 		PolicyVersion: "p", ComposerVersion: "comp", KillSwitch: true, VolumeCap: 50,
 		AllowedRouteClasses: []string{RouteClassGenericCompany}, SMTPReady: true,
 		ObservabilityReady: true, TTLValid: true, SuppressionClear: true,
+		DBCohortAuthority: true, EvidenceVersion: DefaultEvidenceVersion,
 	}
 	got := want
 	v := EvaluateControlledEmailRelease(want, got)

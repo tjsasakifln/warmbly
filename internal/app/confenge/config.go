@@ -60,6 +60,11 @@ const (
 	EnvOperatorAlertEmail           = "CONFENGE_OPERATOR_ALERT_EMAIL"
 	EnvOperatorAlertEmailEnabled    = "CONFENGE_OPERATOR_ALERT_EMAIL_ENABLED"
 	EnvOperatorAlertEmailKillSwitch = "CONFENGE_OPERATOR_ALERT_EMAIL_KILL_SWITCH"
+	// Runtime version bindings compared by the transport gate and release evaluator.
+	// Production fail-closes when CONFENGE_OUTREACH_ENABLED=true and SHA is empty.
+	EnvRepositorySHA     = "CONFENGE_REPOSITORY_SHA"
+	EnvFeedSchemaVersion = "CONFENGE_FEED_SCHEMA_VERSION"
+	EnvEvidenceVersion   = "CONFENGE_EVIDENCE_VERSION"
 )
 
 // Defaults for conservative cold outreach.
@@ -205,6 +210,20 @@ func LoadConfig() Config {
 		OperatorAlertEmail:           strings.TrimSpace(os.Getenv(EnvOperatorAlertEmail)),
 		OperatorAlertEmailEnabled:    envBool(EnvOperatorAlertEmailEnabled, false),
 		OperatorAlertEmailKillSwitch: envBool(EnvOperatorAlertEmailKillSwitch, true),
+		RepositorySHA: firstNonEmpty(
+			strings.TrimSpace(os.Getenv(EnvRepositorySHA)),
+			strings.TrimSpace(os.Getenv("GIT_SHA")),
+			strings.TrimSpace(os.Getenv("GITHUB_SHA")),
+			strings.TrimSpace(os.Getenv("WARMBLY_GIT_SHA")),
+		),
+		FeedSchemaVersion: firstNonEmpty(
+			strings.TrimSpace(os.Getenv(EnvFeedSchemaVersion)),
+			"confenge.outreach.v1",
+		),
+		EvidenceVersion: firstNonEmpty(
+			strings.TrimSpace(os.Getenv(EnvEvidenceVersion)),
+			DefaultEvidenceVersion,
+		),
 	}
 	if cfg.InboundOrgID == uuid.Nil {
 		cfg.InboundOrgID = cfg.OperatorOrgID
@@ -280,6 +299,15 @@ func (c Config) ValidateStartup(appEnv string) error {
 	}
 	prod := strings.EqualFold(appEnv, "prod") || strings.EqualFold(appEnv, "production")
 	if prod {
+		if strings.TrimSpace(c.RepositorySHA) == "" {
+			return fmt.Errorf("%s (or GIT_SHA/GITHUB_SHA) is required when %s=true in production", EnvRepositorySHA, EnvEnabled)
+		}
+		if strings.TrimSpace(c.FeedSchemaVersion) == "" {
+			return fmt.Errorf("%s is required when %s=true in production", EnvFeedSchemaVersion, EnvEnabled)
+		}
+		if strings.TrimSpace(c.EvidenceVersion) == "" {
+			return fmt.Errorf("%s is required when %s=true in production", EnvEvidenceVersion, EnvEnabled)
+		}
 		if (c.FeedURL != "" || c.ManifestURL != "") && len(c.AllowedHosts) == 0 {
 			return fmt.Errorf("%s is required when a feed URL is set in production", EnvAllowedHosts)
 		}

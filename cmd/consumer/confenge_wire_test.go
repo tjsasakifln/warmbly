@@ -42,4 +42,10 @@ func TestConfengeReplyPathWiresCRM(t *testing.T) {
 	if !strings.Contains(s, "WireCohortAuth") {
 		t.Fatal("consumer must WireCohortAuth so bounded cohort grants exist at transport")
 	}
+	if !strings.Contains(s, "NewPostgresCohortStore") {
+		t.Fatal("consumer production boot must construct NewPostgresCohortStore")
+	}
+	if strings.Contains(s, "NewMemoryCohortStore") {
+		t.Fatal("consumer production boot must not use NewMemoryCohortStore as cohort authority")
+	}
 }

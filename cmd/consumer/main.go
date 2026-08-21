@@ -348,7 +348,10 @@ func main() {
 	var confengeSink confenge.OutcomeSink
 	if confengeCfgC.Enabled {
 		confengeSvc = confenge.NewService(confengeCfgC, repository.NewOutreachRepository(primaryDB.Pool), nil)
-		confengeSvc.WireCohortAuth(confenge.NewMemoryCohortStore())
+		if primaryDB == nil || primaryDB.Pool == nil {
+			log.Fatalf("confenge: postgres required for bounded cohort authority")
+		}
+		confengeSvc.WireCohortAuth(confenge.NewPostgresCohortStore(primaryDB.Pool))
 		if sink, ok := confengeSvc.(confenge.OutcomeSink); ok {
 			confengeSink = sink
 		}
