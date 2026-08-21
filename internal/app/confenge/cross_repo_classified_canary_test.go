@@ -67,8 +67,9 @@ func TestCrossRepoFiveClassCanaryIngest(t *testing.T) {
 		t.Fatal("RISKY must stay outside default cohort")
 	}
 	generic := byClass[RouteClassGenericCompany]
-	if !CandidateControlledEligible(&generic) {
-		t.Fatal("generic must be controlled eligible")
+	gd := parseControlledDiscovery(&generic)
+	if gd.ControlledEmailEligible == nil || !*gd.ControlledEmailEligible {
+		t.Fatal("unmodified extra-cli stamp must keep generic controlled_email_eligible")
 	}
 	if generic.PersonID != "" || generic.Name != "" {
 		t.Fatalf("generic invented person id=%q name=%q", generic.PersonID, generic.Name)
@@ -81,7 +82,8 @@ func TestCrossRepoFiveClassCanaryIngest(t *testing.T) {
 	now := time.Now().UTC()
 	mailboxes := []string{}
 	for i := range cands {
-		if CandidateControlledEligible(&cands[i]) {
+		d := parseControlledDiscovery(&cands[i])
+		if d.ControlledEmailEligible != nil && *d.ControlledEmailEligible {
 			mailboxes = append(mailboxes, cands[i].Email)
 		}
 	}
