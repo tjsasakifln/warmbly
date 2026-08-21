@@ -316,18 +316,27 @@ func TestGOReviewIsNotLiveGOAndRevocationBlocks(t *testing.T) {
 	if err := store.PutGrant(context.Background(), auth); err != nil {
 		t.Fatal(err)
 	}
-	got, err := RecordControlledEmailGOReview(context.Background(), store, auth.ID, auth.ActorID,
+	_, err := RecordControlledEmailGOReview(context.Background(), store, auth.ID, auth.ActorID,
 		ReleaseGOForControlledEmailPilot, "no", ReleaseManifest{}, now)
 	if err == nil {
 		t.Fatal("must refuse live GO")
 	}
-	got, err = RecordControlledEmailGOReview(context.Background(), store, auth.ID, auth.ActorID,
+	empty, err := RecordControlledEmailGOReview(context.Background(), store, auth.ID, auth.ActorID,
 		ReleaseReadyForControlledEmailReview, "founder review", ReleaseManifest{}, now)
+	if err == nil || (empty != nil && empty.GOReviewVerdict == ReleaseReadyForControlledEmailReview) {
+		t.Fatal("empty live manifest must not record READY")
+	}
+	live := matchingControlledEmailLive(auth)
+	got, err := RecordControlledEmailGOReview(context.Background(), store, auth.ID, auth.ActorID,
+		ReleaseReadyForControlledEmailReview, "founder review", live, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.GOReviewVerdict != ReleaseReadyForControlledEmailReview {
 		t.Fatalf("verdict=%s", got.GOReviewVerdict)
+	}
+	if got.GOReviewVerdict == ReleaseGOForControlledEmailPilot {
+		t.Fatal("must never emit GO_FOR_CONTROLLED_EMAIL_PILOT")
 	}
 	_ = store.RevokeGrant(context.Background(), auth.ID, auth.ActorID, "stop", now)
 	rev, _ := store.GetGrant(context.Background(), auth.ID)
@@ -374,12 +383,15 @@ func TestObservePathPopulatesRouteClassWithoutHandBuiltEvent(t *testing.T) {
 		ComposerVersion: ComposerVersion, EvidenceVersion: "ev1", ExpiresAt: now.Add(time.Hour),
 	}
 	tp := &models.OutreachTouchpoint{
-		OrganizationID: org, AccountID: accID, ContactCandidateID: &candID,
+		ID: uuid.New(), OrganizationID: org, AccountID: accID, ContactCandidateID: &candID,
 		State: models.TouchpointApproved, Recipient: cand.Email, Subject: "s",
 		BodyText: "Olá, equipe,\n\nSou da CONFENGE.", Channel: models.OutreachChannelEmail,
 		Purpose: models.TouchpointPurposeInitial, GeneratedContextHash: "ctx",
 	}
 	if err := ApplyBoundedCohortAuthorization(tp, auth, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.InsertTouchpoint(ctx, tp); err != nil {
 		t.Fatal(err)
 	}
 	svc := NewService(Config{
@@ -392,36 +404,51 @@ func TestObservePathPopulatesRouteClassWithoutHandBuiltEvent(t *testing.T) {
 	if err := svc.transitionCompletedTouchpoint(ctx, org, tp, now, "prov-1"); err != nil {
 		t.Fatal(err)
 	}
+	_ = repo.UpdateTouchpoint(ctx, tp)
 	if err := svc.NoteReply(ctx, org, cand.Email, map[string]any{"reply_class": "POSITIVE"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.NoteBounce(ctx, org, "other@empresa.com.br", "user unknown"); err != nil {
+	if err := svc.NoteBounce(ctx, org, cand.Email, "user unknown"); err != nil {
 		t.Fatal(err)
 	}
 	events := svc.ObservedControlledEmailEvents()
-	if len(events) < 2 {
-		t.Fatalf("real observe path must emit events, got %d", len(events))
+	if len(events) < 4 {
+		t.Fatalf("real observe path must emit attempted/accepted/reply/bounce, got %d", len(events))
 	}
-	foundClass, foundAccepted, foundReply := false, false, false
+	foundAttempted, foundAccepted, foundReply, foundBounce := false, false, false, false
 	for _, ev := range events {
-		if ev.EmailRouteClass == RouteClassGenericCompany {
-			foundClass = true
-		}
-		if ev.Type == intel.EventProviderAccepted {
-			foundAccepted = true
-		}
-		if ev.Type == intel.EventReply && ev.ReplyClass == "POSITIVE" {
-			foundReply = true
-		}
 		if ev.Type == intel.EventNoReply {
 			t.Fatal("no-reply must not be inferred")
 		}
+		switch ev.Type {
+		case intel.EventEmailAttempted:
+			foundAttempted = true
+		case intel.EventProviderAccepted:
+			foundAccepted = true
+		case intel.EventReply:
+			foundReply = true
+		case intel.EventHardBounce, intel.EventSoftBounce:
+			foundBounce = true
+		default:
+			continue
+		}
+		if ev.EmailRouteClass != RouteClassGenericCompany {
+			t.Fatalf("%s missing route class: %+v", ev.Type, ev)
+		}
+		if ev.CohortID != auth.CohortID {
+			t.Fatalf("%s missing cohort_id: %+v", ev.Type, ev)
+		}
+		if ev.PolicyVersion != auth.PolicyVersion {
+			t.Fatalf("%s missing policy_version: %+v", ev.Type, ev)
+		}
+		if ev.AccountPublicID == "" && ev.EntityPublicID == "" && ev.CorrelationID == "" {
+			t.Fatalf("%s missing touchpoint/account correlation: %+v", ev.Type, ev)
+		}
 	}
-	if !foundClass || !foundAccepted {
+	if !foundAttempted || !foundAccepted || !foundReply || !foundBounce {
 		raw, _ := json.Marshal(events)
-		t.Fatalf("route class / provider_accepted missing from real path: %s", raw)
+		t.Fatalf("attempted/accepted/reply/bounce missing from real path: %s", raw)
 	}
-	_ = foundReply
 	rep := intel.BuildControlledEmailExecutiveReport(events)
 	if len(rep.Rows) == 0 {
 		t.Fatal("executive report empty")
@@ -523,10 +550,13 @@ func TestFirstCohortDryRunFortyAccountsNoRealSend(t *testing.T) {
 	}
 	want := ReleaseManifest{
 		RepositorySHA: "sha-dry", Schema: models.OutreachSchemaV1, FeedHash: "dry-run-1",
-		CohortHash: snap.CohortHash, PolicyVersion: BoundedCohortPolicyV1, ComposerVersion: ComposerVersion,
+		CohortHash: snap.CohortHash, RecipientSetHash: snap.RecipientSetHash,
+		PolicyVersion: BoundedCohortPolicyV1, ComposerVersion: ComposerVersion,
 		AllowedRouteClasses: snap.AllowedRouteClasses, VolumeCap: snap.MaxDailyVolume,
-		KillSwitch: true, SMTPReady: true, ObservabilityReady: true, TTLValid: true,
-		SuppressionClear: true, DBCohortAuthority: true, EvidenceVersion: DefaultEvidenceVersion,
+		SMTPReady: EvidencePass, ObservabilityReady: EvidencePass, TTLValid: EvidencePass,
+		SuppressionClear: EvidencePass, DBCohortAuthority: EvidencePass, EvidenceVersion: DefaultEvidenceVersion,
+		KillSwitchOperational: EvidencePass, SendingPausedState: EvidencePass,
+		AutoSendState: EvidencePass, GreenAutorunState: EvidencePass,
 	}
 	v := EvaluateControlledEmailRelease(want, want)
 	if v.Verdict != ReleaseReadyForControlledEmailReview {

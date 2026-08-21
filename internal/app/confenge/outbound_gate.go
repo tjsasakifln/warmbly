@@ -562,6 +562,7 @@ func (s *service) transitionCompletedTouchpointKeyed(ctx context.Context, orgID 
 		if err := s.commitCohortSlot(ctx, tp, now, messageKey); err != nil {
 			return err
 		}
+		s.observeControlledEmail(ctx, orgID, intel.EventEmailAttempted, tp, cand, ControlledEmailContext{ProviderName: "smtp"})
 		s.observeControlledEmail(ctx, orgID, intel.EventProviderAccepted, tp, cand, ControlledEmailContext{ProviderName: "smtp"})
 		return nil
 	}

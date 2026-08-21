@@ -399,10 +399,12 @@ func TestSuppressedAndOptOutNeverTransportableViaCohort(t *testing.T) {
 func TestReleaseEvaluatorNeverEmitsLiveEmailGO(t *testing.T) {
 	want := ReleaseManifest{
 		RepositorySHA: "sha", Schema: "confenge.outreach.v1", FeedHash: "f", CohortHash: "c",
-		PolicyVersion: "p", ComposerVersion: "comp", KillSwitch: true, VolumeCap: 50,
-		AllowedRouteClasses: []string{RouteClassGenericCompany}, SMTPReady: true,
-		ObservabilityReady: true, TTLValid: true, SuppressionClear: true,
-		DBCohortAuthority: true, EvidenceVersion: DefaultEvidenceVersion,
+		RecipientSetHash: "r", PolicyVersion: "p", ComposerVersion: "comp", VolumeCap: 50,
+		AllowedRouteClasses: []string{RouteClassGenericCompany}, SMTPReady: EvidencePass,
+		ObservabilityReady: EvidencePass, TTLValid: EvidencePass, SuppressionClear: EvidencePass,
+		DBCohortAuthority: EvidencePass, EvidenceVersion: DefaultEvidenceVersion,
+		KillSwitchOperational: EvidencePass, SendingPausedState: EvidencePass,
+		AutoSendState: EvidencePass, GreenAutorunState: EvidencePass,
 	}
 	got := want
 	v := EvaluateControlledEmailRelease(want, got)

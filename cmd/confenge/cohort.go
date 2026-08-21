@@ -217,7 +217,7 @@ func cmdCohortReview(args []string) int {
 	_ = fs.Parse(args)
 	id, err := uuid.Parse(strings.TrimSpace(*idStr))
 	if err != nil || id == uuid.Nil {
-		fmt.Fprintln(os.Stderr, "usage: confenge cohort review --id UUID --actor UUID --verdict READY_FOR_CONTROLLED_EMAIL_GO_REVIEW|NO_GO --confirm")
+		fmt.Fprintln(os.Stderr, "usage: confenge cohort review --id UUID --actor UUID [--verdict READY_FOR_CONTROLLED_EMAIL_GO_REVIEW|NO_GO] [--confirm]")
 		return 2
 	}
 	actorID, err := uuid.Parse(strings.TrimSpace(*actor))
@@ -225,19 +225,36 @@ func cmdCohortReview(args []string) int {
 		fmt.Fprintln(os.Stderr, "BLOCKED: --actor (human UUID) is required")
 		return 2
 	}
-	if !*confirm {
-		fmt.Fprintf(os.Stderr, "not persisted. Re-run with --confirm to record verdict=%s\n", *verdict)
-		return 0
-	}
 	pool, store, err := openCohortStore()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "BLOCKED: %v\n", err)
 		return 1
 	}
 	defer pool.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	auth, err := confenge.RecordControlledEmailGOReview(ctx, store, id, actorID, *verdict, *reason, confenge.ReleaseManifest{}, time.Now().UTC())
+	now := time.Now().UTC()
+	cfg := confenge.LoadConfig()
+	cmp, auth, err := confenge.PrepareControlledEmailGOReview(ctx, confenge.LiveReleaseInput{
+		Now:    now,
+		Config: &cfg,
+		Store:  store,
+		Repo:   repository.NewOutreachRepository(pool),
+	}, id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "BLOCKED: %v\n", err)
+		return 1
+	}
+	fmt.Print(confenge.FormatReleaseComparison(cmp))
+	if !*confirm {
+		fmt.Fprintln(os.Stderr, "not persisted; rerun with --confirm")
+		return 0
+	}
+	live := confenge.ReleaseManifest{}
+	if cmp != nil {
+		live = cmp.Got
+	}
+	auth, err = confenge.RecordControlledEmailGOReview(ctx, store, id, actorID, *verdict, *reason, live, now)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "BLOCKED: %v\n", err)
 		return 1

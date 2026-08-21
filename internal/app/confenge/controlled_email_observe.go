@@ -89,18 +89,39 @@ func applyControlledEmailContext(ev *intel.CommercialEvent, c ControlledEmailCon
 	if ev.ReplyClass == "" {
 		ev.ReplyClass = c.ReplyClass
 	}
+	if ev.AccountPublicID == "" && strings.TrimSpace(c.AccountRef) != "" {
+		ev.AccountPublicID = c.AccountRef
+	}
+	if ev.EntityPublicID == "" && strings.TrimSpace(c.TouchpointID) != "" {
+		ev.EntityPublicID = c.TouchpointID
+	}
+	if ev.CorrelationID == "" && (strings.TrimSpace(c.TouchpointID) != "" || strings.TrimSpace(c.AccountRef) != "") {
+		ev.CorrelationID = strings.TrimSpace(c.TouchpointID) + ":" + strings.TrimSpace(c.AccountRef)
+	}
 }
 
 func (s *service) liveControlledEmailContext(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint, cand *models.OutreachContactCandidate, provider string) ControlledEmailContext {
+	if cand == nil && s != nil && s.repo != nil && tp != nil {
+		if tp.ContactCandidateID != nil {
+			cand, _ = s.repo.GetCandidate(ctx, orgID, *tp.ContactCandidateID)
+		}
+		if cand == nil && strings.TrimSpace(tp.Recipient) != "" {
+			cand, _, _ = s.repo.FindCandidateByEmail(ctx, orgID, strings.TrimSpace(strings.ToLower(tp.Recipient)))
+		}
+	}
+	if tp == nil && s != nil && s.repo != nil && cand != nil && cand.AccountID != uuid.Nil {
+		if list, err := s.repo.ListTouchpoints(ctx, orgID, cand.AccountID, "", 50, 0); err == nil {
+			for i := range list {
+				if list[i].CampaignPolicyAuthorizationID != nil {
+					tp = &list[i]
+					break
+				}
+			}
+		}
+	}
 	var auth *BoundedCohortAuthorization
 	if s != nil && s.cohortStore != nil && tp != nil && tp.CampaignPolicyAuthorizationID != nil {
 		auth, _ = s.cohortStore.GetGrant(ctx, *tp.CampaignPolicyAuthorizationID)
-	}
-	if cand == nil && s != nil && s.repo != nil && tp != nil && tp.ContactCandidateID != nil {
-		cand, _ = s.repo.GetCandidate(ctx, orgID, *tp.ContactCandidateID)
-	}
-	if cand == nil && s != nil && s.repo != nil && tp != nil && strings.TrimSpace(tp.Recipient) != "" {
-		cand, _, _ = s.repo.FindCandidateByEmail(ctx, orgID, strings.TrimSpace(strings.ToLower(tp.Recipient)))
 	}
 	return SnapshotControlledEmailContext(tp, cand, auth, provider)
 }
