@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
 	"github.com/warmbly/warmbly/internal/models"
 )
 
@@ -277,5 +279,140 @@ func TestMemoryStoreNotUsedAsPostgresConstructor(t *testing.T) {
 	}
 	if _, ok := NewPostgresCohortStore(nil).(*postgresCohortStore); !ok {
 		t.Fatal("production constructor must be postgresCohortStore")
+	}
+}
+
+func TestPostgresGateThenCompleteLastSlot(t *testing.T) {
+	allowConfengeSendingForTest(t)
+	ctx := context.Background()
+	_, store := openCohortPG(t)
+	org, accID, candID := uuid.New(), uuid.New(), uuid.New()
+	repo := newMemRepoWithSettings()
+	now := time.Now().UTC()
+	importID := uuid.New()
+	acc := &models.OutreachAccount{
+		ID: accID, OrganizationID: org, CNPJ14: "12345678000190",
+		EmailSendReady: false, TargetFitClass: TargetFitConfirmed, TargetFitVersion: "v1",
+		TargetFitSourceWatermark: "wm", TargetFitObservedAt: &now, TargetFitFresh: true, TargetFitEligible: true,
+		LastImportRunID: &importID, SourceRunID: "current-run", MessageContextHash: "ctx",
+	}
+	_, _ = repo.UpsertAccount(ctx, acc)
+	eligible := true
+	cand := &models.OutreachContactCandidate{
+		ID: candID, OrganizationID: org, AccountID: accID,
+		Email: "contato@empresa.com.br", OwnershipStatus: "COMPANY_OWNED",
+		MailboxPurpose: "GENERIC_CONTACT", VerificationStatus: models.OutreachVerifyInstitutionalGeneric,
+		DiscoveryJSON: discoveryJSON(t, controlledDiscovery{
+			RouteClass: RouteClassGenericCompany, ControlledEmailEligible: &eligible,
+		}),
+		LastImportRunID: &importID, CreatedAt: now.Add(-time.Hour),
+	}
+	_, _ = repo.UpsertCandidate(ctx, cand)
+
+	auth := sampleGrant(t, 1)
+	auth.OrganizationID = org
+	auth.AllowedRouteClasses = []string{RouteClassGenericCompany, RouteClassDirectPerson, RouteClassRoleOrDepartment}
+	auth.RecipientSetHash = HashRecipientSet([]string{"contato@empresa.com.br", "comercial@empresa.com.br"})
+	auth.FrozenHashValue = auth.FrozenHash()
+	if err := store.PutGrant(ctx, auth); err != nil {
+		t.Fatal(err)
+	}
+
+	campaignID, enrollContactID, sequenceID := uuid.New(), uuid.New(), uuid.New()
+	draft := &models.OutreachDraft{
+		OrganizationID: org, AccountID: accID, ContactCandidateID: &candID,
+		RecipientEmail: cand.Email, CampaignID: &campaignID, EnrollmentContactID: &enrollContactID,
+		Status: models.OutreachDraftEnrolled,
+	}
+	if err := repo.memRepo.UpsertDraft(ctx, draft); err != nil {
+		t.Fatal(err)
+	}
+	tp := &models.OutreachTouchpoint{
+		OrganizationID: org, AccountID: accID, ContactCandidateID: &candID,
+		DraftID: &draft.ID, State: models.TouchpointDrafted, Recipient: cand.Email,
+		Subject: "s", BodyText: "Olá, equipe,\n\nSou da CONFENGE.",
+		Channel: models.OutreachChannelEmail, Purpose: models.TouchpointPurposeInitial,
+		GeneratedContextHash: "ctx",
+	}
+	if err := ApplyBoundedCohortAuthorization(tp, auth, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.memRepo.InsertTouchpoint(ctx, tp); err != nil {
+		t.Fatal(err)
+	}
+
+	clock := &dispatch.FixedClock{T: time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)}
+	cfg := dispatch.DefaultConfig()
+	cfg.WindowStart, cfg.WindowEnd, cfg.Timezone, cfg.MinGap = "00:00", "23:59", "UTC", 0
+	cfg.BusinessDaysOnly = false
+	svc := &service{
+		cfg: Config{
+			Enabled: true, RepositorySHA: auth.RepositorySHA, FeedSchemaVersion: auth.FeedSchemaVersion,
+			EvidenceVersion: auth.EvidenceVersion, RequireHumanApproval: true, DefaultDailyLimit: 50,
+		},
+		repo: repo, cohortStore: store,
+		governor: dispatch.NewGovernor(cfg, dispatch.NewMemoryStore(), clock),
+	}
+
+	gate := svc.GateCampaignEmail(ctx, org, DefaultCampaignName, cand.Email, campaignID, enrollContactID, sequenceID)
+	if gate.Kind != GateProceed {
+		t.Fatalf("first gate must reserve last slot: %+v err=%v", gate, gate.Err)
+	}
+	if err := svc.CompleteCampaignEmail(ctx, org, campaignID, enrollContactID, sequenceID, "prov-1"); err != nil {
+		t.Fatalf("complete last reserved slot must succeed: %v", err)
+	}
+	st, err := store.HeldSlot(ctx, auth.ID, MessageKeyCampaignEmail(campaignID, enrollContactID, sequenceID))
+	if err != nil || st != CohortSlotSent {
+		t.Fatalf("slot state=%s err=%v want sent", st, err)
+	}
+
+	cand2ID := uuid.New()
+	cand2 := &models.OutreachContactCandidate{
+		ID: cand2ID, OrganizationID: org, AccountID: accID,
+		Email: "comercial@empresa.com.br", OwnershipStatus: "COMPANY_OWNED",
+		MailboxPurpose: "COMERCIAL", VerificationStatus: models.OutreachVerifyInstitutionalGeneric,
+		DiscoveryJSON: discoveryJSON(t, controlledDiscovery{
+			RouteClass: RouteClassRoleOrDepartment, ControlledEmailEligible: &eligible,
+		}),
+		LastImportRunID: &importID, CreatedAt: now.Add(-time.Hour),
+	}
+	_, _ = repo.UpsertCandidate(ctx, cand2)
+	campaign2, enroll2, seq2 := uuid.New(), uuid.New(), uuid.New()
+	draft2 := &models.OutreachDraft{
+		OrganizationID: org, AccountID: accID, ContactCandidateID: &cand2ID,
+		RecipientEmail: cand2.Email, CampaignID: &campaign2, EnrollmentContactID: &enroll2,
+		Status: models.OutreachDraftEnrolled,
+	}
+	if err := repo.memRepo.UpsertDraft(ctx, draft2); err != nil {
+		t.Fatal(err)
+	}
+	tp2 := &models.OutreachTouchpoint{
+		OrganizationID: org, AccountID: accID, ContactCandidateID: &cand2ID,
+		DraftID: &draft2.ID, State: models.TouchpointDrafted, Recipient: cand2.Email,
+		Subject: "s", BodyText: "Olá, equipe,\n\nSou da CONFENGE.",
+		Channel: models.OutreachChannelEmail, Purpose: models.TouchpointPurposeInitial,
+		GeneratedContextHash: "ctx",
+	}
+	if err := ApplyBoundedCohortAuthorization(tp2, auth, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.memRepo.InsertTouchpoint(ctx, tp2); err != nil {
+		t.Fatal(err)
+	}
+	second := svc.GateCampaignEmail(ctx, org, DefaultCampaignName, cand2.Email, campaign2, enroll2, seq2)
+	if second.Kind == GateProceed || second.Kind == GateAlready {
+		t.Fatalf("second distinct key must not send: %+v", second)
+	}
+	errText := second.Reason
+	if second.Err != nil {
+		errText += second.Err.Error()
+	}
+	if !strings.Contains(errText, "daily_cap") {
+		t.Fatalf("second distinct key must hit cap: %+v err=%v", second, second.Err)
+	}
+
+	replay := svc.GateCampaignEmail(ctx, org, DefaultCampaignName, cand.Email, campaignID, enrollContactID, sequenceID)
+	if replay.Kind != GateAlready {
+		t.Fatalf("replay of sent key must be GateAlready not a second SMTP: %+v err=%v", replay, replay.Err)
 	}
 }

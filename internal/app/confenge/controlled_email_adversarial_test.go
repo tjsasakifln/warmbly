@@ -574,6 +574,11 @@ func TestCanTransportCohortEnforcesCapDriftAndSuppression(t *testing.T) {
 	if err := CanTransportCohort(tp, auth, capHit); err == nil || !(strings.Contains(err.Error(), "daily_cap") || strings.Contains(err.Error(), "daily cap")) {
 		t.Fatalf("daily cap must fail CanTransportCohort: %v", err)
 	}
+	held := capHit
+	held.SlotHeld = true
+	if err := CanTransportCohort(tp, auth, held); err != nil {
+		t.Fatalf("held reserved/sent key must complete the last slot: %v", err)
+	}
 	sup := valid
 	sup.Suppressed = true
 	if err := CanTransportCohort(tp, auth, sup); err == nil || !strings.Contains(err.Error(), "suppressed") {

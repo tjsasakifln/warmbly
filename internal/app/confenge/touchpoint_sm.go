@@ -237,8 +237,10 @@ func CanTransportCohort(tp *models.OutreachTouchpoint, auth *BoundedCohortAuthor
 	if reasons := ValidateBoundedCohortAuthorization(auth, in); len(reasons) > 0 {
 		return fmt.Errorf("bounded cohort invalid: %s", strings.Join(reasons, ","))
 	}
-	if err := EnforceDailyCap(in.SentToday, auth.MaxDailyVolume); err != nil {
-		return err
+	if !in.SlotHeld {
+		if err := EnforceDailyCap(in.SentToday, auth.MaxDailyVolume); err != nil {
+			return err
+		}
 	}
 	return nil
 }

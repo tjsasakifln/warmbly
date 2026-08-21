@@ -183,6 +183,9 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 	if enrolledTouchpoint == nil {
 		return CampaignGateResult{Kind: GateCommercialBlock, Reason: "approved_touchpoint_missing"}
 	}
+	if enrolledTouchpoint.State == models.TouchpointSent {
+		return CampaignGateResult{Kind: GateAlready, Reason: ReasonAlreadySent}
+	}
 	if err := s.AssertTransportable(ctx, orgID, enrolledTouchpoint); err != nil {
 		return CampaignGateResult{Kind: GateCommercialBlock, Reason: "touchpoint_authorization_invalid", Err: err}
 	}
@@ -262,6 +265,9 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 		return CampaignGateResult{Kind: GateTransient, Reason: ReasonGovernor, Err: fmt.Errorf("dispatch governor: %w", err)}
 	}
 	if res.AlreadyCommitted {
+		if cohortAuthID != uuid.Nil {
+			_ = s.cohortStore.CommitSlot(ctx, cohortAuthID, key, time.Now().UTC())
+		}
 		return CampaignGateResult{Kind: GateAlready, Reason: ReasonAlreadySent}
 	}
 	if !res.Allowed {
@@ -443,7 +449,7 @@ func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *
 		}
 	}
 	if strings.TrimSpace(tp.AuthorizationMode) == AuthorizationModeBoundedCohort {
-		return s.assertBoundedCohortTransport(ctx, tp, cand)
+		return s.assertBoundedCohortTransport(ctx, tp, cand, "")
 	}
 	if strings.TrimSpace(tp.AuthorizationMode) != AuthorizationModeCampaignPolicy {
 		return nil
@@ -454,7 +460,7 @@ func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *
 	return nil
 }
 
-func (s *service) assertBoundedCohortTransport(ctx context.Context, tp *models.OutreachTouchpoint, cand *models.OutreachContactCandidate) error {
+func (s *service) assertBoundedCohortTransport(ctx context.Context, tp *models.OutreachTouchpoint, cand *models.OutreachContactCandidate, messageKey string) error {
 	if s == nil || s.cohortStore == nil || tp.CampaignPolicyAuthorizationID == nil {
 		return fmt.Errorf("bounded cohort grant missing at transport")
 	}
@@ -465,7 +471,7 @@ func (s *service) assertBoundedCohortTransport(ctx context.Context, tp *models.O
 	if auth == nil {
 		return fmt.Errorf("bounded cohort grant missing at transport")
 	}
-	return CanTransportCohort(tp, auth, s.liveCohortInput(ctx, tp, cand))
+	return CanTransportCohort(tp, auth, s.liveCohortInput(ctx, tp, cand, messageKey))
 }
 
 func (s *service) assertAuthoritativeFeedForTransport(ctx context.Context, orgID uuid.UUID, acc *models.OutreachAccount) error {
@@ -540,14 +546,14 @@ func (s *service) transitionCompletedTouchpointKeyed(ctx context.Context, orgID 
 		if tp.ContactCandidateID != nil {
 			cand, _ = s.repo.GetCandidate(ctx, orgID, *tp.ContactCandidateID)
 		}
-		if err := s.assertBoundedCohortTransport(ctx, tp, cand); err != nil {
+		if err := s.assertBoundedCohortTransport(ctx, tp, cand, messageKey); err != nil {
 			return err
 		}
 		auth, err := s.cohortStore.GetGrant(ctx, *tp.CampaignPolicyAuthorizationID)
 		if err != nil {
 			return fmt.Errorf("bounded cohort store unavailable: %w", err)
 		}
-		in := s.liveCohortInput(ctx, tp, cand)
+		in := s.liveCohortInput(ctx, tp, cand, messageKey)
 		if err := TransitionToSentCohort(tp, now, providerMessageID, auth, in); err != nil {
 			return err
 		}
@@ -559,7 +565,7 @@ func (s *service) transitionCompletedTouchpointKeyed(ctx context.Context, orgID 
 	return TransitionToSent(tp, now, providerMessageID)
 }
 
-func (s *service) liveCohortInput(ctx context.Context, tp *models.OutreachTouchpoint, cand *models.OutreachContactCandidate) CohortTransportInput {
+func (s *service) liveCohortInput(ctx context.Context, tp *models.OutreachTouchpoint, cand *models.OutreachContactCandidate, messageKey string) CohortTransportInput {
 	now := time.Now().UTC()
 	in := CohortTransportInput{
 		Now:                 now,
@@ -580,6 +586,12 @@ func (s *service) liveCohortInput(ctx context.Context, tp *models.OutreachTouchp
 			in.RecipientSetHash = auth.RecipientSetHash
 			in.EvidenceVersion = firstNonEmpty(s.cfg.EvidenceVersion, auth.EvidenceVersion)
 			in.SentToday = s.cohortStore.SentToday(auth.ID, now.UTC().Format("2006-01-02"))
+			if strings.TrimSpace(messageKey) != "" {
+				if st, herr := s.cohortStore.HeldSlot(ctx, auth.ID, messageKey); herr == nil &&
+					(st == CohortSlotReserved || st == CohortSlotSent) {
+					in.SlotHeld = true
+				}
+			}
 			if cand != nil && !auth.AuthorizedAt.IsZero() && !cand.CreatedAt.IsZero() && cand.CreatedAt.After(auth.AuthorizedAt) {
 				in.PostFreezeRecipient = true
 			}

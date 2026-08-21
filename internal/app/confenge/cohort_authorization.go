@@ -152,6 +152,10 @@ type CohortTransportInput struct {
 	OptOut              bool
 	PostFreezeRecipient bool
 	SentToday           int
+	// SlotHeld is true when this message_key already occupies a reserved or
+	// sent slot. Complete-time revalidation must not treat that occupancy as a
+	// new send that exceeds the daily cap.
+	SlotHeld            bool
 	KillSwitchEngaged   bool
 	AutoSendEnabled     bool
 	GreenAutorunEnabled bool
@@ -189,7 +193,7 @@ func ValidateBoundedCohortAuthorization(auth *BoundedCohortAuthorization, in Coh
 	if auth.MaxDailyVolume < 1 {
 		add("daily_cap_missing")
 	}
-	if in.SentToday >= auth.MaxDailyVolume {
+	if !in.SlotHeld && in.SentToday >= auth.MaxDailyVolume {
 		add("daily_cap_exceeded")
 	}
 	bound := func(grant, live, code string) {
@@ -305,6 +309,7 @@ type BoundedCohortStore interface {
 	ReleaseSlot(ctx context.Context, id uuid.UUID, messageKey, reason string) error
 	ReleaseSlotByLease(ctx context.Context, leaseToken, reason string) error
 	BindLeaseToken(ctx context.Context, id uuid.UUID, messageKey, leaseToken string) error
+	HeldSlot(ctx context.Context, id uuid.UUID, messageKey string) (string, error)
 }
 
 type memoryCohortStore struct {
@@ -569,4 +574,17 @@ func (m *memoryCohortStore) BindLeaseToken(_ context.Context, id uuid.UUID, mess
 	slot.leaseToken = leaseToken
 	m.slots[k] = slot
 	return nil
+}
+
+func (m *memoryCohortStore) HeldSlot(_ context.Context, id uuid.UUID, messageKey string) (string, error) {
+	if m == nil {
+		return "", ErrCohortStoreUnavailable
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	slot, ok := m.slots[memorySlotKey(id, messageKey)]
+	if !ok {
+		return "", nil
+	}
+	return slot.state, nil
 }

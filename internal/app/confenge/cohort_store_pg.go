@@ -402,3 +402,24 @@ func (s *postgresCohortStore) BindLeaseToken(ctx context.Context, id uuid.UUID, 
 	}
 	return nil
 }
+
+func (s *postgresCohortStore) HeldSlot(ctx context.Context, id uuid.UUID, messageKey string) (string, error) {
+	if err := s.unavailable(); err != nil {
+		return "", err
+	}
+	if id == uuid.Nil || strings.TrimSpace(messageKey) == "" {
+		return "", nil
+	}
+	var state string
+	err := s.db.QueryRow(ctx, `
+		SELECT state FROM confenge_bounded_cohort_reservations
+		WHERE authorization_id=$1 AND message_key=$2`, id, messageKey,
+	).Scan(&state)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrCohortStoreUnavailable, err)
+	}
+	return state, nil
+}
