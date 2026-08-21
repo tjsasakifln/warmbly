@@ -189,19 +189,56 @@ func CanTransport(tp *models.OutreachTouchpoint) error {
 		return fmt.Errorf("campaign_policy cannot transport; individual approval required")
 	}
 	if mode == AuthorizationModeBoundedCohort {
-		if tp.ApprovedBy == nil || *tp.ApprovedBy == uuid.Nil {
-			return fmt.Errorf("bounded cohort requires human actor")
-		}
-		if tp.CampaignPolicyAuthorizationID == nil || *tp.CampaignPolicyAuthorizationID == uuid.Nil {
-			return fmt.Errorf("bounded cohort missing authorization binding")
-		}
-		if strings.TrimSpace(tp.AuthorizationPolicyHash) == "" {
-			return fmt.Errorf("bounded cohort missing authorization hash")
-		}
-		return nil
+		return fmt.Errorf("bounded cohort grant must be revalidated at transport")
 	}
 	if tp.ApprovedBy == nil || *tp.ApprovedBy == uuid.Nil {
 		return fmt.Errorf("missing human approved_by")
+	}
+	return nil
+}
+
+// CanTransportCohort is the shipped transport predicate for BOUNDED_COHORT_AUTHORIZATION.
+// Drift, TTL, daily cap, suppression, post-freeze and SHA are enforced here — not metadata.
+func CanTransportCohort(tp *models.OutreachTouchpoint, auth *BoundedCohortAuthorization, in CohortTransportInput) error {
+	if tp == nil {
+		return fmt.Errorf("nil touchpoint")
+	}
+	if strings.TrimSpace(tp.AuthorizationMode) != AuthorizationModeBoundedCohort {
+		return fmt.Errorf("touchpoint is not bounded-cohort authorized")
+	}
+	if FileKillSwitchActive() {
+		return fmt.Errorf("kill switch engaged")
+	}
+	switch tp.State {
+	case models.TouchpointApproved, models.TouchpointQueued:
+	default:
+		return fmt.Errorf("touchpoint state %s is not transportable", tp.State)
+	}
+	if tp.ContentHash == "" || tp.ApprovedContentHash == "" {
+		return fmt.Errorf("missing content hash")
+	}
+	want := TouchpointBindingHash(tp)
+	if want == "" || tp.ContentHash != want || tp.ApprovedContentHash != want {
+		return fmt.Errorf("approved_content_hash does not match live recipient/content/evidence versions")
+	}
+	if tp.ApprovedBy == nil || *tp.ApprovedBy == uuid.Nil {
+		return fmt.Errorf("bounded cohort requires human actor")
+	}
+	if tp.CampaignPolicyAuthorizationID == nil || *tp.CampaignPolicyAuthorizationID == uuid.Nil {
+		return fmt.Errorf("bounded cohort missing authorization binding")
+	}
+	if auth == nil || auth.ID == uuid.Nil || auth.ID != *tp.CampaignPolicyAuthorizationID {
+		return fmt.Errorf("bounded cohort grant missing at transport")
+	}
+	if strings.TrimSpace(tp.AuthorizationPolicyHash) == "" || tp.AuthorizationPolicyHash != auth.FrozenHash() {
+		return fmt.Errorf("bounded cohort hash mismatch")
+	}
+	in.KillSwitchEngaged = in.KillSwitchEngaged || FileKillSwitchActive() || auth.KillSwitchEngaged
+	if reasons := ValidateBoundedCohortAuthorization(auth, in); len(reasons) > 0 {
+		return fmt.Errorf("bounded cohort invalid: %s", strings.Join(reasons, ","))
+	}
+	if err := EnforceDailyCap(in.SentToday, auth.MaxDailyVolume); err != nil {
+		return err
 	}
 	return nil
 }

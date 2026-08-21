@@ -362,8 +362,16 @@ func (s *service) revalidateCampaignPolicyAtSend(ctx context.Context, orgID uuid
 // CanTransport plus live CAMPAIGN_POLICY grant revalidation when applicable.
 // Used by QueueTouchpoint, dispatchEmailTouch, requireTouchTransport (EnrollDraft, WhatsApp).
 func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint) error {
-	if err := CanTransport(tp); err != nil {
-		return err
+	mode := ""
+	if tp != nil {
+		mode = strings.TrimSpace(tp.AuthorizationMode)
+	}
+	if mode != AuthorizationModeBoundedCohort {
+		if err := CanTransport(tp); err != nil {
+			return err
+		}
+	} else if FileKillSwitchActive() {
+		return fmt.Errorf("kill switch engaged")
 	}
 	if s.cfg.OperatorMode {
 		if err := s.requirePilotMembershipForTouchpoint(ctx, orgID, tp); err != nil {
@@ -410,6 +418,9 @@ func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *
 			return fmt.Errorf("touchpoint recipient does not match approved contact candidate")
 		}
 	}
+	if strings.TrimSpace(tp.AuthorizationMode) == AuthorizationModeBoundedCohort {
+		return s.assertBoundedCohortTransport(tp, cand)
+	}
 	if strings.TrimSpace(tp.AuthorizationMode) != AuthorizationModeCampaignPolicy {
 		return nil
 	}
@@ -417,6 +428,41 @@ func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *
 		return fmt.Errorf("campaign policy revalidation: %s", block.Reason)
 	}
 	return nil
+}
+
+func (s *service) assertBoundedCohortTransport(tp *models.OutreachTouchpoint, cand *models.OutreachContactCandidate) error {
+	if s == nil || s.cohortStore == nil || tp.CampaignPolicyAuthorizationID == nil {
+		return fmt.Errorf("bounded cohort grant missing at transport")
+	}
+	auth := s.cohortStore.Get(*tp.CampaignPolicyAuthorizationID)
+	if auth == nil {
+		return fmt.Errorf("bounded cohort grant missing at transport")
+	}
+	now := time.Now().UTC()
+	in := CohortTransportInput{
+		Now:                 now,
+		RepositorySHA:       s.cfg.RepositorySHA,
+		FeedSchemaVersion:   firstNonEmpty(s.cfg.FeedSchemaVersion, models.OutreachSchemaV1),
+		CohortHash:          auth.CohortHash,
+		PolicyVersion:       auth.PolicyVersion,
+		ComposerVersion:     ComposerVersion,
+		EvidenceVersion:     firstNonEmpty(s.cfg.EvidenceVersion, auth.EvidenceVersion),
+		RecipientSetHash:    auth.RecipientSetHash,
+		RecipientMailbox:    tp.Recipient,
+		SentToday:           s.cohortStore.SentToday(auth.ID, now.UTC().Format("2006-01-02")),
+		KillSwitchEngaged:   FileKillSwitchActive() || !s.cfg.SendingAllowed(),
+		AutoSendEnabled:     s.cfg.AutoSendEnabled,
+		GreenAutorunEnabled: s.cfg.GreenAutorunEnabled,
+	}
+	if cand != nil {
+		in.RouteClass = CandidateRouteClass(cand)
+		in.Suppressed = cand.Blocked || cand.Bounced
+		in.OptOut = cand.DoNotContact
+		if !auth.AuthorizedAt.IsZero() && !cand.CreatedAt.IsZero() && cand.CreatedAt.After(auth.AuthorizedAt) {
+			in.PostFreezeRecipient = true
+		}
+	}
+	return CanTransportCohort(tp, auth, in)
 }
 
 func (s *service) assertAuthoritativeFeedForTransport(ctx context.Context, orgID uuid.UUID, acc *models.OutreachAccount) error {

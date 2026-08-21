@@ -127,6 +127,9 @@ type Config struct {
 	OperatorAlertEmail           string
 	OperatorAlertEmailEnabled    bool
 	OperatorAlertEmailKillSwitch bool
+	RepositorySHA                string
+	FeedSchemaVersion            string
+	EvidenceVersion              string
 }
 
 // SendWindowHours returns whole hours in [start, end) for HH:MM window strings.

@@ -116,6 +116,7 @@ type Service interface {
 
 	// CAMPAIGN_POLICY_AUTHORIZATION + GREEN autorun (no fake approved_by).
 	WirePolicyAuth(store repository.ConfengePolicyRepository)
+	WireCohortAuth(store BoundedCohortStore)
 	AuthorizeCampaignPolicy(ctx context.Context, orgID, userID uuid.UUID, auth *models.CampaignPolicyAuthorization) (*models.CampaignPolicyAuthorization, *errx.Error)
 	GetActiveCampaignPolicy(ctx context.Context, orgID, campaignID uuid.UUID) (*models.CampaignPolicyAuthorization, *errx.Error)
 	TryGreenAutorun(ctx context.Context, orgID, actorID, touchpointID uuid.UUID) (*models.OutreachTouchpoint, GreenAutorunDecision, *errx.Error)
@@ -166,6 +167,7 @@ type service struct {
 	waStore      WhatsAppStateStore
 	governor     *dispatch.Governor
 	policyStore  repository.ConfengePolicyRepository
+	cohortStore  BoundedCohortStore
 	intel        intel.Store
 	operatorMail func(to, subject, body string) error
 }

@@ -1,6 +1,7 @@
 package confenge
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -280,6 +281,9 @@ func TestBoundedCohortCanTransportAndIsNotAutoSend(t *testing.T) {
 	auth := &BoundedCohortAuthorization{
 		ID: uuid.New(), ActorID: uuid.New(), AuthorizedAt: now, MaxDailyVolume: 50,
 		AllowedRouteClasses: []string{RouteClassGenericCompany},
+		RepositorySHA:       "sha", FeedSchemaVersion: models.OutreachSchemaV1, CohortHash: "h",
+		PolicyVersion: BoundedCohortPolicyV1, RecipientSetHash: HashRecipientSet([]string{"contato@empresa.com.br"}),
+		ComposerVersion: ComposerVersion, EvidenceVersion: "ev1", ExpiresAt: now.Add(time.Hour),
 	}
 	if err := ApplyBoundedCohortAuthorization(tp, auth, now); err != nil {
 		t.Fatal(err)
@@ -290,7 +294,16 @@ func TestBoundedCohortCanTransportAndIsNotAutoSend(t *testing.T) {
 	if tp.ApprovedBy == nil {
 		t.Fatal("cohort must bind human actor, unlike CAMPAIGN_POLICY")
 	}
-	if err := CanTransport(tp); err != nil {
+	if err := CanTransport(tp); err == nil {
+		t.Fatal("CanTransport must not accept cohort on hash-only; grant must be revalidated")
+	}
+	in := CohortTransportInput{
+		Now: now, RepositorySHA: "sha", FeedSchemaVersion: models.OutreachSchemaV1, CohortHash: "h",
+		PolicyVersion: BoundedCohortPolicyV1, ComposerVersion: ComposerVersion, EvidenceVersion: "ev1",
+		RecipientSetHash: auth.RecipientSetHash, RecipientMailbox: tp.Recipient,
+		RouteClass: RouteClassGenericCompany,
+	}
+	if err := CanTransportCohort(tp, auth, in); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -373,6 +386,199 @@ func TestIntelSliceKeepsUnknownAndNonReply(t *testing.T) {
 	}
 	if !intel.NonReplyDoesNotInvalidateMailbox(events[1]) {
 		t.Fatal("no-reply must not invalidate mailbox")
+	}
+}
+
+func TestCanTransportCohortEnforcesCapDriftAndSuppression(t *testing.T) {
+	t.Setenv(EnvKillSwitchPath, filepath.Join(t.TempDir(), "absent"))
+	now := time.Now().UTC()
+	tp := &models.OutreachTouchpoint{
+		State: models.TouchpointDrafted, Recipient: "contato@empresa.com.br",
+		Subject: "s", BodyText: "Olá, equipe,\n\nSou da CONFENGE.",
+		Channel: "EMAIL", Purpose: models.TouchpointPurposeInitial,
+	}
+	auth := &BoundedCohortAuthorization{
+		ID: uuid.New(), ActorID: uuid.New(), AuthorizedAt: now, MaxDailyVolume: 1,
+		AllowedRouteClasses: []string{RouteClassGenericCompany},
+		RepositorySHA:       "sha", FeedSchemaVersion: models.OutreachSchemaV1, CohortHash: "h",
+		PolicyVersion: BoundedCohortPolicyV1, RecipientSetHash: HashRecipientSet([]string{"contato@empresa.com.br"}),
+		ComposerVersion: ComposerVersion, EvidenceVersion: "ev1", ExpiresAt: now.Add(time.Hour),
+	}
+	if err := ApplyBoundedCohortAuthorization(tp, auth, now); err != nil {
+		t.Fatal(err)
+	}
+	valid := CohortTransportInput{
+		Now: now, RepositorySHA: "sha", FeedSchemaVersion: models.OutreachSchemaV1, CohortHash: "h",
+		PolicyVersion: BoundedCohortPolicyV1, ComposerVersion: ComposerVersion, EvidenceVersion: "ev1",
+		RecipientSetHash: auth.RecipientSetHash, RouteClass: RouteClassGenericCompany,
+	}
+	drift := valid
+	drift.ComposerVersion = "other"
+	if err := CanTransportCohort(tp, auth, drift); err == nil || !strings.Contains(err.Error(), "copy_drift") {
+		t.Fatalf("copy drift must fail CanTransportCohort: %v", err)
+	}
+	capHit := valid
+	capHit.SentToday = 1
+	if err := CanTransportCohort(tp, auth, capHit); err == nil || !(strings.Contains(err.Error(), "daily_cap") || strings.Contains(err.Error(), "daily cap")) {
+		t.Fatalf("daily cap must fail CanTransportCohort: %v", err)
+	}
+	sup := valid
+	sup.Suppressed = true
+	if err := CanTransportCohort(tp, auth, sup); err == nil || !strings.Contains(err.Error(), "suppressed") {
+		t.Fatalf("suppression must fail CanTransportCohort: %v", err)
+	}
+}
+
+func TestAssertTransportableAndGateCampaignEmailRunCohortValidator(t *testing.T) {
+	allowConfengeSendingForTest(t)
+	ctx := context.Background()
+	org, accID, candID := uuid.New(), uuid.New(), uuid.New()
+	repo := newMemRepoWithSettings()
+	now := time.Now().UTC()
+	acc := &models.OutreachAccount{
+		ID: accID, OrganizationID: org, CNPJ14: "12345678000190",
+		EmailSendReady: false, TargetFitClass: TargetFitConfirmed, TargetFitVersion: "v1",
+		TargetFitSourceWatermark: "wm", TargetFitObservedAt: &now, TargetFitFresh: true, TargetFitEligible: true,
+	}
+	_, _ = repo.UpsertAccount(ctx, acc)
+	eligible := true
+	cand := &models.OutreachContactCandidate{
+		ID: candID, OrganizationID: org, AccountID: accID,
+		Email: "contato@empresa.com.br", OwnershipStatus: "COMPANY_OWNED",
+		MailboxPurpose: "GENERIC_CONTACT", VerificationStatus: models.OutreachVerifyInstitutionalGeneric,
+		DiscoveryJSON: discoveryJSON(t, controlledDiscovery{
+			RouteClass: RouteClassGenericCompany, ControlledEmailEligible: &eligible,
+		}),
+		CreatedAt: now.Add(-time.Hour),
+	}
+	_, _ = repo.UpsertCandidate(ctx, cand)
+	importID := uuid.New()
+	acc.LastImportRunID = &importID
+	acc.SourceRunID = "current-run"
+	acc.MessageContextHash = "ctx"
+	_, _ = repo.UpsertAccount(ctx, acc)
+	cand.LastImportRunID = &importID
+	_, _ = repo.UpsertCandidate(ctx, cand)
+
+	auth := &BoundedCohortAuthorization{
+		ID: uuid.New(), ActorID: uuid.New(), AuthorizedAt: now.Add(-time.Minute), MaxDailyVolume: 1,
+		AllowedRouteClasses: []string{RouteClassGenericCompany},
+		RepositorySHA:       "sha", FeedSchemaVersion: models.OutreachSchemaV1, CohortHash: "h",
+		PolicyVersion: BoundedCohortPolicyV1, RecipientSetHash: HashRecipientSet([]string{"contato@empresa.com.br"}),
+		ComposerVersion: ComposerVersion, EvidenceVersion: "ev1", ExpiresAt: now.Add(time.Hour),
+	}
+	tp := &models.OutreachTouchpoint{
+		OrganizationID: org, AccountID: accID, ContactCandidateID: &candID,
+		State: models.TouchpointApproved, Recipient: cand.Email, Subject: "s",
+		BodyText: "Olá, equipe,\n\nSou da CONFENGE.", Channel: models.OutreachChannelEmail,
+		Purpose: models.TouchpointPurposeInitial, GeneratedContextHash: "ctx",
+	}
+	if err := ApplyBoundedCohortAuthorization(tp, auth, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.InsertTouchpoint(ctx, tp); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewMemoryCohortStore()
+	store.Put(auth)
+	svc := &service{
+		cfg: Config{
+			Enabled: true, RepositorySHA: "sha", FeedSchemaVersion: models.OutreachSchemaV1,
+			EvidenceVersion: "ev1", RequireHumanApproval: true, DefaultDailyLimit: 50,
+		},
+		repo: repo, cohortStore: store,
+	}
+	if err := svc.AssertTransportable(ctx, org, tp); err != nil {
+		t.Fatalf("valid cohort must pass AssertTransportable: %v", err)
+	}
+	drifted := *auth
+	drifted.ComposerVersion = "stale"
+	store.Put(&drifted)
+	if err := svc.AssertTransportable(ctx, org, tp); err == nil {
+		t.Fatal("AssertTransportable must run cohort validator and reject copy drift")
+	}
+	store.Put(auth)
+	mem := store.(*memoryCohortStore)
+	mem.RecordSent(auth.ID, now.UTC().Format("2006-01-02"))
+	if err := svc.AssertTransportable(ctx, org, tp); err == nil {
+		t.Fatal("AssertTransportable must enforce daily cap")
+	}
+}
+
+func TestAuthorizableHardQAAllowsControlledEligibleGeneric(t *testing.T) {
+	eligible := true
+	cand := &models.OutreachContactCandidate{
+		Email: "contato@empresa.com.br", OwnershipStatus: "COMPANY_OWNED",
+		MailboxPurpose: "GENERIC_CONTACT", VerificationStatus: models.OutreachVerifyInstitutionalGeneric,
+		DiscoveryJSON: discoveryJSON(t, controlledDiscovery{
+			RouteClass: RouteClassGenericCompany, ControlledEmailEligible: &eligible,
+		}),
+	}
+	res := ValidationResult{OK: true}
+	out := &DraftOutput{Subject: "Aditivo publicado", BodyText: "Olá, equipe,\n\nSou da CONFENGE.\n\nVi um aditivo publicado.\n\nPosso encaminhar o recorte?", Channel: ChannelEmailInitial}
+	ApplyAuthorizableHardQA(&res, out, &models.OutreachAccount{ServiceCode: "REAJUSTE_14133"}, cand, ValidateOpts{}, ChannelEmailInitial, out.BodyText)
+	if !res.OK {
+		t.Fatalf("controlled generic must pass authorizable QA: %v", res.Errors)
+	}
+	plain := *cand
+	plain.DiscoveryJSON = nil
+	res2 := ValidationResult{OK: true}
+	ApplyAuthorizableHardQA(&res2, out, &models.OutreachAccount{}, &plain, ValidateOpts{}, ChannelEmailInitial, out.BodyText)
+	if res2.OK {
+		t.Fatal("unmarked generic must still fail authorizable QA")
+	}
+}
+
+func TestImportControlledEligibleContactFromExtraCLIFeed(t *testing.T) {
+	ctx := context.Background()
+	repo := newMemRepo()
+	org, user := uuid.New(), uuid.New()
+	svc := NewService(Config{Enabled: true, AppEnv: "test", MaxInitialEmailWords: 120, DefaultDailyLimit: 50, RequireHumanApproval: true}, repo, nil)
+	eligible, personUnknown, notValidated, preferred := true, true, false, true
+	lead := FeedLead{
+		SourceLeadID: "cnpj:12345678000190",
+		Company:      FeedCompany{CNPJ14: "12345678000190", RazaoSocial: "EMPRESA EXEMPLO ENGENHARIA LTDA"},
+		Contacts: []FeedContact{{
+			SourceContactID: "ct-contato", Email: "contato@empresaexemplo.com.br",
+			OwnershipStatus: "COMPANY_OWNED", MailboxPurpose: "GENERIC_CONTACT",
+			VerificationStatus: models.OutreachVerifyInstitutionalGeneric,
+			SourceURL:          "https://empresaexemplo.com.br/contato", SourceDate: "2026-08-01",
+			RouteClass: RouteClassGenericCompany, ControlledEmailEligible: &eligible,
+			PersonUnknown: &personUnknown, EmailValidated: &notValidated,
+			MailboxCompanyEvidence: "OBSERVED", PreferredInitial: &preferred,
+		}},
+	}
+	feed := Feed{
+		SchemaVersion: models.OutreachSchemaV1,
+		GeneratedAt:   "2026-08-21T00:00:00Z",
+		Source:        FeedSource{System: "extra-cli", RunID: "ctrl-1", SnapshotHash: "snap"},
+		Leads:         []FeedLead{lead},
+	}
+	raw, _ := json.Marshal(feed)
+	if _, xerr := svc.ImportFromBytes(ctx, org, &user, raw, ImportOptions{IdempotencyKey: "ctrl-elig-1"}); xerr != nil {
+		t.Fatal(xerr)
+	}
+	acc, _ := repo.GetAccountByCNPJ(ctx, org, "12345678000190")
+	if acc == nil {
+		t.Fatal("account missing")
+	}
+	cands, _ := repo.ListCandidates(ctx, org, acc.ID)
+	if len(cands) != 1 {
+		t.Fatalf("candidates=%d", len(cands))
+	}
+	if !CandidateControlledEligible(&cands[0]) {
+		t.Fatalf("imported contact must be controlled eligible: %+v json=%s", cands[0], cands[0].DiscoveryJSON)
+	}
+	if CandidateEmailValidated(&cands[0]) {
+		t.Fatal("generic must not become EMAIL_VALIDATED")
+	}
+	res := ResolveRecipient(acc, cands, time.Now().UTC())
+	if res.State != RecipientControlledEligible {
+		t.Fatalf("state=%s reasons=%v", res.State, res.ReasonCodes)
+	}
+	if res.Name != "" {
+		t.Fatalf("invented person %q", res.Name)
 	}
 }
 

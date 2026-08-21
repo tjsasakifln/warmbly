@@ -147,27 +147,21 @@ func ValidateBoundedCohortAuthorization(auth *BoundedCohortAuthorization, in Coh
 	if in.SentToday >= auth.MaxDailyVolume {
 		add("daily_cap_exceeded")
 	}
-	if strings.TrimSpace(in.RepositorySHA) != "" && in.RepositorySHA != auth.RepositorySHA {
-		add("sha_drift")
+	bound := func(grant, live, code string) {
+		if strings.TrimSpace(grant) == "" {
+			return
+		}
+		if strings.TrimSpace(live) == "" || live != grant {
+			add(code)
+		}
 	}
-	if strings.TrimSpace(in.FeedSchemaVersion) != "" && in.FeedSchemaVersion != auth.FeedSchemaVersion {
-		add("feed_schema_drift")
-	}
-	if strings.TrimSpace(in.CohortHash) != "" && in.CohortHash != auth.CohortHash {
-		add("cohort_hash_drift")
-	}
-	if strings.TrimSpace(in.PolicyVersion) != "" && in.PolicyVersion != auth.PolicyVersion {
-		add("policy_drift")
-	}
-	if strings.TrimSpace(in.ComposerVersion) != "" && in.ComposerVersion != auth.ComposerVersion {
-		add("copy_drift")
-	}
-	if strings.TrimSpace(in.EvidenceVersion) != "" && in.EvidenceVersion != auth.EvidenceVersion {
-		add("evidence_drift")
-	}
-	if strings.TrimSpace(in.RecipientSetHash) != "" && in.RecipientSetHash != auth.RecipientSetHash {
-		add("recipient_drift")
-	}
+	bound(auth.RepositorySHA, in.RepositorySHA, "sha_drift")
+	bound(auth.FeedSchemaVersion, in.FeedSchemaVersion, "feed_schema_drift")
+	bound(auth.CohortHash, in.CohortHash, "cohort_hash_drift")
+	bound(auth.PolicyVersion, in.PolicyVersion, "policy_drift")
+	bound(auth.ComposerVersion, in.ComposerVersion, "copy_drift")
+	bound(auth.EvidenceVersion, in.EvidenceVersion, "evidence_drift")
+	bound(auth.RecipientSetHash, in.RecipientSetHash, "recipient_drift")
 	if in.PostFreezeRecipient {
 		add("post_freeze_recipient")
 	}
@@ -242,4 +236,49 @@ func EnforceDailyCap(sentToday, maxDaily int) error {
 		return fmt.Errorf("daily cap exceeded: %d/%d", sentToday, maxDaily)
 	}
 	return nil
+}
+
+// BoundedCohortStore is the live grant + daily-volume authority used at transport.
+type BoundedCohortStore interface {
+	Put(auth *BoundedCohortAuthorization)
+	Get(id uuid.UUID) *BoundedCohortAuthorization
+	SentToday(id uuid.UUID, day string) int
+}
+
+type memoryCohortStore struct {
+	byID map[uuid.UUID]*BoundedCohortAuthorization
+	sent map[string]int
+}
+
+func NewMemoryCohortStore() BoundedCohortStore {
+	return &memoryCohortStore{byID: map[uuid.UUID]*BoundedCohortAuthorization{}, sent: map[string]int{}}
+}
+
+func (m *memoryCohortStore) Put(auth *BoundedCohortAuthorization) {
+	if m == nil || auth == nil || auth.ID == uuid.Nil {
+		return
+	}
+	cp := *auth
+	m.byID[auth.ID] = &cp
+}
+
+func (m *memoryCohortStore) Get(id uuid.UUID) *BoundedCohortAuthorization {
+	if m == nil {
+		return nil
+	}
+	return m.byID[id]
+}
+
+func (m *memoryCohortStore) SentToday(id uuid.UUID, day string) int {
+	if m == nil {
+		return 0
+	}
+	return m.sent[id.String()+"|"+day]
+}
+
+func (m *memoryCohortStore) RecordSent(id uuid.UUID, day string) {
+	if m == nil {
+		return
+	}
+	m.sent[id.String()+"|"+day]++
 }

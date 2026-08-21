@@ -17,6 +17,10 @@ func (s *service) WirePolicyAuth(store repository.ConfengePolicyRepository) {
 	s.policyStore = store
 }
 
+func (s *service) WireCohortAuth(store BoundedCohortStore) {
+	s.cohortStore = store
+}
+
 // AuthorizeCampaignPolicy mints an auditable CAMPAIGN_POLICY_AUTHORIZATION grant.
 func (s *service) AuthorizeCampaignPolicy(ctx context.Context, orgID, userID uuid.UUID, auth *models.CampaignPolicyAuthorization) (*models.CampaignPolicyAuthorization, *errx.Error) {
 	if xerr := s.requireEnabled(); xerr != nil {
