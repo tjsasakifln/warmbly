@@ -44,6 +44,105 @@ type ActionCard struct {
 	ParentActionID    string                  `json:"parent_action_id,omitempty"`
 	FollowupActionID  string                  `json:"followup_action_id,omitempty"`
 	StaleWarning      string                  `json:"stale_warning,omitempty"`
+	Dossier           *DossierBadge           `json:"dossier,omitempty"`
+}
+
+// DossierBadge is the manifest-only dossier signal on a card. It carries no
+// dossier body, no prospect identity, and never authorizes a send.
+type DossierBadge struct {
+	ReferenceID          string `json:"reference_id"`
+	DossierID            string `json:"dossier_id"`
+	ContentHash          string `json:"content_hash"`
+	PublicContentHash    string `json:"public_content_hash,omitempty"`
+	AsOf                 string `json:"as_of,omitempty"`
+	DataState            string `json:"data_state"`
+	CatalogMode          string `json:"catalog_mode"`
+	ProducerSHA          string `json:"producer_sha,omitempty"`
+	ArtifactURI          string `json:"artifact_uri,omitempty"`
+	Deliverable          bool   `json:"deliverable"`
+	NotDeliverableReason string `json:"not_deliverable_reason,omitempty"`
+	Delivered            bool   `json:"delivered"`
+	DeliveredAt          string `json:"delivered_at,omitempty"`
+	DeliveredBy          string `json:"delivered_by,omitempty"`
+	Label                string `json:"label"`
+}
+
+// BuildDossierBadge projects a stored reference into the operator badge.
+func BuildDossierBadge(ref DossierReference) DossierBadge {
+	b := DossierBadge{
+		ReferenceID:          ref.ID.String(),
+		DossierID:            ref.DossierID,
+		ContentHash:          ref.ContentHash,
+		PublicContentHash:    ref.PublicContentHash,
+		AsOf:                 ref.AsOf,
+		DataState:            ref.DataState,
+		CatalogMode:          ref.CatalogMode,
+		ProducerSHA:          ref.ProducerSHA,
+		ArtifactURI:          ref.ArtifactURI,
+		Deliverable:          ref.Deliverable,
+		NotDeliverableReason: ref.NotDeliverableReason,
+		Delivered:            ref.Delivered(),
+	}
+	if ref.Delivered() {
+		b.DeliveredAt = ref.DeliveredAt.UTC().Format("2006-01-02T15:04:05Z")
+		if ref.DeliveredBy != nil {
+			b.DeliveredBy = ref.DeliveredBy.String()
+		}
+	}
+	b.Label = dossierBadgeLabel(b)
+	return b
+}
+
+func dossierBadgeLabel(b DossierBadge) string {
+	switch {
+	case !b.Deliverable:
+		return "Dossie NAO entregavel (" + b.DataState + "/" + b.CatalogMode + "): " + b.NotDeliverableReason
+	case b.Delivered:
+		return "Dossie entregue por humano em " + b.DeliveredAt
+	default:
+		return "Dossie DATA_READY disponivel. Entrega e ato humano, nao anexo automatico."
+	}
+}
+
+// ApplyDossierBadges stamps the newest reference per account onto each card.
+// It is display metadata only: no sendability flag on the card changes.
+func ApplyDossierBadges(view *TodayView, refs []DossierReference) {
+	if view == nil || len(refs) == 0 {
+		return
+	}
+	byAccount := map[string]DossierReference{}
+	for _, ref := range refs {
+		key := ref.AccountID.String()
+		cur, ok := byAccount[key]
+		if !ok || ref.AttachedAt.After(cur.AttachedAt) {
+			byAccount[key] = ref
+		}
+	}
+	stamp := func(cards []ActionCard) {
+		for i := range cards {
+			ref, ok := byAccount[cards[i].AccountID]
+			if !ok {
+				continue
+			}
+			badge := BuildDossierBadge(ref)
+			cards[i].Dossier = &badge
+			if !badge.Deliverable {
+				cards[i].Warnings = appendUnique(cards[i].Warnings, badge.Label)
+			}
+		}
+	}
+	stamp(view.Actions)
+	stamp(view.Lanes.EmailNeedsReview)
+	stamp(view.Lanes.HumanReviewEmail)
+	stamp(view.Lanes.CallQueue)
+	stamp(view.Lanes.RoutedCallQueue)
+	stamp(view.Lanes.WhatsAppQueue)
+	stamp(view.Lanes.SocialQueue)
+	stamp(view.Lanes.RoleEmailQueue)
+	stamp(view.Lanes.ContactFormQueue)
+	stamp(view.Lanes.LowConfidence)
+	stamp(view.Lanes.Blocked)
+	stamp(view.Lanes.Done)
 }
 
 // TodayView is "o que fazer agora": only executable human work.

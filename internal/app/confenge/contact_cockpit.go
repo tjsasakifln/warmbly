@@ -111,6 +111,7 @@ func (s *service) CollectContactCockpit(ctx context.Context, orgID uuid.UUID) (*
 	}
 	merged := mergeTodayActions(planned, s.loadPersistedActions(ctx, orgID))
 	today := AssembleToday(merged)
+	s.decorateDossierBadges(ctx, orgID, &today)
 	metrics := SummarizeActionMetrics(merged)
 	funnel := SummarizeContactFunnel(classes, extras)
 	funnel.Actionable = today.Summary.Total
