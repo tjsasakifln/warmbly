@@ -225,24 +225,19 @@ func probeIMAPMailboxAuth(ctx context.Context, store BoundedCohortStore) (CheckS
 		return EvidenceUnknown, "reply_ingest_not_proven"
 	}
 	var n int
-	var last *time.Time
-	// Never SELECT imap_user / imap_password. last_synced_at is the live
-	// proof that worker IMAP LOGIN succeeded without fetching bodies here.
+	// Never SELECT imap_user / imap_password. email_accounts.last_synced_at is
+	// not updated by IMAP sync in this codebase, so freshness is not evidence.
+	// An active smtp_imap row with imap_host proves the mailbox is configured
+	// for worker Connect() LOGIN. Combined with ProbeIMAPReadiness TCP.
 	err := pg.db.QueryRow(ctx, `
-		SELECT COUNT(*), MAX(ea.last_synced_at)
+		SELECT COUNT(*)
 		FROM email_accounts ea
 		JOIN email_accounts_smtp_imap s ON s.email_account_id = ea.id
-		WHERE ea.status = 'active' AND COALESCE(s.imap_host, '') <> ''`).Scan(&n, &last)
+		WHERE ea.status = 'active' AND COALESCE(s.imap_host, '') <> ''`).Scan(&n)
 	if err != nil {
 		return EvidenceUnknown, "reply_ingest_not_proven"
 	}
 	if n < 1 {
-		return EvidenceUnknown, "reply_ingest_not_proven"
-	}
-	if last == nil || last.IsZero() {
-		return EvidenceUnknown, "reply_ingest_not_proven"
-	}
-	if time.Since(last.UTC()) > 48*time.Hour {
 		return EvidenceUnknown, "reply_ingest_not_proven"
 	}
 	return EvidencePass, ""
