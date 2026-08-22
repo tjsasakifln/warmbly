@@ -166,3 +166,27 @@ func routeSuppressionActive(v string) bool {
 		return false
 	}
 }
+
+// AccountsFromOrgForRun loads PG-bound accounts limited to one extra-cli feed
+// run. Freezing from Postgres keeps real account/candidate ids for dispatch;
+// scoping by run id keeps the frozen set tied to the imported feed.
+func AccountsFromOrgForRun(ctx context.Context, repo repository.OutreachRepository, orgID uuid.UUID, source, runID string) ([]CohortAccountInput, error) {
+	all, err := AccountsFromOrg(ctx, repo, orgID, source)
+	if err != nil {
+		return nil, err
+	}
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return all, nil
+	}
+	out := make([]CohortAccountInput, 0, len(all))
+	for i := range all {
+		if strings.TrimSpace(all[i].Account.SourceRunID) == runID {
+			out = append(out, all[i])
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no imported accounts for feed run %q; import the feed first", runID)
+	}
+	return out, nil
+}

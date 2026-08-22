@@ -50,7 +50,7 @@ func cmdCohortPrepare(args []string) int {
 	fs := flag.NewFlagSet("cohort prepare", flag.ExitOnError)
 	feedPath := fs.String("feed", "", "extra-cli feed JSON (preferred; hashes are derived)")
 	outPath := fs.String("out", "", "write frozen snapshot JSON to PATH")
-	orgStr := fs.String("org-id", "", "load accounts from postgres instead of --feed")
+	orgStr := fs.String("org-id", "", "load accounts from postgres; with --feed, scope to that feed run and keep its identity")
 	limit := fs.Int("limit", confenge.DefaultCohortLimit, "max accounts in the frozen set (1-100)")
 	volume := fs.Int("max-daily", confenge.DefaultCohortDailyVolume, "max daily volume bound into the grant")
 	ttl := fs.String("ttl", "24h", "authorization TTL")
@@ -78,6 +78,48 @@ func cmdCohortPrepare(args []string) int {
 
 	var snap *confenge.FrozenCohortSnapshot
 	switch {
+	case strings.TrimSpace(*feedPath) != "" && strings.TrimSpace(*orgStr) != "":
+		// Feed supplies identity and scope; Postgres supplies the real
+		// account/candidate ids the dispatch path needs.
+		raw, err := os.ReadFile(*feedPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "BLOCKED: feed: %v\n", err)
+			return 1
+		}
+		feed, err := confenge.ParseFeed(raw)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "BLOCKED: parse feed: %v\n", err)
+			return 1
+		}
+		runID := firstNonEmpty(feed.Source.RunID, feed.Source.SnapshotHash)
+		if strings.TrimSpace(runID) == "" {
+			fmt.Fprintln(os.Stderr, "BLOCKED: feed has no run id; cannot bind a frozen cohort to it")
+			return 1
+		}
+		opts.FeedIdentity = firstNonEmpty(opts.FeedIdentity, runID)
+		opts.SnapshotHash = firstNonEmpty(opts.SnapshotHash, feed.Source.SnapshotHash)
+		opts.FeedSchemaVersion = firstNonEmpty(feed.SchemaVersion, opts.FeedSchemaVersion)
+		opts.Source = firstNonEmpty(feed.Source.System, "extra-cli")
+		orgID := parseOrg(*orgStr)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		pool, err := pgxpool.New(ctx, primaryDSN())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "BLOCKED: postgres: %v\n", err)
+			return 1
+		}
+		defer pool.Close()
+		repo := repository.NewOutreachRepository(pool)
+		accounts, err := confenge.AccountsFromOrgForRun(ctx, repo, orgID, opts.Source, runID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "BLOCKED: load accounts: %v\n", err)
+			return 1
+		}
+		snap, err = confenge.PrepareControlledCohort(accounts, opts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "BLOCKED: prepare: %v\n", err)
+			return 1
+		}
 	case strings.TrimSpace(*feedPath) != "":
 		raw, err := os.ReadFile(*feedPath)
 		if err != nil {
@@ -116,7 +158,7 @@ func cmdCohortPrepare(args []string) int {
 			return 1
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: confenge cohort prepare --feed PATH [--out PATH] or --org-id UUID")
+		fmt.Fprintln(os.Stderr, "usage: confenge cohort prepare --feed PATH [--org-id UUID] [--out PATH] or --org-id UUID")
 		return 2
 	}
 

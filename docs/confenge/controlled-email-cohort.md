@@ -4,7 +4,7 @@ The founder path for the first real cohort is:
 
 ```text
 confenge import --feed PATH
-confenge cohort prepare --feed PATH --out /tmp/cohort.json
+confenge cohort prepare --feed PATH --org-id ORG_UUID --out /tmp/cohort.json
 confenge cohort preview --manifest /tmp/cohort.json
 confenge cohort authorize --manifest /tmp/cohort.json --actor UUID
 confenge cohort authorize --manifest /tmp/cohort.json --actor UUID --confirm
@@ -15,6 +15,8 @@ confenge cohort report --events PATH
 ```
 
 Hashes (`cohort_id`, `cohort_hash`, `recipient_set_hash`, SHA, feed identity, policy/composer/evidence versions) are derived by `prepare`. Do not copy them by hand.
+
+Pass `--feed` and `--org-id` together for a cohort you intend to dispatch. The feed supplies identity and scopes the freeze to that import run; Postgres supplies the real account and candidate ids the dispatch path needs. `--feed` alone freezes straight from the document and leaves those ids empty, so it previews but cannot dispatch. `--org-id` alone carries no feed identity, so the live GO review reports `feed_identity_missing` and never reaches `GO_FOR_CONTROLLED_EMAIL_PILOT`.
 
 `cohort-auth create|show|revoke` remains the low-level grant primitive.
 
