@@ -59,6 +59,30 @@ func accountsFromFeed(feed *Feed, source string) []CohortAccountInput {
 			QuestionToAsk: lead.MessagingContext.QuestionToAsk,
 			CTA:           lead.MessagingContext.CTA,
 			SourceRunID:   feed.Source.RunID,
+
+			// Carried for the founder preview's admission evidence. Nothing in
+			// the prepare ladder reads these: the ladder admits on controlled
+			// route eligibility and copy QA, and dropping them here only hid
+			// from the reviewer what the feed had actually asserted.
+			PriorityRank:             lead.Priority.Rank,
+			PriorityScore:            lead.Priority.Score,
+			PriorityTier:             lead.Priority.Tier,
+			PriorityConfidence:       lead.Priority.Confidence,
+			MomentConfidence:         lead.Moment.Confidence,
+			MomentObservedAt:         parseFeedDate(lead.Moment.ObservedAt),
+			MomentEvidenceIDs:        append([]string(nil), lead.Moment.EvidenceIDs...),
+			TargetFitSendTier:        lead.TargetFitSendTier,
+			TargetFitReasons:         append([]string(nil), lead.TargetFitReasons...),
+			TargetFitClass:           lead.TargetFitClass,
+			TargetFitConfidence:      lead.TargetFitConfidence,
+			TargetFitVersion:         lead.TargetFitVersion,
+			TargetFitComputedAt:      parseFeedDate(lead.TargetFitComputedAt),
+			TargetFitSourceWatermark: lead.TargetFitSourceWatermark,
+			TargetFitEvidenceIDs:     append([]string(nil), lead.TargetFitEvidenceIDs...),
+			TargetFitFreshnessReason: lead.TargetFitFreshnessReason,
+		}
+		if lead.TargetFitFresh != nil {
+			acc.TargetFitFresh = *lead.TargetFitFresh
 		}
 		if lead.Activation != nil && strings.EqualFold(lead.Activation.State, ActivationSuppressed) {
 			acc.Blocked = true
@@ -187,6 +211,22 @@ func candidateFromFeedContact(fc FeedContact) models.OutreachContactCandidate {
 	}
 	c.DiscoveryJSON = mergeControlledDiscovery(fc.DiscoveryJSON, fc)
 	return c
+}
+
+// parseFeedDate accepts both shapes extra-cli emits. An unparseable date stays
+// nil so the preview reports it absent instead of inventing an epoch.
+func parseFeedDate(s string) *time.Time {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	for _, layout := range []string{"2006-01-02", time.RFC3339} {
+		if ts, err := time.Parse(layout, s); err == nil {
+			ts = ts.UTC()
+			return &ts
+		}
+	}
+	return nil
 }
 
 // routeSuppressionActive is extra-cli's suppression enum. NONE/CLEAR/empty are not suppressed.

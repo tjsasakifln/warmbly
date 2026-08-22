@@ -99,20 +99,73 @@ func appendReferralAsk(cta string) string {
 	return cta + " " + referralAsk
 }
 
+// ComposedInitial is what the composer decided, not only what it printed. The
+// founder review has to judge the observed fact and the ask on their own, and
+// neither survives inside BodyText in a form that can be read back without
+// re-parsing prose.
+type ComposedInitial struct {
+	Subject  string
+	Body     string
+	Greeting string
+	// ObservedFact is empty whenever the composer printed no fact. FactSource
+	// says which kind of empty it is, so "the feed carried nothing" is never
+	// silently shown as "the composer refused what the feed carried".
+	ObservedFact string
+	FactSource   string
+	CTA          string
+	CTASource    string
+	Theme        string
+}
+
+// Closed set of fact provenances. A fact the composer refused to print is a
+// different founder signal from a fact that was never in the feed.
+const (
+	FactSourceFactToMention = "fact_to_mention"
+	FactSourceMomentSummary = "moment_summary"
+	FactSourceDropped       = "dropped_unusable"
+	FactSourceNone          = "none"
+)
+
+// Closed set of ask provenances. A routing ask is the composer's own words for
+// a mailbox with no owner; an account CTA came from the feed.
+const (
+	CTASourceAccount = "account_cta"
+	CTASourceRouting = "routing_ask"
+	CTASourceDefault = "composer_default"
+)
+
 // ComposeControlledInitial is the freeze-time composer. It never invents a
 // person. GENERIC/FREEMAIL copy is institutional and may ask for a route.
 func ComposeControlledInitial(acc *models.OutreachAccount, cand *models.OutreachContactCandidate, class string) (subject, body, greeting string) {
-	greeting = greetingForRouteClass(class, cand)
+	c := ComposeControlledInitialDetailed(acc, cand, class)
+	return c.Subject, c.Body, c.Greeting
+}
+
+// ComposeControlledInitialDetailed composes exactly what ComposeControlledInitial
+// composes and additionally reports the inputs the copy was built from, so the
+// preview can show the fact and the ask without guessing them back out of prose.
+func ComposeControlledInitialDetailed(acc *models.OutreachAccount, cand *models.OutreachContactCandidate, class string) ComposedInitial {
+	out := ComposedInitial{
+		Greeting:   greetingForRouteClass(class, cand),
+		FactSource: FactSourceNone,
+		CTASource:  CTASourceDefault,
+	}
 	obs := ""
 	cta := "Posso te mandar o recorte objetivo que eu conferiria?"
 	theme := "contratos públicos"
 	if acc != nil {
-		obs = firstNonEmpty(strings.TrimSpace(acc.FactToMention), strings.TrimSpace(acc.MomentSummary))
+		if s := strings.TrimSpace(acc.FactToMention); s != "" {
+			obs, out.FactSource = s, FactSourceFactToMention
+		} else if s := strings.TrimSpace(acc.MomentSummary); s != "" {
+			obs, out.FactSource = s, FactSourceMomentSummary
+		}
 		if strings.TrimSpace(acc.CTA) != "" {
 			cta = ensureClosingAsk(strings.TrimSpace(acc.CTA))
+			out.CTASource = CTASourceAccount
 		}
 		theme = firstNonEmpty(humanizeMoment(acc.MomentCode), acc.ServiceName, theme)
 	}
+	fedAFact := out.FactSource != FactSourceNone
 	obs = ApplyCopyHygiene(obs)
 	// A serialized feed record is not prose. Condense it, and drop it entirely
 	// rather than pasting a database row into a cold email.
@@ -122,9 +175,15 @@ func ComposeControlledInitial(acc *models.OutreachAccount, cand *models.Outreach
 			obs = ""
 		}
 	}
+	// Hygiene can also empty a fact that arrived non-empty. Reporting that as
+	// "none" would tell the founder the feed carried no fact, which is false.
+	if obs == "" && fedAFact {
+		out.FactSource = FactSourceDropped
+	}
 	switch class {
 	case RouteClassGenericCompany, RouteClassPublicCompanyFreemail:
 		cta = routingCTA(theme)
+		out.CTASource = CTASourceRouting
 	case RouteClassRoleOrDepartment:
 		// A department mailbox is the right door, not proof of the right person.
 		if CandidatePersonUnknown(cand) {
@@ -132,7 +191,7 @@ func ComposeControlledInitial(acc *models.OutreachAccount, cand *models.Outreach
 		}
 	}
 	var b strings.Builder
-	b.WriteString(greeting)
+	b.WriteString(out.Greeting)
 	b.WriteString(",\n\nSou da CONFENGE.\n\n")
 	if obs != "" {
 		b.WriteString(obs)
@@ -142,9 +201,12 @@ func ComposeControlledInitial(acc *models.OutreachAccount, cand *models.Outreach
 		b.WriteString("\n\n")
 	}
 	b.WriteString(cta)
-	body = b.String()
-	subject = controlledSubject(acc, obs, theme)
-	return subject, body, greeting
+	out.ObservedFact = obs
+	out.CTA = cta
+	out.Theme = theme
+	out.Body = b.String()
+	out.Subject = controlledSubject(acc, obs, theme)
+	return out
 }
 
 func controlledSubject(acc *models.OutreachAccount, obs, theme string) string {
