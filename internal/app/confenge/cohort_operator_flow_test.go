@@ -79,6 +79,14 @@ func TestPreparePreviewFreezeDerivesHashesAndReconciles(t *testing.T) {
 	if snap.RealEmailSent || snap.AutoSendEnabled {
 		t.Fatal("prepare must not send or auto-send")
 	}
+	for _, m := range snap.Members {
+		if canonicalPilotEmail(m.Mailbox) == "" {
+			t.Fatal("frozen member mailbox must be non-empty")
+		}
+	}
+	if snap.RecipientSetHash == HashRecipientSet(nil) {
+		t.Fatal("recipient set hash must not be the empty-set digest")
+	}
 	if snap.Preview.ByRouteClass[RouteClassDirectPerson] != 1 || snap.Preview.ByRouteClass[RouteClassRoleOrDepartment] != 1 ||
 		snap.Preview.ByRouteClass[RouteClassGenericCompany] != 1 || snap.Preview.ByRouteClass[RouteClassPublicCompanyFreemail] != 1 {
 		t.Fatalf("classes %+v", snap.Preview.ByRouteClass)
