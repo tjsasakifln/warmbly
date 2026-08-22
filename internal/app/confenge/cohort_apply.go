@@ -230,15 +230,18 @@ func locateOrBuildTouchpoint(ctx context.Context, repo repository.OutreachReposi
 			}
 		}
 		if reusable != nil {
+			stampAccountContext(ctx, repo, orgID, reusable)
 			return reusable, false, nil
 		}
 		// Only stale non-terminal artifacts remain (e.g. a CANCELLED row from an
 		// older composer version). Supersede them with a fresh initial touch
 		// rather than blocking the whole frozen cohort on one stale row.
 		tp := newFrozenTouchpoint(orgID, m, now)
+		stampAccountContext(ctx, repo, orgID, tp)
 		return tp, true, nil
 	}
 	tp := newFrozenTouchpoint(orgID, m, now)
+	stampAccountContext(ctx, repo, orgID, tp)
 	return tp, true, nil
 }
 
@@ -259,6 +262,21 @@ func resolveAccountForMember(ctx context.Context, repo repository.OutreachReposi
 		}
 	}
 	return nil, fmt.Errorf("account_not_found")
+}
+
+// stampAccountContext binds the frozen touchpoint to the account snapshot the
+// transport gate re-checks. Without it AssertMessageContextFresh reports a
+// missing generated context hash and every cohort member fails to queue.
+func stampAccountContext(ctx context.Context, repo repository.OutreachRepository, orgID uuid.UUID, tp *models.OutreachTouchpoint) {
+	if repo == nil || tp == nil || tp.AccountID == uuid.Nil || tp.GeneratedContextHash != "" {
+		return
+	}
+	acc, err := repo.GetAccount(ctx, orgID, tp.AccountID)
+	if err != nil || acc == nil {
+		return
+	}
+	tp.GeneratedContextHash = acc.MessageContextHash
+	RecomputeContentHash(tp)
 }
 
 func newFrozenTouchpoint(orgID uuid.UUID, m FrozenCohortMember, now time.Time) *models.OutreachTouchpoint {

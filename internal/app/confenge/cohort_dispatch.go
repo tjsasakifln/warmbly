@@ -262,6 +262,22 @@ func loadDispatchTouchpoint(ctx context.Context, repo repository.OutreachReposit
 	return tp, nil
 }
 
+// controlledDraftFact is the evidence the cohort message actually rests on,
+// condensed the same way the composer condenses it so a serialized feed record
+// never reaches the draft as prose.
+func controlledDraftFact(acc *models.OutreachAccount) string {
+	raw := firstNonEmpty(strings.TrimSpace(acc.FactToMention), strings.TrimSpace(acc.MomentSummary))
+	raw = ApplyCopyHygiene(raw)
+	if looksLikeMetadataDump(raw) || containsDumpLabel(raw) {
+		condensed := condenseMetadataFact(raw)
+		if condensed != "" && !looksLikeMetadataDump(condensed) && !containsDumpLabel(condensed) {
+			return condensed
+		}
+		return strings.TrimSpace(acc.MomentSummary)
+	}
+	return raw
+}
+
 func FormatCohortDispatch(res *CohortDispatchResult) string {
 	if res == nil {
 		return "dispatch_missing=true\n"
@@ -359,6 +375,12 @@ func (s *service) ensureCohortDraft(ctx context.Context, orgID, actor uuid.UUID,
 		ApprovedAt:     tp.ApprovedAt,
 		CreatedAt:      now,
 		UpdatedAt:      now,
+	}
+	// ValidateDraft requires a fact or a claim. Carry the account's observed
+	// fact so a cohort draft is not rejected as evidence-free at enroll.
+	if acc, err := s.repo.GetAccount(ctx, orgID, tp.AccountID); err == nil && acc != nil {
+		d.FactUsed = controlledDraftFact(acc)
+		d.ServiceCode = acc.ServiceCode
 	}
 	if d.ApprovedBy == nil && actor != uuid.Nil {
 		d.ApprovedBy = &actor

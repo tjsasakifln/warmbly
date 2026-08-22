@@ -128,7 +128,7 @@ func ValidateDraft(out *DraftOutput, acc *models.OutreachAccount, cand *models.O
 
 	if cand != nil {
 		if !skipEmail {
-			if !cand.CanEnroll() {
+			if !CandidateEnrollable(cand) {
 				res.OK = false
 				res.Errors = append(res.Errors, "contact is not enrollable (verification, DNC, bounce, or missing email)")
 			}

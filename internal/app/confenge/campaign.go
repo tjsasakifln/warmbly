@@ -171,7 +171,7 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 			return nil, errx.New(errx.NotFound, "contact candidate not found")
 		}
 	}
-	if cand == nil || !cand.CanEnroll() {
+	if cand == nil || !CandidateEnrollable(cand) {
 		// Re-resolve by draft recipient email (human may have edited recipient
 		// after plan bound a phone-only or unverified candidate).
 		email := strings.TrimSpace(strings.ToLower(d.RecipientEmail))
@@ -179,7 +179,7 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 			if list, lerr := s.repo.ListCandidates(ctx, orgID, d.AccountID); lerr == nil {
 				for i := range list {
 					c := &list[i]
-					if strings.EqualFold(strings.TrimSpace(c.Email), email) && c.CanEnroll() {
+					if strings.EqualFold(strings.TrimSpace(c.Email), email) && CandidateEnrollable(c) {
 						cand = c
 						id := c.ID
 						d.ContactCandidateID = &id
@@ -191,7 +191,7 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 			// production (Mailpit/sink/dev/tests). Production fail-closed:
 			// never silently promote a draft address without a legitimate
 			// enrollable candidate. Explicit audited manual confirm is separate.
-			if (cand == nil || !cand.CanEnroll()) && strings.Contains(email, "@") && s.cfg.AllowSilentEnrollMint() {
+			if (cand == nil || !CandidateEnrollable(cand)) && strings.Contains(email, "@") && s.cfg.AllowSilentEnrollMint() {
 				mint := &models.OutreachContactCandidate{
 					OrganizationID:     orgID,
 					AccountID:          d.AccountID,
@@ -212,7 +212,7 @@ func (s *service) EnrollDraft(ctx context.Context, orgID, userID, draftID uuid.U
 	if err := RequireEmailOutbound(acc, cand); err != nil {
 		return nil, errx.New(errx.BadRequest, err.Error())
 	}
-	if cand == nil || !cand.CanEnroll() {
+	if cand == nil || !CandidateEnrollable(cand) {
 		return nil, errx.New(errx.BadRequest, "contact is not enrollable")
 	}
 

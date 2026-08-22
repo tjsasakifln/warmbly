@@ -97,6 +97,20 @@ func CandidateControlledEligible(c *models.OutreachContactCandidate) bool {
 	return defaultPilotRouteClasses[class]
 }
 
+// CandidateEnrollable is the controlled-route enrollability rule: a classified
+// institutional route is contactable without nominal-person verification, while
+// suppression, provenance and fixture guards still apply. Legacy nominal paths
+// keep using CanEnroll directly.
+func CandidateEnrollable(c *models.OutreachContactCandidate) bool {
+	if c.CanEnroll() {
+		return true
+	}
+	if !CandidateControlledEligible(c) || !ControlledRouteAllowed(c, nil) {
+		return false
+	}
+	return c.EnrollableIgnoringVerification()
+}
+
 func CandidatePreferredInitial(c *models.OutreachContactCandidate) bool {
 	d := parseControlledDiscovery(c)
 	return d.PreferredInitial != nil && *d.PreferredInitial
@@ -194,6 +208,17 @@ func ValidateCopyForRouteClass(class, body, subject string, cand *models.Outreac
 	add := func(code string) { errs = append(errs, code) }
 	if strings.Contains(blob, "decision_unit") || strings.Contains(blob, "email_discovery_class") || strings.Contains(blob, "reachability_class") {
 		add("internal_dump")
+	}
+	// Freeze-time QA must reject what the send-time hard QA rejects, otherwise a
+	// cohort freezes clean and then fails for every member at dispatch.
+	if looksLikeMetadataDump(body) || containsDumpLabel(body) {
+		add("metadata_dump")
+	}
+	if containsDumpLabel(subject) {
+		add("subject_dump_label")
+	}
+	if looksMidTokenTruncation(subject) || looksMidTokenTruncation(body) {
+		add("mid_token_truncation")
 	}
 	switch class {
 	case RouteClassDirectPerson:
