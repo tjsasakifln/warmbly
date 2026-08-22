@@ -22,6 +22,11 @@ orchestration, per-touch approval, dispatch governor, reply cockpit,
 commercial intelligence (join / exception queue / executive view), and
 local-first ops. See [commercial-intelligence.md](./commercial-intelligence.md).
 
+A `confenge-dossier/1.0` artifact produced by extra-cli can be referenced from
+a commercial card by its `manifest.json` alone. The private dossier body never
+enters Warmbly and the dossier is delivered by a human, never auto-attached.
+See [dossier-reference.md](./dossier-reference.md).
+
 ## Separation of concerns
 
 | Warmbly | extra-cli |

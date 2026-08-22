@@ -118,6 +118,13 @@ type Service interface {
 	// CAMPAIGN_POLICY_AUTHORIZATION + GREEN autorun (no fake approved_by).
 	WirePolicyAuth(store repository.ConfengePolicyRepository)
 	WireCohortAuth(store BoundedCohortStore)
+
+	// confenge-dossier/1.0 manifest references. Card metadata, never a send path.
+	WireDossierReferences(store DossierReferenceStore)
+	AttachDossierReference(ctx context.Context, orgID, actorID uuid.UUID, in DossierAttachInput) (*DossierReference, *errx.Error)
+	ListDossierReferences(ctx context.Context, orgID, accountID uuid.UUID) ([]DossierReference, *errx.Error)
+	MarkDossierReferenceDelivered(ctx context.Context, orgID, actorID, refID uuid.UUID, note string) (*DossierReference, *errx.Error)
+
 	AuthorizeCampaignPolicy(ctx context.Context, orgID, userID uuid.UUID, auth *models.CampaignPolicyAuthorization) (*models.CampaignPolicyAuthorization, *errx.Error)
 	GetActiveCampaignPolicy(ctx context.Context, orgID, campaignID uuid.UUID) (*models.CampaignPolicyAuthorization, *errx.Error)
 	TryGreenAutorun(ctx context.Context, orgID, actorID, touchpointID uuid.UUID) (*models.OutreachTouchpoint, GreenAutorunDecision, *errx.Error)
@@ -169,6 +176,7 @@ type service struct {
 	governor       *dispatch.Governor
 	policyStore    repository.ConfengePolicyRepository
 	cohortStore    BoundedCohortStore
+	dossierStore   DossierReferenceStore
 	intel          intel.Store
 	operatorMail   func(to, subject, body string) error
 	observedEvents []intel.CommercialEvent
@@ -188,7 +196,8 @@ func NewService(cfg Config, repo repository.OutreachRepository, audit AuditLogge
 			AllowFile:    !prod,
 			RequireHTTPS: prod,
 		},
-		cohortStore: NewMemoryCohortStore(), // tests/unit only; production boot wires NewPostgresCohortStore
+		cohortStore:  NewMemoryCohortStore(), // tests/unit only; production boot wires NewPostgresCohortStore
+		dossierStore: NewMemoryDossierStore(),
 	}
 }
 
@@ -206,8 +215,9 @@ func NewServiceWithAI(cfg Config, repo repository.OutreachRepository, audit Audi
 			AllowFile:    !prod,
 			RequireHTTPS: prod,
 		},
-		ai:          ai,
-		cohortStore: NewMemoryCohortStore(), // tests/unit only; production boot wires NewPostgresCohortStore
+		ai:           ai,
+		cohortStore:  NewMemoryCohortStore(), // tests/unit only; production boot wires NewPostgresCohortStore
+		dossierStore: NewMemoryDossierStore(),
 	}
 	return svc
 }
