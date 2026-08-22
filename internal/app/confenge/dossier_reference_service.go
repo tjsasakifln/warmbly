@@ -52,6 +52,28 @@ func (s *service) AttachDossierReference(ctx context.Context, orgID, actorID uui
 	if aerr != nil || acc == nil {
 		return nil, errx.New(errx.NotFound, "account not found")
 	}
+	// The link columns carry bare FKs with no organization predicate, so an id
+	// from another tenant would be written happily. Resolve both the way the
+	// account already is.
+	if in.CommercialActionID != nil && *in.CommercialActionID != uuid.Nil {
+		st := s.actionStore()
+		if st == nil {
+			return nil, errx.New(errx.Internal, "commercial action store unavailable")
+		}
+		act, cerr := st.GetCommercialAction(ctx, orgID, *in.CommercialActionID)
+		if cerr != nil || act == nil {
+			return nil, errx.New(errx.NotFound, "commercial action not found in this organization")
+		}
+		if act.AccountID != in.AccountID {
+			return nil, errx.New(errx.BadRequest, "commercial action belongs to another account")
+		}
+	}
+	if in.TouchpointID != nil && *in.TouchpointID != uuid.Nil {
+		tp, terr := s.repo.GetTouchpoint(ctx, orgID, *in.TouchpointID)
+		if terr != nil || tp == nil {
+			return nil, errx.New(errx.NotFound, "touchpoint not found in this organization")
+		}
+	}
 	ref := &DossierReference{
 		OrganizationID:     orgID,
 		AccountID:          in.AccountID,
@@ -164,7 +186,11 @@ func (s *service) decorateDossierBadges(ctx context.Context, orgID uuid.UUID, vi
 	if s == nil || s.dossierStore == nil || view == nil {
 		return
 	}
-	refs, err := s.dossierStore.ListDossierReferences(ctx, orgID, uuid.Nil, 500)
+	accounts := DossierBadgeAccountIDs(view)
+	if len(accounts) == 0 {
+		return
+	}
+	refs, err := s.dossierStore.ListDossierReferencesForAccounts(ctx, orgID, accounts)
 	if err != nil || len(refs) == 0 {
 		return
 	}

@@ -23,9 +23,9 @@ func dossierManifestJSON(t *testing.T, catalogMode, dataState string) []byte {
 		"catalog_mode":        catalogMode,
 		"data_state":          dataState,
 		"as_of":               "2026-08-22",
-		"content_hash":        "sha256:aaaa",
-		"public_content_hash": "sha256:bbbb",
-		"producer_sha":        "extra-cli@deadbeef",
+		"content_hash":        "sha256:" + strings.Repeat("a", 64),
+		"public_content_hash": "sha256:" + strings.Repeat("b", 64),
+		"producer_sha":        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
 		"files":               []string{"dossier.json", "public-read.json", "dossier.md", "manifest.json"},
 		"reason_codes":        []string{"PANEL_OK"},
 	})
@@ -138,7 +138,7 @@ func TestDossierPrivateBodyAndIdentityCanNeverBeStored(t *testing.T) {
 		"schema":       DossierSchemaV1,
 		"catalog_mode": DossierCatalogOfficialLive,
 		"data_state":   DossierDataReady,
-		"content_hash": "sha256:aaaa",
+		"content_hash": "sha256:" + strings.Repeat("a", 64),
 	}
 	with := func(extra map[string]any) []byte {
 		doc := map[string]any{}
@@ -356,5 +356,138 @@ func TestDossierReferenceMigrationCarriesNoBodyOrIdentityColumn(t *testing.T) {
 		if !strings.Contains(body, guard) {
 			t.Fatalf("migration must enforce %q in SQL, not only in Go", guard)
 		}
+	}
+}
+
+// --- Regressions pinned from the adversarial review -------------------------
+
+func TestDossierManifestScalarsAreFormatPinned(t *testing.T) {
+	// The forbidden-key scan inspects key names only. Without format and length
+	// bounds every persisted column is free-form text, and the dossier body plus
+	// the prospect identity go straight into dossier_id, as_of or content_hash.
+	base := func() map[string]any {
+		return map[string]any{
+			"dossier_id":   "cfg-dossier-cb06e7fa204654f7",
+			"schema":       DossierSchemaV1,
+			"catalog_mode": "official_live",
+			"data_state":   "DATA_READY",
+			"as_of":        "2026-08-22",
+			"content_hash": "sha256:" + strings.Repeat("a", 64),
+		}
+	}
+	cases := []struct {
+		name  string
+		field string
+		value any
+	}{
+		{"dossier body in dossier_id", "dossier_id", "Engenharia Alpha LTDA - CNPJ 00.820.854/0001-14 - MAPA DE COMPRADORES"},
+		{"identity in as_of", "as_of", "razao_social=Engenharia Alpha LTDA;cnpj14=00820854000114"},
+		{"padded content_hash", "content_hash", "sha256:" + strings.Repeat("a", 100000)},
+		{"short content_hash", "content_hash", "sha256:aaaa"},
+		{"producer_sha carrying prose", "producer_sha", "extra-cli@deadbeef built by Tiago"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := base()
+			doc[tc.field] = tc.value
+			raw, _ := json.Marshal(doc)
+			if _, err := ParseDossierManifest(raw); err == nil {
+				t.Fatalf("%s was accepted; every persisted scalar must be format-pinned", tc.field)
+			}
+		})
+	}
+	raw, _ := json.Marshal(base())
+	if _, err := ParseDossierManifest(raw); err != nil {
+		t.Fatalf("a well-formed manifest must still parse: %v", err)
+	}
+}
+
+func TestDeliveryNoteCannotCarryTheDossierBack(t *testing.T) {
+	ref := &DossierReference{Deliverable: true}
+	actor := uuid.New()
+	if err := MarkDossierDelivered(ref, actor, time.Now(), strings.Repeat("x", DossierDeliveryNoteMax+1)); err == nil {
+		t.Fatal("an unbounded delivery_note is where the dossier gets pasted back in")
+	}
+	if err := MarkDossierDelivered(ref, actor, time.Now(), "entregue por telefone; razao_social: Engenharia Alpha LTDA"); err == nil {
+		t.Fatal("prospect identity in free prose is the same leak as a column")
+	}
+	if err := MarkDossierDelivered(ref, actor, time.Now(), "cliente confirmou recebimento em 00.820.854/0001-14"); err == nil {
+		t.Fatal("a CNPJ in the note must be refused")
+	}
+	if err := MarkDossierDelivered(ref, actor, time.Now(), "entregue em reuniao presencial"); err != nil {
+		t.Fatalf("an ordinary operator note must still be accepted: %v", err)
+	}
+}
+
+func TestForbiddenKeyScanDoesNotGiveUpAtDepth(t *testing.T) {
+	// Returning "" at the cap silently declares a deeply nested payload clean,
+	// which is the opposite of the guarantee the contract states.
+	node := any(map[string]any{"razao_social": "Engenharia Alpha LTDA"})
+	for i := 0; i < 40; i++ {
+		node = map[string]any{"n": node}
+	}
+	doc := map[string]any{
+		"dossier_id":   "cfg-dossier-1",
+		"catalog_mode": "official_live",
+		"data_state":   "DATA_READY",
+		"content_hash": "sha256:" + strings.Repeat("a", 64),
+		"wrap":         node,
+	}
+	raw, _ := json.Marshal(doc)
+	if _, err := ParseDossierManifest(raw); err == nil {
+		t.Fatal("a payload nested past the scan depth must be refused, not assumed clean")
+	}
+}
+
+func TestMemoryStoreModelsTheUniqueIndex(t *testing.T) {
+	// Without this the suite cannot see an upsert defect: three identical
+	// attaches give three rows in memory and one in Postgres.
+	store := NewMemoryDossierStore()
+	org, account, actor := uuid.New(), uuid.New(), uuid.New()
+	var ids []uuid.UUID
+	for i := 0; i < 3; i++ {
+		ref := &DossierReference{
+			OrganizationID: org, AccountID: account, AttachedBy: actor,
+			DossierID: "cfg-dossier-1", CatalogMode: "official_live", DataState: "DATA_READY",
+			ContentHash: "sha256:" + strings.Repeat("a", 64),
+		}
+		if err := NormalizeDossierReference(ref, time.Now().UTC()); err != nil {
+			t.Fatalf("normalize: %v", err)
+		}
+		if err := store.PutDossierReference(context.Background(), ref); err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		ids = append(ids, ref.ID)
+	}
+	rows, err := store.ListDossierReferences(context.Background(), org, account, 100)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("identical attaches must collapse to one row, got %d", len(rows))
+	}
+	for _, id := range ids {
+		if id != ids[0] {
+			t.Fatalf("every attach must report the surviving row id, got %v", ids)
+		}
+	}
+}
+
+func TestBadgeAccountIDsCoverEveryLane(t *testing.T) {
+	// The org-wide paged read this replaces dropped any account whose newest
+	// reference fell outside the page, taking its warning with it.
+	a1, a2 := uuid.New(), uuid.New()
+	view := &TodayView{Actions: []ActionCard{{AccountID: a1.String()}}}
+	view.Lanes.Blocked = []ActionCard{{AccountID: a2.String()}, {AccountID: a1.String()}, {AccountID: "not-a-uuid"}}
+	got := DossierBadgeAccountIDs(view)
+	if len(got) != 2 {
+		t.Fatalf("expected the two distinct parseable accounts, got %v", got)
+	}
+	seen := map[uuid.UUID]bool{got[0]: true, got[1]: true}
+	if !seen[a1] || !seen[a2] {
+		t.Fatalf("both lanes must contribute their accounts, got %v", got)
+	}
+	if len(DossierBadgeAccountIDs(nil)) != 0 {
+		t.Fatal("a nil view must yield no accounts")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"sort"
 
+	"github.com/google/uuid"
 	"github.com/warmbly/warmbly/internal/models"
 )
 
@@ -106,6 +107,47 @@ func dossierBadgeLabel(b DossierBadge) string {
 
 // ApplyDossierBadges stamps the newest reference per account onto each card.
 // It is display metadata only: no sendability flag on the card changes.
+// DossierBadgeAccountIDs lists every account the badge stamp can reach, so the
+// caller can fetch exactly those references instead of an org-wide page that
+// silently drops accounts past its limit.
+func DossierBadgeAccountIDs(view *TodayView) []uuid.UUID {
+	if view == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]uuid.UUID, 0, 32)
+	collect := func(cards []ActionCard) {
+		for i := range cards {
+			raw := cards[i].AccountID
+			if raw == "" {
+				continue
+			}
+			if _, dup := seen[raw]; dup {
+				continue
+			}
+			id, err := uuid.Parse(raw)
+			if err != nil {
+				continue
+			}
+			seen[raw] = struct{}{}
+			out = append(out, id)
+		}
+	}
+	collect(view.Actions)
+	collect(view.Lanes.EmailNeedsReview)
+	collect(view.Lanes.HumanReviewEmail)
+	collect(view.Lanes.CallQueue)
+	collect(view.Lanes.RoutedCallQueue)
+	collect(view.Lanes.WhatsAppQueue)
+	collect(view.Lanes.SocialQueue)
+	collect(view.Lanes.RoleEmailQueue)
+	collect(view.Lanes.ContactFormQueue)
+	collect(view.Lanes.LowConfidence)
+	collect(view.Lanes.Blocked)
+	collect(view.Lanes.Done)
+	return out
+}
+
 func ApplyDossierBadges(view *TodayView, refs []DossierReference) {
 	if view == nil || len(refs) == 0 {
 		return

@@ -33,7 +33,29 @@ already holds.
 (`identity`, `buyer_map`, `competitors`, `price_panel`, `expiring_contracts`,
 `open_opportunities`, `findings`) or an identity field (`cnpj14`, `cnpj_raiz`,
 `razao_social`, `nome_fantasia`, `supplier_cnpj`, `supplier_nome`,
-`fornecedor_cnpj`, `fornecedor_nome`, `municipio`), at any nesting depth.
+`fornecedor_cnpj`, `fornecedor_nome`, `municipio`). The scan bounds recursion at
+32 levels and treats reaching that bound as a refusal, because declaring a
+deeply nested payload clean is the opposite of the guarantee.
+
+That scan inspects key **names**, which on its own is not enough: an adversarial
+review put 126 KB of `dossier.md` into `dossier_id` and `razao_social=...;cnpj14=...`
+into `as_of`, and both were stored. Every persisted scalar is therefore also
+format- and length-pinned, in the application and again as a SQL `CHECK`
+(migration `000112`):
+
+| Field | Bound |
+| --- | --- |
+| `dossier_id` | `^[A-Za-z0-9_.:-]{1,128}$` |
+| `content_hash`, `public_content_hash` | `^sha256:[0-9a-f]{64}$` |
+| `as_of` | `^\d{4}-\d{2}-\d{2}$` |
+| `producer_sha` | `^[0-9a-f]{7,64}$` |
+| `artifact_uri` | `^[A-Za-z0-9_./:-]{1,512}$` |
+| `delivery_note` | 2000 bytes, and scanned for a CNPJ or an identity field |
+
+`delivery_note` is the one field a human types, so it cannot be format-pinned.
+It is bounded and scanned by value instead: a CNPJ or a `razao_social:` in the
+note is the same leak as one in a column.
+
 Handing `dossier.json` to the attach call is rejected with `422`, and nothing
 is written.
 

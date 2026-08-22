@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -48,7 +49,21 @@ var dossierForbiddenKeys = []string{
 	"municipio",
 }
 
-const dossierScanMaxDepth = 8
+// Every persisted scalar is format- and length-pinned. Without this the columns
+// are free-form text and a caller can put the whole dossier, and the prospect
+// identity, inside dossier_id or as_of: the forbidden-key scan only inspects
+// key names, never values.
+var (
+	dossierIDPattern   = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,128}$`)
+	dossierHashPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	dossierAsOfPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+	dossierSHAPattern  = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+	dossierURIPattern  = regexp.MustCompile(`^[A-Za-z0-9_./:-]{1,512}$`)
+	dossierCNPJPattern = regexp.MustCompile(`\d{2}[.\s]?\d{3}[.\s]?\d{3}[/.\s]?\d{4}[-.\s]?\d{2}`)
+)
+
+// DossierDeliveryNoteMax bounds the one field a human types by hand.
+const DossierDeliveryNoteMax = 2000
 
 // DossierManifest is the manifest.json projection. It carries hashes and state,
 // never a dossier body and never the prospect identity.
@@ -101,6 +116,7 @@ type DossierReferenceStore interface {
 	PutDossierReference(ctx context.Context, ref *DossierReference) error
 	GetDossierReference(ctx context.Context, orgID, id uuid.UUID) (*DossierReference, error)
 	ListDossierReferences(ctx context.Context, orgID, accountID uuid.UUID, limit int) ([]DossierReference, error)
+	ListDossierReferencesForAccounts(ctx context.Context, orgID uuid.UUID, accountIDs []uuid.UUID) ([]DossierReference, error)
 	SetDossierReferenceDelivered(ctx context.Context, ref *DossierReference) error
 }
 
@@ -136,11 +152,20 @@ func ParseDossierManifest(raw []byte) (DossierManifest, error) {
 
 // ValidateDossierManifest pins the schema and the closed vocabularies.
 func ValidateDossierManifest(m DossierManifest) error {
-	if strings.TrimSpace(m.DossierID) == "" {
-		return fmt.Errorf("%w: dossier_id required", ErrDossierManifestInvalid)
+	if !dossierIDPattern.MatchString(strings.TrimSpace(m.DossierID)) {
+		return fmt.Errorf("%w: dossier_id must match %s", ErrDossierManifestInvalid, dossierIDPattern)
 	}
-	if strings.TrimSpace(m.ContentHash) == "" {
-		return fmt.Errorf("%w: content_hash required", ErrDossierManifestInvalid)
+	if !dossierHashPattern.MatchString(strings.TrimSpace(m.ContentHash)) {
+		return fmt.Errorf("%w: content_hash must be sha256:<64 hex>", ErrDossierManifestInvalid)
+	}
+	if v := strings.TrimSpace(m.PublicContentHash); v != "" && !dossierHashPattern.MatchString(v) {
+		return fmt.Errorf("%w: public_content_hash must be sha256:<64 hex>", ErrDossierManifestInvalid)
+	}
+	if v := strings.TrimSpace(m.AsOf); v != "" && !dossierAsOfPattern.MatchString(v) {
+		return fmt.Errorf("%w: as_of must be YYYY-MM-DD", ErrDossierManifestInvalid)
+	}
+	if v := strings.TrimSpace(m.ProducerSHA); v != "" && !dossierSHAPattern.MatchString(v) {
+		return fmt.Errorf("%w: producer_sha must be lowercase hex", ErrDossierManifestInvalid)
 	}
 	if s := strings.TrimSpace(m.Schema); s != "" && s != DossierSchemaV1 {
 		return fmt.Errorf("%w: unsupported schema %q", ErrDossierManifestInvalid, s)
@@ -156,6 +181,25 @@ func ValidateDossierManifest(m DossierManifest) error {
 		return fmt.Errorf("%w: unknown data_state %q", ErrDossierManifestInvalid, m.DataState)
 	}
 	return nil
+}
+
+// findForbiddenDossierValue looks for prospect identity inside free prose, where
+// a key-name scan cannot reach. A CNPJ or a razao_social pasted into the note is
+// the same leak as one stored in a column.
+func findForbiddenDossierValue(text string) string {
+	if text == "" {
+		return ""
+	}
+	if dossierCNPJPattern.MatchString(text) {
+		return "cnpj"
+	}
+	lowered := strings.ToLower(text)
+	for _, key := range dossierForbiddenKeys {
+		if strings.Contains(lowered, key+":") || strings.Contains(lowered, key+"=") {
+			return key
+		}
+	}
+	return ""
 }
 
 // DossierDeliverability is derived from the manifest, never asserted by a caller.
@@ -196,9 +240,13 @@ func NormalizeDossierReference(ref *DossierReference, now time.Time) error {
 	ref.ProducerSHA = strings.TrimSpace(ref.ProducerSHA)
 	ref.AsOf = strings.TrimSpace(ref.AsOf)
 	ref.ArtifactURI = strings.TrimSpace(ref.ArtifactURI)
+	if ref.ArtifactURI != "" && !dossierURIPattern.MatchString(ref.ArtifactURI) {
+		return fmt.Errorf("%w: artifact_uri must match %s", ErrDossierManifestInvalid, dossierURIPattern)
+	}
 	if err := ValidateDossierManifest(DossierManifest{
 		DossierID: ref.DossierID, Schema: ref.Schema, CatalogMode: ref.CatalogMode,
 		DataState: ref.DataState, ContentHash: ref.ContentHash,
+		PublicContentHash: ref.PublicContentHash, AsOf: ref.AsOf, ProducerSHA: ref.ProducerSHA,
 	}); err != nil {
 		return err
 	}
@@ -238,17 +286,34 @@ func MarkDossierDelivered(ref *DossierReference, actor uuid.UUID, at time.Time, 
 	if at.IsZero() {
 		at = time.Now().UTC()
 	}
+	note = strings.TrimSpace(note)
+	if len(note) > DossierDeliveryNoteMax {
+		return fmt.Errorf("%w: delivery_note over %d bytes", ErrDossierManifestInvalid, DossierDeliveryNoteMax)
+	}
+	// The note is free prose, so it cannot be format-pinned. It can still be
+	// kept from becoming a place to paste the dossier back in.
+	if key := findForbiddenDossierValue(note); key != "" {
+		return fmt.Errorf("%w: delivery_note contains %s", ErrDossierPrivateBody, key)
+	}
 	at = at.UTC()
 	ref.DeliveredAt = &at
 	ref.DeliveredBy = &actor
-	ref.DeliveryNote = strings.TrimSpace(note)
+	ref.DeliveryNote = note
 	ref.UpdatedAt = at
 	return nil
 }
 
+// dossierScanMaxDepth bounds recursion against a hostile payload. Reaching it is
+// itself a refusal: returning "" here would silently declare a deeply nested
+// payload clean, which is the opposite of what the guarantee says.
+const dossierScanMaxDepth = 32
+
+// dossierScanTooDeep is reported as the offending key when the cap is reached.
+const dossierScanTooDeep = "payload_nested_beyond_scan_depth"
+
 func findForbiddenDossierKey(node any, depth int) string {
 	if depth > dossierScanMaxDepth {
-		return ""
+		return dossierScanTooDeep
 	}
 	switch v := node.(type) {
 	case map[string]any:
@@ -294,13 +359,14 @@ func dossierString(doc map[string]any, key string) string {
 
 // memoryDossierStore is the unit-test authority; production wires Postgres.
 type memoryDossierStore struct {
-	mu   sync.Mutex
-	byID map[uuid.UUID]DossierReference
+	mu    sync.Mutex
+	byID  map[uuid.UUID]DossierReference
+	byKey map[string]uuid.UUID
 }
 
 // NewMemoryDossierStore returns an in-process reference store.
 func NewMemoryDossierStore() DossierReferenceStore {
-	return &memoryDossierStore{byID: map[uuid.UUID]DossierReference{}}
+	return &memoryDossierStore{byID: map[uuid.UUID]DossierReference{}, byKey: map[string]uuid.UUID{}}
 }
 
 func (m *memoryDossierStore) PutDossierReference(_ context.Context, ref *DossierReference) error {
@@ -310,10 +376,32 @@ func (m *memoryDossierStore) PutDossierReference(_ context.Context, ref *Dossier
 	if ref == nil || ref.ID == uuid.Nil {
 		return ErrDossierReferenceMissing
 	}
+	if ref.DeliveredAt != nil || ref.DeliveredBy != nil {
+		return ErrDossierDeliveryNotInferred
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Model the unique index the migration declares. Without it three identical
+	// attaches give three rows here and one in Postgres, and the suite stops
+	// being able to see an upsert defect at all.
+	key := dossierUniqueKey(*ref)
+	if existing, ok := m.byKey[key]; ok {
+		prior := m.byID[existing]
+		ref.ID = prior.ID
+		ref.AttachedAt = prior.AttachedAt
+		ref.CreatedAt = prior.CreatedAt
+		ref.DeliveredAt = prior.DeliveredAt
+		ref.DeliveredBy = prior.DeliveredBy
+		ref.DeliveryNote = prior.DeliveryNote
+	}
 	m.byID[ref.ID] = *ref
+	m.byKey[key] = ref.ID
 	return nil
+}
+
+// dossierUniqueKey mirrors the migration's unique index.
+func dossierUniqueKey(ref DossierReference) string {
+	return ref.OrganizationID.String() + "|" + ref.AccountID.String() + "|" + ref.DossierID + "|" + ref.ContentHash
 }
 
 func (m *memoryDossierStore) GetDossierReference(_ context.Context, orgID, id uuid.UUID) (*DossierReference, error) {
@@ -327,6 +415,39 @@ func (m *memoryDossierStore) GetDossierReference(_ context.Context, orgID, id uu
 		return nil, nil
 	}
 	return &ref, nil
+}
+
+func (m *memoryDossierStore) ListDossierReferencesForAccounts(_ context.Context, orgID uuid.UUID, accountIDs []uuid.UUID) ([]DossierReference, error) {
+	if m == nil {
+		return nil, ErrDossierStoreUnavailable
+	}
+	if orgID == uuid.Nil || len(accountIDs) == 0 {
+		return nil, nil
+	}
+	wanted := make(map[uuid.UUID]struct{}, len(accountIDs))
+	for _, id := range accountIDs {
+		wanted[id] = struct{}{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	newest := map[uuid.UUID]DossierReference{}
+	for _, ref := range m.byID {
+		if ref.OrganizationID != orgID {
+			continue
+		}
+		if _, ok := wanted[ref.AccountID]; !ok {
+			continue
+		}
+		if cur, ok := newest[ref.AccountID]; !ok || ref.AttachedAt.After(cur.AttachedAt) {
+			newest[ref.AccountID] = ref
+		}
+	}
+	out := make([]DossierReference, 0, len(newest))
+	for _, ref := range newest {
+		out = append(out, ref)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].AccountID.String() < out[j].AccountID.String() })
+	return out, nil
 }
 
 func (m *memoryDossierStore) ListDossierReferences(_ context.Context, orgID, accountID uuid.UUID, limit int) ([]DossierReference, error) {
