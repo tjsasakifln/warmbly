@@ -56,7 +56,12 @@ func (r Result) State() string {
 // defaultSelectors are common DKIM selectors to probe when the caller doesn't
 // know the domain's selector. DKIM selectors aren't discoverable from DNS, so a
 // "not found" only means none of these matched, not that DKIM is absent.
-var defaultSelectors = []string{"google", "default", "selector1", "selector2", "k1", "mail", "dkim", "s1", "s2", "hostingermail1", "hostingermail2", "hostingermail3", "zoho", "titan"}
+// Hostinger publishes hostingermail-a/-b/-c (hyphen, letter), not
+// hostingermail1/2/3. The numeric spellings match nothing, so every
+// Hostinger-hosted domain probed as "no DKIM" — including confenge.com.br,
+// whose selector hostingermail-a has been live and signing all along. The
+// numeric forms are kept: they cost one lookup and removing them cannot help.
+var defaultSelectors = []string{"google", "default", "selector1", "selector2", "k1", "mail", "dkim", "s1", "s2", "hostingermail-a", "hostingermail-b", "hostingermail-c", "hostingermail1", "hostingermail2", "hostingermail3", "zoho", "titan"}
 
 const lookupTimeout = 5 * time.Second
 
