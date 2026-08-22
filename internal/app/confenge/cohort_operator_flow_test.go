@@ -553,17 +553,18 @@ func TestFirstCohortDryRunFortyAccountsNoRealSend(t *testing.T) {
 		CohortHash: snap.CohortHash, RecipientSetHash: snap.RecipientSetHash,
 		PolicyVersion: BoundedCohortPolicyV1, ComposerVersion: ComposerVersion,
 		AllowedRouteClasses: snap.AllowedRouteClasses, VolumeCap: snap.MaxDailyVolume,
-		SMTPReady: EvidencePass, ObservabilityReady: EvidencePass, TTLValid: EvidencePass,
+		SMTPReady: EvidencePass, ReplyIngestReady: EvidencePass, ObservabilityReady: EvidencePass,
+		DispatchWiring: EvidencePass, SenderProviderConfig: EvidencePass, TTLValid: EvidencePass,
 		SuppressionClear: EvidencePass, DBCohortAuthority: EvidencePass, EvidenceVersion: DefaultEvidenceVersion,
 		KillSwitchOperational: EvidencePass, SendingPausedState: EvidencePass,
 		AutoSendState: EvidencePass, GreenAutorunState: EvidencePass,
 	}
 	v := EvaluateControlledEmailRelease(want, want)
-	if v.Verdict != ReleaseReadyForControlledEmailReview {
-		t.Fatalf("verdict=%s %v", v.Verdict, v.Reasons)
+	if v.Verdict != ReleaseGOForControlledEmailPilot {
+		t.Fatalf("complete PASS set must be live GO, got %s %v", v.Verdict, v.Reasons)
 	}
-	if v.Verdict == ReleaseGOForControlledEmailPilot {
-		t.Fatal("never live GO")
+	if res.RealEmailSent || res.AutoSendEnabled {
+		t.Fatal("authorize/dry-run must not send or enable auto-send")
 	}
 }
 
