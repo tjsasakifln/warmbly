@@ -409,7 +409,10 @@ func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *
 	} else if FileKillSwitchActive() {
 		return fmt.Errorf("kill switch engaged")
 	}
-	if s.cfg.OperatorMode {
+	// A frozen bounded cohort carries its own membership (the grant manifest,
+	// re-validated by CanTransportCohort). The legacy confenge-pilot-v1
+	// membership table is not written for it and must not gate it.
+	if s.cfg.OperatorMode && mode != AuthorizationModeBoundedCohort {
 		if err := s.requirePilotMembershipForTouchpoint(ctx, orgID, tp); err != nil {
 			return fmt.Errorf("controlled pilot membership: %w", err)
 		}

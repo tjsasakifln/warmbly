@@ -18,7 +18,7 @@ const (
 	// Env path override; prefer a pre-optimized JPEG under data/confenge/.
 	EnvSignatureImagePath = "CONFENGE_SIGNATURE_IMAGE_PATH"
 	// SignatureVersion bumps when the close text or CID decoration semantics change.
-	SignatureVersion = "confenge.signature.v2"
+	SignatureVersion = "confenge.signature.v3"
 )
 
 // First-touch close: plain text only (no image). Cold outreach should not look
@@ -26,10 +26,13 @@ const (
 const SignaturePlainBlock = `Abraço,
 Eng. Tiago Sasaki
 Consultor B2G | Confenge
-(48)9 8834-4559`
+(48)9 8834-4559
+
+Se preferir não receber mais contato meu, é só responder "sair" que removo seu e-mail.`
 
 // Legacy text blocks stripped before re-applying the current first-touch close.
 var legacyPlainSignatureTails = []string{
+	"\n\nAbraço,\nEng. Tiago Sasaki\nConsultor B2G | Confenge\n(48)9 8834-4559",
 	"\n\n" + SignaturePlainBlock,
 	"\n\nAtenciosamente,\n\nEng. Tiago Sasaki\nCONFENGE\ntiago.sasaki@confenge.com.br",
 	"\n\nAtenciosamente,\nEng. Tiago Sasaki\nCONFENGE\ntiago.sasaki@confenge.com.br",

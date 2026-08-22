@@ -65,6 +65,40 @@ func routingCTA(theme string) string {
 	return "Queria falar com quem acompanha " + ensureLowerStart(theme) + " por aí. Você consegue me indicar a pessoa responsável?"
 }
 
+// ensureClosingAsk keeps the mail ending in a real question. Portuguese
+// declaratives do not become questions by swapping the final period for "?",
+// so a short ask is appended instead of coercing the punctuation.
+func ensureClosingAsk(cta string) string {
+	cta = strings.TrimSpace(cta)
+	if cta == "" || strings.Contains(cta, "?") {
+		return cta
+	}
+	if !strings.HasSuffix(cta, ".") {
+		cta += "."
+	}
+	return cta + " Faz sentido para você?"
+}
+
+// referralAsk keeps a departmental pitch honest when no person is proven: the
+// offer still stands, but the reader is not assumed to own the subject.
+const referralAsk = "Se não for com você, pode me indicar a pessoa certa?"
+
+func appendReferralAsk(cta string) string {
+	cta = strings.TrimSpace(cta)
+	if cta == "" {
+		return referralAsk
+	}
+	blob := foldASCII(cta)
+	if strings.Contains(blob, "indicar a pessoa") || strings.Contains(blob, "pessoa certa") ||
+		strings.Contains(blob, "encaminhar") || strings.Contains(blob, "pessoa responsavel") {
+		return cta
+	}
+	if !strings.HasSuffix(cta, "?") && !strings.HasSuffix(cta, ".") {
+		cta += "."
+	}
+	return cta + " " + referralAsk
+}
+
 // ComposeControlledInitial is the freeze-time composer. It never invents a
 // person. GENERIC/FREEMAIL copy is institutional and may ask for a route.
 func ComposeControlledInitial(acc *models.OutreachAccount, cand *models.OutreachContactCandidate, class string) (subject, body, greeting string) {
@@ -75,17 +109,27 @@ func ComposeControlledInitial(acc *models.OutreachAccount, cand *models.Outreach
 	if acc != nil {
 		obs = firstNonEmpty(strings.TrimSpace(acc.FactToMention), strings.TrimSpace(acc.MomentSummary))
 		if strings.TrimSpace(acc.CTA) != "" {
-			cta = strings.TrimSpace(acc.CTA)
-			if !strings.Contains(cta, "?") {
-				cta = strings.TrimRight(cta, ". ") + "?"
-			}
+			cta = ensureClosingAsk(strings.TrimSpace(acc.CTA))
 		}
 		theme = firstNonEmpty(humanizeMoment(acc.MomentCode), acc.ServiceName, theme)
 	}
 	obs = ApplyCopyHygiene(obs)
+	// A serialized feed record is not prose. Condense it, and drop it entirely
+	// rather than pasting a database row into a cold email.
+	if looksLikeMetadataDump(obs) || containsDumpLabel(obs) {
+		obs = condenseMetadataFact(obs)
+		if looksLikeMetadataDump(obs) || containsDumpLabel(obs) {
+			obs = ""
+		}
+	}
 	switch class {
 	case RouteClassGenericCompany, RouteClassPublicCompanyFreemail:
 		cta = routingCTA(theme)
+	case RouteClassRoleOrDepartment:
+		// A department mailbox is the right door, not proof of the right person.
+		if CandidatePersonUnknown(cand) {
+			cta = appendReferralAsk(cta)
+		}
 	}
 	var b strings.Builder
 	b.WriteString(greeting)
@@ -112,8 +156,8 @@ func controlledSubject(acc *models.OutreachAccount, obs, theme string) string {
 			raw = firstNonEmpty(theme, "Uma leitura objetiva")
 		}
 	}
-	if subjectHasLegalForm(raw) {
-		return "Uma leitura objetiva"
+	if subjectHasLegalForm(raw) || containsDumpLabel(raw) {
+		return firstNonEmpty(theme, "Uma leitura objetiva")
 	}
 	return strings.TrimSpace(raw)
 }
@@ -126,10 +170,9 @@ func trimSubjectFact(obs string) string {
 	if i := strings.IndexAny(obs, ".!?"); i > 12 && i < 80 {
 		return obs[:i]
 	}
-	if len(obs) > 80 {
-		return strings.TrimSpace(obs[:80])
-	}
-	return obs
+	// Rune-safe and on a word boundary: a byte slice can split a multi-byte
+	// rune into an invalid MIME Subject header, and cuts mid-word read broken.
+	return cutAtWordBoundary(obs, 64)
 }
 
 func humanizeMoment(code string) string {
@@ -141,11 +184,18 @@ func humanizeMoment(code string) string {
 		return "licitações"
 	case "REAJUSTE", "REAJUSTE_14133":
 		return "reajuste contratual"
+	case "PORTFOLIO_REVIEW":
+		return "a carteira de contratos públicos"
+	case "ADDENDUM":
+		return "aditivos"
+	case "GLOSA_MEDICAO":
+		return "glosas de medição"
+	case "REEQUILIBRIO":
+		return "reequilíbrio econômico-financeiro"
 	default:
-		if c == "" {
-			return ""
-		}
-		return strings.ToLower(strings.ReplaceAll(c, "_", " "))
+		// Closed on purpose: an unmapped code must fall through to ServiceName
+		// or the default theme, never reach copy as a raw enum.
+		return ""
 	}
 }
 

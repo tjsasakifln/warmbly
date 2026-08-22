@@ -283,6 +283,17 @@ type OutreachContactCandidate struct {
 
 // CanEnroll reports whether this candidate may be put into a campaign.
 func (c *OutreachContactCandidate) CanEnroll() bool {
+	if !c.EnrollableIgnoringVerification() {
+		return false
+	}
+	return !OutreachUnenrollableVerification[c.VerificationStatus]
+}
+
+// EnrollableIgnoringVerification holds every enrollability guard except the
+// nominal-person verification map. Classified institutional routes use it so a
+// route extra-cli deliberately marked contactable is not rejected for lacking a
+// verified person, while suppression, provenance and fixture guards still apply.
+func (c *OutreachContactCandidate) EnrollableIgnoringVerification() bool {
 	if c == nil {
 		return false
 	}
@@ -290,9 +301,6 @@ func (c *OutreachContactCandidate) CanEnroll() bool {
 		return false
 	}
 	if c.Email == "" {
-		return false
-	}
-	if OutreachUnenrollableVerification[c.VerificationStatus] {
 		return false
 	}
 	// Defense-in-depth: known synthetic demo00Xobra channels never enroll

@@ -78,7 +78,7 @@ func RequireEmailOutbound(acc *models.OutreachAccount, cand *models.OutreachCont
 	if cand == nil {
 		return fmt.Errorf("contact candidate is missing")
 	}
-	if !cand.CanEnroll() {
+	if !CandidateEnrollable(cand) {
 		return fmt.Errorf("contact is not enrollable")
 	}
 	if CandidateControlledEligible(cand) && ControlledRouteAllowed(cand, nil) {
