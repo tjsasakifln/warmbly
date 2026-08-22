@@ -490,3 +490,5 @@ func (s *service) ApplyDeactivations(ctx context.Context, orgID uuid.UUID, deact
 
 // Ensure service interface still compiles if methods are used from handlers.
 var _ = uuid.Nil
+
+// ci-timecheck: comentário temporário para acionar o filtro de caminhos do Go CI.
