@@ -41,7 +41,7 @@ That scan inspects key **names**, which on its own is not enough: an adversarial
 review put 126 KB of `dossier.md` into `dossier_id` and `razao_social=...;cnpj14=...`
 into `as_of`, and both were stored. Every persisted scalar is therefore also
 format- and length-pinned, in the application and again as a SQL `CHECK`
-(migration `000112`):
+(migration `000115`):
 
 | Field | Bound |
 | --- | --- |
@@ -102,7 +102,7 @@ Three guards keep that honest:
 
 ## Storage
 
-Migration `000111_confenge_dossier_reference` creates
+Migration `000114_confenge_dossier_reference` creates
 `confenge_dossier_references`, keyed by `(organization_id, account_id,
 dossier_id, content_hash)` so re-attaching the same artifact is idempotent and
 a re-run with new data lands as a new row. Optional
@@ -129,7 +129,7 @@ confenge queries for every teammate with no new frontend mapping.
 
 ## Files
 
-- `internal/infrastructure/db/migrations/000111_confenge_dossier_reference.{up,down}.sql`
+- `internal/infrastructure/db/migrations/000114_confenge_dossier_reference.{up,down}.sql`
 - `internal/app/confenge/dossier_reference.go` (types, guards, memory store)
 - `internal/app/confenge/dossier_reference_service.go` (service seam)
 - `internal/app/confenge/dossier_reference_store_pg.go` (durable store)

@@ -327,7 +327,7 @@ func TestAttachingDossierReferenceReachesNoSendPath(t *testing.T) {
 // The reference table must hold hashes and state, never the dossier body.
 func TestDossierReferenceMigrationCarriesNoBodyOrIdentityColumn(t *testing.T) {
 	path := filepath.Join("..", "..", "infrastructure", "db", "migrations",
-		"000111_confenge_dossier_reference.up.sql")
+		"000114_confenge_dossier_reference.up.sql")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read migration: %v", err)
