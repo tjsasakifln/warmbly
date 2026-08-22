@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -21,7 +24,7 @@ import (
 
 func cmdCohort(args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: confenge cohort prepare|preview|authorize|review|report [flags]")
+		fmt.Fprintln(os.Stderr, "usage: confenge cohort prepare|preview|authorize|review|report|dispatch [flags]")
 		return 2
 	}
 	switch args[0] {
@@ -35,6 +38,8 @@ func cmdCohort(args []string) int {
 		return cmdCohortReview(args[1:])
 	case "report":
 		return cmdCohortReport(args[1:])
+	case "dispatch":
+		return cmdCohortDispatch(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown cohort command %q\n", args[0])
 		return 2
@@ -259,11 +264,143 @@ func cmdCohortReview(args []string) int {
 		fmt.Fprintf(os.Stderr, "BLOCKED: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(os.Stderr, "review recorded authorization_id=%s verdict=%s (not GO_FOR_CONTROLLED_EMAIL_PILOT; auto_send remains false)\n",
-		auth.ID, auth.GOReviewVerdict)
+	if cmp != nil && cmp.Verdict.Verdict == confenge.ReleaseGOForControlledEmailPilot {
+		fmt.Fprintf(os.Stderr, "review recorded authorization_id=%s human_verdict=%s production_verdict=%s cap=%d auto_send=false\n",
+			auth.ID, auth.GOReviewVerdict, confenge.ReleaseGOForControlledEmailPilot, auth.MaxDailyVolume)
+	} else {
+		fmt.Fprintf(os.Stderr, "review recorded authorization_id=%s verdict=%s auto_send remains false\n",
+			auth.ID, auth.GOReviewVerdict)
+	}
 	enc, _ := json.MarshalIndent(auth.Summary(), "", "  ")
 	fmt.Println(string(enc))
 	return 0
+}
+
+func cmdCohortDispatch(args []string) int {
+	fs := flag.NewFlagSet("cohort dispatch", flag.ExitOnError)
+	idStr := fs.String("id", "", "authorization UUID")
+	actor := fs.String("actor", "", "human actor UUID")
+	limit := fs.Int("limit", confenge.DefaultCohortDispatchCap, "max messages this run (1-50)")
+	confirm := fs.Bool("confirm", false, "dispatch through the shipped transport path")
+	_ = fs.Parse(args)
+	id, err := uuid.Parse(strings.TrimSpace(*idStr))
+	if err != nil || id == uuid.Nil {
+		fmt.Fprintln(os.Stderr, "usage: confenge cohort dispatch --id UUID --actor UUID [--limit 50] [--confirm]")
+		return 2
+	}
+	actorID, err := uuid.Parse(strings.TrimSpace(*actor))
+	if err != nil || actorID == uuid.Nil {
+		fmt.Fprintln(os.Stderr, "BLOCKED: --actor (human UUID) is required")
+		return 2
+	}
+	if *limit < 1 || *limit > 50 {
+		fmt.Fprintln(os.Stderr, "BLOCKED: --limit must be 1-50")
+		return 2
+	}
+	pool, store, err := openCohortStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "BLOCKED: %v\n", err)
+		return 1
+	}
+	defer pool.Close()
+	maybeLoadDotEnv()
+	cfg := confenge.LoadConfig()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	now := time.Now().UTC()
+	cmp, auth, err := confenge.PrepareControlledEmailGOReview(ctx, confenge.LiveReleaseInput{
+		Now: now, Config: &cfg, Store: store, Repo: repository.NewOutreachRepository(pool),
+	}, id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "BLOCKED: %v\n", err)
+		return 1
+	}
+	fmt.Print(confenge.FormatReleaseComparison(cmp))
+	if err := confenge.RequireControlledEmailGO(cmp); err != nil {
+		fmt.Fprintf(os.Stderr, "BLOCKED: %v\n", err)
+		return 1
+	}
+	if !*confirm {
+		fmt.Fprintln(os.Stderr, "not dispatched; rerun with --confirm")
+		return 0
+	}
+	svc := confenge.NewService(cfg, repository.NewOutreachRepository(pool), nil)
+	svc.WireCohortAuth(store)
+	orgID := seed.DevOrgID
+	if auth != nil && auth.OrganizationID != uuid.Nil {
+		orgID = auth.OrganizationID
+	}
+	res, xerr := svc.DispatchBoundedCohort(ctx, orgID, actorID, id, now, *limit)
+	if xerr != nil && strings.Contains(xerr.Error(), "execution services not wired") {
+		apiRes, apiErr := dispatchViaOperatorAPI(id, *limit)
+		if apiErr != nil {
+			fmt.Fprintf(os.Stderr, "BLOCKED: in-process dispatch: %v; api: %v\n", xerr, apiErr)
+			return 1
+		}
+		res, xerr = apiRes, nil
+	}
+	if res != nil {
+		fmt.Print(confenge.FormatCohortDispatch(res))
+	}
+	if xerr != nil {
+		fmt.Fprintf(os.Stderr, "BLOCKED: %v\n", xerr)
+		return 1
+	}
+	return 0
+}
+
+func dispatchViaOperatorAPI(id uuid.UUID, limit int) (*confenge.CohortDispatchResult, error) {
+	base := strings.TrimRight(firstNonEmpty(os.Getenv("CONFENGE_API_BASE"), "http://127.0.0.1:8080"), "/")
+	if !strings.Contains(base, "://") {
+		base = "http://" + base
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	client := &http.Client{Timeout: 2 * time.Minute}
+	sessReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/auth/confenge-operator/session", strings.NewReader("{}"))
+	if err != nil {
+		return nil, err
+	}
+	sessReq.Header.Set("Content-Type", "application/json")
+	sess, err := client.Do(sessReq)
+	if err != nil {
+		return nil, err
+	}
+	defer sess.Body.Close()
+	raw, _ := io.ReadAll(sess.Body)
+	var tok struct {
+		AccessToken string `json:"access_token"`
+	}
+	_ = json.Unmarshal(raw, &tok)
+	if strings.TrimSpace(tok.AccessToken) == "" {
+		return nil, fmt.Errorf("operator session missing access_token (http %s)", sess.Status)
+	}
+	url := fmt.Sprintf("%s/v1/confenge/cohorts/%s/dispatch?limit=%d", base, id, limit)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("dispatch http %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var wrap struct {
+		Data *confenge.CohortDispatchResult `json:"data"`
+	}
+	if err := json.Unmarshal(body, &wrap); err != nil {
+		return nil, err
+	}
+	if wrap.Data == nil {
+		return nil, fmt.Errorf("dispatch response missing data")
+	}
+	return wrap.Data, nil
 }
 
 func cmdCohortReport(args []string) int {

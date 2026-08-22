@@ -112,6 +112,7 @@ type Service interface {
 	RejectOrSkipTouchpoint(ctx context.Context, orgID, userID, id uuid.UUID, action string) (*models.OutreachTouchpoint, *errx.Error)
 	RejectOrSkipTouchpointReason(ctx context.Context, orgID, userID, id uuid.UUID, action, reason string) (*models.OutreachTouchpoint, *errx.Error)
 	QueueTouchpoint(ctx context.Context, orgID, userID, id uuid.UUID) (*models.OutreachTouchpoint, *errx.Error)
+	DispatchBoundedCohort(ctx context.Context, orgID, actor, authID uuid.UUID, now time.Time, limit int) (*CohortDispatchResult, *errx.Error)
 	CancelAccountTouchpoints(ctx context.Context, orgID, userID, accountID uuid.UUID, reason string) (int, *errx.Error)
 
 	// CAMPAIGN_POLICY_AUTHORIZATION + GREEN autorun (no fake approved_by).

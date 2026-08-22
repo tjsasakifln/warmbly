@@ -10,8 +10,9 @@ import (
 )
 
 // RecordControlledEmailGOReview stores the founder's explicit decision for
-// one frozen grant. READY_FOR_CONTROLLED_EMAIL_GO_REVIEW is not a live GO
-// and never enables auto-send.
+// one frozen grant. READY_FOR_CONTROLLED_EMAIL_GO_REVIEW is the human
+// verdict. The evaluator emits GO_FOR_CONTROLLED_EMAIL_PILOT only when every
+// required live check is PASS. Auto-send stays false.
 func RecordControlledEmailGOReview(
 	ctx context.Context,
 	store BoundedCohortStore,
@@ -31,11 +32,11 @@ func RecordControlledEmailGOReview(
 	}
 	verdict = strings.TrimSpace(verdict)
 	switch verdict {
-	case ReleaseReadyForControlledEmailReview, ReleaseNOGO:
-	case ReleaseGOForControlledEmailPilot, ReleaseGO:
-		return nil, fmt.Errorf("GO_FOR_CONTROLLED_EMAIL_PILOT is not a valid operator verdict")
+	case ReleaseReadyForControlledEmailReview, ReleaseNOGO, ReleaseGOForControlledEmailPilot:
+	case ReleaseGO:
+		return nil, fmt.Errorf("GO_FOR_CONTROLLED_PILOT is not a valid controlled-email operator verdict")
 	default:
-		return nil, fmt.Errorf("verdict must be %s or %s", ReleaseReadyForControlledEmailReview, ReleaseNOGO)
+		return nil, fmt.Errorf("verdict must be %s, %s, or %s", ReleaseReadyForControlledEmailReview, ReleaseGOForControlledEmailPilot, ReleaseNOGO)
 	}
 	auth, err := store.GetGrant(ctx, id)
 	if err != nil {
@@ -56,13 +57,17 @@ func RecordControlledEmailGOReview(
 	if auth.AutoSendEnabled || auth.GreenAutorunEnabled {
 		return nil, fmt.Errorf("bounded cohort cannot enable auto-send")
 	}
-	if verdict == ReleaseReadyForControlledEmailReview {
+	if verdict == ReleaseReadyForControlledEmailReview || verdict == ReleaseGOForControlledEmailPilot {
 		want := expectedReleaseFromGrant(auth)
 		// Missing live evidence is a NO_GO.
 		// Never synthesize release readiness from expected state.
 		v := EvaluateControlledEmailRelease(want, live)
-		if v.Verdict != ReleaseReadyForControlledEmailReview {
+		if v.Verdict != ReleaseGOForControlledEmailPilot {
 			return nil, fmt.Errorf("review refused: %s", strings.Join(v.Reasons, ","))
+		}
+		// Human records READY; the evaluator emits the production GO.
+		if verdict == ReleaseReadyForControlledEmailReview {
+			verdict = ReleaseReadyForControlledEmailReview
 		}
 	}
 	if err := store.RecordGOReview(ctx, id, actor, verdict, reason, now); err != nil {
@@ -142,6 +147,15 @@ func FormatReleaseComparison(cmp *ReleaseComparison) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "authorization_id=%s\n", cmp.AuthorizationID)
+	if cmp.Want.CohortHash != "" {
+		fmt.Fprintf(&b, "cohort_hash=%s\n", cmp.Got.CohortHash)
+	}
+	if cmp.Want.PolicyVersion != "" || cmp.Got.PolicyVersion != "" {
+		fmt.Fprintf(&b, "policy_version.expected=%s\n", cmp.Want.PolicyVersion)
+	}
+	if cmp.Want.VolumeCap > 0 || cmp.Got.VolumeCap > 0 {
+		fmt.Fprintf(&b, "volume_cap.expected=%s\n", itoa(cmp.Want.VolumeCap))
+	}
 	for _, ch := range cmp.Checks {
 		switch ch.Name {
 		case "repository_sha":
@@ -155,8 +169,34 @@ func FormatReleaseComparison(cmp *ReleaseComparison) string {
 		}
 	}
 	fmt.Fprintf(&b, "release_verdict=%s\n", cmp.Verdict.Verdict)
-	if cmp.Verdict.Verdict != ReleaseReadyForControlledEmailReview && len(cmp.Verdict.Reasons) > 0 {
+	if cmp.Verdict.Verdict == ReleaseGOForControlledEmailPilot {
+		fmt.Fprintf(&b, "production_verdict=%s\n", ReleaseGOForControlledEmailPilot)
+		fmt.Fprintf(&b, "repository_sha=%s\n", cmp.Got.RepositorySHA)
+		fmt.Fprintf(&b, "policy_version=%s\n", cmp.Got.PolicyVersion)
+		fmt.Fprintf(&b, "volume_cap=%s\n", itoa(cmp.Got.VolumeCap))
+	}
+	if cmp.Verdict.Verdict != ReleaseGOForControlledEmailPilot && len(cmp.Verdict.Reasons) > 0 {
 		fmt.Fprintf(&b, "reason=%s\n", strings.Join(cmp.Verdict.Reasons, ","))
 	}
 	return b.String()
+}
+
+// RequireControlledEmailGO refuses dispatch unless the live comparison is
+// GO_FOR_CONTROLLED_EMAIL_PILOT with every required check PASS.
+func RequireControlledEmailGO(cmp *ReleaseComparison) error {
+	if cmp == nil {
+		return fmt.Errorf("live GO review missing")
+	}
+	if cmp.Verdict.Verdict != ReleaseGOForControlledEmailPilot {
+		if len(cmp.Verdict.Reasons) > 0 {
+			return fmt.Errorf("live GO refused: %s", strings.Join(cmp.Verdict.Reasons, ","))
+		}
+		return fmt.Errorf("live GO refused: %s", cmp.Verdict.Verdict)
+	}
+	for _, ch := range cmp.Checks {
+		if !ch.State.IsPass() {
+			return fmt.Errorf("live GO refused: %s=%s", ch.Name, ch.State.Label())
+		}
+	}
+	return nil
 }

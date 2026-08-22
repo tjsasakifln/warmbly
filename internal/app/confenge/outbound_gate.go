@@ -236,10 +236,14 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 	}
 
 	key := MessageKeyCampaignEmail(campaignID, contactID, sequenceID)
+	cohortKey := key
 	var cohortAuthID uuid.UUID
 	if isBoundedCohortTouch(enrolledTouchpoint) && enrolledTouchpoint.CampaignPolicyAuthorizationID != nil && s.cohortStore != nil {
 		cohortAuthID = *enrolledTouchpoint.CampaignPolicyAuthorizationID
-		slot, rerr := s.cohortStore.ReserveSlot(ctx, cohortAuthID, key, time.Now().UTC())
+		if enrolledTouchpoint.ID != uuid.Nil {
+			cohortKey = cohortMessageKey(cohortAuthID, enrolledTouchpoint.ID)
+		}
+		slot, rerr := s.cohortStore.ReserveSlot(ctx, cohortAuthID, cohortKey, time.Now().UTC())
 		if rerr != nil {
 			if errors.Is(rerr, ErrCohortDailyCap) {
 				return CampaignGateResult{Kind: GateDeferred, Reason: "daily_cap_exceeded", NextSlot: time.Now().UTC().Add(time.Hour)}
@@ -261,19 +265,19 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 	})
 	if err != nil {
 		if cohortAuthID != uuid.Nil {
-			_ = s.cohortStore.ReleaseSlot(ctx, cohortAuthID, key, "governor_error")
+			_ = s.cohortStore.ReleaseSlot(ctx, cohortAuthID, cohortKey, "governor_error")
 		}
 		return CampaignGateResult{Kind: GateTransient, Reason: ReasonGovernor, Err: fmt.Errorf("dispatch governor: %w", err)}
 	}
 	if res.AlreadyCommitted {
 		if cohortAuthID != uuid.Nil {
-			_ = s.cohortStore.CommitSlot(ctx, cohortAuthID, key, time.Now().UTC())
+			_ = s.cohortStore.CommitSlot(ctx, cohortAuthID, cohortKey, time.Now().UTC())
 		}
 		return CampaignGateResult{Kind: GateAlready, Reason: ReasonAlreadySent}
 	}
 	if !res.Allowed {
 		if cohortAuthID != uuid.Nil {
-			_ = s.cohortStore.ReleaseSlot(ctx, cohortAuthID, key, res.Reason)
+			_ = s.cohortStore.ReleaseSlot(ctx, cohortAuthID, cohortKey, res.Reason)
 		}
 		due := res.NextSlot
 		if due.IsZero() {
@@ -290,7 +294,7 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 		return CampaignGateResult{Kind: GateDeferred, NextSlot: due, Reason: res.Reason}
 	}
 	if cohortAuthID != uuid.Nil && res.Reservation != nil {
-		_ = s.cohortStore.BindLeaseToken(ctx, cohortAuthID, key, res.Reservation.ID.String())
+		_ = s.cohortStore.BindLeaseToken(ctx, cohortAuthID, cohortKey, res.Reservation.ID.String())
 	}
 	s.observeControlledEmail(ctx, orgID, intel.EventEmailAttempted, enrolledTouchpoint, cand, ControlledEmailContext{})
 	return CampaignGateResult{

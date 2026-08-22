@@ -319,7 +319,7 @@ func TestGOReviewIsNotLiveGOAndRevocationBlocks(t *testing.T) {
 	_, err := RecordControlledEmailGOReview(context.Background(), store, auth.ID, auth.ActorID,
 		ReleaseGOForControlledEmailPilot, "no", ReleaseManifest{}, now)
 	if err == nil {
-		t.Fatal("must refuse live GO")
+		t.Fatal("empty evidence must refuse live GO")
 	}
 	empty, err := RecordControlledEmailGOReview(context.Background(), store, auth.ID, auth.ActorID,
 		ReleaseReadyForControlledEmailReview, "founder review", ReleaseManifest{}, now)
@@ -335,8 +335,8 @@ func TestGOReviewIsNotLiveGOAndRevocationBlocks(t *testing.T) {
 	if got.GOReviewVerdict != ReleaseReadyForControlledEmailReview {
 		t.Fatalf("verdict=%s", got.GOReviewVerdict)
 	}
-	if got.GOReviewVerdict == ReleaseGOForControlledEmailPilot {
-		t.Fatal("must never emit GO_FOR_CONTROLLED_EMAIL_PILOT")
+	if EvaluateControlledEmailRelease(expectedReleaseFromGrant(auth), live).Verdict != ReleaseGOForControlledEmailPilot {
+		t.Fatal("complete live evidence must evaluate to GO_FOR_CONTROLLED_EMAIL_PILOT")
 	}
 	_ = store.RevokeGrant(context.Background(), auth.ID, auth.ActorID, "stop", now)
 	rev, _ := store.GetGrant(context.Background(), auth.ID)
@@ -553,17 +553,18 @@ func TestFirstCohortDryRunFortyAccountsNoRealSend(t *testing.T) {
 		CohortHash: snap.CohortHash, RecipientSetHash: snap.RecipientSetHash,
 		PolicyVersion: BoundedCohortPolicyV1, ComposerVersion: ComposerVersion,
 		AllowedRouteClasses: snap.AllowedRouteClasses, VolumeCap: snap.MaxDailyVolume,
-		SMTPReady: EvidencePass, ObservabilityReady: EvidencePass, TTLValid: EvidencePass,
+		SMTPReady: EvidencePass, ReplyIngestReady: EvidencePass, ObservabilityReady: EvidencePass,
+		DispatchWiring: EvidencePass, SenderProviderConfig: EvidencePass, TTLValid: EvidencePass,
 		SuppressionClear: EvidencePass, DBCohortAuthority: EvidencePass, EvidenceVersion: DefaultEvidenceVersion,
 		KillSwitchOperational: EvidencePass, SendingPausedState: EvidencePass,
 		AutoSendState: EvidencePass, GreenAutorunState: EvidencePass,
 	}
 	v := EvaluateControlledEmailRelease(want, want)
-	if v.Verdict != ReleaseReadyForControlledEmailReview {
-		t.Fatalf("verdict=%s %v", v.Verdict, v.Reasons)
+	if v.Verdict != ReleaseGOForControlledEmailPilot {
+		t.Fatalf("complete PASS set must be live GO, got %s %v", v.Verdict, v.Reasons)
 	}
-	if v.Verdict == ReleaseGOForControlledEmailPilot {
-		t.Fatal("never live GO")
+	if res.RealEmailSent || res.AutoSendEnabled {
+		t.Fatal("authorize/dry-run must not send or enable auto-send")
 	}
 }
 

@@ -64,7 +64,7 @@ func TestControlledEmailGOReviewAdversarialFailClosed(t *testing.T) {
 			t.Fatalf("verdict=%s reasons=%v", v.Verdict, v.Reasons)
 		}
 		if v.Verdict == ReleaseGOForControlledEmailPilot {
-			t.Fatal("must never emit GO_FOR_CONTROLLED_EMAIL_PILOT")
+			t.Fatal("incomplete evidence must not emit GO_FOR_CONTROLLED_EMAIL_PILOT")
 		}
 		if wantReason != "" && !containsStr(v.Reasons, wantReason) {
 			t.Fatalf("want reason %s in %v", wantReason, v.Reasons)
@@ -83,6 +83,21 @@ func TestControlledEmailGOReviewAdversarialFailClosed(t *testing.T) {
 		live := matchingControlledEmailLive(sampleGOReviewGrant(t, now))
 		live.SMTPReady = EvidenceUnknown
 		mustNOGO(t, live, "smtp_readiness_not_proven")
+	})
+	t.Run("3b_missing_reply_ingest", func(t *testing.T) {
+		live := matchingControlledEmailLive(sampleGOReviewGrant(t, now))
+		live.ReplyIngestReady = EvidenceUnknown
+		mustNOGO(t, live, "reply_ingest_not_proven")
+	})
+	t.Run("3c_missing_dispatch_wiring", func(t *testing.T) {
+		live := matchingControlledEmailLive(sampleGOReviewGrant(t, now))
+		live.DispatchWiring = EvidenceUnknown
+		mustNOGO(t, live, "dispatch_wiring_not_proven")
+	})
+	t.Run("3d_missing_sender_config", func(t *testing.T) {
+		live := matchingControlledEmailLive(sampleGOReviewGrant(t, now))
+		live.SenderProviderConfig = EvidenceUnknown
+		mustNOGO(t, live, "sender_provider_not_proven")
 	})
 	t.Run("4_missing_observability", func(t *testing.T) {
 		live := matchingControlledEmailLive(sampleGOReviewGrant(t, now))
@@ -215,15 +230,17 @@ func TestControlledEmailGOReviewAdversarialFailClosed(t *testing.T) {
 		if got.GOReviewVerdict != ReleaseReadyForControlledEmailReview {
 			t.Fatalf("verdict=%s", got.GOReviewVerdict)
 		}
-		if got.GOReviewVerdict == ReleaseGOForControlledEmailPilot || got.GOReviewVerdict == ReleaseGO {
-			t.Fatal("must never emit GO_FOR_CONTROLLED_EMAIL_PILOT")
-		}
 		v := EvaluateControlledEmailRelease(expectedReleaseFromGrant(auth), live)
-		if v.Verdict != ReleaseReadyForControlledEmailReview {
+		if v.Verdict != ReleaseGOForControlledEmailPilot {
 			t.Fatalf("eval %s %v", v.Verdict, v.Reasons)
 		}
-		if v.Verdict == ReleaseGOForControlledEmailPilot {
-			t.Fatal("evaluator must never emit live GO")
+		gotGO, err := RecordControlledEmailGOReview(context.Background(), store, auth.ID, auth.ActorID,
+			ReleaseGOForControlledEmailPilot, "founder go", live, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotGO.GOReviewVerdict != ReleaseGOForControlledEmailPilot {
+			t.Fatalf("persisted production GO=%s", gotGO.GOReviewVerdict)
 		}
 	})
 	t.Run("21_explicit_human_nogo_without_fake_readiness", func(t *testing.T) {
@@ -432,8 +449,8 @@ func TestCLIReviewFormatterPreviewNotPersisted(t *testing.T) {
 	if strings.Contains(text, "smtp_ready=FAIL") {
 		t.Fatalf("unproven SMTP must not print FAIL\n%s", text)
 	}
-	if strings.Contains(text, ReleaseGOForControlledEmailPilot) {
-		t.Fatal("formatter must not emit live GO")
+	if strings.Contains(text, "release_verdict="+ReleaseGOForControlledEmailPilot) {
+		t.Fatal("unproven preview must not emit live GO")
 	}
 	persisted, _ := store.GetGrant(context.Background(), auth.ID)
 	if persisted.GOReviewVerdict != "" {
@@ -444,7 +461,7 @@ func TestCLIReviewFormatterPreviewNotPersisted(t *testing.T) {
 	cmpReady := CompareControlledEmailRelease(expectedReleaseFromGrant(auth), ready)
 	cmpReady.AuthorizationID = auth.ID
 	readyText := FormatReleaseComparison(&cmpReady)
-	if !strings.Contains(readyText, "release_verdict="+ReleaseReadyForControlledEmailReview) {
+	if !strings.Contains(readyText, "release_verdict="+ReleaseGOForControlledEmailPilot) {
 		t.Fatalf("ready preview:\n%s", readyText)
 	}
 	if !strings.Contains(readyText, "repository_sha=PASS") || !strings.Contains(readyText, "smtp_ready=PASS") {
@@ -487,7 +504,10 @@ func matchingControlledEmailLive(auth *BoundedCohortAuthorization) ReleaseManife
 		VolumeCap:             auth.MaxDailyVolume,
 		EvidenceVersion:       auth.EvidenceVersion,
 		SMTPReady:             EvidencePass,
+		ReplyIngestReady:      EvidencePass,
 		ObservabilityReady:    EvidencePass,
+		DispatchWiring:        EvidencePass,
+		SenderProviderConfig:  EvidencePass,
 		TTLValid:              EvidencePass,
 		SuppressionClear:      EvidencePass,
 		DBCohortAuthority:     EvidencePass,
