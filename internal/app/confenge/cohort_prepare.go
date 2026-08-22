@@ -439,6 +439,12 @@ func controlledPrepareBlock(c *models.OutreachContactCandidate, allowed map[stri
 	if blk := classifyControlledRecipient(nil, c, now); blk != nil {
 		return blk.Code
 	}
+	if canonicalPilotEmail(c.Email) == "" {
+		return "missing_mailbox"
+	}
+	if !CandidateControlledEligible(c) {
+		return "no_controlled_eligible_route"
+	}
 	class := CandidateRouteClass(c)
 	if class == RouteClassProbabilisticOrRisky {
 		return "risky_outside_default_pilot"
