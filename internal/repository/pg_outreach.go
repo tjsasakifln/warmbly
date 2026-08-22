@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,6 +30,8 @@ type OutreachRepository interface {
 
 	// Accounts
 	GetAccountByCNPJ(ctx context.Context, orgID uuid.UUID, cnpj14 string) (*models.OutreachAccount, error)
+	// GetAccountBySourceLeadID resolves the extra-cli lead id via the org+source_lead_id index.
+	GetAccountBySourceLeadID(ctx context.Context, orgID uuid.UUID, sourceLeadID string) (*models.OutreachAccount, error)
 	GetAccount(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachAccount, error)
 	UpsertAccount(ctx context.Context, acc *models.OutreachAccount) (created bool, err error)
 	ListAccounts(ctx context.Context, orgID uuid.UUID, filter OutreachAccountFilter) ([]models.OutreachAccount, error)
@@ -113,6 +116,8 @@ type OutreachAccountFilter struct {
 	RequireTargetFitEligible bool
 	RequireOperational       bool
 	StableOrder              bool
+	// SourceRunID scopes the page to one extra-cli import run. Indexed; implies StableOrder.
+	SourceRunID string
 }
 
 // OutreachActivationCounts is aggregate activation_state distribution for an org.
@@ -337,6 +342,21 @@ func scanImportRun(row scannable) (*models.OutreachImportRun, error) {
 func (r *outreachRepository) GetAccountByCNPJ(ctx context.Context, orgID uuid.UUID, cnpj14 string) (*models.OutreachAccount, error) {
 	row := r.db.QueryRow(ctx, outreachAccountSelect+`
 		FROM outreach_accounts WHERE organization_id=$1 AND cnpj14=$2`, orgID, cnpj14)
+	acc, err := scanAccount(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return acc, err
+}
+
+func (r *outreachRepository) GetAccountBySourceLeadID(ctx context.Context, orgID uuid.UUID, sourceLeadID string) (*models.OutreachAccount, error) {
+	sourceLeadID = strings.TrimSpace(sourceLeadID)
+	if sourceLeadID == "" {
+		return nil, nil
+	}
+	row := r.db.QueryRow(ctx, outreachAccountSelect+`
+		FROM outreach_accounts WHERE organization_id=$1 AND source_lead_id=$2
+		ORDER BY updated_at DESC LIMIT 1`, orgID, sourceLeadID)
 	acc, err := scanAccount(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -675,6 +695,11 @@ func (r *outreachRepository) ListAccounts(ctx context.Context, orgID uuid.UUID, 
 		args = append(args, filter.CNPJ14)
 		n++
 	}
+	if filter.SourceRunID != "" {
+		q += fmt.Sprintf(` AND source_run_id=$%d`, n)
+		args = append(args, filter.SourceRunID)
+		n++
+	}
 	if filter.Search != "" {
 		q += fmt.Sprintf(` AND (razao_social ILIKE $%d OR nome_fantasia ILIKE $%d OR cnpj14 LIKE $%d)`, n, n, n)
 		args = append(args, "%"+filter.Search+"%")
@@ -703,8 +728,9 @@ func (r *outreachRepository) ListAccounts(ctx context.Context, orgID uuid.UUID, 
 		q += ` AND email_send_ready = true`
 		q += ` AND EXISTS (SELECT 1 FROM outreach_contact_candidates occ WHERE occ.organization_id=outreach_accounts.organization_id AND occ.account_id=outreach_accounts.id AND occ.email_send_ready=true AND occ.email<>'' AND occ.blocked=false AND occ.do_not_contact=false AND occ.bounced=false AND occ.mailbox_purpose_send_blocked=false AND occ.verification_status NOT IN ('CANDIDATE_UNVERIFIED','NOT_FOUND','INVALID','BOUNCED','DO_NOT_CONTACT'))`
 	}
-	if filter.StableOrder {
-		q += fmt.Sprintf(` ORDER BY cnpj14 ASC LIMIT $%d OFFSET $%d`, n, n+1)
+	// A run-scoped page must paginate deterministically; priority_rank ordering is not stable.
+	if filter.StableOrder || filter.SourceRunID != "" {
+		q += fmt.Sprintf(` ORDER BY cnpj14 ASC, id ASC LIMIT $%d OFFSET $%d`, n, n+1)
 	} else if filter.DynamicPriority {
 		q += fmt.Sprintf(` ORDER BY next_best_action_at ASC NULLS LAST, activation_score DESC, priority_rank ASC NULLS LAST, moment_observed_at DESC NULLS LAST, cnpj14 ASC LIMIT $%d OFFSET $%d`, n, n+1)
 	} else {

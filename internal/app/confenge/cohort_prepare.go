@@ -29,14 +29,16 @@ type CohortAccountInput struct {
 	Account    models.OutreachAccount
 	Candidates []models.OutreachContactCandidate
 	Source     string
+	// Persisted marks a row read back from Postgres, so its canonical ids must be real.
+	Persisted bool
 }
 
 // FrozenCohortMember is the exact authorization composition for one account.
 // One member = one initial route. Membership is frozen at preview time.
 type FrozenCohortMember struct {
-	AccountID        uuid.UUID `json:"account_id,omitempty"`
+	AccountID        uuid.UUID `json:"account_id"`
 	AccountRef       string    `json:"account_ref"`
-	CandidateID      uuid.UUID `json:"candidate_id,omitempty"`
+	CandidateID      uuid.UUID `json:"candidate_id"`
 	CandidateRef     string    `json:"candidate_ref"`
 	Mailbox          string    `json:"mailbox"`
 	RouteClass       string    `json:"route_class"`
@@ -240,6 +242,11 @@ func PrepareControlledCohort(accounts []CohortAccountInput, opts CohortPrepareOp
 		if in.Account.Blocked {
 			exclude(ref, "account_blocked", "", "")
 			continue
+		}
+		// A Postgres-bound account without its canonical id would freeze uuid.Nil
+		// and only surface at authorize time as an opaque touchpoint FK violation.
+		if in.Persisted && in.Account.ID == uuid.Nil {
+			return nil, fmt.Errorf("account %q loaded from postgres has no canonical id; refusing to freeze an unbound member", ref)
 		}
 
 		cand, reason := SelectInitialRoute(in.Candidates, allowed, opts.Now)
