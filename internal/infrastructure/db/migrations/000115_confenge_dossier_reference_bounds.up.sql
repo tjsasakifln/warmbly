@@ -15,12 +15,16 @@ ALTER TABLE confenge_dossier_references
         CHECK (as_of = '' OR as_of ~ '^\d{4}-\d{2}-\d{2}$'),
     ADD CONSTRAINT confenge_dossier_references_producer_sha_bounds
         CHECK (producer_sha = '' OR producer_sha ~ '^[0-9a-f]{7,64}$'),
+    -- Postgres caps a regex repetition bound at 255 (DUPMAX), so {1,512} is not
+    -- a long pattern, it is invalid SQL. It only looked fine because OR
+    -- short-circuits on an empty artifact_uri and the ALTER ran on an empty
+    -- table: the first real value, and any populated table, raises 2201B.
     ADD CONSTRAINT confenge_dossier_references_artifact_uri_bounds
-        CHECK (artifact_uri = '' OR artifact_uri ~ '^[A-Za-z0-9_./:-]{1,512}$'),
+        CHECK (artifact_uri = '' OR (length(artifact_uri) <= 512 AND artifact_uri ~ '^[A-Za-z0-9_./:-]+$')),
     ADD CONSTRAINT confenge_dossier_references_delivery_note_bounds
-        CHECK (length(delivery_note) <= 2000),
+        CHECK (octet_length(delivery_note) <= 2000),
     ADD CONSTRAINT confenge_dossier_references_not_deliverable_reason_bounds
-        CHECK (length(not_deliverable_reason) <= 512);
+        CHECK (octet_length(not_deliverable_reason) <= 512);
 
 -- The badge decorator reads the newest reference per account for the accounts on
 -- the operator view. The existing index leads with account_id, which blocks the

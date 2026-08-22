@@ -491,3 +491,133 @@ func TestBadgeAccountIDsCoverEveryLane(t *testing.T) {
 		t.Fatal("a nil view must yield no accounts")
 	}
 }
+
+// --- Regressions from the second adversarial review -------------------------
+
+func TestIdentityDoesNotFitInTheFormatPinnedFields(t *testing.T) {
+	// Format pinning bounds the shape, not the meaning. 128 characters of
+	// [A-Za-z0-9_.:-] hold a razao social, a CNPJ and a municipio comfortably,
+	// and the key-name scan cannot see a value.
+	for _, attack := range []string{
+		"CONSTRUTORA.ALFA.ENGENHARIA.LTDA:12.345.678.0001-95:Curitiba-PR",
+		"razao_social.CONSTRUTORA-ALFA-LTDA.cnpj.12.345.678.0001-95",
+		"cnpj14:12345678000195",
+	} {
+		ref := &DossierReference{
+			OrganizationID: uuid.New(), AccountID: uuid.New(), AttachedBy: uuid.New(),
+			DossierID: attack, CatalogMode: "official_live", DataState: "DATA_READY",
+			ContentHash: "sha256:" + strings.Repeat("a", 64),
+		}
+		if err := NormalizeDossierReference(ref, time.Now().UTC()); err == nil {
+			t.Fatalf("dossier_id accepted identity: %q", attack)
+		}
+	}
+	ref := &DossierReference{
+		OrganizationID: uuid.New(), AccountID: uuid.New(), AttachedBy: uuid.New(),
+		DossierID: "cfg-dossier-cb06e7fa204654f7", CatalogMode: "official_live", DataState: "DATA_READY",
+		ContentHash: "sha256:" + strings.Repeat("a", 64),
+		ArtifactURI: "/srv/dossies/cfg-2026-08-beta/manifest.json",
+	}
+	if err := NormalizeDossierReference(ref, time.Now().UTC()); err != nil {
+		t.Fatalf("a legitimate reference must still normalize: %v", err)
+	}
+}
+
+func TestDocumentScanUsesCheckDigitsNotShape(t *testing.T) {
+	// Separators vary, so match the digits; check digits stop an ordinary
+	// protocol number from being refused as a CNPJ.
+	for _, leak := range []string{
+		"Empresa 12-345-678/0001-95 recebeu o dossie.",
+		"Empresa 12/345/678/0001/95 recebeu o dossie.",
+		"Entregue a Joao da Silva, CPF 529.982.247-25, socio.",
+		"Enviado para joao.silva@construtoraalfa.com.br",
+		"Dossie entregue ao diretor da Construtora Alfa Engenharia Ltda.",
+	} {
+		if findForbiddenDossierValue(leak) == "" {
+			t.Errorf("identity passed the value scan: %q", leak)
+		}
+	}
+	for _, ok := range []string{
+		"Protocolo 20260822093512 confirmado pelo cliente.",
+		"Contrato 12 345 678 9012 34 assinado.",
+		"entregue em reuniao presencial",
+	} {
+		if key := findForbiddenDossierValue(ok); key != "" {
+			t.Errorf("false positive (%s) on an ordinary note: %q", key, ok)
+		}
+	}
+}
+
+func TestDeliveredDowngradeIsAConflictNotAnOutage(t *testing.T) {
+	// The upsert fix moved the failure from the undelivered case to the
+	// delivered one, where it surfaced as an opaque 500.
+	store := NewMemoryDossierStore()
+	org, account, actor := uuid.New(), uuid.New(), uuid.New()
+	build := func(state string) *DossierReference {
+		ref := &DossierReference{
+			OrganizationID: org, AccountID: account, AttachedBy: actor,
+			DossierID: "cfg-dossier-1", CatalogMode: "official_live", DataState: state,
+			ContentHash: "sha256:" + strings.Repeat("a", 64),
+		}
+		if err := NormalizeDossierReference(ref, time.Now().UTC()); err != nil {
+			t.Fatalf("normalize: %v", err)
+		}
+		return ref
+	}
+	first := build("DATA_READY")
+	if err := store.PutDossierReference(context.Background(), first); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if err := MarkDossierDelivered(first, actor, time.Now().UTC(), "entregue"); err != nil {
+		t.Fatalf("deliver: %v", err)
+	}
+	if err := store.SetDossierReferenceDelivered(context.Background(), first); err != nil {
+		t.Fatalf("persist delivery: %v", err)
+	}
+	if err := store.PutDossierReference(context.Background(), build("DATA_REJECT")); !errors.Is(err, ErrDossierDeliveredDowngrade) {
+		t.Fatalf("a downgrade of a delivered reference must be a typed conflict, got %v", err)
+	}
+}
+
+func TestReattachKeepsTheOriginalAttacher(t *testing.T) {
+	// Postgres omits attached_by from both ON CONFLICT SET and RETURNING, so the
+	// first attacher is who the row keeps. The memory store adopting the second
+	// hid that divergence.
+	store := NewMemoryDossierStore()
+	org, account := uuid.New(), uuid.New()
+	first, second := uuid.New(), uuid.New()
+	mk := func(by uuid.UUID) *DossierReference {
+		ref := &DossierReference{
+			OrganizationID: org, AccountID: account, AttachedBy: by,
+			DossierID: "cfg-dossier-1", CatalogMode: "official_live", DataState: "DATA_READY",
+			ContentHash: "sha256:" + strings.Repeat("a", 64),
+		}
+		_ = NormalizeDossierReference(ref, time.Now().UTC())
+		return ref
+	}
+	_ = store.PutDossierReference(context.Background(), mk(first))
+	again := mk(second)
+	_ = store.PutDossierReference(context.Background(), again)
+	if again.AttachedBy != first {
+		t.Fatalf("re-attach must report the original attacher, got %v", again.AttachedBy)
+	}
+}
+
+func TestManifestSizeIsBounded(t *testing.T) {
+	// The depth cap bounds recursion, not width.
+	wide := make(map[string]any, 1000)
+	for i := 0; i < 1000; i++ {
+		wide[strings.Repeat("k", 80)+string(rune('a'+i%26))+string(rune('a'+i/26))] = strings.Repeat("v", 80)
+	}
+	wide["dossier_id"] = "cfg-1"
+	wide["catalog_mode"] = "official_live"
+	wide["data_state"] = "DATA_READY"
+	wide["content_hash"] = "sha256:" + strings.Repeat("a", 64)
+	raw, _ := json.Marshal(wide)
+	if len(raw) <= DossierManifestMaxBytes {
+		t.Skipf("probe payload is %d bytes, under the cap", len(raw))
+	}
+	if _, err := ParseDossierManifest(raw); err == nil {
+		t.Fatal("a payload past the byte cap must be refused")
+	}
+}

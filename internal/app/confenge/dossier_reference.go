@@ -35,6 +35,10 @@ var (
 	ErrDossierHumanActor          = errors.New("dossier delivery requires a human actor")
 	ErrDossierReferenceMissing    = errors.New("dossier reference not found")
 	ErrDossierDeliveryNotInferred = errors.New("delivery is a human act and cannot be attached pre-delivered")
+	// A producer downgrade of an already-delivered reference is a real event an
+	// operator must see, not an opaque 500 from a CHECK. The delivery record is
+	// never erased to make the new state fit.
+	ErrDossierDeliveredDowngrade = errors.New("dossier was already delivered and the producer now reports it not deliverable")
 )
 
 // dossierForbiddenKeys are the confenge-dossier/1.0 body sections and the
@@ -54,16 +58,22 @@ var dossierForbiddenKeys = []string{
 // identity, inside dossier_id or as_of: the forbidden-key scan only inspects
 // key names, never values.
 var (
-	dossierIDPattern   = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,128}$`)
-	dossierHashPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	dossierAsOfPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
-	dossierSHAPattern  = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
-	dossierURIPattern  = regexp.MustCompile(`^[A-Za-z0-9_./:-]{1,512}$`)
-	dossierCNPJPattern = regexp.MustCompile(`\d{2}[.\s]?\d{3}[.\s]?\d{3}[/.\s]?\d{4}[-.\s]?\d{2}`)
+	dossierIDPattern    = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,128}$`)
+	dossierHashPattern  = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	dossierAsOfPattern  = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+	dossierSHAPattern   = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+	dossierURIPattern   = regexp.MustCompile(`^[A-Za-z0-9_./:-]{1,512}$`)
+	dossierEmailPattern = regexp.MustCompile(`[\w.+-]+@[\w-]+\.[\w.-]+`)
+	// Legal-form markers that end a Brazilian company name.
+	dossierCompanySuffix = regexp.MustCompile(`(?i)\b(ltda|s\.?/?a|eireli|epp|mei)\b`)
 )
 
 // DossierDeliveryNoteMax bounds the one field a human types by hand.
 const DossierDeliveryNoteMax = 2000
+
+// DossierManifestMaxBytes bounds the parsed payload. A manifest is a dozen
+// scalars; anything near this is a mistake or an attack.
+const DossierManifestMaxBytes = 64 << 10
 
 // DossierManifest is the manifest.json projection. It carries hashes and state,
 // never a dossier body and never the prospect identity.
@@ -126,6 +136,11 @@ func ParseDossierManifest(raw []byte) (DossierManifest, error) {
 	var m DossierManifest
 	if len(raw) == 0 {
 		return m, fmt.Errorf("%w: empty payload", ErrDossierManifestInvalid)
+	}
+	// The depth cap bounds recursion, not width: a flat 400k-key object parses
+	// cleanly and allocates ~84 MB. A manifest is a dozen scalars.
+	if len(raw) > DossierManifestMaxBytes {
+		return m, fmt.Errorf("%w: manifest over %d bytes", ErrDossierManifestInvalid, DossierManifestMaxBytes)
 	}
 	var doc map[string]any
 	if err := json.Unmarshal(raw, &doc); err != nil {
@@ -190,8 +205,18 @@ func findForbiddenDossierValue(text string) string {
 	if text == "" {
 		return ""
 	}
-	if dossierCNPJPattern.MatchString(text) {
+	// Separators vary in the wild, so match on the digits rather than on a
+	// punctuation shape: "12.345.678/0001-95", "12-345-678/0001-95" and
+	// "12/345/678/0001/95" are the same number. Check digits are validated so an
+	// ordinary protocol number is not mistaken for a CNPJ.
+	if run := findDocumentRun(text, 14, validCNPJ); run != "" {
 		return "cnpj"
+	}
+	if run := findDocumentRun(text, 11, validCPF); run != "" {
+		return "cpf"
+	}
+	if dossierEmailPattern.MatchString(text) {
+		return "email"
 	}
 	lowered := strings.ToLower(text)
 	for _, key := range dossierForbiddenKeys {
@@ -199,7 +224,82 @@ func findForbiddenDossierValue(text string) string {
 			return key
 		}
 	}
+	if dossierCompanySuffix.MatchString(text) {
+		return "razao_social"
+	}
 	return ""
+}
+
+// findDocumentRun looks for a run of exactly `size` digits, ignoring any
+// separators between them, that satisfies `valid`.
+func findDocumentRun(text string, size int, valid func(string) bool) string {
+	digits := make([]byte, 0, len(text))
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		switch {
+		case c >= '0' && c <= '9':
+			digits = append(digits, c)
+		case c == '.' || c == '-' || c == '/' || c == ' ':
+			// separator: keep the run going
+		default:
+			if len(digits) >= size && scanWindows(string(digits), size, valid) {
+				return string(digits)
+			}
+			digits = digits[:0]
+		}
+	}
+	if len(digits) >= size && scanWindows(string(digits), size, valid) {
+		return string(digits)
+	}
+	return ""
+}
+
+func scanWindows(digits string, size int, valid func(string) bool) bool {
+	for i := 0; i+size <= len(digits); i++ {
+		if valid(digits[i : i+size]) {
+			return true
+		}
+	}
+	return false
+}
+
+func checkDigit(digits string, weights []int) byte {
+	sum := 0
+	for i, w := range weights {
+		sum += int(digits[i]-'0') * w
+	}
+	rest := sum % 11
+	if rest < 2 {
+		return '0'
+	}
+	return byte('0' + 11 - rest)
+}
+
+func validCNPJ(d string) bool {
+	if len(d) != 14 || allSameDigit(d) {
+		return false
+	}
+	w1 := []int{5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2}
+	w2 := []int{6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2}
+	return d[12] == checkDigit(d, w1) && d[13] == checkDigit(d, w2)
+}
+
+func validCPF(d string) bool {
+	if len(d) != 11 || allSameDigit(d) {
+		return false
+	}
+	w1 := []int{10, 9, 8, 7, 6, 5, 4, 3, 2}
+	w2 := []int{11, 10, 9, 8, 7, 6, 5, 4, 3, 2}
+	return d[9] == checkDigit(d, w1) && d[10] == checkDigit(d, w2)
+}
+
+func allSameDigit(d string) bool {
+	for i := 1; i < len(d); i++ {
+		if d[i] != d[0] {
+			return false
+		}
+	}
+	return true
 }
 
 // DossierDeliverability is derived from the manifest, never asserted by a caller.
@@ -242,6 +342,15 @@ func NormalizeDossierReference(ref *DossierReference, now time.Time) error {
 	ref.ArtifactURI = strings.TrimSpace(ref.ArtifactURI)
 	if ref.ArtifactURI != "" && !dossierURIPattern.MatchString(ref.ArtifactURI) {
 		return fmt.Errorf("%w: artifact_uri must match %s", ErrDossierManifestInvalid, dossierURIPattern)
+	}
+	// Format pinning bounds the shape, not the meaning: 128 characters of
+	// [A-Za-z0-9_.:-] hold a razao social, a CNPJ and a municipio comfortably.
+	// These are the fields the review used to smuggle identity past the
+	// key-name scan, so they get the value scan too.
+	for label, value := range map[string]string{"dossier_id": ref.DossierID, "artifact_uri": ref.ArtifactURI} {
+		if key := findForbiddenDossierValue(value); key != "" {
+			return fmt.Errorf("%w: %s contains %s", ErrDossierPrivateBody, label, key)
+		}
 	}
 	if err := ValidateDossierManifest(DossierManifest{
 		DossierID: ref.DossierID, Schema: ref.Schema, CatalogMode: ref.CatalogMode,
@@ -387,7 +496,14 @@ func (m *memoryDossierStore) PutDossierReference(_ context.Context, ref *Dossier
 	key := dossierUniqueKey(*ref)
 	if existing, ok := m.byKey[key]; ok {
 		prior := m.byID[existing]
+		// Postgres omits attached_by from both the ON CONFLICT SET and the
+		// RETURNING list, so the first attacher is who the row keeps. Adopting
+		// the second one here is a divergence that hides attribution bugs.
+		if prior.DeliveredAt != nil && !ref.Deliverable {
+			return ErrDossierDeliveredDowngrade
+		}
 		ref.ID = prior.ID
+		ref.AttachedBy = prior.AttachedBy
 		ref.AttachedAt = prior.AttachedAt
 		ref.CreatedAt = prior.CreatedAt
 		ref.DeliveredAt = prior.DeliveredAt

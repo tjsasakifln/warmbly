@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -85,6 +86,12 @@ func (s *postgresDossierStore) PutDossierReference(ctx context.Context, ref *Dos
 		ref.AttachedBy, ref.AttachedAt.UTC(), ref.CreatedAt.UTC(), ref.UpdatedAt.UTC(),
 	).Scan(&ref.ID, &ref.AttachedAt, &ref.CreatedAt, &ref.DeliveredAt, &ref.DeliveredBy, &ref.DeliveryNote)
 	if err != nil {
+		// The delivery gate firing means the producer downgraded a reference a
+		// human already delivered. That is a conflict the operator must see, not
+		// a store outage.
+		if strings.Contains(err.Error(), "delivery_gate_check") {
+			return ErrDossierDeliveredDowngrade
+		}
 		return fmt.Errorf("%w: %v", ErrDossierStoreUnavailable, err)
 	}
 	return nil

@@ -94,6 +94,9 @@ func (s *service) AttachDossierReference(ctx context.Context, orgID, actorID uui
 		return nil, errx.New(errx.BadRequest, nerr.Error())
 	}
 	if perr := s.dossierStore.PutDossierReference(ctx, ref); perr != nil {
+		if errors.Is(perr, ErrDossierDeliveredDowngrade) {
+			return nil, errx.New(errx.Conflict, perr.Error())
+		}
 		return nil, errx.New(errx.Internal, "persist dossier reference: "+perr.Error())
 	}
 	s.auditDossier(ctx, orgID, actorID, ref, "dossier_reference_attach")
