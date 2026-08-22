@@ -354,8 +354,15 @@ func dispatchViaOperatorAPI(id uuid.UUID, limit int) (*confenge.CohortDispatchRe
 	if !strings.Contains(base, "://") {
 		base = "http://" + base
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
 	client := &http.Client{Timeout: 2 * time.Minute}
-	sess, err := client.Post(base+"/v1/auth/confenge-operator/session", "application/json", strings.NewReader("{}"))
+	sessReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/auth/confenge-operator/session", strings.NewReader("{}"))
+	if err != nil {
+		return nil, err
+	}
+	sessReq.Header.Set("Content-Type", "application/json")
+	sess, err := client.Do(sessReq)
 	if err != nil {
 		return nil, err
 	}
@@ -369,7 +376,7 @@ func dispatchViaOperatorAPI(id uuid.UUID, limit int) (*confenge.CohortDispatchRe
 		return nil, fmt.Errorf("operator session missing access_token (http %s)", sess.Status)
 	}
 	url := fmt.Sprintf("%s/v1/confenge/cohorts/%s/dispatch?limit=%d", base, id, limit)
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte("{}")))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader([]byte("{}")))
 	if err != nil {
 		return nil, err
 	}
