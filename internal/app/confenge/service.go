@@ -642,10 +642,10 @@ func leadToCandidate(orgID, accountID, runID uuid.UUID, fc FeedContact) *models.
 	if models.OutreachUnenrollableVerification[cand.VerificationStatus] || cand.VerificationStatus == models.OutreachVerifyInstitutionalGeneric {
 		cand.EmailSendReady = false
 	}
-	if supp := strings.ToUpper(strings.TrimSpace(cand.RouteSuppression)); supp == "SUPPRESSED" || supp == "DO_NOT_CONTACT" || supp == "DNC" {
+	if routeSuppressionActive(cand.RouteSuppression) {
 		cand.DoNotContact = true
 		if cand.BlockReason == "" {
-			cand.BlockReason = "route_suppression:" + supp
+			cand.BlockReason = "route_suppression:" + strings.ToUpper(strings.TrimSpace(cand.RouteSuppression))
 		}
 	}
 	if fc.MailboxPurposeSendBlocked != nil {

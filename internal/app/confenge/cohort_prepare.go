@@ -471,10 +471,10 @@ func provenanceMissing(c *models.OutreachContactCandidate) bool {
 	if c == nil {
 		return true
 	}
-	if strings.TrimSpace(c.RouteSuppression) != "" {
+	if routeSuppressionActive(c.RouteSuppression) {
 		return true
 	}
-	if strings.Contains(strings.ToLower(c.BlockReason), "provenance") {
+	if strings.Contains(strings.ToLower(c.BlockReason), "provenance_taint") {
 		return true
 	}
 	return false

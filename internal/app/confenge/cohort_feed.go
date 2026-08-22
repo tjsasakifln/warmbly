@@ -135,14 +135,34 @@ func candidateFromFeedContact(fc FeedContact) models.OutreachContactCandidate {
 	case models.OutreachVerifyDoNotContact:
 		c.DoNotContact = true
 	}
-	if strings.TrimSpace(fc.RouteSuppression) != "" {
-		c.Blocked = true
-		c.BlockReason = fc.RouteSuppression
+	if routeSuppressionActive(fc.RouteSuppression) {
+		c.DoNotContact = true
+		if c.BlockReason == "" {
+			c.BlockReason = "route_suppression:" + strings.ToUpper(strings.TrimSpace(fc.RouteSuppression))
+		}
 	}
 	if fc.ProvenanceChainValid != nil && !*fc.ProvenanceChainValid {
+		c.EmailSendReady = false
+		if c.BlockReason == "" {
+			c.BlockReason = "provenance_chain_invalid"
+		}
+	}
+	derivedFixture := fc.DerivedFromFixture != nil && *fc.DerivedFromFixture
+	if t, reason := ContactProvenanceTainted(fc.Email, fc.SourceURL, "", fc.VerificationStatus, derivedFixture); t {
+		c.EmailSendReady = false
 		c.Blocked = true
-		c.BlockReason = "provenance"
+		c.BlockReason = "provenance_taint:" + reason
 	}
 	c.DiscoveryJSON = mergeControlledDiscovery(fc.DiscoveryJSON, fc)
 	return c
+}
+
+// routeSuppressionActive is extra-cli's suppression enum. NONE/CLEAR/empty are not suppressed.
+func routeSuppressionActive(v string) bool {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "SUPPRESSED", "DO_NOT_CONTACT", "DNC":
+		return true
+	default:
+		return false
+	}
 }

@@ -25,6 +25,7 @@ Hashes (`cohort_id`, `cohort_hash`, `recipient_set_hash`, SHA, feed identity, po
 - Allows `ROLE_OR_DEPARTMENT`, `GENERIC_COMPANY`, `PUBLIC_COMPANY_FREEMAIL`
 - Keeps `PROBABILISTIC_OR_RISKY` out of the default pilot
 - Excludes hard bounce, opt-out, suppression, DNC, stale evidence, missing provenance, shotgun duplicates
+- Extra-cli `route_suppression: NONE` is not suppression. `provenance_chain_valid: false` does not by itself drop a contact extra-cli already stamped `controlled_email_eligible`. Demo or fixture taint still excludes.
 - Absence of a named person does **not** exclude a control-eligible route
 - Prints a reconciling preview (eligible + excluded = considered)
 
