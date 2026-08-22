@@ -579,6 +579,7 @@ func Run(
 					confengeWrite.POST("/touchpoints/:id/approve", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ApproveConfengeTouchpoint)
 					confengeWrite.POST("/touchpoints/:id/decision", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.RejectSkipConfengeTouchpoint)
 					confengeWrite.POST("/touchpoints/:id/queue", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.QueueConfengeTouchpoint)
+					confengeWrite.POST("/cohorts/:id/dispatch", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.DispatchConfengeCohort)
 					confengeWrite.POST("/touchpoints/:id/green-autorun", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.GreenAutorunConfengeTouchpoint)
 					confengeWrite.POST("/campaign/policy/authorize", m.RequireAccess(models.PermManageCampaigns, models.APIPermWriteCampaigns), h.AuthorizeConfengeCampaignPolicy)
 					confengeWrite.POST("/campaign/green-autorun/batch", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.BatchGreenAutorunConfenge)

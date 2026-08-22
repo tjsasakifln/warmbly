@@ -10,6 +10,7 @@ confenge cohort authorize --manifest /tmp/cohort.json --actor UUID
 confenge cohort authorize --manifest /tmp/cohort.json --actor UUID --confirm
 confenge cohort review --id AUTHORIZATION_UUID --actor UUID
 confenge cohort review --id AUTHORIZATION_UUID --actor UUID --verdict READY_FOR_CONTROLLED_EMAIL_GO_REVIEW --confirm
+confenge cohort dispatch --id AUTHORIZATION_UUID --actor UUID --limit 50 --confirm
 confenge cohort report --events PATH
 ```
 
@@ -37,7 +38,9 @@ This is not auto-send. `CONFENGE_AUTO_SEND_ENABLED` stays `false`. GREEN autorun
 
 `cohort review` loads the persisted grant, collects a live release manifest from the running system (deployed SHA, SMTP TCP reachability, kill-switch file, auto-send/GREEN flags, PostgreSQL grant/membership, suppression, TTL, observe-path wiring), and prints PASS/FAIL/UNKNOWN per check. Missing live evidence is `NO_GO`. The CLI never treats an empty manifest as ready.
 
-`--confirm` persists the human decision against that live manifest. `READY_FOR_CONTROLLED_EMAIL_GO_REVIEW` is not `GO_FOR_CONTROLLED_EMAIL_PILOT`. Drift, RISKY, auto-send, GREEN autorun, an engaged kill switch, or post-freeze suppression is `NO_GO`.
+`--confirm` persists the human decision against that live manifest. `READY_FOR_CONTROLLED_EMAIL_GO_REVIEW` is the human verdict. The evaluator emits `GO_FOR_CONTROLLED_EMAIL_PILOT` only when every required live check is PASS, including SMTP and IMAP reply-ingest (UNKNOWN is NO_GO). Drift, RISKY, auto-send, GREEN autorun, an engaged kill switch, or post-freeze suppression is `NO_GO`.
+
+`confenge cohort dispatch --id UUID --actor UUID --confirm` is the bounded send (N<=50). Global auto-send stays false. The kill switch remains available.
 
 ## Observability
 
@@ -45,7 +48,8 @@ Send, bounce, and reply paths snapshot `email_route_class`, `cohort_id`, `policy
 
 ## Safety
 
-- `REAL_EMAIL_SENT=false` for this operator and its tests
+- Tests never open a real SMTP session or send mail
 - `AUTO_SEND_ENABLED=false`
 - Kill switch still blocks before transport
 - Daily cap is reserved in PostgreSQL before SMTP
+- Live `cohort dispatch` records attempted vs provider-accepted; delivered is not inferred

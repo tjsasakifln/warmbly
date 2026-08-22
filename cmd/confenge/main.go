@@ -77,7 +77,8 @@ Usage:
   confenge cohort prepare --feed PATH [--out PATH] [--limit N] [--max-daily N] [--ttl 24h]
   confenge cohort preview --manifest PATH
   confenge cohort authorize --manifest PATH --actor UUID [--confirm]
-  confenge cohort review --id UUID --actor UUID [--verdict READY_FOR_CONTROLLED_EMAIL_GO_REVIEW|NO_GO] [--confirm]
+  confenge cohort review --id UUID --actor UUID [--verdict READY_FOR_CONTROLLED_EMAIL_GO_REVIEW|GO_FOR_CONTROLLED_EMAIL_PILOT|NO_GO] [--confirm]
+  confenge cohort dispatch --id UUID --actor UUID [--limit 50] [--confirm]
   confenge cohort report --events PATH
   confenge cohort-auth create|show|revoke [flags]
 

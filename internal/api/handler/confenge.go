@@ -1066,6 +1066,39 @@ func (h *Handler) QueueConfengeTouchpoint(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"data": tp})
 }
+
+func (h *Handler) DispatchConfengeCohort(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	limit := 50
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 50 {
+			limit = n
+		}
+	}
+	res, xerr := h.ConfengeService.DispatchBoundedCohort(c.Request.Context(), orgID, userID, id, time.Now().UTC(), limit)
+	if res != nil {
+		c.Header("X-Confenge-Attempted", strconv.Itoa(res.Attempted))
+	}
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": res, "report": confenge.FormatCohortDispatch(res)})
+}
+
 func (h *Handler) CancelConfengeAccountTouchpoints(c *gin.Context) {
 	orgID, ok := h.confengeOrg(c)
 	if !ok {

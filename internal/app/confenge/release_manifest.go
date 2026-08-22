@@ -104,6 +104,9 @@ type ReleaseManifest struct {
 	VolumeCap            int        `json:"volume_cap,omitempty"`
 	SMTPReady            CheckState `json:"smtp_ready"`
 	ObservabilityReady   CheckState `json:"observability_ready"`
+	ReplyIngestReady     CheckState `json:"reply_ingest_ready"`
+	DispatchWiring       CheckState `json:"dispatch_wiring"`
+	SenderProviderConfig CheckState `json:"sender_provider_config"`
 	GreenAutorun         bool       `json:"green_autorun"`
 	TTLValid             CheckState `json:"ttl_valid"`
 	SuppressionClear     CheckState `json:"suppression_clear"`
@@ -178,9 +181,9 @@ type ReleaseComparison struct {
 	Verdict         ReleaseVerdict  `json:"verdict"`
 }
 
-// EvaluateControlledEmailRelease never emits GO_FOR_CONTROLLED_EMAIL_PILOT.
-// Matching frozen manifests yield READY_FOR_CONTROLLED_EMAIL_GO_REVIEW.
-// Missing live evidence is a NO_GO. Never synthesize release readiness from expected state.
+// EvaluateControlledEmailRelease is fail-closed. Every required live check
+// must be PASS to emit GO_FOR_CONTROLLED_EMAIL_PILOT. Empty or partial
+// evidence is NO_GO. UNKNOWN is never PASS.
 func EvaluateControlledEmailRelease(want, got ReleaseManifest) ReleaseVerdict {
 	cmp := CompareControlledEmailRelease(want, got)
 	return cmp.Verdict
@@ -249,7 +252,10 @@ func CompareControlledEmailRelease(want, got ReleaseManifest) ReleaseComparison 
 	}, volOK)
 
 	add(readyCheck("smtp_ready", got.SMTPReady, "smtp_readiness_not_proven", "smtp_not_ready"))
+	add(readyCheck("reply_ingest_ready", got.ReplyIngestReady, "reply_ingest_not_proven", "reply_ingest_not_ready"))
 	add(readyCheck("observability_ready", got.ObservabilityReady, "observability_not_proven", "observability_not_ready"))
+	add(readyCheck("dispatch_wiring", got.DispatchWiring, "dispatch_wiring_not_proven", "dispatch_wiring_not_ready"))
+	add(readyCheck("sender_provider_config", got.SenderProviderConfig, "sender_provider_not_proven", "sender_provider_missing"))
 	add(readyCheck("db_cohort_authority", got.DBCohortAuthority, "db_cohort_authority_not_proven", "db_cohort_authority_missing"))
 	suppFail := "suppression_not_clear"
 	if strings.TrimSpace(got.SuppressionReason) != "" {
@@ -323,7 +329,7 @@ func CompareControlledEmailRelease(want, got ReleaseManifest) ReleaseComparison 
 		})
 	}
 
-	verdict := ReleaseVerdict{Verdict: ReleaseReadyForControlledEmailReview}
+	verdict := ReleaseVerdict{Verdict: ReleaseGOForControlledEmailPilot}
 	if len(reasons) > 0 {
 		verdict = ReleaseVerdict{Verdict: ReleaseNOGO, Reasons: reasons}
 	}

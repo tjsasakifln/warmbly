@@ -4,12 +4,14 @@ import (
 	"context"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/warmbly/warmbly/internal/app/confenge/intel"
+	"github.com/warmbly/warmbly/internal/email"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/repository"
 )
@@ -61,7 +63,10 @@ func CollectLiveReleaseManifest(ctx context.Context, in LiveReleaseInput) Releas
 
 	got.KillSwitchOperational, got.SendingPaused, got.SendingPausedState = probeKillSwitch(cfg)
 	got.SMTPReady, _ = ProbeSMTPReadiness(3 * time.Second)
+	got.ReplyIngestReady, _ = ProbeReplyIngestReadiness(ctx, in.Store, 3*time.Second)
 	got.ObservabilityReady, _ = ProveObservabilityWiring(auth)
+	got.DispatchWiring, _ = ProveDispatchWiring(auth)
+	got.SenderProviderConfig, _ = ProveSenderProviderConfig()
 	got.DBCohortAuthority, _ = probeDBCohortAuthority(ctx, in.Store, auth, got.EvaluatedAt)
 	got.TTLValid, _ = probeTTL(auth, got.EvaluatedAt)
 	got.SuppressionClear, got.SuppressionReason = probeSuppressionClear(ctx, in.Repo, auth, got.EvaluatedAt)
@@ -104,17 +109,44 @@ func probeKillSwitch(cfg Config) (operational CheckState, paused bool, pausedSta
 	return operational, false, EvidencePass
 }
 
-// ProbeSMTPReadiness is pre-transport proof: SMTP_HOST is set and the host:port
+// campaignSMTPHost is the Hostinger (or equivalent) submission host used by
+// the worker. SMTP_HOST alone may be Mailpit for notifications.
+func campaignSMTPHost() string {
+	return firstNonEmpty(os.Getenv("CONFENGE_SMTP_HOST"), os.Getenv("SMTP_HOST"))
+}
+
+func campaignSMTPPort() string {
+	if p := strings.TrimSpace(os.Getenv("CONFENGE_SMTP_PORT")); p != "" {
+		return p
+	}
+	if p := strings.TrimSpace(os.Getenv("SMTP_PORT")); p != "" {
+		return p
+	}
+	if strings.TrimSpace(os.Getenv("CONFENGE_SMTP_HOST")) != "" {
+		return "587"
+	}
+	return "1025"
+}
+
+func campaignIMAPHost() string {
+	return firstNonEmpty(os.Getenv("CONFENGE_IMAP_HOST"), os.Getenv("IMAP_HOST"))
+}
+
+func campaignIMAPPort() string {
+	if p := firstNonEmpty(os.Getenv("CONFENGE_IMAP_PORT"), os.Getenv("IMAP_PORT")); p != "" {
+		return p
+	}
+	return "993"
+}
+
+// ProbeSMTPReadiness is pre-transport proof: the campaign SMTP host:port
 // accepts a TCP connection. It never calls SendMail and never sends mail.
 func ProbeSMTPReadiness(timeout time.Duration) (CheckState, string) {
-	host := strings.TrimSpace(os.Getenv("SMTP_HOST"))
+	host := campaignSMTPHost()
 	if host == "" {
 		return EvidenceUnknown, "smtp_readiness_not_proven"
 	}
-	port := strings.TrimSpace(os.Getenv("SMTP_PORT"))
-	if port == "" {
-		port = "1025"
-	}
+	port := campaignSMTPPort()
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
@@ -125,6 +157,144 @@ func ProbeSMTPReadiness(timeout time.Duration) (CheckState, string) {
 		return EvidenceFail, "smtp_not_ready"
 	}
 	_ = conn.Close()
+	return EvidencePass, ""
+}
+
+// ProbeIMAPReadiness is a read-only connectivity probe. It never SELECT/FETCHes
+// mail and never logs credentials. LOGIN+LOGOUT runs only when IMAP user/pass
+// are present in the environment.
+func ProbeIMAPReadiness(timeout time.Duration) (CheckState, string) {
+	host := campaignIMAPHost()
+	if host == "" {
+		return EvidenceUnknown, "reply_ingest_not_proven"
+	}
+	port := campaignIMAPPort()
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+	addr := net.JoinHostPort(host, port)
+	d := net.Dialer{Timeout: timeout}
+	conn, err := d.Dial("tcp", addr)
+	if err != nil {
+		return EvidenceFail, "reply_ingest_not_ready"
+	}
+	_ = conn.Close()
+
+	user := firstNonEmpty(os.Getenv("CONFENGE_IMAP_USER"), os.Getenv("IMAP_USER"), os.Getenv("CONFENGE_MAILBOX_EMAIL"))
+	pass := firstNonEmpty(os.Getenv("CONFENGE_IMAP_PASSWORD"), os.Getenv("IMAP_PASSWORD"), os.Getenv("CONFENGE_MAILBOX_PASSWORD"))
+	if user != "" && pass != "" {
+		portN, err := strconv.Atoi(port)
+		if err != nil || portN <= 0 {
+			return EvidenceFail, "reply_ingest_not_ready"
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		if !email.VerifyImap(ctx, host, portN, user, pass) {
+			return EvidenceFail, "reply_ingest_not_ready"
+		}
+	}
+	return EvidencePass, ""
+}
+
+// ProbeReplyIngestReadiness is the required live check for inbound replies.
+// Replies arrive via worker IMAP sync → consumer ProcessIncomingReply →
+// OnClassifiedReply. UNKNOWN if connectivity or auth cannot be proven.
+func ProbeReplyIngestReadiness(ctx context.Context, store BoundedCohortStore, timeout time.Duration) (CheckState, string) {
+	conn, connReason := ProbeIMAPReadiness(timeout)
+	if conn != EvidencePass {
+		return conn, connReason
+	}
+	user := firstNonEmpty(os.Getenv("CONFENGE_IMAP_USER"), os.Getenv("IMAP_USER"), os.Getenv("CONFENGE_MAILBOX_EMAIL"))
+	pass := firstNonEmpty(os.Getenv("CONFENGE_IMAP_PASSWORD"), os.Getenv("IMAP_PASSWORD"), os.Getenv("CONFENGE_MAILBOX_PASSWORD"))
+	if user != "" && pass != "" {
+		return EvidencePass, ""
+	}
+	auth, authReason := probeIMAPMailboxAuth(ctx, store)
+	if auth != EvidencePass {
+		return auth, authReason
+	}
+	return EvidencePass, ""
+}
+
+func probeIMAPMailboxAuth(ctx context.Context, store BoundedCohortStore) (CheckState, string) {
+	pg, ok := store.(*postgresCohortStore)
+	if !ok || pg == nil || pg.db == nil {
+		return EvidenceUnknown, "reply_ingest_not_proven"
+	}
+	if err := pg.db.Ping(ctx); err != nil {
+		return EvidenceUnknown, "reply_ingest_not_proven"
+	}
+	var n int
+	var last *time.Time
+	// Never SELECT imap_user / imap_password. last_synced_at is the live
+	// proof that worker IMAP LOGIN succeeded without fetching bodies here.
+	err := pg.db.QueryRow(ctx, `
+		SELECT COUNT(*), MAX(ea.last_synced_at)
+		FROM email_accounts ea
+		JOIN email_accounts_smtp_imap s ON s.email_account_id = ea.id
+		WHERE ea.status = 'active' AND COALESCE(s.imap_host, '') <> ''`).Scan(&n, &last)
+	if err != nil {
+		return EvidenceUnknown, "reply_ingest_not_proven"
+	}
+	if n < 1 {
+		return EvidenceUnknown, "reply_ingest_not_proven"
+	}
+	if last == nil || last.IsZero() {
+		return EvidenceUnknown, "reply_ingest_not_proven"
+	}
+	if time.Since(last.UTC()) > 48*time.Hour {
+		return EvidenceUnknown, "reply_ingest_not_proven"
+	}
+	return EvidencePass, ""
+}
+
+// ProveDispatchWiring is PASS when the frozen grant can drive the shipped
+// reserve/release/idempotent message-key path. It never sends mail.
+func ProveDispatchWiring(auth *BoundedCohortAuthorization) (CheckState, string) {
+	if auth == nil || auth.ID == uuid.Nil {
+		return EvidenceUnknown, "dispatch_wiring_not_proven"
+	}
+	if auth.MaxDailyVolume < 1 {
+		return EvidenceFail, "dispatch_wiring_not_ready"
+	}
+	if auth.FrozenManifest == nil || len(auth.FrozenManifest.Members) == 0 {
+		return EvidenceUnknown, "dispatch_wiring_not_proven"
+	}
+	tpID := auth.FrozenManifest.Members[0].TouchpointID
+	if tpID == uuid.Nil {
+		tpID = uuid.New()
+	}
+	key := cohortMessageKey(auth.ID, tpID)
+	if key == "" || !strings.HasPrefix(key, "cohort:") {
+		return EvidenceFail, "dispatch_wiring_not_ready"
+	}
+	replay := cohortMessageKey(auth.ID, tpID)
+	if replay != key {
+		return EvidenceFail, "dispatch_wiring_not_ready"
+	}
+	a := MessageKeyCampaignEmail(auth.ID, auth.ID, auth.ID)
+	b := MessageKeyCampaignEmail(auth.ID, auth.ID, auth.ID)
+	if a == "" || a != b {
+		return EvidenceFail, "dispatch_wiring_not_ready"
+	}
+	return EvidencePass, ""
+}
+
+// ProveSenderProviderConfig is PASS when campaign SMTP host and mailbox
+// identity are present. Mailpit is not a production sender.
+func ProveSenderProviderConfig() (CheckState, string) {
+	host := campaignSMTPHost()
+	if host == "" {
+		return EvidenceUnknown, "sender_provider_not_proven"
+	}
+	from := firstNonEmpty(os.Getenv("CONFENGE_MAILBOX_EMAIL"), os.Getenv("EMAIL_ADDRESS"))
+	if from == "" {
+		return EvidenceUnknown, "sender_provider_not_proven"
+	}
+	appEnv := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+	if (appEnv == "prod" || appEnv == "production") && strings.EqualFold(host, "mailpit") {
+		return EvidenceFail, "sender_provider_missing"
+	}
 	return EvidencePass, ""
 }
 

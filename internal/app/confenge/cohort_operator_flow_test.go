@@ -319,7 +319,7 @@ func TestGOReviewIsNotLiveGOAndRevocationBlocks(t *testing.T) {
 	_, err := RecordControlledEmailGOReview(context.Background(), store, auth.ID, auth.ActorID,
 		ReleaseGOForControlledEmailPilot, "no", ReleaseManifest{}, now)
 	if err == nil {
-		t.Fatal("must refuse live GO")
+		t.Fatal("empty evidence must refuse live GO")
 	}
 	empty, err := RecordControlledEmailGOReview(context.Background(), store, auth.ID, auth.ActorID,
 		ReleaseReadyForControlledEmailReview, "founder review", ReleaseManifest{}, now)
@@ -335,8 +335,8 @@ func TestGOReviewIsNotLiveGOAndRevocationBlocks(t *testing.T) {
 	if got.GOReviewVerdict != ReleaseReadyForControlledEmailReview {
 		t.Fatalf("verdict=%s", got.GOReviewVerdict)
 	}
-	if got.GOReviewVerdict == ReleaseGOForControlledEmailPilot {
-		t.Fatal("must never emit GO_FOR_CONTROLLED_EMAIL_PILOT")
+	if EvaluateControlledEmailRelease(expectedReleaseFromGrant(auth), live).Verdict != ReleaseGOForControlledEmailPilot {
+		t.Fatal("complete live evidence must evaluate to GO_FOR_CONTROLLED_EMAIL_PILOT")
 	}
 	_ = store.RevokeGrant(context.Background(), auth.ID, auth.ActorID, "stop", now)
 	rev, _ := store.GetGrant(context.Background(), auth.ID)

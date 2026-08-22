@@ -396,27 +396,37 @@ func TestSuppressedAndOptOutNeverTransportableViaCohort(t *testing.T) {
 	}
 }
 
-func TestReleaseEvaluatorNeverEmitsLiveEmailGO(t *testing.T) {
+func TestReleaseEvaluatorEmitsLiveGOOnlyWhenComplete(t *testing.T) {
 	want := ReleaseManifest{
 		RepositorySHA: "sha", Schema: "confenge.outreach.v1", FeedHash: "f", CohortHash: "c",
 		RecipientSetHash: "r", PolicyVersion: "p", ComposerVersion: "comp", VolumeCap: 50,
 		AllowedRouteClasses: []string{RouteClassGenericCompany}, SMTPReady: EvidencePass,
-		ObservabilityReady: EvidencePass, TTLValid: EvidencePass, SuppressionClear: EvidencePass,
+		ReplyIngestReady: EvidencePass, ObservabilityReady: EvidencePass,
+		DispatchWiring: EvidencePass, SenderProviderConfig: EvidencePass,
+		TTLValid: EvidencePass, SuppressionClear: EvidencePass,
 		DBCohortAuthority: EvidencePass, EvidenceVersion: DefaultEvidenceVersion,
 		KillSwitchOperational: EvidencePass, SendingPausedState: EvidencePass,
 		AutoSendState: EvidencePass, GreenAutorunState: EvidencePass,
 	}
 	got := want
 	v := EvaluateControlledEmailRelease(want, got)
-	if v.Verdict != ReleaseReadyForControlledEmailReview {
-		t.Fatalf("verdict=%s reasons=%v", v.Verdict, v.Reasons)
-	}
-	if v.Verdict == ReleaseGOForControlledEmailPilot {
-		t.Fatal("must never emit GO_FOR_CONTROLLED_EMAIL_PILOT")
+	if v.Verdict != ReleaseGOForControlledEmailPilot {
+		t.Fatalf("complete PASS set must emit live GO, got %s reasons=%v", v.Verdict, v.Reasons)
 	}
 	got.RepositorySHA = "other"
 	if EvaluateControlledEmailRelease(want, got).Verdict != ReleaseNOGO {
 		t.Fatal("sha drift must be NO_GO")
+	}
+	got = want
+	got.ReplyIngestReady = EvidenceUnknown
+	v = EvaluateControlledEmailRelease(want, got)
+	if v.Verdict != ReleaseNOGO || !containsStr(v.Reasons, "reply_ingest_not_proven") {
+		t.Fatalf("reply ingest UNKNOWN must be NO_GO: %s %v", v.Verdict, v.Reasons)
+	}
+	got = want
+	got.SMTPReady = EvidenceUnknown
+	if EvaluateControlledEmailRelease(want, got).Verdict != ReleaseNOGO {
+		t.Fatal("SMTP UNKNOWN must be NO_GO")
 	}
 }
 
