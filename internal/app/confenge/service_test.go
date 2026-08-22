@@ -3,6 +3,7 @@ package confenge
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -127,6 +128,22 @@ func (m *memRepo) GetAccountByCNPJ(ctx context.Context, orgID uuid.UUID, cnpj14 
 	return &cp, nil
 }
 
+func (m *memRepo) GetAccountBySourceLeadID(ctx context.Context, orgID uuid.UUID, sourceLeadID string) (*models.OutreachAccount, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sourceLeadID = strings.TrimSpace(sourceLeadID)
+	if sourceLeadID == "" {
+		return nil, nil
+	}
+	for _, a := range m.byID {
+		if a.OrganizationID == orgID && a.SourceLeadID == sourceLeadID {
+			cp := *a
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
+
 func (m *memRepo) GetAccount(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachAccount, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -191,6 +208,9 @@ func (m *memRepo) ListAccounts(ctx context.Context, orgID uuid.UUID, filter repo
 		if filter.CNPJ14 != "" && a.CNPJ14 != filter.CNPJ14 {
 			continue
 		}
+		if filter.SourceRunID != "" && a.SourceRunID != filter.SourceRunID {
+			continue
+		}
 		if filter.ActivationState != "" && a.ActivationState != filter.ActivationState {
 			continue
 		}
@@ -247,10 +267,19 @@ func (m *memRepo) ListAccounts(ctx context.Context, orgID uuid.UUID, filter repo
 		cp := *a
 		out = append(out, cp)
 	}
-	// stable-ish order by CNPJ
+	// Mirror the repository: deterministic page order, and an empty filter is 50 rows, not everything.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CNPJ14 != out[j].CNPJ14 {
+			return out[i].CNPJ14 < out[j].CNPJ14
+		}
+		return out[i].ID.String() < out[j].ID.String()
+	})
 	limit := filter.Limit
 	if limit <= 0 {
-		limit = len(out)
+		limit = 50
+	}
+	if limit > 1000 {
+		limit = 1000
 	}
 	offset := filter.Offset
 	if offset < 0 {

@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS outreach_accounts_org_source_run_idx;

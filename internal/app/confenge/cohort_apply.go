@@ -197,9 +197,15 @@ func locateOrBuildTouchpoint(ctx context.Context, repo repository.OutreachReposi
 		return tp, false, nil
 	}
 	if m.AccountID == uuid.Nil {
-		if acc, err := resolveAccountForMember(ctx, repo, orgID, m); err == nil && acc != nil {
-			m.AccountID = acc.ID
+		// An unbound member must fail here, not reach the touchpoint FK as uuid.Nil.
+		acc, err := resolveAccountForMember(ctx, repo, orgID, m)
+		if err != nil {
+			return nil, false, fmt.Errorf("resolve account for member %q: %w", m.AccountRef, err)
 		}
+		if acc == nil || acc.ID == uuid.Nil {
+			return nil, false, fmt.Errorf("resolve account for member %q: account_not_found", m.AccountRef)
+		}
+		m.AccountID = acc.ID
 	}
 	if m.AccountID != uuid.Nil {
 		list, err := repo.ListTouchpoints(ctx, orgID, m.AccountID, "", 50, 0)
@@ -249,16 +255,32 @@ func resolveAccountForMember(ctx context.Context, repo repository.OutreachReposi
 	if repo == nil {
 		return nil, fmt.Errorf("repository required")
 	}
-	if cnpj := NormalizeCNPJ14(m.AccountRef); len(cnpj) == 14 {
-		return repo.GetAccountByCNPJ(ctx, orgID, cnpj)
+	ref := strings.TrimSpace(m.AccountRef)
+	if ref == "" {
+		return nil, fmt.Errorf("account_ref_missing")
 	}
-	accs, err := repo.ListAccounts(ctx, orgID, repository.OutreachAccountFilter{})
-	if err != nil {
+	// accountRef prefers source_lead_id, so try that index before anything else.
+	if acc, err := repo.GetAccountBySourceLeadID(ctx, orgID, ref); err != nil {
 		return nil, err
+	} else if acc != nil {
+		return acc, nil
 	}
-	for i := range accs {
-		if accs[i].SourceLeadID == m.AccountRef || accs[i].ID.String() == m.AccountRef {
-			return &accs[i], nil
+	if cnpj := NormalizeCNPJ14(ref); len(cnpj) == 14 {
+		acc, err := repo.GetAccountByCNPJ(ctx, orgID, cnpj)
+		if err != nil {
+			return nil, err
+		}
+		if acc != nil {
+			return acc, nil
+		}
+	}
+	if id, err := uuid.Parse(ref); err == nil {
+		acc, err := repo.GetAccount(ctx, orgID, id)
+		if err != nil {
+			return nil, err
+		}
+		if acc != nil {
+			return acc, nil
 		}
 	}
 	return nil, fmt.Errorf("account_not_found")

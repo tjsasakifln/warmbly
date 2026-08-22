@@ -13,6 +13,20 @@ import (
 	"github.com/warmbly/warmbly/internal/models"
 )
 
+// The activation window has to move with the clock. It used to be frozen at
+// 2026-08-08 → 2026-08-22T10:00:00Z, and at exactly that instant every test
+// resting on this fixture began failing: the account fell out of the "agora"
+// lane because its activation had expired, and the failure pointed at
+// target-fit rather than at a lapsed fixture. Relative timestamps keep the same
+// fourteen-day span without a date that rots.
+func activationFixtureEvaluatedAt() string {
+	return time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+}
+
+func activationFixtureExpiresAt() string {
+	return time.Now().UTC().Add(13 * 24 * time.Hour).Format(time.RFC3339)
+}
+
 func sampleLeadWithActivation(score float64, state string) FeedLead {
 	ready := true
 	return FeedLead{
@@ -49,9 +63,9 @@ func sampleLeadWithActivation(score float64, state string) FeedLead {
 			State: state, Score: score,
 			ReasonCodes:      []string{"NEW_RELEVANT_CONTRACT"},
 			PolicyVersion:    "confenge-activation-v1",
-			EvaluatedAt:      "2026-08-08T10:00:00Z",
-			NextBestActionAt: "2026-08-08T10:00:00Z",
-			ExpiresAt:        "2026-08-22T10:00:00Z",
+			EvaluatedAt:      activationFixtureEvaluatedAt(),
+			NextBestActionAt: activationFixtureEvaluatedAt(),
+			ExpiresAt:        activationFixtureExpiresAt(),
 			SourceHash:       "src-hash-1",
 			ScoreComponents: map[string]float64{
 				"trigger_strength": 34, "freshness": 21, "evidence_quality": 14, "commercial_relevance": 13.4,

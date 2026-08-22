@@ -73,13 +73,45 @@ func accountsFromFeed(feed *Feed, source string) []CohortAccountInput {
 	return out
 }
 
+// orgAccountPageSize is the per-query page for org-bound account scans. An empty
+// filter silently means 50 rows in the repository, which is never what a freeze wants.
+const orgAccountPageSize = 1000
+
+// maxOrgFreezeAccounts bounds an org-bound freeze. Beyond it the operator must
+// scope by feed run: truncating would freeze a different cohort than the one asked for.
+const maxOrgFreezeAccounts = 5000
+
 func AccountsFromOrg(ctx context.Context, repo repository.OutreachRepository, orgID uuid.UUID, source string) ([]CohortAccountInput, error) {
+	return accountsFromOrgScoped(ctx, repo, orgID, source, "")
+}
+
+// accountsFromOrgScoped pages through outreach_accounts with an explicit limit,
+// pushing the run scope into the query so the freeze never depends on page one.
+func accountsFromOrgScoped(ctx context.Context, repo repository.OutreachRepository, orgID uuid.UUID, source, runID string) ([]CohortAccountInput, error) {
 	if repo == nil {
 		return nil, fmt.Errorf("repository required")
 	}
-	accs, err := repo.ListAccounts(ctx, orgID, repository.OutreachAccountFilter{})
-	if err != nil {
-		return nil, err
+	var accs []models.OutreachAccount
+	for offset := 0; ; offset += orgAccountPageSize {
+		batch, err := repo.ListAccounts(ctx, orgID, repository.OutreachAccountFilter{
+			Limit:       orgAccountPageSize,
+			Offset:      offset,
+			StableOrder: true,
+			SourceRunID: runID,
+		})
+		if err != nil {
+			return nil, err
+		}
+		accs = append(accs, batch...)
+		if len(accs) > maxOrgFreezeAccounts {
+			if runID == "" {
+				return nil, fmt.Errorf("organization has more than %d accounts; scope the freeze to one feed run (--feed) instead of the whole org", maxOrgFreezeAccounts)
+			}
+			return nil, fmt.Errorf("feed run %q has more than %d accounts; split the import before freezing", runID, maxOrgFreezeAccounts)
+		}
+		if len(batch) < orgAccountPageSize {
+			break
+		}
 	}
 	out := make([]CohortAccountInput, 0, len(accs))
 	for i := range accs {
@@ -87,7 +119,7 @@ func AccountsFromOrg(ctx context.Context, repo repository.OutreachRepository, or
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, CohortAccountInput{Account: accs[i], Candidates: cands, Source: source})
+		out = append(out, CohortAccountInput{Account: accs[i], Candidates: cands, Source: source, Persisted: true})
 	}
 	return out, nil
 }
@@ -171,19 +203,13 @@ func routeSuppressionActive(v string) bool {
 // run. Freezing from Postgres keeps real account/candidate ids for dispatch;
 // scoping by run id keeps the frozen set tied to the imported feed.
 func AccountsFromOrgForRun(ctx context.Context, repo repository.OutreachRepository, orgID uuid.UUID, source, runID string) ([]CohortAccountInput, error) {
-	all, err := AccountsFromOrg(ctx, repo, orgID, source)
-	if err != nil {
-		return nil, err
-	}
 	runID = strings.TrimSpace(runID)
 	if runID == "" {
-		return all, nil
+		return AccountsFromOrg(ctx, repo, orgID, source)
 	}
-	out := make([]CohortAccountInput, 0, len(all))
-	for i := range all {
-		if strings.TrimSpace(all[i].Account.SourceRunID) == runID {
-			out = append(out, all[i])
-		}
+	out, err := accountsFromOrgScoped(ctx, repo, orgID, source, runID)
+	if err != nil {
+		return nil, err
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("no imported accounts for feed run %q; import the feed first", runID)
