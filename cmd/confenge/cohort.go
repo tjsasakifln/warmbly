@@ -55,6 +55,7 @@ func cmdCohortPrepare(args []string) int {
 	volume := fs.Int("max-daily", confenge.DefaultCohortDailyVolume, "max daily volume bound into the grant")
 	ttl := fs.String("ttl", "24h", "authorization TTL")
 	sha := fs.String("repository-sha", "", "deployed SHA (defaults to CONFENGE_REPOSITORY_SHA)")
+	previewOpts := registerPreviewFlags(fs)
 	_ = fs.Parse(args)
 
 	dur, err := time.ParseDuration(*ttl)
@@ -162,7 +163,7 @@ func cmdCohortPrepare(args []string) int {
 		return 2
 	}
 
-	fmt.Print(confenge.FormatCohortPreview(snap))
+	fmt.Print(confenge.FormatCohortPreviewWithOptions(snap, previewOpts()))
 	enc, err := confenge.MarshalFrozenCohort(snap)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "BLOCKED: marshal: %v\n", err)
@@ -180,10 +181,26 @@ func cmdCohortPrepare(args []string) int {
 	return 0
 }
 
+// registerPreviewFlags binds the founder review knobs. They tune what the
+// operator reads before authorizing; none of them can change what was admitted.
+func registerPreviewFlags(fs *flag.FlagSet) func() confenge.CohortPreviewOptions {
+	samples := fs.Int("samples", confenge.DefaultPreviewSamplesPerClass, "sampled recipients rendered per route class")
+	bodies := fs.Int("bodies", confenge.DefaultPreviewFullBodies, "sampled recipients whose full composed body is printed")
+	showMailbox := fs.Bool("show-mailbox", false, "print the real destination address instead of the redacted one")
+	return func() confenge.CohortPreviewOptions {
+		return confenge.CohortPreviewOptions{
+			SamplesPerClass: *samples,
+			FullBodies:      *bodies,
+			ShowMailbox:     *showMailbox,
+		}
+	}
+}
+
 func cmdCohortPreview(args []string) int {
 	fs := flag.NewFlagSet("cohort preview", flag.ExitOnError)
 	manifest := fs.String("manifest", "", "frozen snapshot JSON from cohort prepare --out")
 	asJSON := fs.Bool("json", false, "print the snapshot JSON")
+	previewOpts := registerPreviewFlags(fs)
 	_ = fs.Parse(args)
 	snap, err := readFrozenManifest(*manifest)
 	if err != nil {
@@ -195,7 +212,7 @@ func cmdCohortPreview(args []string) int {
 		fmt.Println(string(enc))
 		return 0
 	}
-	fmt.Print(confenge.FormatCohortPreview(snap))
+	fmt.Print(confenge.FormatCohortPreviewWithOptions(snap, previewOpts()))
 	return 0
 }
 
@@ -205,6 +222,7 @@ func cmdCohortAuthorize(args []string) int {
 	actor := fs.String("actor", "", "human actor UUID (required)")
 	orgStr := fs.String("org-id", seed.DevOrgID.String(), "organization UUID")
 	confirm := fs.Bool("confirm", false, "persist the grant and apply to touchpoints")
+	previewOpts := registerPreviewFlags(fs)
 	_ = fs.Parse(args)
 	if strings.TrimSpace(*actor) == "" {
 		fmt.Fprintln(os.Stderr, "BLOCKED: --actor (human UUID) is required")
@@ -230,7 +248,7 @@ func cmdCohortAuthorize(args []string) int {
 		}
 		enc, _ := json.MarshalIndent(auth.Summary(), "", "  ")
 		fmt.Println(string(enc))
-		fmt.Print(confenge.FormatCohortPreview(snap))
+		fmt.Print(confenge.FormatCohortPreviewWithOptions(snap, previewOpts()))
 		fmt.Fprintln(os.Stderr, "not persisted. Re-run with --confirm after reviewing the summary.")
 		return 0
 	}

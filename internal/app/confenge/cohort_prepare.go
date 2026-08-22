@@ -52,6 +52,18 @@ type FrozenCohortMember struct {
 	PersonUnknown    bool      `json:"person_unknown"`
 	PreferredInitial bool      `json:"preferred_initial"`
 	TouchpointID     uuid.UUID `json:"touchpoint_id,omitempty"`
+
+	// Founder-review projection. These carry no omitempty on purpose: a missing
+	// fact or an unclassified mailbox purpose has to stay visible as a missing
+	// field in the JSON too, not vanish into a key that was never written.
+	Company          string   `json:"company"`
+	MailboxPurpose   string   `json:"mailbox_purpose"`
+	ObservedFact     string   `json:"observed_fact"`
+	FactSource       string   `json:"fact_source"`
+	CTA              string   `json:"cta"`
+	CTASource        string   `json:"cta_source"`
+	AdmissionReasons []string `json:"admission_reasons"`
+	RouteReasons     []string `json:"route_reasons"`
 }
 
 // CohortExclusion is one account left out of the frozen set.
@@ -62,14 +74,31 @@ type CohortExclusion struct {
 	RouteClass string `json:"route_class,omitempty"`
 }
 
-// CohortClassSample is a founder-reviewable excerpt. Aggregated logs should
-// use RedactedMailbox, not the full address.
+// CohortClassSample is a founder-reviewable excerpt: enough of the composed
+// message to spot the wrong company, strange copy, a raw enum in prose, a pasted
+// database row or personalization nobody observed.
+//
+// Aggregated logs should use RedactedMailbox, not Mailbox. Mailbox is carried
+// because the founder deciding whether to authorize a real send needs the real
+// destination, and the frozen manifest already holds it on the member; renderers
+// must gate it behind an explicit reveal rather than printing it by default.
 type CohortClassSample struct {
-	AccountRef      string `json:"account_ref"`
-	RouteClass      string `json:"route_class"`
-	RedactedMailbox string `json:"redacted_mailbox"`
-	Greeting        string `json:"greeting"`
-	PersonUnknown   bool   `json:"person_unknown"`
+	AccountRef       string   `json:"account_ref"`
+	Company          string   `json:"company"`
+	RouteClass       string   `json:"route_class"`
+	RedactedMailbox  string   `json:"redacted_mailbox"`
+	Mailbox          string   `json:"mailbox"`
+	MailboxPurpose   string   `json:"mailbox_purpose"`
+	Greeting         string   `json:"greeting"`
+	PersonUnknown    bool     `json:"person_unknown"`
+	Subject          string   `json:"subject"`
+	ObservedFact     string   `json:"observed_fact"`
+	FactSource       string   `json:"fact_source"`
+	CTA              string   `json:"cta"`
+	CTASource        string   `json:"cta_source"`
+	BodyText         string   `json:"body_text"`
+	AdmissionReasons []string `json:"admission_reasons"`
+	RouteReasons     []string `json:"route_reasons"`
 }
 
 // CohortPreviewReport is the deterministic operator preview. Totals reconcile.
@@ -249,7 +278,7 @@ func PrepareControlledCohort(accounts []CohortAccountInput, opts CohortPrepareOp
 			return nil, fmt.Errorf("account %q loaded from postgres has no canonical id; refusing to freeze an unbound member", ref)
 		}
 
-		cand, reason := SelectInitialRoute(in.Candidates, allowed, opts.Now)
+		cand, reason, routeReasons := selectInitialRouteRationale(in.Candidates, allowed, opts.Now)
 		if cand == nil {
 			if reason == "" {
 				reason = "no_controlled_eligible_route"
@@ -265,8 +294,8 @@ func PrepareControlledCohort(accounts []CohortAccountInput, opts CohortPrepareOp
 			continue
 		}
 
-		subject, body, greeting := ComposeControlledInitial(&in.Account, cand, class)
-		if qa := ValidateCopyForRouteClass(class, body, subject, cand); len(qa) > 0 {
+		comp := ComposeControlledInitialDetailed(&in.Account, cand, class)
+		if qa := ValidateCopyForRouteClass(class, comp.Body, comp.Subject, cand); len(qa) > 0 {
 			exclude(ref, "copy_qa_failure", mailbox, class)
 			continue
 		}
@@ -285,14 +314,24 @@ func PrepareControlledCohort(accounts []CohortAccountInput, opts CohortPrepareOp
 			Mailbox:          mailbox,
 			RouteClass:       class,
 			Source:           src,
-			ContentHash:      hashControlledContent(mailbox, class, subject, body),
+			ContentHash:      hashControlledContent(mailbox, class, comp.Subject, comp.Body),
 			EvidenceHash:     hashControlledEvidence(cand),
 			ComposerVersion:  opts.ComposerVersion,
-			Subject:          subject,
-			BodyText:         body,
-			Greeting:         greeting,
+			Subject:          comp.Subject,
+			BodyText:         comp.Body,
+			Greeting:         comp.Greeting,
 			PersonUnknown:    CandidatePersonUnknown(cand),
 			PreferredInitial: CandidatePreferredInitial(cand),
+			// accountCompany, not accountRef: nobody spots the wrong company
+			// from fourteen digits of CNPJ.
+			Company:          accountCompany(&in.Account),
+			MailboxPurpose:   strings.TrimSpace(cand.MailboxPurpose),
+			ObservedFact:     comp.ObservedFact,
+			FactSource:       comp.FactSource,
+			CTA:              comp.CTA,
+			CTASource:        comp.CTASource,
+			AdmissionReasons: admissionEvidence(&in.Account, class),
+			RouteReasons:     routeReasons,
 		}
 		members = append(members, member)
 		preview.ByRouteClass[class]++
@@ -300,16 +339,6 @@ func PrepareControlledCohort(accounts []CohortAccountInput, opts CohortPrepareOp
 			src = "UNKNOWN"
 		}
 		preview.BySource[src]++
-		samples := preview.SamplesByClass[class]
-		if len(samples) < previewSamplePerClass {
-			preview.SamplesByClass[class] = append(samples, CohortClassSample{
-				AccountRef:      ref,
-				RouteClass:      class,
-				RedactedMailbox: RedactMailbox(mailbox),
-				Greeting:        greeting,
-				PersonUnknown:   member.PersonUnknown,
-			})
-		}
 	}
 
 	preview.AccountsEligible = len(members)
@@ -327,6 +356,7 @@ func PrepareControlledCohort(accounts []CohortAccountInput, opts CohortPrepareOp
 		}
 		return members[i].AccountRef < members[j].AccountRef
 	})
+	preview.SamplesByClass = selectPreviewSamples(members, previewSamplePerClass)
 
 	var warnings []string
 	if strings.TrimSpace(opts.RepositorySHA) == "" {
@@ -389,34 +419,10 @@ func reconcileCohortPreview(p CohortPreviewReport, considered int) (bool, string
 
 // SelectInitialRoute picks at most one controlled-eligible mailbox.
 // DIRECT_PERSON wins when proven; otherwise preferred_initial; else class rank.
+// The rationale variant carries why, for the founder preview.
 func SelectInitialRoute(cands []models.OutreachContactCandidate, allowed map[string]bool, now time.Time) (*models.OutreachContactCandidate, string) {
-	if allowed == nil {
-		allowed = defaultPilotRouteClasses
-	}
-	var eligible []models.OutreachContactCandidate
-	lastReason := "no_controlled_eligible_route"
-	for i := range cands {
-		c := cands[i]
-		if reason := controlledPrepareBlock(&c, allowed, now); reason != "" {
-			lastReason = reason
-			continue
-		}
-		eligible = append(eligible, c)
-	}
-	if len(eligible) == 0 {
-		return nil, lastReason
-	}
-	var best *models.OutreachContactCandidate
-	bestScore := -1
-	for i := range eligible {
-		c := &eligible[i]
-		score := routeSelectionScore(c)
-		if score > bestScore {
-			bestScore = score
-			best = c
-		}
-	}
-	return best, ""
+	cand, reason, _ := selectInitialRouteRationale(cands, allowed, now)
+	return cand, reason
 }
 
 func routeSelectionScore(c *models.OutreachContactCandidate) int {
@@ -595,8 +601,18 @@ func RedactMailbox(email string) string {
 	return string([]rune(local)[0]) + "***@" + parts[1]
 }
 
-// FormatCohortPreview is the founder-readable report. JSON is separate.
+// FormatCohortPreview is the founder-readable report with review defaults:
+// mailboxes redacted, a small sample per route class. JSON is separate.
 func FormatCohortPreview(snap *FrozenCohortSnapshot) string {
+	return FormatCohortPreviewWithOptions(snap, CohortPreviewOptions{
+		SamplesPerClass: DefaultPreviewSamplesPerClass,
+		FullBodies:      DefaultPreviewFullBodies,
+	})
+}
+
+// FormatCohortPreviewWithOptions is the same report with the review knobs the
+// founder controls. Options change what is rendered, never what was admitted.
+func FormatCohortPreviewWithOptions(snap *FrozenCohortSnapshot, opts CohortPreviewOptions) string {
 	if snap == nil {
 		return "no cohort snapshot\n"
 	}
@@ -636,20 +652,7 @@ func FormatCohortPreview(snap *FrozenCohortSnapshot) string {
 			fmt.Fprintf(&b, "  %s=%d\n", k, p.ByExclusionReason[k])
 		}
 	}
-	classKeys := make([]string, 0, len(p.SamplesByClass))
-	for k := range p.SamplesByClass {
-		classKeys = append(classKeys, k)
-	}
-	sort.Strings(classKeys)
-	if len(classKeys) > 0 {
-		fmt.Fprintf(&b, "\nsamples (redacted mailbox):\n")
-		for _, k := range classKeys {
-			for _, s := range p.SamplesByClass[k] {
-				fmt.Fprintf(&b, "  %s %s %s greeting=%q person_unknown=%v\n",
-					s.RouteClass, s.AccountRef, s.RedactedMailbox, s.Greeting, s.PersonUnknown)
-			}
-		}
-	}
+	writeFounderSamples(&b, snap, opts)
 	for _, w := range snap.Warnings {
 		fmt.Fprintf(&b, "\nWARNING: %s\n", w)
 	}
