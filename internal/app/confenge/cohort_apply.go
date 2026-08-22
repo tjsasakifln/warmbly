@@ -206,14 +206,35 @@ func locateOrBuildTouchpoint(ctx context.Context, repo repository.OutreachReposi
 		if err != nil {
 			return nil, false, err
 		}
+		var reusable *models.OutreachTouchpoint
 		for i := range list {
 			tp := &list[i]
-			if tp.Ordinal == 1 || tp.Purpose == models.TouchpointPurposeInitial {
-				if canonicalPilotEmail(tp.Recipient) == canonicalPilotEmail(m.Mailbox) || tp.Recipient == "" {
-					return tp, false, nil
-				}
+			if tp.Ordinal != 1 && tp.Purpose != models.TouchpointPurposeInitial {
+				continue
+			}
+			if canonicalPilotEmail(tp.Recipient) != canonicalPilotEmail(m.Mailbox) && tp.Recipient != "" {
+				continue
+			}
+			// A route already in flight or delivered must never be re-authorized
+			// into a second initial touch.
+			if terminalSentTouchpointState(tp.State) {
+				return nil, false, fmt.Errorf("route_already_dispatched:%s", strings.ToLower(tp.State))
+			}
+			// A stop that means "do not contact this recipient" still blocks,
+			// whatever the stop reason text says.
+			if suppressedTouchpointState(tp.State) {
+				return nil, false, fmt.Errorf("route_suppressed:%s", strings.ToLower(tp.State))
+			}
+			if reusableTouchpointState(tp.State) && reusable == nil {
+				reusable = tp
 			}
 		}
+		if reusable != nil {
+			return reusable, false, nil
+		}
+		// Only stale non-terminal artifacts remain (e.g. a CANCELLED row from an
+		// older composer version). Supersede them with a fresh initial touch
+		// rather than blocking the whole frozen cohort on one stale row.
 		tp := newFrozenTouchpoint(orgID, m, now)
 		return tp, true, nil
 	}
@@ -281,4 +302,36 @@ func FormatCohortAuthorize(res *CohortAuthorizeResult) string {
 		fmt.Fprintf(&b, "FAIL account=%s mailbox=%s reason=%s\n", f.AccountRef, RedactMailbox(f.Mailbox), f.Reason)
 	}
 	return b.String()
+}
+
+// reusableTouchpointState is a pre-send state a frozen cohort may authorize.
+func reusableTouchpointState(state string) bool {
+	switch state {
+	case models.TouchpointDrafted, models.TouchpointNeedsReview, models.TouchpointApproved,
+		models.TouchpointPlanned, models.TouchpointDue:
+		return true
+	default:
+		return false
+	}
+}
+
+// terminalSentTouchpointState means the route already reached transport.
+// Re-authorizing it would risk a duplicate send.
+func terminalSentTouchpointState(state string) bool {
+	switch state {
+	case models.TouchpointQueued, models.TouchpointSent, models.TouchpointReplied:
+		return true
+	default:
+		return false
+	}
+}
+
+// suppressedTouchpointState means the recipient itself is stopped.
+func suppressedTouchpointState(state string) bool {
+	switch state {
+	case models.TouchpointDNC, models.TouchpointBounced, models.TouchpointRejected:
+		return true
+	default:
+		return false
+	}
 }
