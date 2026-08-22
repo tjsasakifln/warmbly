@@ -3,6 +3,7 @@ package confenge
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -597,5 +598,128 @@ func TestPostFreezeAndContentDriftFailClosed(t *testing.T) {
 	in.ComposerVersion = "other"
 	if reasons := ValidateBoundedCohortAuthorization(auth, in); !containsStr(reasons, "copy_drift") {
 		t.Fatalf("content/composer drift: %v", reasons)
+	}
+}
+
+func extraCLIStampContact(email, class, sourceURL, suppression string) FeedContact {
+	eligible, unk, chain := true, true, false
+	preferred := class == RouteClassGenericCompany
+	return FeedContact{
+		Email: email, SourceURL: sourceURL, OwnershipStatus: "COMPANY_OWNED",
+		MailboxPurpose: "UNKNOWN", VerificationStatus: models.OutreachVerifyOfficialSource,
+		RouteClass: class, ControlledEmailEligible: &eligible, PreferredInitial: &preferred,
+		PersonUnknown: &unk, MailboxCompanyEvidence: "OBSERVED", RouteSuppression: suppression,
+		RouteFreshness: "FRESH", ProvenanceChainValid: &chain, RiskClass: "ALLOWED",
+	}
+}
+
+func extraCLIStampLead(ref, cnpj, email, class, sourceURL, suppression string) FeedLead {
+	return FeedLead{
+		SourceLeadID: ref,
+		Company:      FeedCompany{CNPJ14: cnpj, RazaoSocial: "EMPRESA " + ref + " LTDA"},
+		Moment:       FeedMoment{Code: "CONTRACT_EXTENSION", Summary: "Aditivo publicado"},
+		MessagingContext: FeedMessaging{
+			FactToMention: "Aditivo publicado no portal oficial", CTA: "Posso enviar o recorte?",
+		},
+		Contacts: []FeedContact{extraCLIStampContact(email, class, sourceURL, suppression)},
+	}
+}
+
+func TestPrepareFromExtraCLINoneSuppressionKeepsControlledEligible(t *testing.T) {
+	feed := &Feed{
+		SchemaVersion: models.OutreachSchemaV1,
+		Source:        FeedSource{System: "extra-cli", RunID: "run-none", SnapshotHash: "snap-none"},
+		Leads: []FeedLead{
+			extraCLIStampLead("lead-generic", "11111111000191", "contato@empresa-extra.com.br", RouteClassGenericCompany, "https://empresa-extra.com.br/contato", "NONE"),
+			extraCLIStampLead("lead-gmail", "22222222000192", "empresa@gmail.com", RouteClassPublicCompanyFreemail, "https://empresa-gmail.com.br/contato", "NONE"),
+		},
+	}
+	snap, err := PrepareControlledCohortFromFeed(feed, CohortPrepareOptions{
+		Now: time.Now().UTC(), Limit: 50, MaxDailyVolume: 50, TTL: 24 * time.Hour, RepositorySHA: "sha-none",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Preview.AccountsEligible != 2 || snap.Preview.RecipientsFinal != 2 {
+		t.Fatalf("extra-cli NONE + invalid chain must freeze stamped routes, preview=%+v exclusions=%+v", snap.Preview, snap.Exclusions)
+	}
+	if snap.RecipientSetHash == HashRecipientSet(nil) {
+		t.Fatal("recipient set must not be the empty digest")
+	}
+	for _, m := range snap.Members {
+		if canonicalPilotEmail(m.Mailbox) == "" {
+			t.Fatal("frozen mailbox empty")
+		}
+		if m.RouteClass != RouteClassGenericCompany && m.RouteClass != RouteClassPublicCompanyFreemail {
+			t.Fatalf("unexpected class %s", m.RouteClass)
+		}
+	}
+}
+
+func TestPrepareFromExtraCLIActiveSuppressionStillWins(t *testing.T) {
+	feed := &Feed{
+		SchemaVersion: models.OutreachSchemaV1,
+		Source:        FeedSource{System: "extra-cli", RunID: "run-supp", SnapshotHash: "snap-supp"},
+		Leads: []FeedLead{
+			extraCLIStampLead("lead-dnc", "33333333000193", "contato@empresa-dnc.com.br", RouteClassGenericCompany, "https://empresa-dnc.com.br/contato", "SUPPRESSED"),
+		},
+	}
+	snap, err := PrepareControlledCohortFromFeed(feed, CohortPrepareOptions{
+		Now: time.Now().UTC(), RepositorySHA: "sha-supp",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Preview.AccountsEligible != 0 {
+		t.Fatalf("active suppression must win, preview=%+v", snap.Preview)
+	}
+	if snap.Preview.OptOut < 1 && snap.Preview.ByExclusionReason["recipient_opt_out"] < 1 {
+		t.Fatalf("want recipient_opt_out, got %+v", snap.Preview.ByExclusionReason)
+	}
+}
+
+func TestPrepareFromExtraCLIFixtureTaintStillExcluded(t *testing.T) {
+	lead := extraCLIStampLead("lead-fix", "55555555000195", "contato@empresa-fix.com.br", RouteClassGenericCompany, "https://empresa-fix.com.br/contato", "NONE")
+	derived := true
+	lead.Contacts[0].DerivedFromFixture = &derived
+	feed := &Feed{
+		SchemaVersion: models.OutreachSchemaV1,
+		Source:        FeedSource{System: "extra-cli", RunID: "run-fix", SnapshotHash: "snap-fix"},
+		Leads:         []FeedLead{lead},
+	}
+	snap, err := PrepareControlledCohortFromFeed(feed, CohortPrepareOptions{
+		Now: time.Now().UTC(), RepositorySHA: "sha-fix",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Preview.AccountsEligible != 0 {
+		t.Fatalf("fixture taint must exclude, preview=%+v", snap.Preview)
+	}
+}
+
+func TestPrepareFromFiveClassCanaryPicksOneNonemptyRoute(t *testing.T) {
+	raw, err := os.ReadFile("testdata/controlled_email_five_class_canary.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	feed, err := ParseFeed(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := PrepareControlledCohortFromFeed(feed, CohortPrepareOptions{
+		Now: time.Now().UTC(), Limit: 50, MaxDailyVolume: 50, TTL: 24 * time.Hour, RepositorySHA: "sha-canary",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Preview.RecipientsFinal != 1 {
+		t.Fatalf("one account, one route, got eligible=%d reasons=%+v members=%d", snap.Preview.AccountsEligible, snap.Preview.ByExclusionReason, len(snap.Members))
+	}
+	if canonicalPilotEmail(snap.Members[0].Mailbox) == "" {
+		t.Fatal("canary frozen mailbox empty")
+	}
+	if snap.Members[0].RouteClass == RouteClassProbabilisticOrRisky {
+		t.Fatal("RISKY must not freeze")
 	}
 }
