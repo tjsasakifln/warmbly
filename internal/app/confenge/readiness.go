@@ -57,10 +57,72 @@ type Readiness struct {
 	PilotNeedsReview  int    `json:"pilot_cohort_needs_review"`
 	PilotApproved     int    `json:"pilot_cohort_approved"`
 	PilotSent         int    `json:"pilot_cohort_sent"`
+	// LatestBoundedCohort is a read-only projection of the newest persisted
+	// cohort grant. It is nil when no durable grant exists; absence is not an
+	// authorization.
+	LatestBoundedCohort *BoundedCohortReadiness `json:"latest_bounded_cohort,omitempty"`
 	// Inbound is ready only when HMAC secret + dest org are set. Never implies live POST.
 	Inbound                 string `json:"inbound"`
 	InboundSecretConfigured bool   `json:"inbound_secret_configured"`
 	InboundOrgConfigured    bool   `json:"inbound_org_configured"`
+}
+
+// BoundedCohortReadiness carries only operator-safe grant facts. It never
+// includes recipient addresses or rendered message bodies.
+type BoundedCohortReadiness struct {
+	AuthorizationID        uuid.UUID      `json:"authorization_id"`
+	CohortID               string         `json:"cohort_id"`
+	CohortHash             string         `json:"cohort_hash"`
+	PolicyVersion          string         `json:"policy_version"`
+	AllowedRouteClasses    []string       `json:"allowed_route_classes"`
+	RouteClassDistribution map[string]int `json:"route_class_distribution,omitempty"`
+	AuthorizedQuantity     *int           `json:"authorized_quantity,omitempty"`
+	MaxDailyVolume         int            `json:"max_daily_volume"`
+	AuthorizedAt           time.Time      `json:"authorized_at"`
+	ExpiresAt              time.Time      `json:"expires_at"`
+	State                  string         `json:"state"`
+	GOReviewVerdict        string         `json:"go_review_verdict,omitempty"`
+	GOReviewAt             *time.Time     `json:"go_review_at,omitempty"`
+	Sent                   *int           `json:"sent,omitempty"`
+	Reserved               *int           `json:"reserved,omitempty"`
+}
+
+type latestBoundedCohortStore interface {
+	LatestGrant(ctx context.Context, orgID uuid.UUID) (*BoundedCohortAuthorization, error)
+	GrantDispatchCounts(ctx context.Context, authorizationID uuid.UUID) (sent int, reserved int, err error)
+}
+
+func boundedCohortReadiness(auth *BoundedCohortAuthorization, now time.Time) *BoundedCohortReadiness {
+	if auth == nil {
+		return nil
+	}
+	state := "active"
+	if auth.RevokedAt != nil {
+		state = "revoked"
+	} else if expiry := auth.EffectiveExpiry(); !expiry.IsZero() && !now.Before(expiry) {
+		state = "expired"
+	}
+	var quantity *int
+	var routeDistribution map[string]int
+	if auth.FrozenManifest != nil {
+		observed := len(auth.FrozenManifest.Members)
+		quantity = &observed
+		routeDistribution = map[string]int{}
+		for _, member := range auth.FrozenManifest.Members {
+			class := strings.TrimSpace(member.RouteClass)
+			if class != "" {
+				routeDistribution[class]++
+			}
+		}
+	}
+	return &BoundedCohortReadiness{
+		AuthorizationID: auth.ID, CohortID: auth.CohortID, CohortHash: auth.CohortHash,
+		PolicyVersion: auth.PolicyVersion, AllowedRouteClasses: append([]string{}, auth.AllowedRouteClasses...),
+		RouteClassDistribution: routeDistribution,
+		AuthorizedQuantity:     quantity, MaxDailyVolume: auth.MaxDailyVolume,
+		AuthorizedAt: auth.AuthorizedAt, ExpiresAt: auth.EffectiveExpiry(), State: state,
+		GOReviewVerdict: auth.GOReviewVerdict, GOReviewAt: auth.GOReviewAt,
+	}
 }
 
 // ReadinessInputs are optional live signals for BuildReadiness.
@@ -256,6 +318,17 @@ func (s *service) CollectReadiness(ctx context.Context, orgID uuid.UUID, emailRe
 		in.Queue = sum
 	}
 	readiness := BuildReadiness(s.cfg, in)
+	if store, ok := s.cohortStore.(latestBoundedCohortStore); ok {
+		if auth, grantErr := store.LatestGrant(ctx, orgID); grantErr == nil {
+			readiness.LatestBoundedCohort = boundedCohortReadiness(auth, time.Now().UTC())
+			if readiness.LatestBoundedCohort != nil {
+				if sent, reserved, countErr := store.GrantDispatchCounts(ctx, auth.ID); countErr == nil {
+					readiness.LatestBoundedCohort.Sent = &sent
+					readiness.LatestBoundedCohort.Reserved = &reserved
+				}
+			}
+		}
+	}
 	readiness.PilotCohortState = "unavailable"
 	cohortID := uuid.NewSHA1(orgID, []byte("confenge-pilot-v1")).String()
 	memberships, err := s.repo.ListPilotMemberships(ctx, orgID, cohortID)

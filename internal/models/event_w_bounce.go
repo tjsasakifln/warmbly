@@ -2,11 +2,9 @@ package models
 
 import "github.com/google/uuid"
 
-// JobEventInboundBounce is emitted by the worker when a synced inbound message
-// is a permanent (hard) delivery-status notification for one of our sends. The
-// worker parses the DSN it already has in hand (no SQL); the consumer resolves
-// the original send and records the bounce. Only permanent failures are emitted,
-// so acting on this never over-suppresses a transient failure.
+// JobEventInboundBounce is emitted by the worker for an attributable delivery
+// status notification. The consumer suppresses only a definitive HARD bounce;
+// SOFT and UNKNOWN remain observable without suppressing the recipient.
 type JobEventInboundBounce struct {
 	UserID  uuid.UUID `json:"user_id"`
 	EmailID uuid.UUID `json:"email_id"`
@@ -17,4 +15,10 @@ type JobEventInboundBounce struct {
 	FailedRecipient string `json:"failed_recipient"`
 	// Reason is a short human string (the bounce subject) for the event record.
 	Reason string `json:"reason"`
+	// BounceClass is HARD, SOFT, or UNKNOWN and comes from machine-readable DSN
+	// status. Codes/diagnostic are additive provenance for the commercial ledger.
+	BounceClass    string `json:"bounce_class"`
+	EnhancedStatus string `json:"enhanced_status,omitempty"`
+	SMTPStatus     string `json:"smtp_status,omitempty"`
+	Diagnostic     string `json:"diagnostic,omitempty"`
 }

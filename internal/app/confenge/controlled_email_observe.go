@@ -15,15 +15,19 @@ import (
 
 // ControlledEmailContext is snapshotted at the observe site. UNKNOWN stays UNKNOWN.
 type ControlledEmailContext struct {
-	RouteClass    string
-	CohortID      string
-	PolicyVersion string
-	ProviderName  string
-	Source        string
-	BounceClass   string
-	ReplyClass    string
-	AccountRef    string
-	TouchpointID  string
+	OccurredAt     time.Time
+	RouteClass     string
+	CohortID       string
+	PolicyVersion  string
+	ProviderName   string
+	Source         string
+	BounceClass    string
+	ReplyClass     string
+	AccountRef     string
+	TouchpointID   string
+	SMTPStatus     string
+	EnhancedStatus string
+	Diagnostic     string
 }
 
 func SnapshotControlledEmailContext(tp *models.OutreachTouchpoint, cand *models.OutreachContactCandidate, auth *BoundedCohortAuthorization, provider string) ControlledEmailContext {
@@ -98,6 +102,15 @@ func applyControlledEmailContext(ev *intel.CommercialEvent, c ControlledEmailCon
 	if ev.CorrelationID == "" && (strings.TrimSpace(c.TouchpointID) != "" || strings.TrimSpace(c.AccountRef) != "") {
 		ev.CorrelationID = strings.TrimSpace(c.TouchpointID) + ":" + strings.TrimSpace(c.AccountRef)
 	}
+	if ev.SMTPStatus == "" {
+		ev.SMTPStatus = c.SMTPStatus
+	}
+	if ev.EnhancedStatus == "" {
+		ev.EnhancedStatus = c.EnhancedStatus
+	}
+	if ev.Diagnostic == "" {
+		ev.Diagnostic = c.Diagnostic
+	}
 }
 
 func (s *service) liveControlledEmailContext(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint, cand *models.OutreachContactCandidate, provider string) ControlledEmailContext {
@@ -123,14 +136,51 @@ func (s *service) liveControlledEmailContext(ctx context.Context, orgID uuid.UUI
 	if s != nil && s.cohortStore != nil && tp != nil && tp.CampaignPolicyAuthorizationID != nil {
 		auth, _ = s.cohortStore.GetGrant(ctx, *tp.CampaignPolicyAuthorizationID)
 	}
-	return SnapshotControlledEmailContext(tp, cand, auth, provider)
+	result := SnapshotControlledEmailContext(tp, cand, auth, provider)
+	if result.ProviderName == "" || result.ProviderName == intel.Unknown {
+		result.ProviderName = s.observedControlledProvider(orgID, result.AccountRef, result.TouchpointID)
+	}
+	return result
+}
+
+// observedControlledProvider carries the provider from the already-persisted
+// attempt/acceptance receipt to later IMAP/DSN/opt-out events. It never guesses
+// from a Message-ID shape or mailbox domain.
+func (s *service) observedControlledProvider(orgID uuid.UUID, accountRef, touchpointID string) string {
+	if s == nil || strings.TrimSpace(accountRef) == "" {
+		return intel.Unknown
+	}
+	chains, err := s.intelStore().ListChains(orgID.String())
+	if err != nil {
+		return intel.Unknown
+	}
+	var provider string
+	var latest time.Time
+	for _, chain := range chains {
+		for _, receipt := range chain.Commercial.Timeline {
+			if receipt.AccountPublicID != accountRef || strings.TrimSpace(receipt.ProviderName) == "" {
+				continue
+			}
+			if touchpointID != "" && receipt.TouchpointID != "" && receipt.TouchpointID != touchpointID {
+				continue
+			}
+			if provider == "" || receipt.OccurredAt.After(latest) {
+				provider = receipt.ProviderName
+				latest = receipt.OccurredAt
+			}
+		}
+	}
+	return firstNonEmpty(provider, intel.Unknown)
 }
 
 func (s *service) observeControlledEmail(ctx context.Context, orgID uuid.UUID, typ string, tp *models.OutreachTouchpoint, cand *models.OutreachContactCandidate, extra ControlledEmailContext) {
 	if s == nil {
 		return
 	}
-	now := time.Now().UTC()
+	now := extra.OccurredAt.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 	c := s.liveControlledEmailContext(ctx, orgID, tp, cand, extra.ProviderName)
 	if extra.BounceClass != "" {
 		c.BounceClass = extra.BounceClass
@@ -141,6 +191,9 @@ func (s *service) observeControlledEmail(ctx context.Context, orgID uuid.UUID, t
 	if extra.Source != "" && (c.Source == "" || c.Source == intel.Unknown) {
 		c.Source = extra.Source
 	}
+	c.SMTPStatus = extra.SMTPStatus
+	c.EnhancedStatus = extra.EnhancedStatus
+	c.Diagnostic = extra.Diagnostic
 	ev := intel.CommercialEvent{
 		EventID:        uuid.NewString(),
 		Version:        intel.EventSchemaV1,
@@ -149,7 +202,9 @@ func (s *service) observeControlledEmail(ctx context.Context, orgID uuid.UUID, t
 		IngestedAt:     now,
 		OrganizationID: orgID.String(),
 		IdempotencyKey: typ + ":" + orgID.String() + ":" + c.TouchpointID + ":" + c.AccountRef,
-		Synthetic:      true,
+		// This path is invoked by real cohort transport/IMAP/DSN handling.
+		// Fixtures and canaries set Synthetic at their own construction sites.
+		Synthetic: false,
 	}
 	applyControlledEmailContext(&ev, c)
 	if extra.AccountRef != "" {
@@ -214,6 +269,9 @@ func CommercialEventFromOutcome(ev models.OutreachOutcome) intel.CommercialEvent
 		ProviderName:    metaString(meta, "provider_name"),
 		BounceClass:     metaString(meta, "bounce_class"),
 		ReplyClass:      metaString(meta, "reply_class"),
+		SMTPStatus:      metaString(meta, "smtp_status"),
+		EnhancedStatus:  metaString(meta, "enhanced_status"),
+		Diagnostic:      metaString(meta, "diagnostic"),
 		Source:          metaString(meta, "source"),
 	}
 	if out.EmailRouteClass == "" {
@@ -222,16 +280,32 @@ func CommercialEventFromOutcome(ev models.OutreachOutcome) intel.CommercialEvent
 	return out
 }
 
-// ClassifyBounceClass is fail-closed: unknown provider text is HARD, never a
-// silent soft bounce that would keep the mailbox in the cohort.
+// ClassifyBounceClass never promotes ambiguous human text to a definitive hard
+// bounce. Permanent suppression requires explicit 5xx/permanent evidence.
 func ClassifyBounceClass(reason string) string {
 	low := strings.ToLower(reason)
+	for _, tok := range []string{"550", "551", "552", "553", "554", "5.0.", "5.1.", "5.2.", "5.3.", "5.4.", "5.5.", "5.6.", "5.7.", "user unknown", "no such user", "mailbox does not exist"} {
+		if strings.Contains(low, tok) {
+			return "HARD"
+		}
+	}
 	for _, tok := range []string{"mailbox full", "over quota", "temporarily rejected", "try again later", "4.2.2", "4.4.1", "greylist"} {
 		if strings.Contains(low, tok) {
 			return "SOFT"
 		}
 	}
-	return "HARD"
+	return "UNKNOWN"
+}
+
+func normalizeBounceClass(class string) string {
+	switch strings.ToUpper(strings.TrimSpace(class)) {
+	case "HARD":
+		return "HARD"
+	case "SOFT":
+		return "SOFT"
+	default:
+		return "UNKNOWN"
+	}
 }
 
 func outcomeToControlledType(eventType string, meta map[string]any) string {
@@ -242,7 +316,10 @@ func outcomeToControlledType(eventType string, meta map[string]any) string {
 		if strings.EqualFold(metaString(meta, "bounce_class"), "SOFT") {
 			return intel.EventSoftBounce
 		}
-		return intel.EventHardBounce
+		if strings.EqualFold(metaString(meta, "bounce_class"), "HARD") {
+			return intel.EventHardBounce
+		}
+		return intel.EventUnknownState
 	case OutcomeReplied:
 		return intel.EventReply
 	case OutcomeDoNotContact:

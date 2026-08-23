@@ -8,7 +8,7 @@ import (
 )
 
 // maybeEmitBounce inspects a freshly synced inbound message and, when it is a
-// permanent delivery-status notification for one of our sends, emits an
+// attributable delivery-status notification for one of our sends, emits an
 // INBOUND_BOUNCE event so the consumer can suppress the recipient and record the
 // bounce against the campaign. This is where API-sent (Gmail/Graph) mail finally
 // gets bounce tracking: those sends succeed synchronously, so the only bounce
@@ -16,9 +16,9 @@ import (
 //
 // Runs on the worker because the full DSN body is in hand here (the consumer has
 // no S3 access). It only PARSES — resolution and suppression stay control-plane.
-// Best-effort and permanent-only: a message that doesn't parse to a permanent
-// failure with a resolvable original id is silently ignored, so a transient
-// (4.x.x) bounce never suppresses a valid recipient.
+// Best-effort: a message without a machine-readable bounce class or resolvable
+// original id is ignored. Transient (4.x.x) observations are emitted as SOFT;
+// suppression remains a consumer-side HARD-only decision.
 func (w *WMail) maybeEmitBounce(msg *models.EmailMessageData) {
 	from := strings.Join(msg.From, " ")
 	if !dsn.Detect(from, msg.Subject, headerFlagValue(msg.Flags, "Content-Type")) {
@@ -26,7 +26,7 @@ func (w *WMail) maybeEmitBounce(msg *models.EmailMessageData) {
 	}
 
 	report := dsn.Parse(msg.BodyPlain + "\n" + msg.BodyHTML)
-	if !report.Permanent {
+	if !report.IsBounce {
 		return
 	}
 
@@ -46,6 +46,10 @@ func (w *WMail) maybeEmitBounce(msg *models.EmailMessageData) {
 		OriginalMessageID: strings.Trim(originalID, "<>"),
 		FailedRecipient:   report.FailedRecipient,
 		Reason:            msg.Subject,
+		BounceClass:       report.BounceClass,
+		EnhancedStatus:    report.EnhancedStatus,
+		SMTPStatus:        report.SMTPStatus,
+		Diagnostic:        report.Diagnostic,
 	})
 }
 

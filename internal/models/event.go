@@ -32,8 +32,9 @@ const (
 	JobEventTypeGraphDeltaUpdate JobEventType = "GRAPH_DELTA_UPDATE"
 
 	// Task result events from worker
-	JobEventTypeEmailSent   JobEventType = "EMAIL_SENT"
-	JobEventTypeEmailFailed JobEventType = "EMAIL_FAILED"
+	JobEventTypeEmailAttempted JobEventType = "EMAIL_ATTEMPTED"
+	JobEventTypeEmailSent      JobEventType = "EMAIL_SENT"
+	JobEventTypeEmailFailed    JobEventType = "EMAIL_FAILED"
 
 	// Error-specific events for worker -> jobsService
 	JobEventTypeEmailAuthError   JobEventType = "EMAIL_AUTH_ERROR"   // Needs re-auth

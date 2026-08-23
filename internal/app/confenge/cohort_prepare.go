@@ -16,7 +16,7 @@ import (
 
 const (
 	FrozenCohortSchemaV1     = "confenge.frozen_cohort.v1"
-	DefaultCohortDailyVolume = 50
+	DefaultCohortDailyVolume = 10
 	DefaultCohortTTL         = 24 * time.Hour
 	DefaultCohortLimit       = 50
 	MaxCohortLimit           = 100
@@ -126,47 +126,52 @@ type CohortPreviewReport struct {
 // FrozenCohortSnapshot is the immutable prepare artifact. Hashes are derived
 // here so the founder never copies them by hand.
 type FrozenCohortSnapshot struct {
-	SchemaVersion       string               `json:"schema_version"`
-	CohortID            string               `json:"cohort_id"`
-	CohortHash          string               `json:"cohort_hash"`
-	RecipientSetHash    string               `json:"recipient_set_hash"`
-	RepositorySHA       string               `json:"repository_sha"`
-	FeedSchemaVersion   string               `json:"feed_schema_version"`
-	FeedIdentity        string               `json:"feed_identity,omitempty"`
-	SnapshotHash        string               `json:"snapshot_hash,omitempty"`
-	PolicyVersion       string               `json:"policy_version"`
-	ComposerVersion     string               `json:"composer_version"`
-	EvidenceVersion     string               `json:"evidence_version"`
-	AllowedRouteClasses []string             `json:"allowed_route_classes"`
-	MaxDailyVolume      int                  `json:"max_daily_volume"`
-	TTLSeconds          int64                `json:"ttl_seconds"`
-	FrozenAt            time.Time            `json:"frozen_at"`
-	Members             []FrozenCohortMember `json:"members"`
-	Exclusions          []CohortExclusion    `json:"exclusions"`
-	Preview             CohortPreviewReport  `json:"preview"`
-	AuthorizationID     uuid.UUID            `json:"authorization_id,omitempty"`
-	RealEmailSent       bool                 `json:"real_email_sent"`
-	AutoSendEnabled     bool                 `json:"auto_send_enabled"`
-	GreenAutorunEnabled bool                 `json:"green_autorun_enabled"`
-	Warnings            []string             `json:"warnings,omitempty"`
+	SchemaVersion                  string               `json:"schema_version"`
+	CohortID                       string               `json:"cohort_id"`
+	CohortHash                     string               `json:"cohort_hash"`
+	RecipientSetHash               string               `json:"recipient_set_hash"`
+	RepositorySHA                  string               `json:"repository_sha"`
+	FeedSchemaVersion              string               `json:"feed_schema_version"`
+	FeedIdentity                   string               `json:"feed_identity,omitempty"`
+	SnapshotHash                   string               `json:"snapshot_hash,omitempty"`
+	AuthoritativeSourceFreshness   *FeedSourceFreshness `json:"authoritative_source_freshness,omitempty"`
+	AuthoritativeFreshnessHash     string               `json:"authoritative_freshness_hash,omitempty"`
+	AuthoritativeFreshnessRequired bool                 `json:"authoritative_freshness_required,omitempty"`
+	PolicyVersion                  string               `json:"policy_version"`
+	ComposerVersion                string               `json:"composer_version"`
+	EvidenceVersion                string               `json:"evidence_version"`
+	AllowedRouteClasses            []string             `json:"allowed_route_classes"`
+	MaxDailyVolume                 int                  `json:"max_daily_volume"`
+	TTLSeconds                     int64                `json:"ttl_seconds"`
+	FrozenAt                       time.Time            `json:"frozen_at"`
+	Members                        []FrozenCohortMember `json:"members"`
+	Exclusions                     []CohortExclusion    `json:"exclusions"`
+	Preview                        CohortPreviewReport  `json:"preview"`
+	AuthorizationID                uuid.UUID            `json:"authorization_id,omitempty"`
+	RealEmailSent                  bool                 `json:"real_email_sent"`
+	AutoSendEnabled                bool                 `json:"auto_send_enabled"`
+	GreenAutorunEnabled            bool                 `json:"green_autorun_enabled"`
+	Warnings                       []string             `json:"warnings,omitempty"`
 }
 
 // CohortPrepareOptions binds live runtime identity. Empty SHA is a warning
 // at preview and a hard block at authorize.
 type CohortPrepareOptions struct {
-	Now                 time.Time
-	Limit               int
-	MaxDailyVolume      int
-	TTL                 time.Duration
-	RepositorySHA       string
-	FeedSchemaVersion   string
-	FeedIdentity        string
-	SnapshotHash        string
-	PolicyVersion       string
-	ComposerVersion     string
-	EvidenceVersion     string
-	AllowedRouteClasses []string
-	Source              string
+	Now                           time.Time
+	Limit                         int
+	MaxDailyVolume                int
+	TTL                           time.Duration
+	RepositorySHA                 string
+	FeedSchemaVersion             string
+	FeedIdentity                  string
+	SnapshotHash                  string
+	PolicyVersion                 string
+	ComposerVersion               string
+	EvidenceVersion               string
+	AllowedRouteClasses           []string
+	Source                        string
+	AuthoritativeSourceFreshness  *FeedSourceFreshness
+	RequireAuthoritativeFreshness bool
 }
 
 // PrepareControlledCohort selects at most one initial route per account,
@@ -174,6 +179,11 @@ type CohortPrepareOptions struct {
 func PrepareControlledCohort(accounts []CohortAccountInput, opts CohortPrepareOptions) (*FrozenCohortSnapshot, error) {
 	if opts.Now.IsZero() {
 		opts.Now = time.Now().UTC()
+	}
+	if opts.RequireAuthoritativeFreshness || opts.AuthoritativeSourceFreshness != nil {
+		if err := ValidateAuthoritativeSourceFreshness(opts.AuthoritativeSourceFreshness, opts.Now); err != nil {
+			return nil, err
+		}
 	}
 	if opts.Limit <= 0 {
 		opts.Limit = DefaultCohortLimit
@@ -183,6 +193,9 @@ func PrepareControlledCohort(accounts []CohortAccountInput, opts CohortPrepareOp
 	}
 	if opts.MaxDailyVolume <= 0 {
 		opts.MaxDailyVolume = DefaultCohortDailyVolume
+	}
+	if opts.MaxDailyVolume > DefaultCohortDispatchCap {
+		return nil, fmt.Errorf("max_daily_volume exceeds first-cohort cap %d", DefaultCohortDispatchCap)
 	}
 	if opts.TTL <= 0 {
 		opts.TTL = DefaultCohortTTL
@@ -364,28 +377,31 @@ func PrepareControlledCohort(accounts []CohortAccountInput, opts CohortPrepareOp
 	}
 
 	snap := &FrozenCohortSnapshot{
-		SchemaVersion:       FrozenCohortSchemaV1,
-		RecipientSetHash:    HashRecipientSet(mailboxes),
-		RepositorySHA:       strings.TrimSpace(opts.RepositorySHA),
-		FeedSchemaVersion:   opts.FeedSchemaVersion,
-		FeedIdentity:        firstNonEmpty(opts.FeedIdentity, opts.SnapshotHash),
-		SnapshotHash:        opts.SnapshotHash,
-		PolicyVersion:       opts.PolicyVersion,
-		ComposerVersion:     opts.ComposerVersion,
-		EvidenceVersion:     opts.EvidenceVersion,
-		AllowedRouteClasses: append([]string{}, opts.AllowedRouteClasses...),
-		MaxDailyVolume:      opts.MaxDailyVolume,
-		TTLSeconds:          int64(opts.TTL / time.Second),
-		FrozenAt:            opts.Now.UTC(),
-		Members:             members,
-		Exclusions:          exclusions,
-		Preview:             preview,
-		RealEmailSent:       false,
-		AutoSendEnabled:     false,
-		GreenAutorunEnabled: false,
-		Warnings:            warnings,
+		SchemaVersion:                  FrozenCohortSchemaV1,
+		RecipientSetHash:               HashRecipientSet(mailboxes),
+		RepositorySHA:                  strings.TrimSpace(opts.RepositorySHA),
+		FeedSchemaVersion:              opts.FeedSchemaVersion,
+		FeedIdentity:                   firstNonEmpty(opts.FeedIdentity, opts.SnapshotHash),
+		SnapshotHash:                   opts.SnapshotHash,
+		AuthoritativeSourceFreshness:   opts.AuthoritativeSourceFreshness,
+		AuthoritativeFreshnessHash:     HashAuthoritativeSourceFreshness(opts.AuthoritativeSourceFreshness),
+		AuthoritativeFreshnessRequired: opts.RequireAuthoritativeFreshness,
+		PolicyVersion:                  opts.PolicyVersion,
+		ComposerVersion:                opts.ComposerVersion,
+		EvidenceVersion:                opts.EvidenceVersion,
+		AllowedRouteClasses:            append([]string{}, opts.AllowedRouteClasses...),
+		MaxDailyVolume:                 opts.MaxDailyVolume,
+		TTLSeconds:                     int64(opts.TTL / time.Second),
+		FrozenAt:                       opts.Now.UTC(),
+		Members:                        members,
+		Exclusions:                     exclusions,
+		Preview:                        preview,
+		RealEmailSent:                  false,
+		AutoSendEnabled:                false,
+		GreenAutorunEnabled:            false,
+		Warnings:                       warnings,
 	}
-	snap.CohortHash = HashFrozenMembership(members)
+	snap.CohortHash = HashFrozenCohort(snap)
 	snap.CohortID = deriveCohortID(opts.SnapshotHash, opts.FeedIdentity, snap.CohortHash)
 	return snap, nil
 }
@@ -623,6 +639,16 @@ func FormatCohortPreviewWithOptions(snap *FrozenCohortSnapshot, opts CohortPrevi
 	fmt.Fprintf(&b, "recipient_set_hash=%s\n", snap.RecipientSetHash)
 	fmt.Fprintf(&b, "repository_sha=%s\n", snap.RepositorySHA)
 	fmt.Fprintf(&b, "feed_schema=%s feed_identity=%s snapshot=%s\n", snap.FeedSchemaVersion, snap.FeedIdentity, snap.SnapshotHash)
+	if snap.AuthoritativeSourceFreshness != nil {
+		fmt.Fprintf(&b, "source_freshness_contract=%s source_freshness_status=%s source_freshness_expires_at=%s source_freshness_hash=%s\n",
+			snap.AuthoritativeSourceFreshness.ContractVersion,
+			snap.AuthoritativeSourceFreshness.Status,
+			snap.AuthoritativeSourceFreshness.ExpiresAt,
+			snap.AuthoritativeFreshnessHash,
+		)
+	} else {
+		fmt.Fprintln(&b, "source_freshness_status=UNKNOWN")
+	}
 	fmt.Fprintf(&b, "policy=%s composer=%s evidence=%s\n", snap.PolicyVersion, snap.ComposerVersion, snap.EvidenceVersion)
 	fmt.Fprintf(&b, "max_daily_volume=%d ttl_seconds=%d\n", snap.MaxDailyVolume, snap.TTLSeconds)
 	fmt.Fprintf(&b, "allowed_route_classes=%s\n", strings.Join(snap.AllowedRouteClasses, ","))
@@ -687,6 +713,11 @@ func GrantFromFrozenSnapshot(snap *FrozenCohortSnapshot, orgID, actor uuid.UUID,
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
+	}
+	if snap.AuthoritativeFreshnessRequired || snap.AuthoritativeSourceFreshness != nil {
+		if err := ValidateFrozenSourceFreshness(snap, now, false); err != nil {
+			return nil, err
+		}
 	}
 	ttl := time.Duration(snap.TTLSeconds) * time.Second
 	if ttl <= 0 {

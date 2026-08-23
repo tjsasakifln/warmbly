@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/warmbly/warmbly/internal/app/replyclassify"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
 )
@@ -140,10 +141,43 @@ func (s *service) ProcessInboundHandoff(ctx context.Context, orgID uuid.UUID, in
 	if intent.Intent == IntentDoNotContact {
 		eventType = OutcomeDoNotContact
 	}
+	controlledReply := controlledReplyClass(intent.Intent)
+	payload["reply_class"] = controlledReply
 	_ = s.EnqueueOutcome(ctx, orgID, models.OutreachOutcome{IdempotencyKey: idem, SourceLeadID: acc.SourceLeadID, CNPJ14: acc.CNPJ14, ContactEmail: contactEmail, EventType: eventType, OccurredAt: in.OccurredAt, Payload: mustJSON(payload)})
 	s.applyReplyCRM(ctx, orgID, in.ActorID, contactEmail, intentToCRMClass(intent.Intent), in.WarmblyContactID, cand, acc)
 	s.markAccountDraftsReplied(ctx, orgID, acc.ID)
 	return &HandoffResult{AccountID: acc.ID, QueueState: queueState, Intent: intent, CancelledDrafts: cancelled, StoppedCadence: true, IdempotencyKey: idem}, nil
+}
+
+// ClassifyControlledReply is the offline, bounded projection used at IMAP
+// ingest. The optional model is deliberately gated off here: a commercial
+// metric may stay UNKNOWN, but must never become positive without deterministic
+// evidence. The richer handoff path can still perform CRM actions separately.
+func ClassifyControlledReply(subject, body string, headers map[string][]string) string {
+	base := replyclassify.ClassifyGated(context.Background(), replyclassify.Input{
+		Headers: headers, Subject: subject, BodyText: body,
+	}, func() bool { return false })
+	intent := ClassifyCommercialIntent(subject, body, base.Class, headers)
+	return controlledReplyClass(intent.Intent)
+}
+
+// controlledReplyClass projects the richer internal reply taxonomy onto the
+// bounded learning contract. It never promotes UNKNOWN to positive.
+func controlledReplyClass(intent string) string {
+	switch strings.ToUpper(strings.TrimSpace(intent)) {
+	case IntentPositiveInterest:
+		return "POSITIVE"
+	case IntentNegative:
+		return "NEGATIVE"
+	case IntentReferral:
+		return "ROUTED/FORWARDED"
+	case IntentDoNotContact:
+		return "OPT_OUT"
+	case IntentQuestion, IntentObjection, IntentNotNow, IntentOutOfOffice:
+		return "NEUTRAL"
+	default:
+		return "UNKNOWN"
+	}
 }
 
 func queueStateForIntent(intent string, acc *models.OutreachAccount) (string, bool, bool) {

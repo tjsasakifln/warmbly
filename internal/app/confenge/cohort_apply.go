@@ -97,6 +97,23 @@ func AuthorizeFrozenCohort(
 	}
 
 	cp := *snap
+	cp.Members = append([]FrozenCohortMember(nil), snap.Members...)
+	for _, work := range works {
+		for i := range cp.Members {
+			if cp.Members[i].AccountRef == work.member.AccountRef &&
+				canonicalPilotEmail(cp.Members[i].Mailbox) == canonicalPilotEmail(work.member.Mailbox) {
+				cp.Members[i].AccountID = work.tp.AccountID
+				cp.Members[i].TouchpointID = work.tp.ID
+				break
+			}
+		}
+	}
+	// Canonical account/touchpoint ids are operational bindings added after
+	// review. HashFrozenMembership intentionally excludes them, so this must
+	// never change the founder-reviewed cohort composition hash.
+	if cp.CohortHash != HashFrozenCohort(&cp) {
+		return out, fmt.Errorf("touchpoint binding changed frozen cohort hash")
+	}
 	cp.AuthorizationID = auth.ID
 	auth.FrozenManifest = &cp
 	got, err := CreateBoundedCohortGrant(ctx, store, auth, true)

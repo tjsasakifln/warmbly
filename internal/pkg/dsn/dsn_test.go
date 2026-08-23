@@ -37,6 +37,12 @@ func TestParsePermanent(t *testing.T) {
 	if r.OriginalMessageID != "camp-abc-123@yourdomain.com" {
 		t.Errorf("original message id = %q", r.OriginalMessageID)
 	}
+	if r.BounceClass != "HARD" || r.EnhancedStatus != "5.1.1" || r.SMTPStatus != "550" {
+		t.Fatalf("hard provenance lost: %+v", r)
+	}
+	if r.Diagnostic != "5.1.1 user unknown" {
+		t.Fatalf("diagnostic = %q", r.Diagnostic)
+	}
 }
 
 func TestParseTransientNotPermanent(t *testing.T) {
@@ -47,12 +53,29 @@ func TestParseTransientNotPermanent(t *testing.T) {
 	if r.Permanent {
 		t.Error("4.x.x/delayed must not be permanent (would over-suppress)")
 	}
+	if r.BounceClass != "SOFT" || r.EnhancedStatus != "4.4.1" {
+		t.Fatalf("soft provenance lost: %+v", r)
+	}
 }
 
 func TestParseOrdinaryBody(t *testing.T) {
 	r := Parse("Hi, thanks for reaching out, let's chat next week.")
 	if r.IsBounce || r.Permanent {
 		t.Errorf("ordinary mail misread as bounce: %+v", r)
+	}
+}
+
+func TestSuccessfulDSNIsNotMisreportedAsBounce(t *testing.T) {
+	r := Parse("Action: delivered\nStatus: 2.0.0\nDiagnostic-Code: smtp; 250 queued")
+	if r.IsBounce || r.Permanent || r.BounceClass != "UNKNOWN" {
+		t.Fatalf("successful DSN must not become a bounce: %+v", r)
+	}
+}
+
+func TestDiagnosticIsMinimizedAndRedacted(t *testing.T) {
+	r := Parse("Action: failed\nStatus: 5.1.1\nDiagnostic-Code: smtp; 550 user victim@example.com unknown")
+	if r.Diagnostic != "user <redacted-email> unknown" {
+		t.Fatalf("diagnostic not redacted: %q", r.Diagnostic)
 	}
 }
 

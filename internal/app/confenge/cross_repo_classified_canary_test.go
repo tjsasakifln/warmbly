@@ -96,7 +96,7 @@ func TestCrossRepoFiveClassCanaryIngest(t *testing.T) {
 			RouteClassDirectPerson, RouteClassRoleOrDepartment,
 			RouteClassGenericCompany, RouteClassPublicCompanyFreemail,
 		},
-		MaxDailyVolume: 50, RecipientSetHash: HashRecipientSet(mailboxes),
+		MaxDailyVolume: 10, RecipientSetHash: HashRecipientSet(mailboxes),
 		ComposerVersion: ComposerVersion, EvidenceVersion: DefaultEvidenceVersion,
 		TTL: time.Hour, ExpiresAt: now.Add(time.Hour),
 	}

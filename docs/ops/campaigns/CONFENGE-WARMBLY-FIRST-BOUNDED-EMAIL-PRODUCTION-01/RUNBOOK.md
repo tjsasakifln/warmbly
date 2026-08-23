@@ -48,7 +48,7 @@ docker exec warmbly-confenge-backend-1 /app/confenge cohort prepare \
   --feed /data/confenge-ops/confenge.outreach.v1.json \
   --org-id 22222222-0000-0000-0000-000000000001 \
   --out /data/confenge-ops/first-cohort-bound.json \
-  --limit 50 --max-daily 50 --ttl 24h
+  --limit 10 --max-daily 10 --ttl 24h
 ```
 
 Hashes are derived. Never copy one by hand. The manifest holds operational PII:
@@ -101,10 +101,10 @@ docker exec warmbly-confenge-backend-1 /app/confenge cohort review \
 
 ```bash
 docker exec warmbly-confenge-backend-1 /app/confenge cohort dispatch \
-  --id <AUTHORIZATION_ID> --actor <FOUNDER_UUID> --limit 50    # preview
+  --id <AUTHORIZATION_ID> --actor <FOUNDER_UUID> --limit 10    # preview
 
 docker exec warmbly-confenge-backend-1 /app/confenge cohort dispatch \
-  --id <AUTHORIZATION_ID> --actor <FOUNDER_UUID> --limit 50 --confirm
+  --id <AUTHORIZATION_ID> --actor <FOUNDER_UUID> --limit 10 --confirm
 ```
 
 Enrollment queues campaign execution. Provider acceptance is reported by the
@@ -126,8 +126,11 @@ docker exec warmbly-confenge-backend-1 /app/confenge stop-sending
 docker exec warmbly-confenge-backend-1 /app/confenge cohort report --events <PATH>
 ```
 
-Record attempted, provider-accepted, bounce, reply, opt-out per route class.
-Anything not yet observable stays UNKNOWN.
+Record attempted, provider-accepted, HARD bounce, SOFT bounce, reply,
+classified positive reply and opt-out per route class. `provider accepted` is
+not delivery. Delivery and complaint stay UNKNOWN unless a DSN/webhook/FBL
+actually proves them. A missing or unreconciled denominator is UNKNOWN, not
+zero.
 
 ## Rollback
 

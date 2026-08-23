@@ -754,6 +754,9 @@ type CommercialEvent struct {
 	ProviderEventID   string           `json:"provider_event_id,omitempty"`
 	RawEventType      string           `json:"raw_event_type,omitempty"`
 	RawProviderStatus string           `json:"raw_provider_status,omitempty"`
+	SMTPStatus        string           `json:"smtp_status,omitempty"`
+	EnhancedStatus    string           `json:"enhanced_status,omitempty"`
+	Diagnostic        string           `json:"diagnostic,omitempty"`
 	CompanyRef        string           `json:"company_ref,omitempty"`
 	CNPJ              string           `json:"-"`
 	CNPJHash          string           `json:"cnpj_hash,omitempty"`

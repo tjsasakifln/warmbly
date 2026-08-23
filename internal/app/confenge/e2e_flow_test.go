@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/warmbly/warmbly/internal/app/confenge/intel"
 	"github.com/warmbly/warmbly/internal/models"
 )
 
@@ -157,6 +158,79 @@ func TestSyntheticOperationalFlow(t *testing.T) {
 	}
 	if !strings.Contains(hdr, "v1=") {
 		t.Fatalf("header shape %q", hdr)
+	}
+}
+
+func TestSoftBounceIsObservableWithoutSuppression(t *testing.T) {
+	var outcomes []models.OutreachOutcome
+	rf := &memRepoOutcome{memRepoFull: *newMemRepoWithSettings(), outcomes: &outcomes}
+	rf.memRepo = newMemRepo()
+	rf.settings = map[uuid.UUID]*models.OutreachOrgSettings{}
+	rf.drafts = map[uuid.UUID]*models.OutreachDraft{}
+	org := uuid.New()
+	acc := &models.OutreachAccount{ID: uuid.New(), OrganizationID: org, SourceLeadID: "lead-soft", CNPJ14: "11222333000181"}
+	if _, err := rf.UpsertAccount(context.Background(), acc); err != nil {
+		t.Fatal(err)
+	}
+	cand := &models.OutreachContactCandidate{
+		ID: uuid.New(), OrganizationID: org, AccountID: acc.ID, Email: "busy@empresa.com.br",
+		VerificationStatus: models.OutreachVerifyVerified,
+	}
+	if _, err := rf.UpsertCandidate(context.Background(), cand); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(Config{Enabled: true, DefaultDailyLimit: 10}, rf, nil).(*service)
+	err := svc.NoteBounceObservation(context.Background(), org, cand.Email, BounceObservation{
+		Class: "SOFT", OriginalMessageID: "m-1@example.com", EnhancedStatus: "4.4.1",
+		SMTPStatus: "421", Diagnostic: "4.4.1 try again", Reason: "Delivery delayed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := rf.GetCandidate(context.Background(), org, cand.ID)
+	if stored == nil || stored.Bounced || stored.VerificationStatus == models.OutreachVerifyBounced {
+		t.Fatalf("soft bounce suppressed candidate: %+v", stored)
+	}
+	storedAcc, _ := rf.GetAccount(context.Background(), org, acc.ID)
+	if storedAcc == nil || storedAcc.Blocked || storedAcc.DoNotContact {
+		t.Fatalf("soft bounce blocked account: %+v", storedAcc)
+	}
+	events := svc.ObservedControlledEmailEvents()
+	if len(events) != 1 || events[0].Type != "soft_bounce" || events[0].BounceClass != "SOFT" {
+		t.Fatalf("soft bounce missing from commercial ledger: %+v", events)
+	}
+	if len(outcomes) != 1 || !strings.Contains(string(outcomes[0].Payload), `"enhanced_status":"4.4.1"`) {
+		t.Fatalf("soft provenance missing from outcome: %+v", outcomes)
+	}
+}
+
+func TestUnreconciledExactReplyIdentifierDoesNotFabricateCohort(t *testing.T) {
+	var outcomes []models.OutreachOutcome
+	rf := &memRepoOutcome{memRepoFull: *newMemRepoWithSettings(), outcomes: &outcomes}
+	rf.memRepo = newMemRepo()
+	rf.settings = map[uuid.UUID]*models.OutreachOrgSettings{}
+	rf.drafts = map[uuid.UUID]*models.OutreachDraft{}
+	org := uuid.New()
+	acc := &models.OutreachAccount{ID: uuid.New(), OrganizationID: org, SourceLeadID: "lead-reply", CNPJ14: "11222333000182"}
+	_, _ = rf.UpsertAccount(context.Background(), acc)
+	cand := &models.OutreachContactCandidate{ID: uuid.New(), OrganizationID: org, AccountID: acc.ID, Email: "reply@empresa.com.br"}
+	_, _ = rf.UpsertCandidate(context.Background(), cand)
+	svc := NewService(Config{Enabled: true, DefaultDailyLimit: 10}, rf, nil).(*service)
+	err := svc.NoteReply(context.Background(), org, cand.Email, map[string]any{
+		"campaign_id": uuid.NewString(), "contact_id": uuid.NewString(), "reply_class": "POSITIVE",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := svc.ObservedControlledEmailEvents()
+	if len(events) != 1 {
+		t.Fatalf("events=%+v", events)
+	}
+	if events[0].CohortID != intel.Unknown || events[0].EntityPublicID != "" {
+		t.Fatalf("unreconciled identifier fabricated cohort/touchpoint: %+v", events[0])
+	}
+	if events[0].AccountPublicID != acc.ID.String() {
+		t.Fatalf("canonical account id lost: %+v", events[0])
 	}
 }
 

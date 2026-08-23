@@ -58,7 +58,7 @@ func TestDispatchRequiresLiveGOAndBlocksRiskyAndOverCap(t *testing.T) {
 	now := time.Now().UTC()
 	store := NewMemoryCohortStore()
 	auth := sampleGOReviewGrant(t, now)
-	auth.MaxDailyVolume = 50
+	auth.MaxDailyVolume = 10
 	m0 := auth.FrozenManifest.Members[0]
 	m0.Subject = "s"
 	m0.BodyText = "Olá, equipe,\n\nSou da CONFENGE."
@@ -121,14 +121,14 @@ func TestDispatchRequiresLiveGOAndBlocksRiskyAndOverCap(t *testing.T) {
 	}
 }
 
-func TestDispatchCapBlocksOverFifty(t *testing.T) {
+func TestDispatchCapBlocksOverTen(t *testing.T) {
 	t.Setenv(EnvKillSwitchPath, t.TempDir()+"/absent")
 	now := time.Now().UTC()
 	store := NewMemoryCohortStore()
 	auth := sampleGOReviewGrant(t, now)
-	auth.MaxDailyVolume = 50
-	members := make([]FrozenCohortMember, 0, 51)
-	for i := 0; i < 51; i++ {
+	auth.MaxDailyVolume = 10
+	members := make([]FrozenCohortMember, 0, 11)
+	for i := 0; i < 11; i++ {
 		members = append(members, FrozenCohortMember{
 			AccountID: uuid.New(), AccountRef: "acc-" + itoa(i), CandidateID: uuid.New(),
 			Mailbox: "contato" + itoa(i) + "@empresa.com.br", RouteClass: RouteClassGenericCompany,
@@ -150,7 +150,7 @@ func TestDispatchCapBlocksOverFifty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Attempted > 50 || sends > 50 {
+	if res.Attempted > DefaultCohortDispatchCap || sends > DefaultCohortDispatchCap {
 		t.Fatalf("cap breached attempted=%d sends=%d", res.Attempted, sends)
 	}
 }
@@ -172,7 +172,7 @@ func TestFixtureCannotProduceLiveGO(t *testing.T) {
 		t.Fatal(err)
 	}
 	snap, err := PrepareControlledCohortFromFeed(feed, CohortPrepareOptions{
-		Now: time.Now().UTC(), Limit: 50, MaxDailyVolume: 50, TTL: 24 * time.Hour,
+		Now: time.Now().UTC(), Limit: 50, MaxDailyVolume: 10, TTL: 24 * time.Hour,
 		RepositorySHA: "fixture-sha",
 	})
 	if err != nil {

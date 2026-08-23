@@ -33,6 +33,9 @@ type FeedSource struct {
 	RepoSHA        string `json:"repo_sha"`
 	ProfileID      string `json:"profile_id"`
 	ProfileVersion string `json:"profile_version"`
+	// AuthoritativeFreshness is emitted by the live extra-cli producer. It is
+	// preserved through freeze and revalidated at authorize/GO/transport.
+	AuthoritativeFreshness *FeedSourceFreshness `json:"authoritative_freshness,omitempty"`
 }
 
 // FeedPagination supports paged feeds; all fields optional.

@@ -77,7 +77,7 @@ func CollectLiveReleaseManifest(ctx context.Context, in LiveReleaseInput) Releas
 		if snap := auth.FrozenManifest; snap != nil {
 			got.FeedHash = firstNonEmpty(snap.SnapshotHash, snap.FeedIdentity)
 			if len(snap.Members) > 0 {
-				got.CohortHash = HashFrozenMembership(snap.Members)
+				got.CohortHash = HashFrozenCohort(snap)
 				mailboxes := make([]string, 0, len(snap.Members))
 				for _, m := range snap.Members {
 					mailboxes = append(mailboxes, m.Mailbox)
@@ -249,7 +249,7 @@ func ProveDispatchWiring(auth *BoundedCohortAuthorization) (CheckState, string) 
 	if auth == nil || auth.ID == uuid.Nil {
 		return EvidenceUnknown, "dispatch_wiring_not_proven"
 	}
-	if auth.MaxDailyVolume < 1 {
+	if auth.MaxDailyVolume < 1 || auth.MaxDailyVolume > DefaultCohortDispatchCap {
 		return EvidenceFail, "dispatch_wiring_not_ready"
 	}
 	if auth.FrozenManifest == nil || len(auth.FrozenManifest.Members) == 0 {
@@ -333,7 +333,10 @@ func ProveObservabilityWiring(auth *BoundedCohortAuthorization) (CheckState, str
 	if !observabilityContextComplete(ctx) {
 		return EvidenceFail, "observability_not_ready"
 	}
-	for _, typ := range []string{intel.EventEmailAttempted, intel.EventProviderAccepted, intel.EventHardBounce, intel.EventReply} {
+	for _, typ := range []string{
+		intel.EventEmailAttempted, intel.EventProviderAccepted, intel.EventHardBounce,
+		intel.EventSoftBounce, intel.EventReply, intel.EventOptOut,
+	} {
 		ev := intel.CommercialEvent{Type: typ}
 		applyControlledEmailContext(&ev, ctx)
 		if !observabilityEventComplete(ev, ctx) {
@@ -353,7 +356,10 @@ func observabilityContextComplete(c ControlledEmailContext) bool {
 	if c.PolicyVersion == "" || c.PolicyVersion == intel.Unknown {
 		return false
 	}
-	if strings.TrimSpace(c.AccountRef) == "" && strings.TrimSpace(c.TouchpointID) == "" {
+	if c.ProviderName == "" || c.ProviderName == intel.Unknown {
+		return false
+	}
+	if strings.TrimSpace(c.AccountRef) == "" || strings.TrimSpace(c.TouchpointID) == "" {
 		return false
 	}
 	return true
@@ -369,11 +375,10 @@ func observabilityEventComplete(ev intel.CommercialEvent, c ControlledEmailConte
 	if ev.PolicyVersion == "" || ev.PolicyVersion == intel.Unknown {
 		return false
 	}
-	if strings.TrimSpace(ev.AccountPublicID) == "" && strings.TrimSpace(ev.EntityPublicID) == "" &&
-		strings.TrimSpace(ev.CorrelationID) == "" {
-		if strings.TrimSpace(c.AccountRef) == "" && strings.TrimSpace(c.TouchpointID) == "" {
-			return false
-		}
+	if ev.ProviderName == "" || ev.ProviderName == intel.Unknown {
+		return false
+	}
+	if strings.TrimSpace(ev.AccountPublicID) == "" || strings.TrimSpace(ev.EntityPublicID) == "" {
 		return false
 	}
 	return true
@@ -413,8 +418,13 @@ func probeDBCohortAuthority(ctx context.Context, store BoundedCohortStore, auth 
 	if live.FrozenManifest == nil || len(live.FrozenManifest.Members) == 0 {
 		return EvidenceFail, "db_cohort_authority_missing"
 	}
-	if HashFrozenMembership(live.FrozenManifest.Members) == "" {
+	if HashFrozenCohort(live.FrozenManifest) == "" {
 		return EvidenceFail, "db_cohort_authority_missing"
+	}
+	if live.FrozenManifest.AuthoritativeFreshnessRequired || live.FrozenManifest.AuthoritativeSourceFreshness != nil {
+		if err := ValidateFrozenSourceFreshness(live.FrozenManifest, now, false); err != nil {
+			return EvidenceFail, "authoritative_source_freshness_invalid"
+		}
 	}
 	return EvidencePass, ""
 }

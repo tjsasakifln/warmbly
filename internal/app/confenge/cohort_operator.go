@@ -101,8 +101,8 @@ func NormalizeBoundedCohortGrant(auth *BoundedCohortAuthorization, now time.Time
 	if strings.TrimSpace(auth.RecipientSetHash) == "" {
 		return fmt.Errorf("recipient_set_hash required")
 	}
-	if auth.MaxDailyVolume < 1 || auth.MaxDailyVolume > 100 {
-		return fmt.Errorf("max_daily_volume must be 1..100 for controlled email")
+	if auth.MaxDailyVolume < 1 || auth.MaxDailyVolume > DefaultCohortDispatchCap {
+		return fmt.Errorf("max_daily_volume must be 1..%d for controlled email", DefaultCohortDispatchCap)
 	}
 	if len(auth.AllowedRouteClasses) == 0 {
 		return fmt.Errorf("allowed_route_classes required")

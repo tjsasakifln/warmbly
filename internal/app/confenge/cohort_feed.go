@@ -33,6 +33,7 @@ func PrepareControlledCohortFromFeed(feed *Feed, opts CohortPrepareOptions) (*Fr
 	if opts.Source == "" {
 		opts.Source = firstNonEmpty(feed.Source.System, "extra-cli")
 	}
+	opts.AuthoritativeSourceFreshness = feed.Source.AuthoritativeFreshness
 	accounts := accountsFromFeed(feed, opts.Source)
 	return PrepareControlledCohort(accounts, opts)
 }
