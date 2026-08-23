@@ -1097,6 +1097,7 @@ func main() {
 				log.Fatalf("confenge: postgres required for bounded cohort authority")
 			}
 			confengeServiceForHandler.WireCohortAuth(confenge.NewPostgresCohortStore(primaryDB.Pool))
+			confengeServiceForHandler.WireHumanGate(primaryDB.Pool)
 			// Dossier manifest references are card metadata, not a send path.
 			confengeServiceForHandler.WireDossierReferences(confenge.NewPostgresDossierStore(primaryDB.Pool))
 		}

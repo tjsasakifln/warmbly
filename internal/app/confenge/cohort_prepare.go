@@ -723,8 +723,12 @@ func GrantFromFrozenSnapshot(snap *FrozenCohortSnapshot, orgID, actor uuid.UUID,
 	if ttl <= 0 {
 		ttl = DefaultCohortTTL
 	}
+	authorizationID := snap.AuthorizationID
+	if authorizationID == uuid.Nil {
+		authorizationID = uuid.New()
+	}
 	auth := &BoundedCohortAuthorization{
-		ID: uuid.New(), OrganizationID: orgID, ActorID: actor, AuthorizedAt: now,
+		ID: authorizationID, OrganizationID: orgID, ActorID: actor, AuthorizedAt: now,
 		RepositorySHA: snap.RepositorySHA, FeedSchemaVersion: snap.FeedSchemaVersion,
 		CohortID: snap.CohortID, CohortHash: snap.CohortHash,
 		PolicyVersion: snap.PolicyVersion, AllowedRouteClasses: append([]string{}, snap.AllowedRouteClasses...),
