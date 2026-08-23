@@ -36,8 +36,28 @@ func humanGateActor(c *gin.Context) (uuid.UUID, bool) {
 	return id, true
 }
 
-func humanGateMeta(c *gin.Context, reason []string) gin.H {
-	return gin.H{"contract_version": confenge.HumanGateContractV1, "source": confenge.HumanGateSource, "as_of": time.Now().UTC(), "freshness": "SERVER_OBSERVED", "policy_version": confenge.BoundedCohortPolicyV1, "reason": reason, "correlation_id": c.GetString("request_id")}
+func humanGateMeta(c *gin.Context, cohort *confenge.HumanGateCohort, reason []string) gin.H {
+	meta := gin.H{"contract_version": confenge.HumanGateContractV1, "source": confenge.HumanGateSource, "as_of": time.Now().UTC(), "freshness": "UNKNOWN", "policy_version": confenge.BoundedCohortPolicyV1, "reason": reason, "correlation_id": c.GetString("request_id")}
+	if cohort != nil {
+		meta["source"] = cohort.Source
+		meta["as_of"] = cohort.AsOf
+		meta["freshness"] = cohort.Freshness
+		meta["policy_version"] = cohort.PolicyVersion
+		meta["cohort_version"] = cohort.Version
+	}
+	return meta
+}
+
+func humanGateCandidate(v *confenge.HumanGateCohort, candidateID uuid.UUID) *confenge.HumanGateCandidate {
+	if v == nil {
+		return nil
+	}
+	for i := range v.Candidates {
+		if v.Candidates[i].CandidateID == candidateID {
+			return &v.Candidates[i]
+		}
+	}
+	return nil
 }
 
 func (h *Handler) ListConfengeHumanGateCohorts(c *gin.Context) {
@@ -59,7 +79,7 @@ func (h *Handler) ListConfengeHumanGateCohorts(c *gin.Context) {
 	if len(list) == limit && len(list) > 0 {
 		next = list[len(list)-1].CreatedAt.Format(time.RFC3339Nano)
 	}
-	c.JSON(http.StatusOK, gin.H{"data": list, "pagination": gin.H{"next_cursor": next, "has_more": next != ""}, "meta": humanGateMeta(c, nil)})
+	c.JSON(http.StatusOK, gin.H{"data": list, "pagination": gin.H{"next_cursor": next, "has_more": next != ""}, "meta": humanGateMeta(c, nil, nil)})
 }
 
 func (h *Handler) CreateConfengeHumanGateCohort(c *gin.Context) {
@@ -83,7 +103,7 @@ func (h *Handler) CreateConfengeHumanGateCohort(c *gin.Context) {
 		errx.JSON(c, x)
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"data": v, "meta": humanGateMeta(c, v.Reason), "receipt": v.Receipt})
+	c.JSON(http.StatusCreated, gin.H{"data": v, "meta": humanGateMeta(c, v, v.Reason), "receipt": v.Receipt})
 }
 
 func (h *Handler) ReproduceConfengeHumanGateCohort(c *gin.Context) {
@@ -105,7 +125,7 @@ func (h *Handler) ReproduceConfengeHumanGateCohort(c *gin.Context) {
 		errx.JSON(c, x)
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"data": v, "meta": humanGateMeta(c, v.Reason), "receipt": v.Receipt})
+	c.JSON(http.StatusCreated, gin.H{"data": v, "meta": humanGateMeta(c, v, v.Reason), "receipt": v.Receipt})
 }
 
 func (h *Handler) GetConfengeHumanGateCohort(c *gin.Context) {
@@ -122,7 +142,7 @@ func (h *Handler) GetConfengeHumanGateCohort(c *gin.Context) {
 		errx.JSON(c, x)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": v, "meta": humanGateMeta(c, v.Reason), "receipt": v.Receipt})
+	c.JSON(http.StatusOK, gin.H{"data": v, "meta": humanGateMeta(c, v, v.Reason), "receipt": v.Receipt})
 }
 
 func (h *Handler) GetConfengeHumanGateCandidate(c *gin.Context) {
@@ -139,11 +159,9 @@ func (h *Handler) GetConfengeHumanGateCandidate(c *gin.Context) {
 		errx.JSON(c, x)
 		return
 	}
-	for _, candidate := range v.Candidates {
-		if candidate.CandidateID == candidateID {
-			c.JSON(http.StatusOK, gin.H{"data": candidate, "meta": humanGateMeta(c, candidate.BlockedBy), "receipt": v.Receipt})
-			return
-		}
+	if candidate := humanGateCandidate(v, candidateID); candidate != nil {
+		c.JSON(http.StatusOK, gin.H{"data": candidate, "meta": humanGateMeta(c, v, candidate.BlockedBy), "receipt": v.Receipt})
+		return
 	}
 	errx.JSON(c, errx.NewWithIdentifier(errx.NotFound, "candidate_not_found", "candidate is not in this immutable version"))
 }
@@ -187,7 +205,13 @@ func (h *Handler) ValidateConfengeHumanGateCandidate(c *gin.Context) {
 		errx.JSON(c, x)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": updated, "meta": humanGateMeta(c, updated.Reason), "receipt": updated.Receipt})
+	receipt := updated.Receipt
+	if updated.OperationReceipt != "" {
+		receipt = updated.OperationReceipt
+	} else if candidate := humanGateCandidate(updated, candidateID); candidate != nil && candidate.Validation != nil {
+		receipt = candidate.Validation.Receipt
+	}
+	c.JSON(http.StatusOK, gin.H{"data": updated, "meta": humanGateMeta(c, updated, updated.Reason), "receipt": receipt})
 }
 
 func (h *Handler) ReviewConfengeHumanGateCandidate(c *gin.Context) {
@@ -215,7 +239,13 @@ func (h *Handler) ReviewConfengeHumanGateCandidate(c *gin.Context) {
 		errx.JSON(c, x)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": v, "meta": humanGateMeta(c, v.Reason), "receipt": v.Receipt})
+	receipt := v.Receipt
+	if v.OperationReceipt != "" {
+		receipt = v.OperationReceipt
+	} else if candidate := humanGateCandidate(v, candidateID); candidate != nil && candidate.Review != nil {
+		receipt = candidate.Review.Receipt
+	}
+	c.JSON(http.StatusOK, gin.H{"data": v, "meta": humanGateMeta(c, v, v.Reason), "receipt": receipt})
 }
 
 func (h *Handler) DecideConfengeHumanGateCohort(c *gin.Context) {
@@ -243,5 +273,11 @@ func (h *Handler) DecideConfengeHumanGateCohort(c *gin.Context) {
 		errx.JSON(c, x)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": v, "meta": humanGateMeta(c, v.Reason), "receipt": v.Receipt})
+	receipt := v.Receipt
+	if v.OperationReceipt != "" {
+		receipt = v.OperationReceipt
+	} else if v.Decision != nil {
+		receipt = v.Decision.Receipt
+	}
+	c.JSON(http.StatusOK, gin.H{"data": v, "meta": humanGateMeta(c, v, v.Reason), "receipt": receipt})
 }

@@ -18,13 +18,18 @@ send operation.
 - `GET /v1/confenge/cohorts/{version_id}/candidates/{candidate_id}` returns one
   progressive detail.
 - `POST .../validation` requests pre-send syntax/MX/SMTP verification.
-- `POST .../review` records `APPROVE`, `REJECT` or `HOLD` with a reason.
-- `POST /v1/confenge/cohorts/{version_id}/decision` records `GO` or `NO_GO`.
+- `POST .../review` records `APPROVE`, `REJECT` or `HOLD` with a reason;
+  `APPROVE` also requires `"acknowledged": true`.
+- `POST /v1/confenge/cohorts/{version_id}/decision` records `GO` or `NO_GO`
+  only when `confirmation` exactly names the immutable version (for example
+  `v3`).
 
 All POSTs require `Idempotency-Key`. Reusing a key with the same payload returns
 the original resource/receipt; reusing it with another payload returns 409.
 Responses include source, `as_of`, freshness, policy/contract version, reason,
 correlation id and receipt. List responses use `data` plus `pagination`.
+The acknowledgement and typed version are included in the idempotent intent
+hash, so an ambiguous retry cannot silently change the human confirmation.
 
 Reads require read-contacts. Cohort/validation/review writes require
 manage-contacts. GO/NO-GO requires manage-campaigns, not send-campaigns. The

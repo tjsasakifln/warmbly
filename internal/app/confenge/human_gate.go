@@ -3,6 +3,7 @@ package confenge
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -23,6 +24,7 @@ const (
 	HumanGateSource        = "warmbly.controlled-outbound"
 	HumanGateValidationTTL = 24 * time.Hour
 	HumanGateMaxCohort     = 10
+	HumanGateReadyVerdict  = "READY_FOR_HUMAN_GATE_LIVE_PREFLIGHT"
 )
 
 type HumanGateCreateInput struct {
@@ -77,29 +79,32 @@ type HumanGateDecision struct {
 }
 
 type HumanGateCohort struct {
-	ContractVersion string               `json:"contract_version"`
-	ID              uuid.UUID            `json:"id"`
-	CohortID        uuid.UUID            `json:"cohort_id"`
-	Version         int                  `json:"version"`
-	Source          string               `json:"source"`
-	SourceRunID     string               `json:"source_run_id"`
-	AsOf            time.Time            `json:"as_of"`
-	Freshness       string               `json:"freshness"`
-	FreshUntil      time.Time            `json:"fresh_until"`
-	PolicyVersion   string               `json:"policy_version"`
-	FrozenHash      string               `json:"frozen_hash"`
-	Manifest        FrozenCohortSnapshot `json:"manifest"`
-	Candidates      []HumanGateCandidate `json:"candidates"`
-	Decision        *HumanGateDecision   `json:"decision"`
-	Reason          []string             `json:"reason"`
-	CorrelationID   string               `json:"correlation_id"`
-	Receipt         string               `json:"receipt"`
-	CreatedAt       time.Time            `json:"created_at"`
+	ContractVersion  string               `json:"contract_version"`
+	ID               uuid.UUID            `json:"id"`
+	CohortID         uuid.UUID            `json:"cohort_id"`
+	Version          int                  `json:"version"`
+	Source           string               `json:"source"`
+	SourceRunID      string               `json:"source_run_id"`
+	AsOf             time.Time            `json:"as_of"`
+	Freshness        string               `json:"freshness"`
+	FreshUntil       time.Time            `json:"fresh_until"`
+	PolicyVersion    string               `json:"policy_version"`
+	FrozenHash       string               `json:"frozen_hash"`
+	Manifest         FrozenCohortSnapshot `json:"manifest"`
+	Candidates       []HumanGateCandidate `json:"candidates"`
+	Decision         *HumanGateDecision   `json:"decision"`
+	Reason           []string             `json:"reason"`
+	CorrelationID    string               `json:"correlation_id"`
+	Receipt          string               `json:"receipt"`
+	OperationReceipt string               `json:"-"`
+	CreatedAt        time.Time            `json:"created_at"`
 }
 
 type HumanGateReviewInput struct {
 	Decision       string `json:"decision"`
 	Reason         string `json:"reason"`
+	Acknowledged   bool   `json:"acknowledged,omitempty"`
+	Confirmation   string `json:"confirmation,omitempty"`
 	IdempotencyKey string `json:"-"`
 	CorrelationID  string `json:"-"`
 }
@@ -116,8 +121,56 @@ func humanGateRequestHash(v any) string {
 
 func humanGateReceipt(kind string, id uuid.UUID) string { return kind + ":" + id.String() }
 
+func humanGateAuthorizationID(orgID, versionID uuid.UUID, idempotencyKey string) uuid.UUID {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(HumanGateContractV1+"\x00"+orgID.String()+"\x00"+versionID.String()+"\x00"+strings.TrimSpace(idempotencyKey)))
+}
+
+func humanGateVersionConfirmed(confirmation string, version int) bool {
+	return strings.ToLower(strings.TrimSpace(confirmation)) == fmt.Sprintf("v%d", version)
+}
+
+func (s *service) requireDurableHumanGateGO(ctx context.Context, orgID uuid.UUID, auth *BoundedCohortAuthorization) *errx.Error {
+	if auth == nil || auth.GOReviewVerdict != HumanGateReadyVerdict {
+		return nil // backward-compatible: this guard owns only authorities created by this contract.
+	}
+	if s.humanGateDB == nil {
+		return humanGateError(errx.Conflict, "human_gate_decision_missing", "human-gate authority has no durable GO decision store")
+	}
+	var exists bool
+	if err := s.humanGateDB.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM confenge_cohort_go_decisions WHERE organization_id=$1 AND authorization_id=$2 AND decision='GO')`, orgID, auth.ID).Scan(&exists); err != nil || !exists {
+		return humanGateError(errx.Conflict, "human_gate_decision_missing", "human-gate authority is not bound to a durable GO decision")
+	}
+	return nil
+}
+
 func humanGateError(code errx.Code, id, message string) *errx.Error {
 	return errx.NewWithIdentifier(code, id, message)
+}
+
+// Session advisory locking closes the gap between "read idempotency receipt"
+// and side effects such as creating a bounded transport authority. A UNIQUE
+// constraint protects rows, but by itself cannot prevent two concurrent GO
+// calls from creating two authorities before one row loses the race.
+func (s *service) lockHumanGateIntent(ctx context.Context, orgID uuid.UUID, key string) (func(), *errx.Error) {
+	if s.humanGateDB == nil {
+		return nil, humanGateError(errx.ServiceUnavailable, "human_gate_store_unavailable", "human gate store is not configured")
+	}
+	sum := sha256.Sum256([]byte(orgID.String() + "\x00" + strings.TrimSpace(key)))
+	lockID := int64(binary.BigEndian.Uint64(sum[:8]))
+	conn, err := s.humanGateDB.Acquire(ctx)
+	if err != nil {
+		return nil, humanGateError(errx.ServiceUnavailable, "idempotency_lock_unavailable", "human gate idempotency lock is unavailable")
+	}
+	if _, err = conn.Exec(ctx, "SELECT pg_advisory_lock($1)", lockID); err != nil {
+		conn.Release()
+		return nil, humanGateError(errx.ServiceUnavailable, "idempotency_lock_unavailable", "human gate idempotency lock is unavailable")
+	}
+	return func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = conn.Exec(unlockCtx, "SELECT pg_advisory_unlock($1)", lockID)
+		conn.Release()
+	}, nil
 }
 
 func (s *service) CreateHumanGateCohort(ctx context.Context, orgID, actorID uuid.UUID, in HumanGateCreateInput) (*HumanGateCohort, *errx.Error) {
@@ -133,6 +186,11 @@ func (s *service) CreateHumanGateCohort(ctx context.Context, orgID, actorID uuid
 	if strings.TrimSpace(in.IdempotencyKey) == "" {
 		return nil, humanGateError(errx.BadRequest, "idempotency_key_required", "Idempotency-Key is required")
 	}
+	unlock, lockErr := s.lockHumanGateIntent(ctx, orgID, in.IdempotencyKey)
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	defer unlock()
 	if in.Limit == 0 {
 		in.Limit = 5
 	}
@@ -208,9 +266,17 @@ func (s *service) CreateHumanGateCohort(ctx context.Context, orgID, actorID uuid
 }
 
 func (s *service) ReproduceHumanGateCohort(ctx context.Context, orgID, actorID, id uuid.UUID, in HumanGateCreateInput) (*HumanGateCohort, *errx.Error) {
+	if actorID == uuid.Nil {
+		return nil, errx.ErrUnauthorized
+	}
 	if strings.TrimSpace(in.IdempotencyKey) == "" {
 		return nil, humanGateError(errx.BadRequest, "idempotency_key_required", "Idempotency-Key is required")
 	}
+	unlock, lockErr := s.lockHumanGateIntent(ctx, orgID, in.IdempotencyKey)
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	defer unlock()
 	old, x := s.GetHumanGateCohort(ctx, orgID, id, time.Now().UTC())
 	if x != nil {
 		return nil, x
@@ -227,6 +293,9 @@ func (s *service) ReproduceHumanGateCohort(ctx context.Context, orgID, actorID, 
 		SELECT $1,organization_id,cohort_id,(SELECT max(version)+1 FROM confenge_cohort_versions WHERE organization_id=$2 AND cohort_id=$3),source_run_id,source_system,source_as_of,freshness_expires_at,policy_version,frozen_hash,$4,version,$5,$6,$7,$8
 		FROM confenge_cohort_versions WHERE id=$9 AND organization_id=$2 RETURNING version`, newID, orgID, old.CohortID, b, actorID, in.CorrelationID, in.IdempotencyKey, reqHash, id).Scan(&version)
 	if err != nil {
+		if existing, idemErr := s.humanGateByIdempotency(ctx, orgID, in.IdempotencyKey, reqHash); existing != nil || idemErr != nil {
+			return existing, idemErr
+		}
 		return nil, humanGateError(errx.Conflict, "cohort_reproduce_conflict", "cohort reproduction conflicted; read the latest version")
 	}
 	s.auditHumanGate(ctx, orgID, actorID, "cohort_version_reproduced", newID, map[string]string{"version": fmt.Sprint(old.Version)}, map[string]string{"version": fmt.Sprint(version), "frozen_hash": old.FrozenHash})
@@ -282,13 +351,15 @@ func (s *service) GetHumanGateCohort(ctx context.Context, orgID, id uuid.UUID, n
 		v.Freshness = "STALE"
 		v.Reason = append(v.Reason, "source_evidence_stale")
 	}
+	policyCurrent := v.PolicyVersion == BoundedCohortPolicyV1
+	if !policyCurrent {
+		v.Reason = append(v.Reason, "policy_version_stale")
+	}
 	v.Candidates = make([]HumanGateCandidate, 0, len(v.Manifest.Members))
 	current := map[uuid.UUID]CohortAccountInput{}
 	if accounts, liveErr := AccountsFromOrgForRun(ctx, s.repo, orgID, v.Source, v.SourceRunID); liveErr == nil {
 		for _, account := range accounts {
-			for _, candidate := range account.Candidates {
-				current[candidate.ID] = account
-			}
+			current[account.Account.ID] = account
 		}
 	} else {
 		v.Reason = append(v.Reason, "live_suppression_state_unknown")
@@ -296,7 +367,7 @@ func (s *service) GetHumanGateCohort(ctx context.Context, orgID, id uuid.UUID, n
 	for _, m := range v.Manifest.Members {
 		c := HumanGateCandidate{FrozenCohortMember: m, BlockedBy: []string{}}
 		c.Validation = s.latestHumanGateValidation(ctx, orgID, id, m.CandidateID, now)
-		c.Review = s.latestHumanGateReview(ctx, orgID, id, m, c.Validation, now)
+		c.Review = s.latestHumanGateReview(ctx, orgID, id, m, BoundedCohortPolicyV1, c.Validation, now)
 		if c.Validation == nil {
 			c.BlockedBy = append(c.BlockedBy, "validation_missing")
 		} else if c.Validation.Status != "VALID" {
@@ -305,55 +376,67 @@ func (s *service) GetHumanGateCohort(ctx context.Context, orgID, id uuid.UUID, n
 		if c.Review == nil || !c.Review.Effective {
 			c.BlockedBy = append(c.BlockedBy, "approval_missing_or_invalid")
 		}
-		if live, ok := current[m.CandidateID]; ok {
-			var candidate *models.OutreachContactCandidate
-			for i := range live.Candidates {
-				if live.Candidates[i].ID == m.CandidateID {
-					candidate = &live.Candidates[i]
-					break
-				}
-			}
-			liveReasons := []string{}
-			if live.Account.Blocked {
-				liveReasons = append(liveReasons, "late_account_suppression")
-			}
-			if live.Account.DoNotContact {
-				liveReasons = append(liveReasons, "late_account_opt_out")
-			}
-			if candidate == nil {
-				liveReasons = append(liveReasons, "candidate_removed")
-			} else {
-				if candidate.Blocked {
-					liveReasons = append(liveReasons, "late_recipient_suppression")
-				}
-				if candidate.DoNotContact {
-					liveReasons = append(liveReasons, "late_recipient_opt_out")
-				}
-				if candidate.Bounced {
-					liveReasons = append(liveReasons, "late_hard_bounce")
-				}
-				if canonicalPilotEmail(candidate.Email) != canonicalPilotEmail(m.Mailbox) {
-					liveReasons = append(liveReasons, "recipient_drift")
-				}
-			}
-			if len(liveReasons) > 0 {
-				c.BlockedBy = append(c.BlockedBy, liveReasons...)
-				if c.Review != nil {
-					c.Review.Effective = false
-					c.Review.InvalidatedBy = append(c.Review.InvalidatedBy, liveReasons...)
-				}
-			}
-		} else {
-			c.BlockedBy = append(c.BlockedBy, "live_candidate_state_unknown")
+		if !policyCurrent {
+			c.BlockedBy = append(c.BlockedBy, "policy_drift")
+		}
+		live, ok := current[m.AccountID]
+		liveReasons := humanGateLiveInvalidations(m, live, ok)
+		if len(liveReasons) > 0 {
+			c.BlockedBy = append(c.BlockedBy, liveReasons...)
 			if c.Review != nil {
 				c.Review.Effective = false
-				c.Review.InvalidatedBy = append(c.Review.InvalidatedBy, "live_candidate_state_unknown")
+				c.Review.InvalidatedBy = append(c.Review.InvalidatedBy, liveReasons...)
 			}
 		}
 		v.Candidates = append(v.Candidates, c)
 	}
 	v.Decision = s.latestHumanGateDecision(ctx, orgID, id)
+	if v.Decision != nil && v.Decision.Decision == "GO" {
+		if blockers := humanGateDecisionBlockers(v); len(blockers) > 0 {
+			// GET remains a pure read: it projects that historical GO is no longer
+			// queue-ready. The transport authority independently revalidates these
+			// same live gates and cannot dispatch through this state.
+			v.Decision.QueueState = "BLOCKED_BY_INVALIDATION"
+			v.Reason = append(v.Reason, "go_invalidated_by_current_gate_state")
+		}
+	}
 	return v, nil
+}
+
+func humanGateLiveInvalidations(m FrozenCohortMember, live CohortAccountInput, known bool) []string {
+	if !known {
+		return []string{"live_candidate_state_unknown"}
+	}
+	reasons := []string{}
+	if live.Account.Blocked {
+		reasons = append(reasons, "late_account_suppression")
+	}
+	if live.Account.DoNotContact {
+		reasons = append(reasons, "late_account_opt_out")
+	}
+	var candidate *models.OutreachContactCandidate
+	for i := range live.Candidates {
+		if live.Candidates[i].ID == m.CandidateID {
+			candidate = &live.Candidates[i]
+			break
+		}
+	}
+	if candidate == nil {
+		return append(reasons, "candidate_removed")
+	}
+	if candidate.Blocked {
+		reasons = append(reasons, "late_recipient_suppression")
+	}
+	if candidate.DoNotContact {
+		reasons = append(reasons, "late_recipient_opt_out")
+	}
+	if candidate.Bounced {
+		reasons = append(reasons, "late_hard_bounce")
+	}
+	if canonicalPilotEmail(candidate.Email) != canonicalPilotEmail(m.Mailbox) {
+		reasons = append(reasons, "recipient_drift")
+	}
+	return reasons
 }
 
 func (s *service) humanGateByIdempotency(ctx context.Context, orgID uuid.UUID, key, reqHash string) (*HumanGateCohort, *errx.Error) {
@@ -372,6 +455,14 @@ func (s *service) humanGateByIdempotency(ctx context.Context, orgID uuid.UUID, k
 	return s.GetHumanGateCohort(ctx, orgID, id, time.Now().UTC())
 }
 
+func (s *service) humanGateWithOperationReceipt(ctx context.Context, orgID, versionID uuid.UUID, receipt string) (*HumanGateCohort, *errx.Error) {
+	v, x := s.GetHumanGateCohort(ctx, orgID, versionID, time.Now().UTC())
+	if v != nil {
+		v.OperationReceipt = receipt
+	}
+	return v, x
+}
+
 func normalizeValidationStatus(s verify.Status) string {
 	switch s {
 	case verify.StatusValid:
@@ -386,8 +477,28 @@ func normalizeValidationStatus(s verify.Status) string {
 }
 
 func (s *service) RecordHumanGateValidation(ctx context.Context, orgID, actorID, versionID, candidateID uuid.UUID, result verify.Result, key, correlation string) (*HumanGateCohort, *errx.Error) {
+	if actorID == uuid.Nil {
+		return nil, errx.ErrUnauthorized
+	}
 	if strings.TrimSpace(key) == "" {
 		return nil, humanGateError(errx.BadRequest, "idempotency_key_required", "Idempotency-Key is required")
+	}
+	unlock, lockErr := s.lockHumanGateIntent(ctx, orgID, key)
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	defer unlock()
+	reqHash := humanGateRequestHash(struct {
+		V, C uuid.UUID
+	}{versionID, candidateID})
+	var priorHash, priorReceipt string
+	if err := s.humanGateDB.QueryRow(ctx, `SELECT request_hash,receipt FROM confenge_cohort_validations WHERE organization_id=$1 AND idempotency_key=$2`, orgID, key).Scan(&priorHash, &priorReceipt); err == nil {
+		if priorHash != reqHash {
+			return nil, humanGateError(errx.Conflict, "idempotency_payload_conflict", "Idempotency-Key was already used with another payload")
+		}
+		return s.humanGateWithOperationReceipt(ctx, orgID, versionID, priorReceipt)
+	} else if err != pgx.ErrNoRows {
+		return nil, humanGateError(errx.Internal, "idempotency_read_failed", "idempotency receipt could not be read")
 	}
 	v, x := s.GetHumanGateCohort(ctx, orgID, versionID, time.Now().UTC())
 	if x != nil {
@@ -411,17 +522,14 @@ func (s *service) RecordHumanGateValidation(ctx context.Context, orgID, actorID,
 	expires := checked.Add(HumanGateValidationTTL)
 	evidence := HashCohortID(member.EvidenceHash, member.Mailbox, status, result.Reason, checked.Format(time.RFC3339Nano))
 	id := uuid.New()
-	reqHash := humanGateRequestHash(struct {
-		V, C uuid.UUID
-		S, R string
-	}{versionID, candidateID, status, result.Reason})
-	_, err := s.humanGateDB.Exec(ctx, `INSERT INTO confenge_cohort_validations(id,organization_id,cohort_version_id,candidate_id,status,reason,provider,method,evidence_hash,checked_at,expires_at,actor_id,correlation_id,receipt,idempotency_key,request_hash) VALUES($1,$2,$3,$4,$5,$6,'warmbly-emailverify','syntax-mx-smtp',$7,$8,$9,$10,$11,$12,$13,$14)`, id, orgID, versionID, candidateID, status, result.Reason, evidence, checked, expires, actorID, correlation, humanGateReceipt("validation", id), key, reqHash)
+	receipt := humanGateReceipt("validation", id)
+	_, err := s.humanGateDB.Exec(ctx, `INSERT INTO confenge_cohort_validations(id,organization_id,cohort_version_id,candidate_id,status,reason,provider,method,evidence_hash,checked_at,expires_at,actor_id,correlation_id,receipt,idempotency_key,request_hash) VALUES($1,$2,$3,$4,$5,$6,'warmbly-emailverify','syntax-mx-smtp',$7,$8,$9,$10,$11,$12,$13,$14)`, id, orgID, versionID, candidateID, status, result.Reason, evidence, checked, expires, actorID, correlation, receipt, key, reqHash)
 	if err != nil {
-		var stored string
+		var stored, existingReceipt string
 		var existing uuid.UUID
-		e := s.humanGateDB.QueryRow(ctx, `SELECT id,request_hash FROM confenge_cohort_validations WHERE organization_id=$1 AND idempotency_key=$2`, orgID, key).Scan(&existing, &stored)
+		e := s.humanGateDB.QueryRow(ctx, `SELECT id,request_hash,receipt FROM confenge_cohort_validations WHERE organization_id=$1 AND idempotency_key=$2`, orgID, key).Scan(&existing, &stored, &existingReceipt)
 		if e == nil && stored == reqHash {
-			return s.GetHumanGateCohort(ctx, orgID, versionID, time.Now().UTC())
+			return s.humanGateWithOperationReceipt(ctx, orgID, versionID, existingReceipt)
 		}
 		if e == nil {
 			return nil, humanGateError(errx.Conflict, "idempotency_payload_conflict", "Idempotency-Key was already used with another payload")
@@ -429,10 +537,13 @@ func (s *service) RecordHumanGateValidation(ctx context.Context, orgID, actorID,
 		return nil, humanGateError(errx.Internal, "validation_store_failed", "validation receipt could not be stored")
 	}
 	s.auditHumanGate(ctx, orgID, actorID, "candidate_validation_recorded", candidateID, map[string]string{"status": "UNKNOWN"}, map[string]string{"status": status, "evidence_hash": evidence})
-	return s.GetHumanGateCohort(ctx, orgID, versionID, time.Now().UTC())
+	return s.humanGateWithOperationReceipt(ctx, orgID, versionID, receipt)
 }
 
 func (s *service) ReviewHumanGateCandidate(ctx context.Context, orgID, actorID, versionID, candidateID uuid.UUID, in HumanGateReviewInput) (*HumanGateCohort, *errx.Error) {
+	if actorID == uuid.Nil {
+		return nil, errx.ErrUnauthorized
+	}
 	in.Decision = strings.ToUpper(strings.TrimSpace(in.Decision))
 	in.Reason = strings.TrimSpace(in.Reason)
 	if in.Decision != "APPROVE" && in.Decision != "REJECT" && in.Decision != "HOLD" {
@@ -441,8 +552,34 @@ func (s *service) ReviewHumanGateCandidate(ctx context.Context, orgID, actorID, 
 	if in.Reason == "" {
 		return nil, humanGateError(errx.BadRequest, "review_reason_required", "reason is required")
 	}
+	if in.Decision == "APPROVE" && !in.Acknowledged {
+		return nil, humanGateError(errx.BadRequest, "approval_acknowledgement_required", "APPROVE requires explicit acknowledgement of recipient, message, policy and validation evidence")
+	}
+	if in.Decision != "APPROVE" {
+		in.Acknowledged = false
+	}
+	in.IdempotencyKey = strings.TrimSpace(in.IdempotencyKey)
 	if in.IdempotencyKey == "" {
 		return nil, humanGateError(errx.BadRequest, "idempotency_key_required", "Idempotency-Key is required")
+	}
+	unlock, lockErr := s.lockHumanGateIntent(ctx, orgID, in.IdempotencyKey)
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	defer unlock()
+	reqHash := humanGateRequestHash(struct {
+		V, C uuid.UUID
+		D, R string
+		A    bool
+	}{versionID, candidateID, in.Decision, in.Reason, in.Acknowledged})
+	var priorHash, priorReceipt string
+	if err := s.humanGateDB.QueryRow(ctx, `SELECT request_hash,receipt FROM confenge_cohort_candidate_reviews WHERE organization_id=$1 AND idempotency_key=$2`, orgID, in.IdempotencyKey).Scan(&priorHash, &priorReceipt); err == nil {
+		if priorHash != reqHash {
+			return nil, humanGateError(errx.Conflict, "idempotency_payload_conflict", "Idempotency-Key was already used with another payload")
+		}
+		return s.humanGateWithOperationReceipt(ctx, orgID, versionID, priorReceipt)
+	} else if err != pgx.ErrNoRows {
+		return nil, humanGateError(errx.Internal, "idempotency_read_failed", "idempotency receipt could not be read")
 	}
 	v, x := s.GetHumanGateCohort(ctx, orgID, versionID, time.Now().UTC())
 	if x != nil {
@@ -458,14 +595,14 @@ func (s *service) ReviewHumanGateCandidate(ctx context.Context, orgID, actorID, 
 	if c == nil {
 		return nil, humanGateError(errx.NotFound, "candidate_not_found", "candidate is not in this immutable version")
 	}
+	if in.Decision == "APPROVE" && v.PolicyVersion != BoundedCohortPolicyV1 {
+		return nil, humanGateError(errx.Conflict, "policy_drift", "APPROVE requires a cohort created under the current policy version")
+	}
 	if in.Decision == "APPROVE" && (c.Validation == nil || c.Validation.Status != "VALID") {
 		return nil, humanGateError(errx.Conflict, "validation_blocks_approval", "APPROVE requires a current VALID result")
 	}
 	id := uuid.New()
-	reqHash := humanGateRequestHash(struct {
-		V, C uuid.UUID
-		D, R string
-	}{versionID, candidateID, in.Decision, in.Reason})
+	receipt := humanGateReceipt("review", id)
 	before, _ := json.Marshal(map[string]any{"decision": func() string {
 		if c.Review != nil {
 			return c.Review.Decision
@@ -479,12 +616,12 @@ func (s *service) ReviewHumanGateCandidate(ctx context.Context, orgID, actorID, 
 		validationID = c.Validation.ID
 		validationExpiry = c.Validation.ExpiresAt
 	}
-	_, err := s.humanGateDB.Exec(ctx, `INSERT INTO confenge_cohort_candidate_reviews(id,organization_id,cohort_version_id,candidate_id,decision,reason,recipient_hash,content_hash,policy_version,evidence_hash,validation_id,validation_expires_at,actor_id,correlation_id,receipt,idempotency_key,request_hash,before_state,after_state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`, id, orgID, versionID, candidateID, in.Decision, in.Reason, HashRecipientSet([]string{c.Mailbox}), c.ContentHash, v.PolicyVersion, c.EvidenceHash, validationID, validationExpiry, actorID, in.CorrelationID, humanGateReceipt("review", id), in.IdempotencyKey, reqHash, before, after)
+	_, err := s.humanGateDB.Exec(ctx, `INSERT INTO confenge_cohort_candidate_reviews(id,organization_id,cohort_version_id,candidate_id,decision,reason,recipient_hash,content_hash,policy_version,evidence_hash,validation_id,validation_expires_at,actor_id,correlation_id,receipt,idempotency_key,request_hash,before_state,after_state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`, id, orgID, versionID, candidateID, in.Decision, in.Reason, HashRecipientSet([]string{c.Mailbox}), c.ContentHash, v.PolicyVersion, c.EvidenceHash, validationID, validationExpiry, actorID, in.CorrelationID, receipt, in.IdempotencyKey, reqHash, before, after)
 	if err != nil {
-		var stored string
-		e := s.humanGateDB.QueryRow(ctx, `SELECT request_hash FROM confenge_cohort_candidate_reviews WHERE organization_id=$1 AND idempotency_key=$2`, orgID, in.IdempotencyKey).Scan(&stored)
+		var stored, existingReceipt string
+		e := s.humanGateDB.QueryRow(ctx, `SELECT request_hash,receipt FROM confenge_cohort_candidate_reviews WHERE organization_id=$1 AND idempotency_key=$2`, orgID, in.IdempotencyKey).Scan(&stored, &existingReceipt)
 		if e == nil && stored == reqHash {
-			return s.GetHumanGateCohort(ctx, orgID, versionID, time.Now().UTC())
+			return s.humanGateWithOperationReceipt(ctx, orgID, versionID, existingReceipt)
 		}
 		if e == nil {
 			return nil, humanGateError(errx.Conflict, "idempotency_payload_conflict", "Idempotency-Key was already used with another payload")
@@ -497,34 +634,49 @@ func (s *service) ReviewHumanGateCandidate(ctx context.Context, orgID, actorID, 
 		}
 		return "NONE"
 	}()}, map[string]string{"decision": in.Decision, "content_hash": c.ContentHash})
-	return s.GetHumanGateCohort(ctx, orgID, versionID, time.Now().UTC())
+	return s.humanGateWithOperationReceipt(ctx, orgID, versionID, receipt)
 }
 
 func (s *service) DecideHumanGateCohort(ctx context.Context, orgID, actorID, versionID uuid.UUID, in HumanGateDecisionInput) (*HumanGateCohort, *errx.Error) {
+	if actorID == uuid.Nil {
+		return nil, errx.ErrUnauthorized
+	}
 	in.Decision = strings.ToUpper(strings.TrimSpace(in.Decision))
 	in.Reason = strings.TrimSpace(in.Reason)
+	in.Confirmation = strings.ToLower(strings.TrimSpace(in.Confirmation))
 	if in.Decision != "GO" && in.Decision != "NO_GO" {
 		return nil, humanGateError(errx.BadRequest, "invalid_cohort_decision", "decision must be GO or NO_GO")
 	}
-	if in.Reason == "" || in.IdempotencyKey == "" {
-		return nil, humanGateError(errx.BadRequest, "decision_fields_required", "reason and Idempotency-Key are required")
+	in.IdempotencyKey = strings.TrimSpace(in.IdempotencyKey)
+	if in.Reason == "" || in.Confirmation == "" || in.IdempotencyKey == "" {
+		return nil, humanGateError(errx.BadRequest, "decision_fields_required", "reason, confirmation and Idempotency-Key are required")
+	}
+	unlock, lockErr := s.lockHumanGateIntent(ctx, orgID, in.IdempotencyKey)
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	defer unlock()
+	reqHash := humanGateRequestHash(struct {
+		V       uuid.UUID
+		D, R, C string
+	}{versionID, in.Decision, in.Reason, in.Confirmation})
+	var existingHash, existingReceipt string
+	if err := s.humanGateDB.QueryRow(ctx, `SELECT request_hash,receipt FROM confenge_cohort_go_decisions WHERE organization_id=$1 AND idempotency_key=$2`, orgID, in.IdempotencyKey).Scan(&existingHash, &existingReceipt); err == nil {
+		if existingHash != reqHash {
+			return nil, humanGateError(errx.Conflict, "idempotency_payload_conflict", "Idempotency-Key was already used with another payload")
+		}
+		return s.humanGateWithOperationReceipt(ctx, orgID, versionID, existingReceipt)
+	} else if err != pgx.ErrNoRows {
+		return nil, humanGateError(errx.Internal, "idempotency_read_failed", "idempotency receipt could not be read")
 	}
 	v, x := s.GetHumanGateCohort(ctx, orgID, versionID, time.Now().UTC())
 	if x != nil {
 		return nil, x
 	}
-	blocked := []string{}
-	if len(v.Candidates) == 0 {
-		blocked = append(blocked, "cohort_empty")
+	if !humanGateVersionConfirmed(in.Confirmation, v.Version) {
+		return nil, humanGateError(errx.BadRequest, "cohort_version_confirmation_mismatch", "confirmation must match the immutable cohort version")
 	}
-	if v.Freshness != "FRESH" {
-		blocked = append(blocked, "source_evidence_stale")
-	}
-	for _, c := range v.Candidates {
-		if c.Review == nil || !c.Review.Effective || c.Review.Decision != "APPROVE" {
-			blocked = append(blocked, "candidate_not_approved:"+c.CandidateID.String())
-		}
-	}
+	blocked := humanGateDecisionBlockers(v)
 	if in.Decision == "GO" && len(blocked) > 0 {
 		return nil, humanGateError(errx.Conflict, "cohort_not_ready", strings.Join(blocked, ","))
 	}
@@ -534,35 +686,13 @@ func (s *service) DecideHumanGateCohort(ctx context.Context, orgID, actorID, ver
 		B []string
 	}{v.FrozenHash, blocked})
 	id := uuid.New()
-	reqHash := humanGateRequestHash(struct {
-		V    uuid.UUID
-		D, R string
-	}{versionID, in.Decision, in.Reason})
-	var existingHash string
-	if err := s.humanGateDB.QueryRow(ctx, `SELECT request_hash FROM confenge_cohort_go_decisions WHERE organization_id=$1 AND idempotency_key=$2`, orgID, in.IdempotencyKey).Scan(&existingHash); err == nil {
-		if existingHash != reqHash {
-			return nil, humanGateError(errx.Conflict, "idempotency_payload_conflict", "Idempotency-Key was already used with another payload")
-		}
-		return s.GetHumanGateCohort(ctx, orgID, versionID, time.Now().UTC())
-	} else if err != pgx.ErrNoRows {
-		return nil, humanGateError(errx.Internal, "idempotency_read_failed", "idempotency receipt could not be read")
-	}
+	receipt := humanGateReceipt("decision", id)
 	var authorizationID *uuid.UUID
 	if in.Decision == "GO" {
 		authorizeAt := time.Now().UTC()
 		authorizedSnapshot := v.Manifest
-		expiresAt := authorizeAt.Add(time.Duration(authorizedSnapshot.TTLSeconds) * time.Second)
-		if authorizedSnapshot.TTLSeconds <= 0 {
-			expiresAt = authorizeAt.Add(DefaultCohortTTL)
-		}
-		if v.FreshUntil.Before(expiresAt) {
-			expiresAt = v.FreshUntil
-		}
-		for _, candidate := range v.Candidates {
-			if candidate.Validation != nil && candidate.Validation.ExpiresAt.Before(expiresAt) {
-				expiresAt = candidate.Validation.ExpiresAt
-			}
-		}
+		authorizedSnapshot.AuthorizationID = humanGateAuthorizationID(orgID, versionID, in.IdempotencyKey)
+		expiresAt := humanGateAuthorizationExpiry(v, authorizeAt)
 		if !authorizeAt.Before(expiresAt) {
 			return nil, humanGateError(errx.Conflict, "cohort_evidence_expired", "validation or source evidence expired before authorization")
 		}
@@ -573,7 +703,7 @@ func (s *service) DecideHumanGateCohort(ctx context.Context, orgID, actorID, ver
 		}
 		authID := applied.AuthorizationID
 		authorizationID = &authID
-		if err := s.cohortStore.RecordGOReview(ctx, authID, actorID, ReleaseReadyForControlledEmailReview, in.Reason, time.Now().UTC()); err != nil {
+		if err := s.cohortStore.RecordGOReview(ctx, authID, actorID, HumanGateReadyVerdict, in.Reason, time.Now().UTC()); err != nil {
 			_ = s.cohortStore.RevokeGrant(ctx, authID, actorID, "human_gate_review_store_failed", time.Now().UTC())
 			return nil, humanGateError(errx.ServiceUnavailable, "transport_authority_update_failed", "bounded transport authority could not record readiness")
 		}
@@ -589,15 +719,15 @@ func (s *service) DecideHumanGateCohort(ctx context.Context, orgID, actorID, ver
 		return "NONE"
 	}()})
 	after, _ := json.Marshal(map[string]any{"decision": in.Decision, "readiness_hash": readiness})
-	_, err := s.humanGateDB.Exec(ctx, `INSERT INTO confenge_cohort_go_decisions(id,organization_id,cohort_version_id,decision,reason,readiness_hash,authorization_id,actor_id,correlation_id,receipt,idempotency_key,request_hash,before_state,after_state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, id, orgID, versionID, in.Decision, in.Reason, readiness, authorizationID, actorID, in.CorrelationID, humanGateReceipt("decision", id), in.IdempotencyKey, reqHash, before, after)
+	_, err := s.humanGateDB.Exec(ctx, `INSERT INTO confenge_cohort_go_decisions(id,organization_id,cohort_version_id,decision,reason,readiness_hash,authorization_id,actor_id,correlation_id,receipt,idempotency_key,request_hash,before_state,after_state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, id, orgID, versionID, in.Decision, in.Reason, readiness, authorizationID, actorID, in.CorrelationID, receipt, in.IdempotencyKey, reqHash, before, after)
 	if err != nil {
 		if authorizationID != nil {
 			_ = s.cohortStore.RevokeGrant(ctx, *authorizationID, actorID, "human_gate_decision_store_failed", time.Now().UTC())
 		}
-		var stored string
-		e := s.humanGateDB.QueryRow(ctx, `SELECT request_hash FROM confenge_cohort_go_decisions WHERE organization_id=$1 AND idempotency_key=$2`, orgID, in.IdempotencyKey).Scan(&stored)
+		var stored, storedReceipt string
+		e := s.humanGateDB.QueryRow(ctx, `SELECT request_hash,receipt FROM confenge_cohort_go_decisions WHERE organization_id=$1 AND idempotency_key=$2`, orgID, in.IdempotencyKey).Scan(&stored, &storedReceipt)
 		if e == nil && stored == reqHash {
-			return s.GetHumanGateCohort(ctx, orgID, versionID, time.Now().UTC())
+			return s.humanGateWithOperationReceipt(ctx, orgID, versionID, storedReceipt)
 		}
 		if e == nil {
 			return nil, humanGateError(errx.Conflict, "idempotency_payload_conflict", "Idempotency-Key was already used with another payload")
@@ -610,7 +740,44 @@ func (s *service) DecideHumanGateCohort(ctx context.Context, orgID, actorID, ver
 		}
 		return "NONE"
 	}()}, map[string]string{"decision": in.Decision, "readiness_hash": readiness})
-	return s.GetHumanGateCohort(ctx, orgID, versionID, time.Now().UTC())
+	return s.humanGateWithOperationReceipt(ctx, orgID, versionID, receipt)
+}
+
+func humanGateDecisionBlockers(v *HumanGateCohort) []string {
+	blocked := []string{}
+	if v == nil || len(v.Candidates) == 0 {
+		blocked = append(blocked, "cohort_empty")
+	}
+	if v == nil || v.Freshness != "FRESH" {
+		blocked = append(blocked, "source_evidence_stale")
+	}
+	if v != nil {
+		for _, c := range v.Candidates {
+			if c.Validation == nil || c.Validation.Status != "VALID" || c.Review == nil || !c.Review.Effective || c.Review.Decision != "APPROVE" || len(c.BlockedBy) > 0 {
+				blocked = append(blocked, "candidate_not_approved:"+c.CandidateID.String())
+			}
+		}
+	}
+	return blocked
+}
+
+func humanGateAuthorizationExpiry(v *HumanGateCohort, authorizeAt time.Time) time.Time {
+	expiresAt := authorizeAt.Add(DefaultCohortTTL)
+	if v == nil {
+		return expiresAt
+	}
+	if v.Manifest.TTLSeconds > 0 {
+		expiresAt = authorizeAt.Add(time.Duration(v.Manifest.TTLSeconds) * time.Second)
+	}
+	if !v.FreshUntil.IsZero() && v.FreshUntil.Before(expiresAt) {
+		expiresAt = v.FreshUntil
+	}
+	for _, candidate := range v.Candidates {
+		if candidate.Validation != nil && !candidate.Validation.ExpiresAt.IsZero() && candidate.Validation.ExpiresAt.Before(expiresAt) {
+			expiresAt = candidate.Validation.ExpiresAt
+		}
+	}
+	return expiresAt
 }
 
 func (s *service) latestHumanGateValidation(ctx context.Context, orgID, versionID, candidateID uuid.UUID, now time.Time) *HumanGateValidation {
@@ -626,7 +793,7 @@ func (s *service) latestHumanGateValidation(ctx context.Context, orgID, versionI
 	return v
 }
 
-func (s *service) latestHumanGateReview(ctx context.Context, orgID, versionID uuid.UUID, m FrozenCohortMember, v *HumanGateValidation, now time.Time) *HumanGateReview {
+func (s *service) latestHumanGateReview(ctx context.Context, orgID, versionID uuid.UUID, m FrozenCohortMember, expectedPolicy string, v *HumanGateValidation, now time.Time) *HumanGateReview {
 	r := &HumanGateReview{Effective: true, InvalidatedBy: []string{}}
 	var recipient, content, policy, evidence string
 	var validationID *uuid.UUID
@@ -635,7 +802,7 @@ func (s *service) latestHumanGateReview(ctx context.Context, orgID, versionID uu
 	if err != nil {
 		return nil
 	}
-	evaluateHumanGateReview(r, m, BoundedCohortPolicyV1, recipient, content, policy, evidence, validationID, validationExpires, v, now)
+	evaluateHumanGateReview(r, m, expectedPolicy, recipient, content, policy, evidence, validationID, validationExpires, v, now)
 	return r
 }
 
