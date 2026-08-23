@@ -65,16 +65,74 @@ const (
 	StatusUnknown Status = "unknown"
 )
 
+// ReasonCode is a machine-readable tag for *why* a verdict came out the way it
+// did. It exists so an operator can separate the failure modes that are about
+// the prober's own identity from anything about the recipient, without
+// pattern-matching remote-server prose that differs per MTA.
+//
+// Today only the identity family is emitted; every other verdict leaves Code
+// empty and keeps its human reason. Callers must treat an unrecognised code as
+// "no opinion" rather than switching exhaustively.
+type ReasonCode string
+
+const (
+	// ReasonIdentityNotConfigured means we never dialled: EMAIL_VERIFY_HELO_HOST
+	// is unset or not a FQDN, so any probe would announce a name remote MTAs
+	// reject. Says nothing at all about the address.
+	ReasonIdentityNotConfigured ReasonCode = "identity_not_configured"
+	// ReasonIdentityHeloRefused means the remote server refused our EHLO/HELO
+	// name ("need fully-qualified hostname", "Invalid HELO name"). Fix: set
+	// EMAIL_VERIFY_HELO_HOST to a real FQDN for the probing host.
+	ReasonIdentityHeloRefused ReasonCode = "identity_helo_refused"
+	// ReasonIdentityRDNSMissing means the remote server could not resolve a PTR
+	// for our egress IP ("cannot find your reverse hostname"). This is a
+	// DIFFERENT fix from the HELO name — it needs a PTR record from whoever owns
+	// the IP — so it must never be reported as a HELO problem.
+	ReasonIdentityRDNSMissing ReasonCode = "identity_rdns_missing"
+	// ReasonIdentitySenderRefused means the remote server refused our envelope
+	// sender ("Sender address rejected", MAIL FROM refusals). Fix:
+	// EMAIL_VERIFY_MAIL_FROM must be a real, resolvable address.
+	ReasonIdentitySenderRefused ReasonCode = "identity_sender_refused"
+)
+
+// IsIdentity reports whether the code blames our own probing identity rather
+// than the recipient. Every identity code yields StatusUnknown, never
+// StatusInvalid: a server refusing us proves nothing about the mailbox.
+func (c ReasonCode) IsIdentity() bool {
+	switch c {
+	case ReasonIdentityNotConfigured, ReasonIdentityHeloRefused,
+		ReasonIdentityRDNSMissing, ReasonIdentitySenderRefused:
+		return true
+	}
+	return false
+}
+
+// withCode prefixes the human reason with its machine code. Only Reason is
+// persisted (contacts.verification_reason has no companion column), so without
+// this prefix an operator reading stored evidence would be back to grepping
+// prose. The Result carries Code separately for in-process callers.
+func withCode(code ReasonCode, reason string) string {
+	if code == "" {
+		return reason
+	}
+	return string(code) + ": " + reason
+}
+
 // Result is the outcome of verifying one address. It round-trips into the
 // contacts table (verification_status / verification_reason / is_catch_all /
 // verification_checked_at).
 type Result struct {
-	Email      string    `json:"email"`
-	Status     Status    `json:"status"`
-	Reason     string    `json:"reason"`
-	IsCatchAll bool      `json:"is_catch_all"`
-	HasMX      bool      `json:"has_mx"`
-	CheckedAt  time.Time `json:"checked_at"`
+	Email  string `json:"email"`
+	Status Status `json:"status"`
+	Reason string `json:"reason"`
+	// Code is the machine-readable classification of Reason, empty when the
+	// verdict has no code. It is additive: Reason stays human-readable (and
+	// carries the code as a prefix when one is set) so stored evidence is
+	// self-describing.
+	Code       ReasonCode `json:"reason_code,omitempty"`
+	IsCatchAll bool       `json:"is_catch_all"`
+	HasMX      bool       `json:"has_mx"`
+	CheckedAt  time.Time  `json:"checked_at"`
 }
 
 // Verifier is the single contract the rest of the platform depends on. The
@@ -104,12 +162,30 @@ type Config struct {
 	MXTimeout time.Duration
 }
 
-func (c Config) withDefaults() Config {
-	if c.HeloHost == "" {
-		c.HeloHost = "localhost"
+// usableHeloHost reports whether the announced name is a fully-qualified
+// hostname a remote MTA will accept. RFC 5321 4.1.1.1 requires a FQDN, and a
+// bare name such as "localhost" is rejected by any server that enforces it —
+// producing a 5xx that names *our* identity, not the recipient.
+func usableHeloHost(name string) bool {
+	name = strings.TrimSpace(strings.TrimSuffix(name, "."))
+	if name == "" || strings.EqualFold(name, "localhost") {
+		return false
 	}
-	if c.MailFrom == "" {
-		c.MailFrom = "verify@" + c.HeloHost
+	if strings.ContainsAny(name, " \t\r\n") || !strings.Contains(name, ".") {
+		return false
+	}
+	if strings.HasPrefix(name, ".") || strings.Contains(name, "..") {
+		return false
+	}
+	return true
+}
+
+func (c Config) withDefaults() Config {
+	// No fallback identity. An unset or unusable HeloHost must disable probing
+	// instead of silently announcing a name remote servers reject: a probe made
+	// with a broken identity can only produce false verdicts.
+	if c.MailFrom == "" && usableHeloHost(c.HeloHost) {
+		c.MailFrom = "verify@" + strings.TrimSuffix(strings.TrimSpace(c.HeloHost), ".")
 	}
 	if c.DialTimeout <= 0 {
 		c.DialTimeout = 5 * time.Second
@@ -130,6 +206,18 @@ func (c Config) withDefaults() Config {
 type SMTPVerifier struct {
 	cfg      Config
 	resolver *net.Resolver
+
+	// Test seams. Both are package-private and nil/zero in every production
+	// path, so New() behaves exactly as before. They exist because the only
+	// honest proof that we announce the CONFIGURED FQDN is to read the EHLO line
+	// off the wire, and that requires pointing the prober at an in-process
+	// listener instead of a real MX on :25 — reaching the public network from a
+	// unit test is both flaky and, for an SMTP RCPT probe, rude.
+	//
+	// lookupHosts, when set, replaces the MX/implicit-MX resolution entirely
+	// (no DNS is performed). smtpPort, when set, replaces the fixed "25".
+	lookupHosts func(ctx context.Context, domain string) ([]string, error)
+	smtpPort    string
 }
 
 // New constructs the in-house SMTP verifier. The resolver mirrors dnsauth's
@@ -182,6 +270,15 @@ func (v *SMTPVerifier) Verify(ctx context.Context, email string) Result {
 	res.HasMX = true
 
 	// 3. SMTP RCPT probe against the lowest-preference (highest priority) MX.
+	// Refuse to probe without a usable identity: an unset EMAIL_VERIFY_HELO_HOST
+	// would announce a name remote MTAs reject, and their refusal would be
+	// recorded against the recipient. Unknown is the only honest verdict here.
+	if !usableHeloHost(v.cfg.HeloHost) {
+		res.Status = StatusUnknown
+		res.Code = ReasonIdentityNotConfigured
+		res.Reason = withCode(res.Code, "verifier identity not configured: EMAIL_VERIFY_HELO_HOST must be a fully-qualified hostname")
+		return res
+	}
 	probe := v.probe(ctx, hosts[0], localpart, domain)
 	switch probe.outcome {
 	case probeAccepted:
@@ -197,11 +294,14 @@ func (v *SMTPVerifier) Verify(ctx context.Context, email string) Result {
 		res.Reason = "recipient accepted"
 		return res
 	case probeRejected:
+		// An identity code can never reach this branch (probe() maps every one
+		// of them to probeUnknown), so a rejection is always about the mailbox.
 		res.Status = StatusInvalid
 		res.Reason = probe.reason
 		return res
 	default: // probeUnknown
 		res.Status = StatusUnknown
+		res.Code = probe.code
 		res.Reason = probe.reason
 		return res
 	}
@@ -212,6 +312,9 @@ func (v *SMTPVerifier) Verify(ctx context.Context, email string) Result {
 // to the A/AAAA record of the domain itself; we honour that so apex-only mail
 // domains aren't misjudged as invalid.
 func (v *SMTPVerifier) lookupMXHosts(ctx context.Context, domain string) ([]string, error) {
+	if v.lookupHosts != nil {
+		return v.lookupHosts(ctx, domain)
+	}
 	c, cancel := context.WithTimeout(ctx, v.cfg.MXTimeout)
 	defer cancel()
 
@@ -261,6 +364,7 @@ const (
 type probeResult struct {
 	outcome  probeOutcome
 	catchAll bool
+	code     ReasonCode
 	reason   string
 }
 
@@ -274,7 +378,11 @@ type probeResult struct {
 //	4xx / timeout/ dial error -> unknown (greylist, blocked :25, transient)
 func (v *SMTPVerifier) probe(ctx context.Context, host, localpart, domain string) probeResult {
 	dialer := net.Dialer{Timeout: v.cfg.DialTimeout}
-	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, "25"))
+	port := v.smtpPort
+	if port == "" {
+		port = "25"
+	}
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, port))
 	if err != nil {
 		// Most commonly: outbound :25 blocked by the cloud provider, or the MX is
 		// firewalled/tarpitting. Either way we cannot conclude invalid.
@@ -295,48 +403,123 @@ func (v *SMTPVerifier) probe(ctx context.Context, host, localpart, domain string
 	defer func() { _ = client.Close() }()
 
 	if err := client.Hello(v.cfg.HeloHost); err != nil {
-		return probeResult{outcome: probeUnknown, reason: "EHLO/HELO rejected: " + err.Error()}
+		// A hard refusal of the greeting itself is by construction about our
+		// name, not the mailbox; fall back to the HELO code only when the
+		// server's prose does not name a more specific dimension (e.g. it is
+		// really our missing rDNS that it objected to).
+		code := commandIdentityCode(err, ReasonIdentityHeloRefused)
+		return probeResult{outcome: probeUnknown, code: code, reason: withCode(code, "EHLO/HELO rejected: "+err.Error())}
 	}
 	if err := client.Mail(v.cfg.MailFrom); err != nil {
-		return probeResult{outcome: probeUnknown, reason: "MAIL FROM rejected: " + err.Error()}
+		code := commandIdentityCode(err, ReasonIdentitySenderRefused)
+		return probeResult{outcome: probeUnknown, code: code, reason: withCode(code, "MAIL FROM rejected: "+err.Error())}
 	}
 
-	realOutcome, realReason := classifyRcpt(client.Rcpt(localpart + "@" + domain))
+	realOutcome, realCode, realReason := classifyRcpt(client.Rcpt(localpart + "@" + domain))
 	switch realOutcome {
 	case probeRejected:
 		return probeResult{outcome: probeRejected, reason: realReason}
 	case probeUnknown:
-		return probeResult{outcome: probeUnknown, reason: realReason}
+		return probeResult{outcome: probeUnknown, code: realCode, reason: realReason}
 	}
 
 	// Real address accepted — probe a random control localpart to detect a
 	// catch-all. If that is also accepted, the domain accepts everything and the
 	// real 250 proves nothing.
 	control := randomLocalpart()
-	controlOutcome, _ := classifyRcpt(client.Rcpt(control + "@" + domain))
+	controlOutcome, _, _ := classifyRcpt(client.Rcpt(control + "@" + domain))
 
 	return probeResult{outcome: probeAccepted, catchAll: controlOutcome == probeAccepted}
+}
+
+// identityRejection classifies a rejection text that blames the connecting
+// client rather than the recipient address, and says WHICH part of our identity
+// was refused. The three dimensions have three different fixes — a HELO name in
+// config, a PTR record from whoever owns the egress IP, and a resolvable
+// envelope sender — so collapsing them into one string would leave an operator
+// guessing which knob to turn. Returns "" when nothing in the text blames us.
+//
+// rDNS is tested FIRST and deliberately: a server that says "cannot find your
+// reverse hostname" often also mentions "helo"/"host rejected" in the same
+// line, and reporting that as a HELO problem would hide a missing PTR behind a
+// hostname that is already correct.
+//
+// Note on "access denied": a bare "access denied" / "5.7.1 access denied" is
+// NOT listed. It is a policy verdict about this delivery, not a statement about
+// our identity, and Exchange returns it for genuine recipient/anti-spam blocks;
+// treating it as an identity refusal would silently convert real blocks into
+// UNKNOWN. The production case that motivated this list ("Access denied -
+// Invalid HELO name") is still caught, by the "invalid helo"/"helo" marker.
+// See TestAccessDeniedAloneIsNotIdentity.
+func identityRejection(msg string) ReasonCode {
+	m := strings.ToLower(msg)
+	contains := func(markers ...string) bool {
+		for _, marker := range markers {
+			if strings.Contains(m, marker) {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case contains("reverse", "rdns", "ptr record", "ptr lookup", "cannot find your hostname"):
+		return ReasonIdentityRDNSMissing
+	case contains("helo", "ehlo", "fully-qualified", "fully qualified"):
+		return ReasonIdentityHeloRefused
+	case contains("sender address rejected", "sender rejected", "sender verify failed", "mail from"):
+		return ReasonIdentitySenderRefused
+	}
+	return ""
+}
+
+// commandIdentityCode classifies an error returned by an SMTP command that can
+// only fail on our own identity (EHLO, MAIL FROM). A 5xx gets fallback when the
+// server's prose is unspecific; a 4xx (greylist/tarpit) or a transport error
+// gets no identity code at all, because neither is a statement about us.
+func commandIdentityCode(err error, fallback ReasonCode) ReasonCode {
+	var protoErr *textproto.Error
+	if !errors.As(err, &protoErr) {
+		return ""
+	}
+	if code := identityRejection(protoErr.Msg); code != "" {
+		return code
+	}
+	if protoErr.Code >= 500 && protoErr.Code < 600 {
+		return fallback
+	}
+	return ""
 }
 
 // classifyRcpt maps the error from smtp.Client.Rcpt to a probe outcome. The
 // stdlib surfaces the SMTP reply code on *textproto.Error; 5xx is a hard
 // rejection, 4xx is transient (unknown), and a nil error is acceptance.
-func classifyRcpt(err error) (probeOutcome, string) {
+func classifyRcpt(err error) (probeOutcome, ReasonCode, string) {
 	if err == nil {
-		return probeAccepted, "recipient accepted"
+		return probeAccepted, "", "recipient accepted"
 	}
 	var protoErr *textproto.Error
 	if errors.As(err, &protoErr) {
 		code := protoErr.Code
 		switch {
 		case code >= 500 && code < 600:
-			return probeRejected, "recipient rejected (" + strconv.Itoa(code) + "): " + protoErr.Msg
+			// A 5xx that names our own HELO/rDNS/sender identity is a statement
+			// about the prober, not the mailbox. Postfix and others defer that
+			// refusal to RCPT, so trusting the code alone marks live addresses
+			// invalid. Never StatusInvalid, whichever dimension it names.
+			if idCode := identityRejection(protoErr.Msg); idCode != "" {
+				return probeUnknown, idCode, withCode(idCode, "prober identity refused ("+strconv.Itoa(code)+"): "+protoErr.Msg)
+			}
+			return probeRejected, "", "recipient rejected (" + strconv.Itoa(code) + "): " + protoErr.Msg
 		case code >= 400 && code < 500:
-			return probeUnknown, "transient/greylisted (" + strconv.Itoa(code) + "): " + protoErr.Msg
+			// 4xx is transient by definition. Still tag the dimension when the
+			// server named one, so a tarpit that is really our missing PTR is
+			// visible without waiting for it to harden into a 5xx.
+			idCode := identityRejection(protoErr.Msg)
+			return probeUnknown, idCode, withCode(idCode, "transient/greylisted ("+strconv.Itoa(code)+"): "+protoErr.Msg)
 		}
 	}
 	// Connection reset, timeout mid-command, or an unparseable reply.
-	return probeUnknown, "rcpt indeterminate: " + err.Error()
+	return probeUnknown, "", "rcpt indeterminate: " + err.Error()
 }
 
 func randomLocalpart() string {

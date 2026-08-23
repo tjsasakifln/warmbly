@@ -571,6 +571,10 @@ func Run(
 					confengeWrite.POST("/cohorts/:id/reproduce", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ReproduceConfengeHumanGateCohort)
 					confengeWrite.POST("/cohorts/:id/candidates/:candidateId/validation", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ValidateConfengeHumanGateCandidate)
 					confengeWrite.POST("/cohorts/:id/candidates/:candidateId/review", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ReviewConfengeHumanGateCandidate)
+					// Adjust is an operator action, deliberately the same
+					// permission as review. It forks the immutable version into
+					// N+1 with human-edited copy; it never queues or sends.
+					confengeWrite.POST("/cohorts/:id/candidates/:candidateId/adjust", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.AdjustConfengeHumanGateCandidate)
 					confengeWrite.POST("/cohorts/:id/decision", m.RequireAccess(models.PermManageCampaigns, models.APIPermWriteCampaigns), h.DecideConfengeHumanGateCohort)
 					confengeWrite.POST("/accounts/:id/cancel-touchpoints", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.CancelConfengeAccountTouchpoints)
 					confengeWrite.POST("/accounts/:id/generate", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.GenerateConfengeDraft)

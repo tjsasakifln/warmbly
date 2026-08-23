@@ -79,10 +79,15 @@ type HumanGateDecision struct {
 }
 
 type HumanGateCohort struct {
-	ContractVersion  string               `json:"contract_version"`
-	ID               uuid.UUID            `json:"id"`
-	CohortID         uuid.UUID            `json:"cohort_id"`
-	Version          int                  `json:"version"`
+	ContractVersion string    `json:"contract_version"`
+	ID              uuid.UUID `json:"id"`
+	CohortID        uuid.UUID `json:"cohort_id"`
+	Version         int       `json:"version"`
+	// Derivation says how this version came to exist: CREATE, REPRODUCE,
+	// RECOMPOSE (reserved) or ADJUST. ParentVersion is the version it was
+	// derived from, nil only for CREATE.
+	Derivation       string               `json:"derivation"`
+	ParentVersion    *int                 `json:"parent_version"`
 	Source           string               `json:"source"`
 	SourceRunID      string               `json:"source_run_id"`
 	AsOf             time.Time            `json:"as_of"`
@@ -289,8 +294,8 @@ func (s *service) ReproduceHumanGateCohort(ctx context.Context, orgID, actorID, 
 	b, _ := json.Marshal(old.Manifest)
 	var version int
 	err := s.humanGateDB.QueryRow(ctx, `INSERT INTO confenge_cohort_versions
-		(id,organization_id,cohort_id,version,source_run_id,source_system,source_as_of,freshness_expires_at,policy_version,frozen_hash,frozen_manifest,reproduced_from_version,created_by,correlation_id,idempotency_key,request_hash)
-		SELECT $1,organization_id,cohort_id,(SELECT max(version)+1 FROM confenge_cohort_versions WHERE organization_id=$2 AND cohort_id=$3),source_run_id,source_system,source_as_of,freshness_expires_at,policy_version,frozen_hash,$4,version,$5,$6,$7,$8
+		(id,organization_id,cohort_id,version,source_run_id,source_system,source_as_of,freshness_expires_at,policy_version,frozen_hash,frozen_manifest,reproduced_from_version,derivation,parent_version,created_by,correlation_id,idempotency_key,request_hash)
+		SELECT $1,organization_id,cohort_id,(SELECT max(version)+1 FROM confenge_cohort_versions WHERE organization_id=$2 AND cohort_id=$3),source_run_id,source_system,source_as_of,freshness_expires_at,policy_version,frozen_hash,$4,version,'REPRODUCE',version,$5,$6,$7,$8
 		FROM confenge_cohort_versions WHERE id=$9 AND organization_id=$2 RETURNING version`, newID, orgID, old.CohortID, b, actorID, in.CorrelationID, in.IdempotencyKey, reqHash, id).Scan(&version)
 	if err != nil {
 		if existing, idemErr := s.humanGateByIdempotency(ctx, orgID, in.IdempotencyKey, reqHash); existing != nil || idemErr != nil {
@@ -338,7 +343,7 @@ func (s *service) GetHumanGateCohort(ctx context.Context, orgID, id uuid.UUID, n
 	}
 	v := &HumanGateCohort{ContractVersion: HumanGateContractV1, ID: id, Source: HumanGateSource, CorrelationID: uuid.NewString(), Receipt: humanGateReceipt("cohort", id)}
 	var raw []byte
-	err := s.humanGateDB.QueryRow(ctx, `SELECT cohort_id,version,source_run_id,source_system,source_as_of,freshness_expires_at,policy_version,frozen_hash,frozen_manifest,correlation_id,created_at FROM confenge_cohort_versions WHERE id=$1 AND organization_id=$2`, id, orgID).Scan(&v.CohortID, &v.Version, &v.SourceRunID, &v.Source, &v.AsOf, &v.FreshUntil, &v.PolicyVersion, &v.FrozenHash, &raw, &v.CorrelationID, &v.CreatedAt)
+	err := s.humanGateDB.QueryRow(ctx, `SELECT cohort_id,version,derivation,parent_version,source_run_id,source_system,source_as_of,freshness_expires_at,policy_version,frozen_hash,frozen_manifest,correlation_id,created_at FROM confenge_cohort_versions WHERE id=$1 AND organization_id=$2`, id, orgID).Scan(&v.CohortID, &v.Version, &v.Derivation, &v.ParentVersion, &v.SourceRunID, &v.Source, &v.AsOf, &v.FreshUntil, &v.PolicyVersion, &v.FrozenHash, &raw, &v.CorrelationID, &v.CreatedAt)
 	if err == pgx.ErrNoRows {
 		return nil, humanGateError(errx.NotFound, "cohort_version_not_found", "cohort version was not found")
 	}

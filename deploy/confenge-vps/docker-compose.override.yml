@@ -39,6 +39,11 @@ x-confenge-env: &confenge-env
   CONFENGE_IMAP_HOST: ${CONFENGE_IMAP_HOST:-imap.hostinger.com}
   CONFENGE_IMAP_PORT: ${CONFENGE_IMAP_PORT:-993}
   CONFENGE_MAILBOX_EMAIL: ${CONFENGE_MAILBOX_EMAIL:-}
+  # Identity the pre-send verifier announces in EHLO/MAIL FROM. Without it the
+  # prober has no usable identity and every probe stays UNKNOWN by design: a
+  # remote MTA refusing our HELO must never be recorded against the recipient.
+  EMAIL_VERIFY_HELO_HOST: ${EMAIL_VERIFY_HELO_HOST:-}
+  EMAIL_VERIFY_MAIL_FROM: ${EMAIL_VERIFY_MAIL_FROM:-}
   IMAP_HOST: ${CONFENGE_IMAP_HOST:-imap.hostinger.com}
   IMAP_PORT: ${CONFENGE_IMAP_PORT:-993}
   CONFENGE_SENDING_PAUSED: ${CONFENGE_SENDING_PAUSED:-false}

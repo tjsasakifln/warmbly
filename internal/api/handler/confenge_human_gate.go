@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -280,4 +281,55 @@ func (h *Handler) DecideConfengeHumanGateCohort(c *gin.Context) {
 		receipt = v.Decision.Receipt
 	}
 	c.JSON(http.StatusOK, gin.H{"data": v, "meta": humanGateMeta(c, v, v.Reason), "receipt": receipt})
+}
+
+// AdjustConfengeHumanGateCandidate forks the addressed immutable version into
+// N+1 with human-edited copy for exactly one candidate. It is an operator
+// action (manage-contacts), not an admin one: GO stays manage-campaigns.
+//
+// It neither queues, dispatches, sends nor resumes anything.
+func (h *Handler) AdjustConfengeHumanGateCandidate(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	actor, ok := humanGateActor(c)
+	if !ok {
+		return
+	}
+	versionID, candidateID, ok := humanGateIDs(c)
+	if !ok {
+		return
+	}
+	if candidateID == uuid.Nil {
+		errx.JSON(c, errx.NewWithIdentifier(errx.BadRequest, "invalid_resource_id", "cohort or candidate id is invalid"))
+		return
+	}
+	// The raw body is read first and kept: the server has to be able to see a
+	// key the typed struct would silently drop, such as "mailbox".
+	raw, err := c.GetRawData()
+	if err != nil {
+		errx.JSON(c, errx.NewWithIdentifier(errx.BadRequest, "invalid_payload", "JSON body is invalid"))
+		return
+	}
+	var in confenge.HumanGateAdjustInput
+	if json.Unmarshal(raw, &in) != nil {
+		errx.JSON(c, errx.NewWithIdentifier(errx.BadRequest, "invalid_payload", "JSON body is invalid"))
+		return
+	}
+	in.RawBody = raw
+	in.IdempotencyKey = strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	in.CorrelationID = c.GetString("request_id")
+	result, x := h.ConfengeService.AdjustHumanGateCandidate(c.Request.Context(), orgID, actor, versionID, candidateID, in)
+	if x != nil {
+		errx.JSON(c, x)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{
+		"contract_version": result.ContractVersion,
+		"cohort":           result.Cohort,
+		"adjustment":       result.Adjustment,
+		"meta":             humanGateMeta(c, result.Cohort, result.Cohort.Reason),
+		"receipt":          result.Adjustment.Receipt,
+	})
 }

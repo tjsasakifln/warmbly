@@ -220,6 +220,13 @@ func ValidateCopyForRouteClass(class, body, subject string, cand *models.Outreac
 	if looksMidTokenTruncation(subject) || looksMidTokenTruncation(body) {
 		add("mid_token_truncation")
 	}
+	// Cohort v1 froze five members with admission_reasons saying
+	// "copy_qa=passed" while two messages carried ",." and one repeated a
+	// three-word run. The composer now prevents all three, and these gates make
+	// a regression refuse admission instead of freezing quietly.
+	for _, code := range copyProjectionDefects(subject, body) {
+		add(code)
+	}
 	switch class {
 	case RouteClassDirectPerson:
 		if cand != nil && provenPersonName(cand) {

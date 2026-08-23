@@ -194,10 +194,9 @@ func ComposeControlledInitialDetailed(acc *models.OutreachAccount, cand *models.
 	b.WriteString(out.Greeting)
 	b.WriteString(",\n\nSou da CONFENGE.\n\n")
 	if obs != "" {
+		// A fact cut at a comma used to gain a period and read "Sapucaí,.".
+		obs = terminateFactSentence(obs)
 		b.WriteString(obs)
-		if !strings.HasSuffix(strings.TrimSpace(obs), ".") {
-			b.WriteByte('.')
-		}
 		b.WriteString("\n\n")
 	}
 	b.WriteString(cta)
