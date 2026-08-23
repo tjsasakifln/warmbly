@@ -1483,10 +1483,22 @@ func main() {
 		// contacts each tick so hard-bouncing addresses are dropped before any
 		// worker sends. CONTROL-PLANE ONLY — the SMTP RCPT probe dials remote MX
 		// on :25 from this backend host (a non-sending IP), never a worker.
-		emailVerifier := emailverify.New(emailverify.Config{
-			HeloHost: os.Getenv("EMAIL_VERIFY_HELO_HOST"), // e.g. verify.warmbly.com
-			MailFrom: os.Getenv("EMAIL_VERIFY_MAIL_FROM"), // e.g. verify@warmbly.com
-		})
+		emailVerifyCfg := emailverify.Config{
+			HeloHost: os.Getenv(emailverify.EnvHeloHost), // e.g. verify.warmbly.com
+			MailFrom: os.Getenv(emailverify.EnvMailFrom), // e.g. verify@warmbly.com
+		}
+		// Fail closed on a production outreach plane with no usable prober
+		// identity. Verify() alone would degrade every probe to UNKNOWN, which
+		// is correct but silent — and the deploy that shipped without
+		// EMAIL_VERIFY_HELO_HOST announced "localhost", collected 5xx replies
+		// that named our own HELO, and stored them as if the RECIPIENT were
+		// bad. A refusal to boot is the only version of that nobody misses.
+		// Dev / self-host / outreach-off keep booting with the verifier idle.
+		if err := emailVerifyCfg.ValidateStartup(os.Getenv("APP_ENV"), confengeCfg.Enabled); err != nil {
+			sentry.CaptureException(err)
+			log.Fatalf("email verifier identity: %v", err)
+		}
+		emailVerifier := emailverify.New(emailVerifyCfg)
 		emailVerifyService = emailverifyapp.NewService(contactRepostory, emailVerifier)
 		emailVerificationJob := jobs.NewEmailVerificationJob(emailVerifyService, 100)
 		emailVerificationScheduler := jobs.NewEmailVerificationScheduler(emailVerificationJob, 15*time.Minute)
