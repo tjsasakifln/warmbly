@@ -129,6 +129,10 @@ type Service interface {
 	GetHumanGateCohort(ctx context.Context, orgID, id uuid.UUID, now time.Time) (*HumanGateCohort, *errx.Error)
 	RecordHumanGateValidation(ctx context.Context, orgID, actorID, versionID, candidateID uuid.UUID, result emailverify.Result, key, correlation string) (*HumanGateCohort, *errx.Error)
 	ReviewHumanGateCandidate(ctx context.Context, orgID, actorID, versionID, candidateID uuid.UUID, in HumanGateReviewInput) (*HumanGateCohort, *errx.Error)
+	// AdjustHumanGateCandidate forks an immutable version into N+1 carrying a
+	// human copy edit for one candidate. It queues, dispatches, sends and
+	// resumes nothing.
+	AdjustHumanGateCandidate(ctx context.Context, orgID, actorID, versionID, candidateID uuid.UUID, in HumanGateAdjustInput) (*HumanGateAdjustResult, *errx.Error)
 	DecideHumanGateCohort(ctx context.Context, orgID, actorID, versionID uuid.UUID, in HumanGateDecisionInput) (*HumanGateCohort, *errx.Error)
 
 	// confenge-dossier/1.0 manifest references. Card metadata, never a send path.

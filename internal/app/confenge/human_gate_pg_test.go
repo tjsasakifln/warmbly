@@ -17,13 +17,24 @@ import (
 func applyHumanGateSchema(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	_, file, _, _ := runtime.Caller(0)
-	raw, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "infrastructure", "db", "migrations", "000116_confenge_human_gate.up.sql"))
-	if err != nil {
-		t.Fatal(err)
+	dir := filepath.Join(filepath.Dir(file), "..", "..", "infrastructure", "db", "migrations")
+	for _, name := range []string{
+		"000116_confenge_human_gate.up.sql",
+		"000117_confenge_cohort_derivation.up.sql",
+	} {
+		raw, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = pool.Exec(context.Background(), string(raw)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
 	}
-	if _, err = pool.Exec(context.Background(), string(raw)); err != nil {
-		t.Fatal(err)
-	}
+}
+
+func dropHumanGateSchema(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	_, _ = pool.Exec(context.Background(), "DROP TABLE IF EXISTS confenge_cohort_adjustments,confenge_cohort_go_decisions,confenge_cohort_candidate_reviews,confenge_cohort_validations,confenge_cohort_versions")
 }
 
 func TestHumanGatePostgresIdempotencySurvivesConcurrencyAndRestart(t *testing.T) {
@@ -128,7 +139,7 @@ func TestHumanGatePostgresIdempotencySurvivesConcurrencyAndRestart(t *testing.T)
 	}
 	defer afterCrash.Close()
 	defer func() {
-		_, _ = afterCrash.Exec(ctx, "DROP TABLE IF EXISTS confenge_cohort_go_decisions,confenge_cohort_candidate_reviews,confenge_cohort_validations,confenge_cohort_versions")
+		_, _ = afterCrash.Exec(ctx, "DROP TABLE IF EXISTS confenge_cohort_adjustments,confenge_cohort_go_decisions,confenge_cohort_candidate_reviews,confenge_cohort_validations,confenge_cohort_versions")
 	}()
 	for table, key := range map[string]string{
 		"confenge_cohort_versions":          "same-two-tabs",
