@@ -37,6 +37,7 @@ func BuildObservabilityReport(store Store, orgID, month string, includeSynthetic
 		RevenueStatus:      Unknown,
 		LearningCandidates: []LearningSummary{},
 		Blockers:           []string{},
+		ControlledEmail:    []ControlledEmailOutcomeSlice{},
 	}
 	if store == nil {
 		rep.RealEmpty = true

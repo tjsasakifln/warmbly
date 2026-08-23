@@ -1,10 +1,22 @@
 package intel
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestControlledEmailReportPublishesStableEmptyArray(t *testing.T) {
+	report := BuildObservabilityReport(NewMemoryStore(), "11111111-2222-4333-8444-555555555555", "2026-08", false)
+	raw, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"controlled_email":[]`) {
+		t.Fatalf("empty real report must keep the controlled-email contract: %s", raw)
+	}
+}
 
 func TestControlledEmailReportPreservesUnknownAndDeduplicatesReplay(t *testing.T) {
 	attempt := CommercialEvent{
