@@ -32,7 +32,7 @@ func cleanCohortMember(accID, candID uuid.UUID, mailbox string) FrozenCohortMemb
 // through and kept its approval.
 func TestApprovedTouchpointCannotCarryApprovalOntoNewCopy(t *testing.T) {
 	orgID, accID, candID := uuid.New(), uuid.New(), uuid.New()
-	mailbox := "contato@empresa-stale.com.br"
+	mailbox := "contato@empresa-stale.invalid"
 	approver := uuid.New()
 	approvedAt := time.Now().UTC().Add(-72 * time.Hour)
 
@@ -115,7 +115,7 @@ func TestApprovedTouchpointCannotCarryApprovalOntoNewCopy(t *testing.T) {
 // not force the founder to re-approve identical text.
 func TestApprovalSurvivesWhenContentIsIdentical(t *testing.T) {
 	orgID, accID, candID := uuid.New(), uuid.New(), uuid.New()
-	mailbox := "contato@empresa-igual.com.br"
+	mailbox := "contato@empresa-igual.invalid"
 	approver := uuid.New()
 	approvedAt := time.Now().UTC().Add(-time.Hour)
 	member := cleanCohortMember(accID, candID, mailbox)
