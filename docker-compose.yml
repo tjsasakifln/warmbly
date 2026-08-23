@@ -272,9 +272,23 @@ services:
     build:
       context: .
       dockerfile: deploy/docker/backend.Dockerfile
+      # Stamp the release onto the image. Compose derives an untagged image name
+      # for this service, so without a label there is nothing that distinguishes
+      # one build from the next and "healthz 200" can never prove which code is
+      # running. Default stays "local" because compose interpolates this file on
+      # every command, including an emergency restart; the release is enforced by
+      # deploy/verify-release.sh, not by making routine ops fail.
+      labels:
+        org.opencontainers.image.revision: "${WARMBLY_RELEASE_SHA:-local}"
+        org.opencontainers.image.version: "${WARMBLY_RELEASE_SHA:-local}"
+        org.opencontainers.image.source: "https://github.com/tjsasakifln/warmbly"
+        br.com.confenge.service: "warmbly-backend"
     ports: ["8080:8080"]
     environment:
       <<: *selfhost-env
+      # Readable from the running container so repo -> image -> runtime can be
+      # reconciled without re-resolving the image.
+      WARMBLY_RELEASE_SHA: "${WARMBLY_RELEASE_SHA:-local}"
       API_HOST: "0.0.0.0:8080"
       GIN_MODE: release
       # To reach Warmbly from another machine, set PUBLIC_HOST=<ip-or-domain> in
