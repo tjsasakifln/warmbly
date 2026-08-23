@@ -193,6 +193,19 @@ func planCohortApply(ctx context.Context, repo repository.OutreachRepository, or
 		tp.Subject = m.Subject
 		tp.BodyText = m.BodyText
 		RecomputeContentHash(tp)
+		// An approval authorizes the exact copy a human read. The drift check
+		// above only fires when the row already carries both a ContentHash and
+		// a BodyText, so a legacy APPROVED row with neither kept its approval
+		// while this loop stamped different copy onto it — an approval of old
+		// copy authorizing new copy. Re-verify against the content we just
+		// stamped and, when it cannot be proven to be the approved content, run
+		// the canonical invalidation. ClearApproval demotes APPROVED/QUEUED to
+		// NEEDS_REVIEW and drops the approver identity, so the history is
+		// preserved and the founder re-reviews rather than the cohort silently
+		// inheriting authority.
+		if tp.ApprovedContentHash != tp.ContentHash {
+			ClearApproval(tp)
+		}
 		works = append(works, cohortApplyWork{member: m, tp: tp, create: create})
 	}
 	return works, fails
