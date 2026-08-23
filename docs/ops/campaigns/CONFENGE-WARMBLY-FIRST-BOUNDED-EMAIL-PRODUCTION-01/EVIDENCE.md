@@ -95,11 +95,14 @@ No mailbox content was fetched and no credential was logged or read.
 Outbound submission and IMAP are open from the host and from inside the worker
 container (587, 465, 993). The Netcup outbound-SMTP unlock is in place.
 
-## The blocker
+## Historical blocker (resolved in the bounded path)
 
 The CONFENGE campaign shell sends Mon-Fri 09:00-18:00 `America/Sao_Paulo`
 (`days` bitmask 31). `ListCampaignScheduleCandidates` additionally requires
-`campaigns.status = 'active'`; the shell is `draft`.
+`campaigns.status = 'active'`; the shell is `draft`. That scheduler constraint
+does not apply to `cohort dispatch`: the bounded path creates/reuses reviewed
+drafts and calls the guarded touchpoint queue directly. The shell must remain
+`draft` for the first cohort.
 
 | Moment | Value |
 | --- | --- |
@@ -150,20 +153,17 @@ Three shipped defects made a live GO structurally unreachable before this round.
 
 ## Smallest human action to complete the round
 
-Either is one decision, not new engineering:
+Run inside the window. On Mon 2026-08-24 between 09:00 and 18:00
+`America/Sao_Paulo`, follow `RUNBOOK.md` with a freshly frozen cohort and a grant
+whose TTL spans the operation. Do not activate the campaign shell and do not
+widen the business-day window.
 
-**A. Run inside the window (recommended).** On Mon 2026-08-24 between 09:00 and 18:00
-`America/Sao_Paulo`, activate the campaign shell and re-run the sequence in `RUNBOOK.md`.
-A fresh 24h grant is required because this one expires Sunday.
+## Historical deliverability note
 
-**B. Authorize sending outside business days.** Widen the campaign `days`/window. This
-sends cold B2B mail outside business hours and is worse for deliverability, especially
-with `auth_dkim = false` on the sending mailbox.
-
-## Deliverability note (unrelated to the blocker)
-
-The sending mailbox reports `auth_spf = true`, `auth_dmarc = true`, `auth_dkim = false`.
-DKIM should be fixed before the first real cold cohort. Tracked separately by #138.
+At the timestamp of this artifact, the mailbox auth cache reported
+`auth_spf = true`, `auth_dmarc = true`, `auth_dkim = false`. Current operation
+must use a fresh direct DNS/preflight result; do not treat this historical cache
+observation as current truth.
 
 Copy QA passes every policy gate, but three cosmetic defects are worth fixing before real
 recipients see them: subjects truncate mid-word, the body embeds a raw record dump

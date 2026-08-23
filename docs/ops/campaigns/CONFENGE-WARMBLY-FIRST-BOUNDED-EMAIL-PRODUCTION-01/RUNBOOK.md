@@ -15,13 +15,18 @@ cat .deployed_sha                       # must equal origin/main
 docker exec warmbly-confenge-backend-1 env | grep CONFENGE_REPOSITORY_SHA
 ```
 
-The campaign shell must be `active`; it ships as `draft` and the scheduler only
-selects `status = 'active'`.
+The bounded-cohort path does not use the campaign scheduler: `cohort dispatch`
+creates/reuses each reviewed draft and calls the guarded touchpoint queue
+directly. Keep the campaign shell in `draft`. Activating it is neither required
+nor authorized for this first cohort.
 
 ```bash
 docker exec -i warmbly-confenge-postgres-1 psql -U warmbly -d warmbly_dev \
   -c "SELECT id, status, days, start_time, end_time, timezone FROM campaigns;"
 ```
+
+The query is a readback of the configured window only. It must show the expected
+Mon-Fri 09:00-18:00 `America/Sao_Paulo` schedule; do not change `status`.
 
 ## 1. Pull and import the fresh feed
 
