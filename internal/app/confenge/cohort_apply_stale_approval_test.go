@@ -10,7 +10,6 @@ import (
 	"github.com/warmbly/warmbly/internal/models"
 )
 
-
 // cleanCohortMember carries copy that passes admission QA, so a test that means
 // to exercise the approval gate is not silently short-circuited by copy QA.
 func cleanCohortMember(accID, candID uuid.UUID, mailbox string) FrozenCohortMember {
@@ -80,7 +79,7 @@ func TestApprovedTouchpointCannotCarryApprovalOntoNewCopy(t *testing.T) {
 			tp := &models.OutreachTouchpoint{
 				ID: uuid.New(), OrganizationID: orgID, AccountID: accID, Ordinal: 1,
 				Purpose: models.TouchpointPurposeInitial, Recipient: mailbox,
-				State: models.TouchpointApproved,
+				State:      models.TouchpointApproved,
 				ApprovedBy: &approver, ApprovedAt: &approvedAt,
 				AuthorizationMode: AuthorizationModeHumanTouchpoint,
 			}

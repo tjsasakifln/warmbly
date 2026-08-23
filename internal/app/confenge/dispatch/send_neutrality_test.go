@@ -20,11 +20,11 @@ func TestNextSlotReportingDoesNotChangeSendDecisions(t *testing.T) {
 	}
 	org := uuid.New()
 	instants := []time.Time{
-		time.Date(2026, 8, 23, 14, 9, 0, 0, sp),  // Sunday, the observed case
-		time.Date(2026, 8, 22, 11, 0, 0, 0, sp),  // Saturday
-		time.Date(2026, 8, 24, 10, 0, 0, 0, sp),  // Monday inside window
-		time.Date(2026, 8, 24, 8, 0, 0, 0, sp),   // Monday before open
-		time.Date(2026, 8, 24, 19, 0, 0, 0, sp),  // Monday after close
+		time.Date(2026, 8, 23, 14, 9, 0, 0, sp), // Sunday, the observed case
+		time.Date(2026, 8, 22, 11, 0, 0, 0, sp), // Saturday
+		time.Date(2026, 8, 24, 10, 0, 0, 0, sp), // Monday inside window
+		time.Date(2026, 8, 24, 8, 0, 0, 0, sp),  // Monday before open
+		time.Date(2026, 8, 24, 19, 0, 0, 0, sp), // Monday after close
 	}
 	for _, inst := range instants {
 		for _, paused := range []bool{false, true} {

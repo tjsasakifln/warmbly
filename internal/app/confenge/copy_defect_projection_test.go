@@ -6,9 +6,11 @@ import (
 )
 
 // The live v1 body read:
-//   "contratação pública: contratação DE Empresa Especializada Para Execução
-//    DOS Serviços Necessários DOS Serviços Necessários À Recuperação
-//    Estrutural DA Ponte SOB O RIO Sapucaí,."
+//
+//	"contratação pública: contratação DE Empresa Especializada Para Execução
+//	 DOS Serviços Necessários DOS Serviços Necessários À Recuperação
+//	 Estrutural DA Ponte SOB O RIO Sapucaí,."
+//
 // Three separate defects, all owned by this repository's outreach projection.
 func TestLiveV1FactProjectionHasNoCopyDefects(t *testing.T) {
 	got := condenseMetadataFact(liveV1RawFact)
@@ -68,9 +70,9 @@ func TestComposerTerminatesFactWithoutDoublePunctuation(t *testing.T) {
 // The live v1 froze with admission_reasons carrying "copy_qa=passed".
 func TestCopyQARefusesDefectiveCopy(t *testing.T) {
 	cases := map[string]string{
-		"repeated_ngram":       "Olá, equipe,\n\nSou da CONFENGE.\n\ncontratação pública: execução dos serviços necessários dos serviços necessários à recuperação.\n\nQueria falar com quem acompanha a carteira.",
+		"repeated_ngram":        "Olá, equipe,\n\nSou da CONFENGE.\n\ncontratação pública: execução dos serviços necessários dos serviços necessários à recuperação.\n\nQueria falar com quem acompanha a carteira.",
 		"defective_punctuation": "Olá, equipe,\n\nSou da CONFENGE.\n\ncontratação pública: recuperação estrutural da ponte,.\n\nQueria falar com quem acompanha a carteira.",
-		"shouted_residue":      "Olá, equipe,\n\nSou da CONFENGE.\n\ncontratação pública: execução DOS Serviços Necessários DA Ponte.\n\nQueria falar com quem acompanha a carteira.",
+		"shouted_residue":       "Olá, equipe,\n\nSou da CONFENGE.\n\ncontratação pública: execução DOS Serviços Necessários DA Ponte.\n\nQueria falar com quem acompanha a carteira.",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {

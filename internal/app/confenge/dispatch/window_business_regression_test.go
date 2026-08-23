@@ -42,10 +42,10 @@ func TestNextEligibleSlotNormalizesEveryOutOfWindowInstant(t *testing.T) {
 		t.Skipf("tzdata unavailable: %v", err)
 	}
 	cases := []time.Time{
-		time.Date(2026, 8, 22, 11, 0, 0, 0, sp), // Saturday inside hours
-		time.Date(2026, 8, 23, 14, 9, 0, 0, sp), // Sunday inside hours
+		time.Date(2026, 8, 22, 11, 0, 0, 0, sp),  // Saturday inside hours
+		time.Date(2026, 8, 23, 14, 9, 0, 0, sp),  // Sunday inside hours
 		time.Date(2026, 8, 21, 19, 30, 0, 0, sp), // Friday after close
-		time.Date(2026, 8, 24, 6, 0, 0, 0, sp),  // Monday before open
+		time.Date(2026, 8, 24, 6, 0, 0, 0, sp),   // Monday before open
 		time.Date(2026, 8, 24, 23, 59, 0, 0, sp), // Monday after close
 	}
 	for _, c := range cases {
