@@ -54,6 +54,9 @@ func (s *PGStore) PutChain(c Chain) (Chain, bool, error) {
 	if existing, err := s.GetChain(org, c.Identity); err != nil {
 		return c, false, err
 	} else if existing != nil {
+		if err := s.syncIdentityLinks(org, *existing); err != nil {
+			return c, false, err
+		}
 		return *existing, false, nil
 	}
 	if c.CreatedAt.IsZero() {
@@ -74,7 +77,13 @@ func (s *PGStore) PutChain(c Chain) (Chain, bool, error) {
 		return c, false, err
 	}
 	if existing, gerr := s.GetChain(org, c.Identity); gerr == nil && existing != nil {
+		if err := s.syncIdentityLinks(org, *existing); err != nil {
+			return c, false, err
+		}
 		return *existing, existing.MetricKey == c.MetricKey && existing.CreatedAt.Equal(c.CreatedAt), nil
+	}
+	if err := s.syncIdentityLinks(org, c); err != nil {
+		return c, false, err
 	}
 	return c, true, nil
 }
@@ -94,7 +103,60 @@ func (s *PGStore) UpdateChain(c Chain) error {
 		WHERE organization_id = $1::uuid AND identity = $2`,
 		org, c.Identity, c.MetricKey, c.RouteFamily, raw,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.syncIdentityLinks(org, c)
+}
+
+func (s *PGStore) syncIdentityLinks(org string, c Chain) error {
+	identity := CanonicalIdentityOf(c)
+	if identity.CorrelationID == Unknown {
+		return nil
+	}
+	links := []struct {
+		kind string
+		id   string
+	}{
+		{kind: "account", id: identity.AccountID},
+		{kind: "opportunity", id: identity.OpportunityID},
+		{kind: "offer", id: identity.OfferID},
+		{kind: "proposal", id: identity.ProposalID},
+		{kind: "charge", id: identity.ChargeID},
+		{kind: "payment", id: identity.PaymentID},
+	}
+	tx, err := s.db.Begin(context.Background())
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	for _, link := range links {
+		if link.id == Unknown {
+			continue
+		}
+		var bound string
+		err = tx.QueryRow(context.Background(), `
+			SELECT correlation_id
+			FROM outreach_intel_identity_links
+			WHERE organization_id = $1::uuid AND entity_kind = $2 AND entity_id = $3`,
+			org, link.kind, link.id).Scan(&bound)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if err == nil && bound != identity.CorrelationID {
+			return fmt.Errorf("canonical %s id is already bound to another correlation", link.kind)
+		}
+		_, err = tx.Exec(context.Background(), `
+			INSERT INTO outreach_intel_identity_links (
+				organization_id, correlation_id, entity_kind, entity_id
+			) VALUES ($1::uuid, $2, $3, $4)
+			ON CONFLICT (organization_id, entity_kind, entity_id) DO NOTHING`,
+			org, identity.CorrelationID, link.kind, link.id)
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit(context.Background())
 }
 
 func (s *PGStore) ListChains(orgID string) ([]Chain, error) {

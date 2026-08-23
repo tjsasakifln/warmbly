@@ -177,6 +177,10 @@ The operational funnel counts imported tiers, `NEEDS_REVIEW`, the manual lanes, 
 
 ## Commercial actions
 
+The executive response includes a weekly revenue-chain read model for operational consoles. Every row is keyed by an opaque `correlation_id`, never by a company or contact name. Warmbly owns commercial actions and their outcomes. The console may operate and display those facts, while Asaas remains the financial authority for charge and receipt status.
+
+The chain keeps charge creation separate from confirmed and received payment. A missing proposal, charge, receipt, owner, deadline, or next action is explicitly `UNKNOWN`; missing money does not become `0`. Human commercial decisions remain visible as `GO`, `NO-GO`, or `WAIT` and are never inferred from provider events.
+
 Actionability is not email sendability. A named person plus a company switchboard is a `ROUTED_CALL` (actionable, not sendable). An inferred email is `INFERRED_EMAIL_REVIEW` and never enters `VALIDATED` or dispatch. A role mailbox is `ROLE_EMAIL`, not a personal inbox. Missing reachability is left empty: Warmbly does not invent an R-class from the current `confenge.outreach.v1` feed.
 
 Execution state (`PLANNED`, `READY`, `IN_PROGRESS`, `COMPLETED`, `NEEDS_FOLLOWUP`, `BLOCKED`) is separate from outcome (`GATEKEEPER_REACHED`, `REFERRED_TO_OTHER_PERSON`, `TARGET_REACHED`, `INTERESTED`, `MEETING_SCHEDULED`, `WRONG_PERSON`, `INVALID_ROUTE`, `DNC`, `QUALIFIED_CONVERSATION`, `PROPOSAL`, `NO_RESPONSE`, `WON`/`CLIENT`, `LOST`). A gatekeeper who names Maria in contratos is new Decision-Unit intelligence, not a failed call. That outcome mints a child action linked to the parent. WON/CLIENT is recorded only by a human, never inferred from a meeting or from inbound interest.

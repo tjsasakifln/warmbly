@@ -15,11 +15,12 @@ func Rollup(chains []Chain, month string, includeSynthetic bool) ExecutiveView {
 		month = time.Now().UTC().Format("2006-01")
 	}
 	view := ExecutiveView{
-		SchemaVersion:    SchemaV1,
-		Month:            month,
-		IncludeSynthetic: includeSynthetic,
-		AttributionKind:  AssociationObserved,
-		CausalProof:      false,
+		SchemaVersion:       SchemaV1,
+		Month:               month,
+		IncludeSynthetic:    includeSynthetic,
+		AttributionKind:     AssociationObserved,
+		CausalProof:         false,
+		WeeklyRevenueChains: []WeeklyRevenueChain{},
 		Families: []FamilyCounts{
 			{Family: FamilyInbound},
 			{Family: FamilyOutbound},
@@ -64,6 +65,9 @@ func Rollup(chains []Chain, month string, includeSynthetic bool) ExecutiveView {
 			continue
 		}
 		view.ChainCount++
+		if IsWeeklyRevenueChain(c) {
+			view.WeeklyRevenueChains = append(view.WeeklyRevenueChains, WeeklyRevenueView(c))
+		}
 		incBreakdown(bySource, c.Source)
 		incBreakdown(byAsset, c.AssetID)
 		incBreakdown(byTrigger, c.Trigger)
@@ -252,6 +256,7 @@ func Rollup(chains []Chain, month string, includeSynthetic bool) ExecutiveView {
 	view.Freshness.ActivationPolicyVersions = mapKeys(apVers)
 	view.Freshness.Watermarks = mapKeys(marks)
 	view.RealEmpty = view.ChainCount == 0
+	SortWeeklyRevenueChains(view.WeeklyRevenueChains)
 	return view
 }
 

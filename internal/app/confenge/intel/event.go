@@ -93,9 +93,14 @@ func EventToFacts(ev CommercialEvent) ObservedFacts {
 			AssetID:           strings.TrimSpace(ev.AssetID),
 			CTAID:             strings.TrimSpace(ev.CTAID),
 			CorrelationID:     strings.TrimSpace(ev.CorrelationID),
+			PreferCorrelation: preferCommercialCorrelation(ev, typ),
 			LeadID:            strings.TrimSpace(ev.LeadID),
 			ReceiptID:         strings.TrimSpace(ev.ReceiptID),
 			AccountID:         firstNonEmpty(ev.AccountPublicID, ev.EntityPublicID),
+			OpportunityID:     strings.TrimSpace(ev.OpportunityID),
+			ProposalID:        strings.TrimSpace(ev.ProposalID),
+			ChargeID:          firstNonEmpty(ev.ChargeID, ev.Provider.ChargeID, ev.Provider.PaymentID),
+			PaymentID:         strings.TrimSpace(ev.PaymentID),
 			SourceLeadID:      strings.TrimSpace(ev.EntityPublicID),
 			ActionID:          strings.TrimSpace(ev.ActionID),
 			OutcomeID:         strings.TrimSpace(ev.OutcomeID),
@@ -381,8 +386,10 @@ func IngestEvent(store Store, ev CommercialEvent) JoinResult {
 		return JoinResult{Exceptions: []Exception{ex}, Held: true}
 	}
 
-	if existing := findSeenEvent(store, ev); existing != nil {
-		return JoinResult{Chain: *existing, Replay: true, Held: existing.Held}
+	if !ev.AllowReceiptRetry {
+		if existing := findSeenEvent(store, ev); existing != nil {
+			return JoinResult{Chain: *existing, Replay: true, Held: existing.Held}
+		}
 	}
 
 	if isCommercialEvent(ev.Type) || ev.Offer.OfferID != "" || ev.ProviderEventID != "" || ev.CallbackOnly {
@@ -501,6 +508,7 @@ func ingestCommercial(store Store, ev CommercialEvent) JoinResult {
 		IdempotencyKey: ev.IdempotencyKey, OrganizationID: ev.OrganizationID,
 		ExternalReference: firstNonEmpty(ev.ExternalReference, ev.Provider.ExternalRef),
 		CorrelationID:     ev.CorrelationID,
+		PreferCorrelation: preferCommercialCorrelation(ev, ev.Type),
 		EventID:           ev.EventID,
 	})
 	var existing *Chain
@@ -553,8 +561,10 @@ func ingestCommercial(store Store, ev CommercialEvent) JoinResult {
 				return JoinResult{Exceptions: []Exception{ex}, Held: true}
 			}
 			if !created {
-				if ch, _ := store.GetChain(ev.OrganizationID, rec.Identity); ch != nil {
-					return JoinResult{Chain: *ch, Replay: true, Held: ch.Held}
+				if !ev.AllowReceiptRetry || rec.Processed {
+					if ch, _ := store.GetChain(ev.OrganizationID, rec.Identity); ch != nil {
+						return JoinResult{Chain: *ch, Replay: true, Held: ch.Held}
+					}
 				}
 			}
 		}
@@ -602,10 +612,29 @@ func ingestCommercial(store Store, ev CommercialEvent) JoinResult {
 	res.Held = res.Held || tr.Held
 	if rs, ok := store.(interface {
 		MarkReceiptProcessed(string, string)
-	}); ok && receiptKey != "" {
+	}); ok && receiptKey != "" && commercialReceiptApplied(res.Chain, ev) {
 		rs.MarkReceiptProcessed(ev.OrganizationID, receiptKey)
 	}
 	return res
+}
+
+func commercialReceiptApplied(chain Chain, ev CommercialEvent) bool {
+	eventID := strings.TrimSpace(ev.EventID)
+	providerEventID := firstNonEmpty(ev.ProviderEventID, ev.Provider.ProviderEventID)
+	for _, receipt := range chain.Commercial.Timeline {
+		if eventID != "" && receipt.EventID == eventID {
+			return true
+		}
+		if providerEventID != "" && receipt.ProviderEventID == providerEventID {
+			return true
+		}
+	}
+	return false
+}
+
+func preferCommercialCorrelation(ev CommercialEvent, typ string) bool {
+	return isCommercialEvent(typ) || ev.ProviderEventID != "" || ev.Provider.ProviderEventID != "" ||
+		ev.OpportunityID != "" || ev.ProposalID != "" || ev.ChargeID != "" || ev.PaymentID != ""
 }
 
 // JoinUnavailable reports a fail-closed store error the HMAC edge should

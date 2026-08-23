@@ -198,6 +198,8 @@ type JoinKeys struct {
 	AssetID       string `json:"asset_id,omitempty"`
 	CTAID         string `json:"cta_id,omitempty"`
 	CorrelationID string `json:"correlation_id,omitempty"`
+	// Commercial events prefer an explicit correlation over transport IDs.
+	PreferCorrelation bool `json:"-"`
 
 	// Inbound durable receipt identity.
 	LeadID    string `json:"lead_id,omitempty"`
@@ -205,6 +207,10 @@ type JoinKeys struct {
 
 	// extra-cli fact / identity / version authority.
 	AccountID               string   `json:"account_id,omitempty"`
+	OpportunityID           string   `json:"opportunity_id,omitempty"`
+	ProposalID              string   `json:"proposal_id,omitempty"`
+	ChargeID                string   `json:"charge_id,omitempty"`
+	PaymentID               string   `json:"payment_id,omitempty"`
 	SourceLeadID            string   `json:"source_lead_id,omitempty"`
 	PersonID                string   `json:"person_id,omitempty"`
 	EventIDs                []string `json:"event_ids,omitempty"`
@@ -335,6 +341,10 @@ type Chain struct {
 	ReceiptID      string `json:"receipt_id"`
 	CorrelationID  string `json:"correlation_id"`
 	AccountID      string `json:"account_id"`
+	OpportunityID  string `json:"opportunity_id"`
+	ProposalID     string `json:"proposal_id"`
+	ChargeID       string `json:"charge_id"`
+	PaymentID      string `json:"payment_id"`
 	PersonID       string `json:"person_id"`
 	ActionID       string `json:"action_id"`
 	OutcomeID      string `json:"outcome_id"`
@@ -602,42 +612,43 @@ type Freshness struct {
 
 // ExecutiveView is the monthly query payload. Not a CRM board.
 type ExecutiveView struct {
-	SchemaVersion            string              `json:"schema_version"`
-	Month                    string              `json:"month"`
-	IncludeSynthetic         bool                `json:"include_synthetic"`
-	InboundQualifiedPipeline int                 `json:"inbound_qualified_pipeline"`
-	QCO                      int                 `json:"qco"`
-	Conversations            int                 `json:"conversations"`
-	Meetings                 int                 `json:"meetings"`
-	Proposals                int                 `json:"proposals"`
-	Pipeline                 int                 `json:"pipeline"`
-	Won                      int                 `json:"won"`
-	Lost                     int                 `json:"lost"`
-	Unknown                  int                 `json:"unknown"`
-	Families                 []FamilyCounts      `json:"families"`
-	BySource                 []Breakdown         `json:"by_source"`
-	ByAsset                  []Breakdown         `json:"by_asset"`
-	ByTrigger                []Breakdown         `json:"by_trigger"`
-	ByOffer                  []Breakdown         `json:"by_offer"`
-	ByRoute                  []Breakdown         `json:"by_route"`
-	ByIntent                 []Breakdown         `json:"by_intent,omitempty"`
-	MarketAnswer             AssetSlice          `json:"market_answer"`
-	ContractAnalysis         AssetSlice          `json:"contract_analysis"`
-	B2GXRay                  AssetSlice          `json:"b2g_xray"`
-	CustomerProof            int                 `json:"customer_proof"`
-	RevenueCents             int64               `json:"revenue_cents"`
-	RevenueStatus            string              `json:"revenue_status"`
-	Commercial               CommercialCounts    `json:"commercial"`
-	ByTerms                  []Breakdown         `json:"by_terms,omitempty"`
-	ByCTA                    []Breakdown         `json:"by_cta,omitempty"`
-	ByOfferVersion           []OfferExecutiveRow `json:"by_offer_version,omitempty"`
-	Denominators             Denominators        `json:"denominators"`
-	Latency                  LatencyMS           `json:"latency"`
-	Freshness                Freshness           `json:"freshness"`
-	AttributionKind          string              `json:"attribution_kind"`
-	CausalProof              bool                `json:"causal_proof"`
-	RealEmpty                bool                `json:"real_empty"`
-	ChainCount               int                 `json:"chain_count"`
+	SchemaVersion            string               `json:"schema_version"`
+	Month                    string               `json:"month"`
+	IncludeSynthetic         bool                 `json:"include_synthetic"`
+	InboundQualifiedPipeline int                  `json:"inbound_qualified_pipeline"`
+	QCO                      int                  `json:"qco"`
+	Conversations            int                  `json:"conversations"`
+	Meetings                 int                  `json:"meetings"`
+	Proposals                int                  `json:"proposals"`
+	Pipeline                 int                  `json:"pipeline"`
+	Won                      int                  `json:"won"`
+	Lost                     int                  `json:"lost"`
+	Unknown                  int                  `json:"unknown"`
+	Families                 []FamilyCounts       `json:"families"`
+	BySource                 []Breakdown          `json:"by_source"`
+	ByAsset                  []Breakdown          `json:"by_asset"`
+	ByTrigger                []Breakdown          `json:"by_trigger"`
+	ByOffer                  []Breakdown          `json:"by_offer"`
+	ByRoute                  []Breakdown          `json:"by_route"`
+	ByIntent                 []Breakdown          `json:"by_intent,omitempty"`
+	MarketAnswer             AssetSlice           `json:"market_answer"`
+	ContractAnalysis         AssetSlice           `json:"contract_analysis"`
+	B2GXRay                  AssetSlice           `json:"b2g_xray"`
+	CustomerProof            int                  `json:"customer_proof"`
+	RevenueCents             int64                `json:"revenue_cents"`
+	RevenueStatus            string               `json:"revenue_status"`
+	Commercial               CommercialCounts     `json:"commercial"`
+	ByTerms                  []Breakdown          `json:"by_terms,omitempty"`
+	ByCTA                    []Breakdown          `json:"by_cta,omitempty"`
+	ByOfferVersion           []OfferExecutiveRow  `json:"by_offer_version,omitempty"`
+	WeeklyRevenueChains      []WeeklyRevenueChain `json:"weekly_revenue_chains"`
+	Denominators             Denominators         `json:"denominators"`
+	Latency                  LatencyMS            `json:"latency"`
+	Freshness                Freshness            `json:"freshness"`
+	AttributionKind          string               `json:"attribution_kind"`
+	CausalProof              bool                 `json:"causal_proof"`
+	RealEmpty                bool                 `json:"real_empty"`
+	ChainCount               int                  `json:"chain_count"`
 }
 
 // AssetSlice is one assisted-asset lane. It is not a CRM stage.
@@ -696,54 +707,64 @@ func isLostType(t string) bool {
 // CommercialEvent is the versioned envelope consumed by IngestEvent.
 // PII lives only at PIIPointer and is never copied into metric keys.
 type CommercialEvent struct {
-	EventID           string     `json:"event_id"`
-	Version           string     `json:"version"`
-	Type              string     `json:"type"`
-	OccurredAt        time.Time  `json:"occurred_at"`
-	IngestedAt        time.Time  `json:"ingested_at"`
-	Timezone          string     `json:"timezone"`
-	CorrelationID     string     `json:"correlation_id,omitempty"`
-	IdempotencyKey    string     `json:"idempotency_key,omitempty"`
-	AssetFamily       string     `json:"asset_family,omitempty"`
-	MarketAnswerID    string     `json:"market_answer_id,omitempty"`
-	AnalysisID        string     `json:"analysis_id,omitempty"`
-	Source            string     `json:"source,omitempty"`
-	Referrer          string     `json:"referrer,omitempty"`
-	Query             string     `json:"query,omitempty"`
-	IntentClass       string     `json:"intent_class,omitempty"`
-	CTAID             string     `json:"cta_id,omitempty"`
-	OfferID           string     `json:"offer_id,omitempty"`
-	Route             string     `json:"route,omitempty"`
-	AccountPublicID   string     `json:"account_public_id,omitempty"`
-	EntityPublicID    string     `json:"entity_public_id,omitempty"`
-	ContractPublicID  string     `json:"contract_public_id,omitempty"`
-	Consent           string     `json:"consent,omitempty"`
-	Suppression       bool       `json:"suppression,omitempty"`
-	ActorRef          string     `json:"actor_ref,omitempty"`
-	EvidenceRef       string     `json:"evidence_ref,omitempty"`
-	OutcomeState      string     `json:"outcome_state,omitempty"`
-	ProducerSHA       string     `json:"producer_sha,omitempty"`
-	Schema            string     `json:"schema,omitempty"`
-	PIIPointer        string     `json:"pii_pointer,omitempty"`
-	LeadID            string     `json:"lead_id,omitempty"`
-	ReceiptID         string     `json:"receipt_id,omitempty"`
-	ActionID          string     `json:"action_id,omitempty"`
-	OutcomeID         string     `json:"outcome_id,omitempty"`
-	RouteFamily       string     `json:"route_family,omitempty"`
-	Trigger           string     `json:"trigger,omitempty"`
-	AssetID           string     `json:"asset_id,omitempty"`
-	Qualified         bool       `json:"qualified,omitempty"`
-	HumanConfirmed    bool       `json:"human_confirmed,omitempty"`
-	RevenueCents      int64      `json:"revenue_cents,omitempty"`
-	RevenueDocumentID string     `json:"revenue_document_id,omitempty"`
-	PublishedAt       *time.Time `json:"published_at,omitempty"`
-	DetectedAt        *time.Time `json:"detected_at,omitempty"`
-	FollowUpAt        *time.Time `json:"follow_up_at,omitempty"`
-	HandRaise         bool       `json:"hand_raise,omitempty"`
-	Correction        bool       `json:"correction,omitempty"`
-	CustomerProofLane bool       `json:"customer_proof_lane,omitempty"`
-	OrganizationID    string     `json:"organization_id,omitempty"`
-	Synthetic         bool       `json:"synthetic,omitempty"`
+	EventID            string     `json:"event_id"`
+	Version            string     `json:"version"`
+	Type               string     `json:"type"`
+	OccurredAt         time.Time  `json:"occurred_at"`
+	IngestedAt         time.Time  `json:"ingested_at"`
+	Timezone           string     `json:"timezone"`
+	CorrelationID      string     `json:"correlation_id,omitempty"`
+	IdempotencyKey     string     `json:"idempotency_key,omitempty"`
+	AssetFamily        string     `json:"asset_family,omitempty"`
+	MarketAnswerID     string     `json:"market_answer_id,omitempty"`
+	AnalysisID         string     `json:"analysis_id,omitempty"`
+	Source             string     `json:"source,omitempty"`
+	Referrer           string     `json:"referrer,omitempty"`
+	Query              string     `json:"query,omitempty"`
+	IntentClass        string     `json:"intent_class,omitempty"`
+	CTAID              string     `json:"cta_id,omitempty"`
+	OfferID            string     `json:"offer_id,omitempty"`
+	Route              string     `json:"route,omitempty"`
+	AccountPublicID    string     `json:"account_public_id,omitempty"`
+	OpportunityID      string     `json:"opportunity_id,omitempty"`
+	ProposalID         string     `json:"proposal_id,omitempty"`
+	ChargeID           string     `json:"charge_id,omitempty"`
+	PaymentID          string     `json:"payment_id,omitempty"`
+	EntityPublicID     string     `json:"entity_public_id,omitempty"`
+	ContractPublicID   string     `json:"contract_public_id,omitempty"`
+	Consent            string     `json:"consent,omitempty"`
+	Suppression        bool       `json:"suppression,omitempty"`
+	ActorRef           string     `json:"actor_ref,omitempty"`
+	EvidenceRef        string     `json:"evidence_ref,omitempty"`
+	OutcomeState       string     `json:"outcome_state,omitempty"`
+	ProducerSHA        string     `json:"producer_sha,omitempty"`
+	Schema             string     `json:"schema,omitempty"`
+	PIIPointer         string     `json:"pii_pointer,omitempty"`
+	LeadID             string     `json:"lead_id,omitempty"`
+	ReceiptID          string     `json:"receipt_id,omitempty"`
+	ActionID           string     `json:"action_id,omitempty"`
+	OutcomeID          string     `json:"outcome_id,omitempty"`
+	RouteFamily        string     `json:"route_family,omitempty"`
+	Trigger            string     `json:"trigger,omitempty"`
+	AssetID            string     `json:"asset_id,omitempty"`
+	Qualified          bool       `json:"qualified,omitempty"`
+	HumanConfirmed     bool       `json:"human_confirmed,omitempty"`
+	RevenueCents       int64      `json:"revenue_cents,omitempty"`
+	RevenueDocumentID  string     `json:"revenue_document_id,omitempty"`
+	PublishedAt        *time.Time `json:"published_at,omitempty"`
+	DetectedAt         *time.Time `json:"detected_at,omitempty"`
+	FollowUpAt         *time.Time `json:"follow_up_at,omitempty"`
+	HandRaise          bool       `json:"hand_raise,omitempty"`
+	Correction         bool       `json:"correction,omitempty"`
+	CustomerProofLane  bool       `json:"customer_proof_lane,omitempty"`
+	OrganizationID     string     `json:"organization_id,omitempty"`
+	Synthetic          bool       `json:"synthetic,omitempty"`
+	DeliverableID      string     `json:"deliverable_id,omitempty"`
+	CommercialDecision string     `json:"commercial_decision,omitempty"`
+	Responsible        string     `json:"responsible,omitempty"`
+	Deadline           *time.Time `json:"deadline,omitempty"`
+	NextAction         string     `json:"next_action,omitempty"`
+	AllowReceiptRetry  bool       `json:"-"`
 
 	Offer             OfferSnapshot    `json:"offer,omitempty"`
 	Capacity          CapacitySnapshot `json:"capacity,omitempty"`

@@ -9,9 +9,16 @@ import (
 )
 
 // ChainIdentity is the durable idempotency key for one observed path.
-// lead_id wins when present so a replay of the same inbound receipt
-// cannot open a second chain.
+// Inbound uses lead_id; commercial events opt into correlation-first identity.
 func ChainIdentity(k JoinKeys) string {
+	if k.PreferCorrelation {
+		if id := strings.TrimSpace(k.CorrelationID); id != "" {
+			return "corr:" + id
+		}
+		if id := strings.TrimSpace(k.ExternalReference); id != "" {
+			return "ext:" + id
+		}
+	}
 	if id := strings.TrimSpace(k.LeadID); id != "" {
 		return "lead:" + id
 	}
@@ -21,14 +28,26 @@ func ChainIdentity(k JoinKeys) string {
 	if id := strings.TrimSpace(k.ActionID); id != "" {
 		return "action:" + id
 	}
-	if id := strings.TrimSpace(k.IdempotencyKey); id != "" {
-		return "idem:" + id
+	if id := strings.TrimSpace(k.CorrelationID); id != "" {
+		return "corr:" + id
 	}
 	if id := strings.TrimSpace(k.ExternalReference); id != "" {
 		return "ext:" + id
 	}
-	if id := strings.TrimSpace(k.CorrelationID); id != "" {
-		return "corr:" + id
+	if id := strings.TrimSpace(k.OpportunityID); id != "" {
+		return "opportunity:" + id
+	}
+	if id := strings.TrimSpace(k.ProposalID); id != "" {
+		return "proposal:" + id
+	}
+	if id := strings.TrimSpace(k.ChargeID); id != "" {
+		return "charge:" + id
+	}
+	if id := strings.TrimSpace(k.PaymentID); id != "" {
+		return "payment:" + id
+	}
+	if id := strings.TrimSpace(k.IdempotencyKey); id != "" {
+		return "idem:" + id
 	}
 	if id := strings.TrimSpace(k.EventID); id != "" {
 		return "event:" + id
@@ -51,6 +70,10 @@ func MetricKey(k JoinKeys) string {
 		strings.TrimSpace(k.LeadID),
 		strings.TrimSpace(k.ReceiptID),
 		strings.TrimSpace(k.AccountID),
+		strings.TrimSpace(k.OpportunityID),
+		strings.TrimSpace(k.ProposalID),
+		strings.TrimSpace(k.ChargeID),
+		strings.TrimSpace(k.PaymentID),
 		strings.TrimSpace(k.SourceLeadID),
 		strings.TrimSpace(k.PersonID),
 		strings.Join(events, ","),
@@ -235,6 +258,10 @@ func buildChain(in ObservedFacts, identity, metric string, now time.Time, closeB
 		ReceiptID:         idOrUnknown(k.ReceiptID),
 		CorrelationID:     idOrUnknown(k.CorrelationID),
 		AccountID:         idOrUnknown(k.AccountID),
+		OpportunityID:     idOrUnknown(k.OpportunityID),
+		ProposalID:        idOrUnknown(k.ProposalID),
+		ChargeID:          idOrUnknown(k.ChargeID),
+		PaymentID:         idOrUnknown(k.PaymentID),
 		PersonID:          idOrUnknown(k.PersonID),
 		ActionID:          idOrUnknown(k.ActionID),
 		OutcomeID:         idOrUnknown(k.OutcomeID),
@@ -328,6 +355,14 @@ func mergeIntoChain(existing Chain, in ObservedFacts, closeBlocked, held bool) (
 	fill(&merged.ReceiptID, in.Keys.ReceiptID)
 	fill(&merged.Keys.CorrelationID, in.Keys.CorrelationID)
 	fill(&merged.CorrelationID, in.Keys.CorrelationID)
+	fill(&merged.Keys.OpportunityID, in.Keys.OpportunityID)
+	fill(&merged.OpportunityID, in.Keys.OpportunityID)
+	fill(&merged.Keys.ProposalID, in.Keys.ProposalID)
+	fill(&merged.ProposalID, in.Keys.ProposalID)
+	fill(&merged.Keys.ChargeID, in.Keys.ChargeID)
+	fill(&merged.ChargeID, in.Keys.ChargeID)
+	fill(&merged.Keys.PaymentID, in.Keys.PaymentID)
+	fill(&merged.PaymentID, in.Keys.PaymentID)
 	fill(&merged.Keys.PersonID, in.Keys.PersonID)
 	fill(&merged.PersonID, in.Keys.PersonID)
 	fill(&merged.Keys.AssetID, in.Keys.AssetID)

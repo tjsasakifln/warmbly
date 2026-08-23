@@ -121,6 +121,16 @@ func NormalizeProducerCommercialEvent(ev CommercialEvent) CommercialEvent {
 	if strings.TrimSpace(ev.Provider.ProviderEventID) == "" {
 		ev.Provider.ProviderEventID = ev.ProviderEventID
 	}
+	if strings.TrimSpace(ev.CorrelationID) == "" && isCommercialEvent(ev.Type) {
+		ev.CorrelationID = firstNonEmpty(ev.ExternalReference, ev.Provider.ExternalRef,
+			ev.ChargeID, ev.Provider.ChargeID, ev.Provider.PaymentID)
+	}
+	if strings.TrimSpace(ev.ChargeID) == "" {
+		ev.ChargeID = firstNonEmpty(ev.Provider.ChargeID, ev.Provider.PaymentID)
+	}
+	if ev.Type == EventPaymentReceived && strings.TrimSpace(ev.PaymentID) == "" {
+		ev.PaymentID = ev.Provider.PaymentID
+	}
 	if strings.TrimSpace(ev.RawProviderStatus) == "" {
 		ev.RawProviderStatus = ev.ProducerCanonicalStatus
 	}

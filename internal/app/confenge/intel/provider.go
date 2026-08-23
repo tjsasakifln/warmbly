@@ -135,6 +135,7 @@ func (a *FakeAdapter) MapEvent(p ProviderEvent, orgID string) CommercialEvent {
 		IngestedAt:        time.Now().UTC(),
 		Timezone:          "America/Sao_Paulo",
 		OrganizationID:    orgID,
+		CorrelationID:     firstNonEmpty(p.ExternalRef, p.PaymentID),
 		ProviderEventID:   p.ProviderEventID,
 		ExternalReference: p.ExternalRef,
 		Synthetic:         true,
@@ -146,6 +147,7 @@ func (a *FakeAdapter) MapEvent(p ProviderEvent, orgID string) CommercialEvent {
 			ExternalRef:     p.ExternalRef,
 			ProviderEventID: p.ProviderEventID,
 			PaymentMethod:   p.PaymentMethod,
+			ChargeID:        p.PaymentID,
 		},
 		Payment: PaymentState{
 			RawProviderStatus: p.RawStatus,
@@ -274,12 +276,15 @@ func IngestProviderWebhook(store Store, adapter ProviderAdapter, orgID, secret, 
 			if ch := findSeenEvent(store, CommercialEvent{OrganizationID: orgID, ProviderEventID: parsed.ProviderEventID, EventID: "prov-" + parsed.ProviderEventID}); ch != nil {
 				ack.Join = JoinResult{Chain: *ch, Replay: true, Held: ch.Held}
 			}
-			return ack, nil
+			if saved.Processed {
+				return ack, nil
+			}
 		}
 		ev := adapter.MapEvent(parsed, orgID)
 		ev.Synthetic = true
+		ev.AllowReceiptRetry = !created
 		join := IngestEvent(store, ev)
-		ack.Processed = !join.Held || join.Chain.Identity != ""
+		ack.Processed = commercialReceiptApplied(join.Chain, ev)
 		ack.Held = join.Held
 		ack.Join = join
 		if ms, ok := store.(interface {
@@ -292,7 +297,7 @@ func IngestProviderWebhook(store Store, adapter ProviderAdapter, orgID, secret, 
 	ev := adapter.MapEvent(parsed, orgID)
 	ev.Synthetic = true
 	join := IngestEvent(store, ev)
-	return WebhookAck{ReceiptID: ev.EventID, Acked: true, Processed: true, Held: join.Held, Join: join}, nil
+	return WebhookAck{ReceiptID: ev.EventID, Acked: true, Processed: commercialReceiptApplied(join.Chain, ev), Held: join.Held, Join: join}, nil
 }
 
 func anyString(v any) string {
