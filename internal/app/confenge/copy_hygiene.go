@@ -35,7 +35,17 @@ func ApplyCopyHygiene(s string) string {
 	s = ocrLoneSRe.ReplaceAllString(s, "$1 $2")
 	s = normalizePtBRAmount(s)
 	s = normalizeBareUSAmount(s)
+	// De-shout before collapseEditalCaps, not after: collapseEditalCaps only
+	// touches wholly-uppercase words of four letters or more, and once it has
+	// title-cased those, the remaining "DOS"/"DA"/"SOB" are a minority and no
+	// longer look like a shouted line. Reading the still-shouted original is
+	// what lets the short prepositions and proper nouns be fixed at all.
+	s = deshoutEditalProse(s)
 	s = collapseEditalCaps(s)
+	// Source object text repeats itself verbatim often enough that a recipient
+	// would read it as a broken merge. Collapse after casing so the comparison
+	// sees one consistent form.
+	s = collapseRepeatedNGrams(s)
 	s = stripLegalVocative(s)
 	s = orphanCommaRe.ReplaceAllString(s, ",")
 	s = doubleDotRe.ReplaceAllString(s, ".")

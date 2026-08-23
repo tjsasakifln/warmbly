@@ -386,7 +386,12 @@ func TestPromptVersionV5(t *testing.T) {
 	if OutreachDoctrineVersion != "confenge-outreach-v2" {
 		t.Fatalf("doctrine=%s", OutreachDoctrineVersion)
 	}
-	if ComposerVersion != "confenge.composer.v3" {
+	// v4 (2026-08-23) de-shouts edital prose, collapses verbatim repeated
+	// n-grams, removes the "contratação pública: contratação" label stutter and
+	// terminates a fact without producing ",.". The bump is deliberate: copy
+	// composed by v3 is materially different text, so a v3 grant must not
+	// authorize v4 output. Bump this pin only together with that reasoning.
+	if ComposerVersion != "confenge.composer.v4" {
 		t.Fatalf("composer=%s", ComposerVersion)
 	}
 }

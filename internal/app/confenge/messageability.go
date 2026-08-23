@@ -25,7 +25,12 @@ const (
 
 // ComposerVersion stamps the outbound-safe composer. Prior-version unsent
 // drafts are identifiable and must be regenerated.
-const ComposerVersion = "confenge.composer.v3"
+// Bumped to v4 on 2026-08-23: the projection now de-shouts edital prose,
+// collapses verbatim repeated n-grams, stops the "contratação pública:
+// contratação" label stutter and terminates a fact without producing ",.".
+// Copy composed by v3 is materially different text, so a v3 grant must not
+// authorize v4 output — release_manifest.go already fails closed on drift.
+const ComposerVersion = "confenge.composer.v4"
 
 // Outbound hook classes from the service playbook.
 const (
@@ -400,7 +405,9 @@ func condenseMetadataFact(raw string) string {
 		obj = stripTruncation(obj)
 		obj = cutAtWordBoundary(strings.TrimSpace(obj), 160)
 		if obj != "" {
-			return "contratação pública: " + ensureLowerStart(obj)
+			// The label and the object both start with "contratação" often
+			// enough that the pair read as a stutter in live copy.
+			return dropRedundantLeadingLabel("contratação pública", obj)
 		}
 	}
 	// Fall back to a short natural clause without labels.
