@@ -37,6 +37,7 @@ func (w *JobsService) InitEvents() {
 	Register(w, models.JobEventTypeHistoryIDUpdate, w.HandleHistoryIDUpdate)
 	Register(w, models.JobEventTypeGraphDeltaUpdate, w.HandleGraphDeltaUpdate)
 	Register(w, models.JobEventTypeTokenUpdate, w.HandleTokenUpdate)
+	Register(w, models.JobEventTypeEmailAttempted, w.HandleEmailAttempted)
 	Register(w, models.JobEventTypeEmailSent, w.HandleEmailSent)
 
 	// Email error handlers

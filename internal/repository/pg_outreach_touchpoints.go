@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -162,6 +163,27 @@ func (r *outreachRepository) GetTouchpointByIdempotency(ctx context.Context, org
 
 func (r *outreachRepository) GetTouchpointByDraft(ctx context.Context, orgID, draftID uuid.UUID) (*models.OutreachTouchpoint, error) {
 	row := r.db.QueryRow(ctx, outreachTouchpointSelect+` FROM outreach_touchpoints WHERE organization_id=$1 AND draft_id=$2 ORDER BY updated_at DESC LIMIT 1`, orgID, draftID)
+	t, err := scanTouchpoint(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return t, err
+}
+
+// GetTouchpointByProviderMessageID resolves a DSN/reply to the exact outbound
+// touchpoint. Angle brackets are normalized because RFC Message-ID headers and
+// provider callbacks do not consistently retain them.
+func (r *outreachRepository) GetTouchpointByProviderMessageID(ctx context.Context, orgID uuid.UUID, messageID string) (*models.OutreachTouchpoint, error) {
+	messageID = strings.Trim(strings.TrimSpace(messageID), "<>")
+	if messageID == "" {
+		return nil, nil
+	}
+	row := r.db.QueryRow(ctx, outreachTouchpointSelect+`
+		FROM outreach_touchpoints
+		WHERE organization_id=$1
+		  AND trim(both '<>' from provider_message_id)=$2
+		ORDER BY updated_at DESC
+		LIMIT 1`, orgID, messageID)
 	t, err := scanTouchpoint(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil

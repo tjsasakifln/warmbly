@@ -508,7 +508,7 @@ func (s *service) assertAuthoritativeFeedForTransport(ctx context.Context, orgID
 	return nil
 }
 
-func (s *service) CompleteCampaignEmail(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, providerMessageID string) error {
+func (s *service) CompleteCampaignEmail(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, providerMessageID string, acceptedAt time.Time) error {
 	touchpoint, err := s.repo.GetTouchpointByEnrollment(ctx, orgID, campaignID, contactID)
 	if err != nil {
 		return err
@@ -532,7 +532,10 @@ func (s *service) CompleteCampaignEmail(ctx context.Context, orgID, campaignID, 
 		}
 		return s.releaseNextTouch(ctx, orgID, touchpoint)
 	}
-	now := time.Now().UTC()
+	now := acceptedAt.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 	if err := s.transitionCompletedTouchpointKeyed(ctx, orgID, touchpoint, now, providerMessageID, MessageKeyCampaignEmail(campaignID, contactID, sequenceID)); err != nil {
 		return err
 	}
@@ -543,6 +546,33 @@ func (s *service) CompleteCampaignEmail(ctx context.Context, orgID, campaignID, 
 		return err
 	}
 	return s.releaseNextTouch(ctx, orgID, touchpoint)
+}
+
+// ObserveCampaignEmailAttempt records that the worker reached the provider
+// transport call. It does not claim acceptance or delivery.
+func (s *service) ObserveCampaignEmailAttempt(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, attemptedAt time.Time) error {
+	touchpoint, err := s.repo.GetTouchpointByEnrollment(ctx, orgID, campaignID, contactID)
+	if err != nil {
+		return err
+	}
+	if touchpoint == nil {
+		return ErrCampaignTouchpointNotFound
+	}
+	if !isBoundedCohortTouch(touchpoint) {
+		return nil
+	}
+	var cand *models.OutreachContactCandidate
+	if touchpoint.ContactCandidateID != nil {
+		cand, _ = s.repo.GetCandidate(ctx, orgID, *touchpoint.ContactCandidateID)
+	}
+	messageKey := MessageKeyCampaignEmail(campaignID, contactID, sequenceID)
+	if err := s.assertBoundedCohortTransport(ctx, touchpoint, cand, messageKey); err != nil {
+		return err
+	}
+	s.observeControlledEmail(ctx, orgID, intel.EventEmailAttempted, touchpoint, cand, ControlledEmailContext{
+		OccurredAt: attemptedAt, ProviderName: "smtp",
+	})
+	return nil
 }
 
 func (s *service) transitionCompletedTouchpoint(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint, now time.Time, providerMessageID string) error {
@@ -569,8 +599,9 @@ func (s *service) transitionCompletedTouchpointKeyed(ctx context.Context, orgID 
 		if err := s.commitCohortSlot(ctx, tp, now, messageKey); err != nil {
 			return err
 		}
-		s.observeControlledEmail(ctx, orgID, intel.EventEmailAttempted, tp, cand, ControlledEmailContext{ProviderName: "smtp"})
-		s.observeControlledEmail(ctx, orgID, intel.EventProviderAccepted, tp, cand, ControlledEmailContext{ProviderName: "smtp"})
+		s.observeControlledEmail(ctx, orgID, intel.EventProviderAccepted, tp, cand, ControlledEmailContext{
+			OccurredAt: now, ProviderName: "smtp",
+		})
 		return nil
 	}
 	return TransitionToSent(tp, now, providerMessageID)

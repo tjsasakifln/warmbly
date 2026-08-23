@@ -256,6 +256,18 @@ type CommercialReceipt struct {
 	RawStatus       string    `json:"raw_status,omitempty"`
 	CanonicalStatus string    `json:"canonical_status,omitempty"`
 	ActorRef        string    `json:"actor_ref,omitempty"`
+	EmailRouteClass string    `json:"email_route_class,omitempty"`
+	Source          string    `json:"source,omitempty"`
+	ProviderName    string    `json:"provider_name,omitempty"`
+	CohortID        string    `json:"cohort_id,omitempty"`
+	PolicyVersion   string    `json:"policy_version,omitempty"`
+	BounceClass     string    `json:"bounce_class,omitempty"`
+	ReplyClass      string    `json:"reply_class,omitempty"`
+	AccountPublicID string    `json:"account_public_id,omitempty"`
+	TouchpointID    string    `json:"touchpoint_id,omitempty"`
+	SMTPStatus      string    `json:"smtp_status,omitempty"`
+	EnhancedStatus  string    `json:"enhanced_status,omitempty"`
+	Diagnostic      string    `json:"diagnostic,omitempty"`
 }
 
 // CommercialState is derived canonical commercial state on the existing chain.

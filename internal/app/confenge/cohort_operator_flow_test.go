@@ -300,6 +300,15 @@ func TestAuthorizeFrozenCohortFailClosedAndIdempotentMembership(t *testing.T) {
 	if got.FrozenManifest.Members[0].Mailbox != "contato@apply.com.br" {
 		t.Fatal("exact mailbox missing")
 	}
+	if got.FrozenManifest.Members[0].AccountID != accID || got.FrozenManifest.Members[0].TouchpointID == uuid.Nil {
+		t.Fatalf("operational correlation missing after authorize: %+v", got.FrozenManifest.Members[0])
+	}
+	if got.CohortHash != snap.CohortHash || HashFrozenCohort(got.FrozenManifest) != snap.CohortHash {
+		t.Fatal("operational correlation must not change reviewed cohort hash")
+	}
+	if state, reason := ProveObservabilityWiring(got); state != EvidencePass {
+		t.Fatalf("authorized cohort observability=%s reason=%s", state, reason)
+	}
 
 	bad := *snap
 	bad.Members = append(append([]FrozenCohortMember{}, snap.Members...), FrozenCohortMember{
@@ -410,6 +419,9 @@ func TestObservePathPopulatesRouteClassWithoutHandBuiltEvent(t *testing.T) {
 	if err := svc.BindBoundedCohortGrant(auth); err != nil {
 		t.Fatal(err)
 	}
+	svc.observeControlledEmail(ctx, org, intel.EventEmailAttempted, tp, cand, ControlledEmailContext{
+		OccurredAt: now, ProviderName: "smtp",
+	})
 	if err := svc.transitionCompletedTouchpoint(ctx, org, tp, now, "prov-1"); err != nil {
 		t.Fatal(err)
 	}
@@ -426,6 +438,9 @@ func TestObservePathPopulatesRouteClassWithoutHandBuiltEvent(t *testing.T) {
 	}
 	foundAttempted, foundAccepted, foundReply, foundBounce := false, false, false, false
 	for _, ev := range events {
+		if ev.Synthetic {
+			t.Fatalf("real controlled-email event mislabeled synthetic: %+v", ev)
+		}
 		if ev.Type == intel.EventNoReply {
 			t.Fatal("no-reply must not be inferred")
 		}
@@ -635,7 +650,7 @@ func TestPrepareFromExtraCLINoneSuppressionKeepsControlledEligible(t *testing.T)
 		},
 	}
 	snap, err := PrepareControlledCohortFromFeed(feed, CohortPrepareOptions{
-		Now: time.Now().UTC(), Limit: 50, MaxDailyVolume: 50, TTL: 24 * time.Hour, RepositorySHA: "sha-none",
+		Now: time.Now().UTC(), Limit: 50, MaxDailyVolume: 10, TTL: 24 * time.Hour, RepositorySHA: "sha-none",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -708,7 +723,7 @@ func TestPrepareFromFiveClassCanaryPicksOneNonemptyRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	snap, err := PrepareControlledCohortFromFeed(feed, CohortPrepareOptions{
-		Now: time.Now().UTC(), Limit: 50, MaxDailyVolume: 50, TTL: 24 * time.Hour, RepositorySHA: "sha-canary",
+		Now: time.Now().UTC(), Limit: 50, MaxDailyVolume: 10, TTL: 24 * time.Hour, RepositorySHA: "sha-canary",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -721,5 +736,54 @@ func TestPrepareFromFiveClassCanaryPicksOneNonemptyRoute(t *testing.T) {
 	}
 	if snap.Members[0].RouteClass == RouteClassProbabilisticOrRisky {
 		t.Fatal("RISKY must not freeze")
+	}
+}
+
+func TestLatestBoundedCohortReadinessIsTruthfulAndRedacted(t *testing.T) {
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	orgID := uuid.New()
+	store := NewMemoryCohortStore()
+	auth := &BoundedCohortAuthorization{
+		ID: uuid.New(), OrganizationID: orgID, ActorID: uuid.New(), AuthorizedAt: now,
+		ExpiresAt: now.Add(6 * time.Hour), CohortID: "cohort-real-10", CohortHash: "cohort-hash",
+		PolicyVersion: BoundedCohortPolicyV1, AllowedRouteClasses: []string{RouteClassGenericCompany},
+		MaxDailyVolume: 10, FrozenManifest: &FrozenCohortSnapshot{Members: []FrozenCohortMember{
+			{RouteClass: RouteClassGenericCompany}, {RouteClass: RouteClassGenericCompany},
+		}},
+	}
+	if err := store.PutGrant(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	latestStore, ok := store.(latestBoundedCohortStore)
+	if !ok {
+		t.Fatal("bounded store does not expose latest read")
+	}
+	latest, err := latestStore.LatestGrant(context.Background(), orgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := boundedCohortReadiness(latest, now)
+	if view == nil || view.CohortID != auth.CohortID || view.AuthorizedQuantity == nil || *view.AuthorizedQuantity != 2 || view.MaxDailyVolume != 10 {
+		t.Fatalf("unexpected readiness: %+v", view)
+	}
+	if view.State != "active" {
+		t.Fatalf("state=%s", view.State)
+	}
+	if view.RouteClassDistribution[RouteClassGenericCompany] != 2 {
+		t.Fatalf("route distribution lost: %+v", view.RouteClassDistribution)
+	}
+	legacy := *latest
+	legacy.FrozenManifest = nil
+	legacyView := boundedCohortReadiness(&legacy, now)
+	if legacyView.AuthorizedQuantity != nil || legacyView.RouteClassDistribution != nil {
+		t.Fatalf("legacy grant without membership must preserve UNKNOWN, got %+v", legacyView)
+	}
+	sent, reserved, err := latestStore.GrantDispatchCounts(context.Background(), auth.ID)
+	if err != nil || sent != 0 || reserved != 0 {
+		t.Fatalf("dispatch counts: sent=%d reserved=%d err=%v", sent, reserved, err)
+	}
+	expired := boundedCohortReadiness(latest, now.Add(7*time.Hour))
+	if expired == nil || expired.State != "expired" {
+		t.Fatalf("expired state lost: %+v", expired)
 	}
 }

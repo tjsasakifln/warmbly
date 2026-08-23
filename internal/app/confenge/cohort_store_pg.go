@@ -156,6 +156,45 @@ func (s *postgresCohortStore) GetGrant(ctx context.Context, id uuid.UUID) (*Boun
 	return scanCohortGrant(row)
 }
 
+func (s *postgresCohortStore) LatestGrant(ctx context.Context, orgID uuid.UUID) (*BoundedCohortAuthorization, error) {
+	if err := s.unavailable(); err != nil {
+		return nil, err
+	}
+	if orgID == uuid.Nil {
+		return nil, nil
+	}
+	row := s.db.QueryRow(ctx, `
+		SELECT id, organization_id, actor_id, authorized_at,
+			repository_sha, feed_schema_version, cohort_id, cohort_hash,
+			policy_version, allowed_route_classes, max_daily_volume,
+			recipient_set_hash, composer_version, evidence_version,
+			ttl_seconds, expires_at, frozen_hash,
+			revoked_at, revoke_actor, revoke_reason,
+			frozen_manifest, go_review_verdict, go_review_actor, go_review_at, go_review_reason
+		FROM confenge_bounded_cohort_authorizations
+		WHERE organization_id=$1
+		ORDER BY authorized_at DESC, id DESC
+		LIMIT 1`, orgID)
+	return scanCohortGrant(row)
+}
+
+func (s *postgresCohortStore) GrantDispatchCounts(ctx context.Context, id uuid.UUID) (int, int, error) {
+	if err := s.unavailable(); err != nil {
+		return 0, 0, err
+	}
+	var sent, reserved int
+	err := s.db.QueryRow(ctx, `
+		SELECT
+			count(*) FILTER (WHERE state='sent'),
+			count(*) FILTER (WHERE state='reserved')
+		FROM confenge_bounded_cohort_reservations
+		WHERE authorization_id=$1`, id).Scan(&sent, &reserved)
+	if err != nil {
+		return 0, 0, fmt.Errorf("%w: %v", ErrCohortStoreUnavailable, err)
+	}
+	return sent, reserved, nil
+}
+
 func scanCohortGrant(row pgx.Row) (*BoundedCohortAuthorization, error) {
 	var a BoundedCohortAuthorization
 	var ttlSec int64

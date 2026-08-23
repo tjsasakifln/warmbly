@@ -21,7 +21,7 @@ func TestOrgBoundCohortWithoutFeedIdentityFailsReleaseComparison(t *testing.T) {
 		EvidenceVersion:     DefaultEvidenceVersion,
 		RecipientSetHash:    "recipients-1",
 		CohortHash:          "cohort-1",
-		MaxDailyVolume:      50,
+		MaxDailyVolume:      10,
 		AllowedRouteClasses: []string{RouteClassDirectPerson, RouteClassRoleOrDepartment, RouteClassGenericCompany, RouteClassPublicCompanyFreemail},
 		FrozenManifest: &FrozenCohortSnapshot{
 			Members: []FrozenCohortMember{{Mailbox: "a@example.com", RouteClass: RouteClassGenericCompany}},
@@ -79,7 +79,7 @@ func TestPrepareFromOrgAccountsCarriesFeedIdentityAndDBIdentifiers(t *testing.T)
 		RepositorySHA:  "sha-1",
 		FeedIdentity:   "run-fresh-1",
 		Limit:          50,
-		MaxDailyVolume: 50,
+		MaxDailyVolume: 10,
 	})
 	if err != nil {
 		t.Fatalf("prepare: %v", err)

@@ -175,6 +175,11 @@ func ValidateBoundedCohortAuthorization(auth *BoundedCohortAuthorization, in Coh
 		add("cohort_authorization_missing")
 		return reasons
 	}
+	if auth.FrozenManifest != nil && (auth.FrozenManifest.AuthoritativeFreshnessRequired || auth.FrozenManifest.AuthoritativeSourceFreshness != nil) {
+		if err := ValidateFrozenSourceFreshness(auth.FrozenManifest, in.Now, false); err != nil {
+			add("authoritative_source_freshness_invalid")
+		}
+	}
 	if auth.ActorID == uuid.Nil {
 		add("human_actor_required")
 	}
@@ -199,6 +204,8 @@ func ValidateBoundedCohortAuthorization(auth *BoundedCohortAuthorization, in Coh
 	}
 	if auth.MaxDailyVolume < 1 {
 		add("daily_cap_missing")
+	} else if auth.MaxDailyVolume > DefaultCohortDispatchCap {
+		add("daily_cap_exceeds_first_cohort_limit")
 	}
 	if !in.SlotHeld && in.SentToday >= auth.MaxDailyVolume {
 		add("daily_cap_exceeded")
@@ -417,6 +424,45 @@ func (m *memoryCohortStore) GetGrant(_ context.Context, id uuid.UUID) (*BoundedC
 		cp.RevokedAt = &ts
 	}
 	return &cp, nil
+}
+
+func (m *memoryCohortStore) LatestGrant(_ context.Context, orgID uuid.UUID) (*BoundedCohortAuthorization, error) {
+	if m == nil {
+		return nil, ErrCohortStoreUnavailable
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var latest *BoundedCohortAuthorization
+	for _, auth := range m.byID {
+		if auth == nil || auth.OrganizationID != orgID || (latest != nil && !auth.AuthorizedAt.After(latest.AuthorizedAt)) {
+			continue
+		}
+		cp := *auth
+		cp.AllowedRouteClasses = append([]string{}, auth.AllowedRouteClasses...)
+		latest = &cp
+	}
+	return latest, nil
+}
+
+func (m *memoryCohortStore) GrantDispatchCounts(_ context.Context, id uuid.UUID) (int, int, error) {
+	if m == nil {
+		return 0, 0, ErrCohortStoreUnavailable
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sent, reserved := 0, 0
+	for key, slot := range m.slots {
+		if !strings.HasPrefix(key, id.String()+"|") {
+			continue
+		}
+		switch slot.state {
+		case CohortSlotSent:
+			sent++
+		case CohortSlotReserved:
+			reserved++
+		}
+	}
+	return sent, reserved, nil
 }
 
 func (m *memoryCohortStore) RevokeGrant(_ context.Context, id, actor uuid.UUID, reason string, now time.Time) error {

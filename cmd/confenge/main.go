@@ -78,7 +78,7 @@ Usage:
   confenge cohort preview --manifest PATH
   confenge cohort authorize --manifest PATH --actor UUID [--confirm]
   confenge cohort review --id UUID --actor UUID [--verdict READY_FOR_CONTROLLED_EMAIL_GO_REVIEW|GO_FOR_CONTROLLED_EMAIL_PILOT|NO_GO] [--confirm]
-  confenge cohort dispatch --id UUID --actor UUID [--limit 50] [--confirm]
+  confenge cohort dispatch --id UUID --actor UUID [--limit 10] [--confirm]
   confenge cohort report --events PATH
   confenge cohort-auth create|show|revoke [flags]
 

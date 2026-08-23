@@ -18,6 +18,16 @@ type Report struct {
 	// Permanent is true only when a 5.x.x status or an explicit permanent
 	// "Action: failed" was found. Transient (4.x.x / delayed) stays false.
 	Permanent bool
+	// BounceClass is HARD for an observed 5.x.x/final failure, SOFT for an
+	// observed 4.x.x/delay, and UNKNOWN when the DSN does not prove either.
+	BounceClass string
+	// EnhancedStatus preserves the machine-readable RFC 3463 status (for
+	// example 5.1.1) when present. SMTPStatus preserves the three-digit code.
+	EnhancedStatus string
+	SMTPStatus     string
+	// Diagnostic is a minimized provider diagnostic, capped by Parse. It must
+	// never contain the full raw DSN or returned message body.
+	Diagnostic string
 	// FailedRecipient is the address that bounced (Final/Original-Recipient).
 	FailedRecipient string
 	// OriginalMessageID is the Message-ID of the original outbound message the
@@ -26,11 +36,12 @@ type Report struct {
 }
 
 var (
-	reStatus     = regexp.MustCompile(`(?im)^\s*Status:\s*([245])\.\d{1,3}\.\d{1,3}`)
+	reStatus     = regexp.MustCompile(`(?im)^\s*Status:\s*([245]\.\d{1,3}\.\d{1,3})`)
 	reAction     = regexp.MustCompile(`(?im)^\s*Action:\s*(failed|delayed|delivered|relayed|expanded)`)
 	reFinalRcpt  = regexp.MustCompile(`(?im)^\s*(?:Final|Original)-Recipient:\s*[^;\r\n]*;\s*<?([^\s<>]+@[^\s<>]+?)>?\s*$`)
 	reMessageID  = regexp.MustCompile(`(?im)^\s*Message-ID:\s*<([^>\s]+)>`)
-	reDiagnostic = regexp.MustCompile(`(?im)^\s*Diagnostic-Code:\s*[^;\r\n]*;\s*([245])\d\d`)
+	reDiagnostic = regexp.MustCompile(`(?im)^\s*Diagnostic-Code:\s*[^;\r\n]*;\s*([245]\d\d)(?:\s+([^\r\n]*))?`)
+	reEmail      = regexp.MustCompile(`(?i)[a-z0-9.!#$%&'*+/=?^_` + "`" + `{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+`)
 )
 
 // senderMarkers identify a machine bounce source in the From line.
@@ -72,21 +83,32 @@ func Parse(body string) Report {
 	var r Report
 
 	if m := reStatus.FindStringSubmatch(body); m != nil {
-		r.IsBounce = true
-		r.Permanent = m[1] == "5"
+		r.EnhancedStatus = m[1]
+		r.BounceClass = classFromLeadingDigit(m[1])
+		r.IsBounce = r.BounceClass == "HARD" || r.BounceClass == "SOFT"
+		r.Permanent = r.BounceClass == "HARD"
 	}
-	if !r.Permanent {
-		if m := reDiagnostic.FindStringSubmatch(body); m != nil {
-			r.IsBounce = true
-			r.Permanent = m[1] == "5"
+	if m := reDiagnostic.FindStringSubmatch(body); m != nil {
+		r.SMTPStatus = m[1]
+		if r.BounceClass == "" || r.BounceClass == "UNKNOWN" {
+			r.BounceClass = classFromLeadingDigit(m[1])
+		}
+		r.IsBounce = r.IsBounce || r.BounceClass == "HARD" || r.BounceClass == "SOFT"
+		r.Permanent = r.BounceClass == "HARD"
+		if len(m) > 2 {
+			r.Diagnostic = minimizeDiagnostic(m[2])
 		}
 	}
 	if a := reAction.FindStringSubmatch(body); a != nil {
-		r.IsBounce = true
 		if strings.EqualFold(a[1], "failed") && r.hasNo4xx(body) {
 			// "failed" is permanent per RFC 3464, but a co-present 4.x.x status
 			// (retry-then-fail) means transient — defer to the status code.
 			r.Permanent = true
+			r.BounceClass = "HARD"
+			r.IsBounce = true
+		} else if strings.EqualFold(a[1], "delayed") && r.BounceClass == "" {
+			r.BounceClass = "SOFT"
+			r.IsBounce = true
 		}
 	}
 
@@ -98,13 +120,37 @@ func Parse(body string) Report {
 	if ids := reMessageID.FindAllStringSubmatch(body, -1); len(ids) > 0 {
 		r.OriginalMessageID = strings.TrimSpace(ids[len(ids)-1][1])
 	}
+	if r.BounceClass == "" {
+		r.BounceClass = "UNKNOWN"
+	}
 
 	return r
 }
 
+func classFromLeadingDigit(code string) string {
+	switch {
+	case strings.HasPrefix(code, "5"):
+		return "HARD"
+	case strings.HasPrefix(code, "4"):
+		return "SOFT"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+func minimizeDiagnostic(value string) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	value = reEmail.ReplaceAllString(value, "<redacted-email>")
+	const max = 240
+	if len(value) > max {
+		value = value[:max]
+	}
+	return value
+}
+
 func (r Report) hasNo4xx(body string) bool {
 	if m := reStatus.FindStringSubmatch(body); m != nil {
-		return m[1] != "4"
+		return !strings.HasPrefix(m[1], "4")
 	}
 	return true
 }

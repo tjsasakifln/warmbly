@@ -398,7 +398,10 @@ func TestPostgresGateThenCompleteLastSlot(t *testing.T) {
 	if gate.Kind != GateProceed {
 		t.Fatalf("first gate must reserve last slot: %+v err=%v", gate, gate.Err)
 	}
-	if err := svc.CompleteCampaignEmail(ctx, org, campaignID, enrollContactID, sequenceID, "prov-1"); err != nil {
+	if err := svc.ObserveCampaignEmailAttempt(ctx, org, campaignID, enrollContactID, sequenceID, clock.Now()); err != nil {
+		t.Fatalf("observe provider attempt: %v", err)
+	}
+	if err := svc.CompleteCampaignEmail(ctx, org, campaignID, enrollContactID, sequenceID, "prov-1", time.Now().UTC()); err != nil {
 		t.Fatalf("complete last reserved slot must succeed: %v", err)
 	}
 	st, err := store.HeldSlot(ctx, auth.ID, MessageKeyCampaignEmail(campaignID, enrollContactID, sequenceID))

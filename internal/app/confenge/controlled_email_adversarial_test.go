@@ -145,7 +145,7 @@ func TestBoundedCohortAuthorizationDriftAndFreeze(t *testing.T) {
 		RepositorySHA: "abc", FeedSchemaVersion: "confenge.outreach.v1",
 		CohortID: "c1", CohortHash: "h1", PolicyVersion: BoundedCohortPolicyV1,
 		AllowedRouteClasses: []string{RouteClassGenericCompany, RouteClassRoleOrDepartment},
-		MaxDailyVolume:      50, RecipientSetHash: HashRecipientSet([]string{"contato@empresa.com.br"}),
+		MaxDailyVolume:      10, RecipientSetHash: HashRecipientSet([]string{"contato@empresa.com.br"}),
 		ComposerVersion: ComposerVersion, EvidenceVersion: "ev1", TTL: time.Hour, ExpiresAt: now.Add(time.Hour),
 	}
 	base := CohortTransportInput{
@@ -325,7 +325,7 @@ func TestBoundedCohortCanTransportAndIsNotAutoSend(t *testing.T) {
 		Channel: "EMAIL", Purpose: models.TouchpointPurposeInitial,
 	}
 	auth := &BoundedCohortAuthorization{
-		ID: uuid.New(), ActorID: uuid.New(), AuthorizedAt: now, MaxDailyVolume: 50,
+		ID: uuid.New(), ActorID: uuid.New(), AuthorizedAt: now, MaxDailyVolume: 10,
 		AllowedRouteClasses: []string{RouteClassGenericCompany},
 		RepositorySHA:       "sha", FeedSchemaVersion: models.OutreachSchemaV1, CohortHash: "h",
 		PolicyVersion: BoundedCohortPolicyV1, RecipientSetHash: HashRecipientSet([]string{"contato@empresa.com.br"}),
@@ -440,7 +440,9 @@ func TestIntelSliceKeepsUnknownAndNonReply(t *testing.T) {
 	if len(slices) != 1 {
 		t.Fatalf("slices=%d", len(slices))
 	}
-	if slices[0].Attempted != 1 || slices[0].HardBounce != 1 || slices[0].Unknown != 1 {
+	if slices[0].Attempted == nil || *slices[0].Attempted != 1 ||
+		slices[0].HardBounce == nil || *slices[0].HardBounce != 1 ||
+		slices[0].Unknown == nil || *slices[0].Unknown != 1 {
 		t.Fatalf("got %+v", slices[0])
 	}
 	if !intel.NonReplyDoesNotInvalidateMailbox(events[1]) {

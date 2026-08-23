@@ -17,6 +17,7 @@ func TestConfengeReplyPathWiresCRM(t *testing.T) {
 	}
 	s := string(b)
 	newIdx := strings.Index(s, "confenge.NewService")
+	wireIntel := strings.Index(s, "WireIntel")
 	wireCRM := strings.Index(s, "WireCRM")
 	wireReply := strings.Index(s, "WireConfengeReply")
 	if newIdx < 0 {
@@ -24,6 +25,9 @@ func TestConfengeReplyPathWiresCRM(t *testing.T) {
 	}
 	if wireCRM < 0 {
 		t.Fatal("consumer must WireCRM on confenge so email reply handoff creates CRM tasks/deals")
+	}
+	if wireIntel < 0 || !(newIdx < wireIntel && wireIntel < wireReply) {
+		t.Fatalf("consumer must WireIntel(Postgres) before reply/DSN handling; new=%d intel=%d reply=%d", newIdx, wireIntel, wireReply)
 	}
 	if wireReply < 0 {
 		t.Fatal("consumer must WireConfengeReply for email handoff")

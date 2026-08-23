@@ -14,7 +14,7 @@ import (
 	"github.com/warmbly/warmbly/internal/repository"
 )
 
-const DefaultCohortDispatchCap = 50
+const DefaultCohortDispatchCap = 10
 
 var errCohortAlreadySent = errors.New("cohort member already sent")
 
@@ -101,7 +101,7 @@ func TransportOneCohortMessage(
 	return providerID, nil
 }
 
-// DispatchBoundedCohort sends at most N<=50 members of a founder-authorized
+// DispatchBoundedCohort sends at most N<=10 members of a founder-authorized
 // grant after a live GO_FOR_CONTROLLED_EMAIL_PILOT. It never enables auto-send.
 func DispatchBoundedCohort(
 	ctx context.Context,
@@ -146,6 +146,9 @@ func DispatchBoundedCohort(
 	if auth.AutoSendEnabled {
 		return out, fmt.Errorf("auto_send_forbidden")
 	}
+	if auth.MaxDailyVolume < 1 || auth.MaxDailyVolume > DefaultCohortDispatchCap {
+		return out, fmt.Errorf("authorization daily cap must be 1-%d", DefaultCohortDispatchCap)
+	}
 	if auth.GreenAutorunEnabled {
 		return out, fmt.Errorf("green_autorun_forbidden")
 	}
@@ -161,8 +164,8 @@ func DispatchBoundedCohort(
 	if auth.MaxDailyVolume > 0 && limit > auth.MaxDailyVolume {
 		limit = auth.MaxDailyVolume
 	}
-	if limit > 50 {
-		limit = 50
+	if limit > DefaultCohortDispatchCap {
+		limit = DefaultCohortDispatchCap
 	}
 	seenAccount := map[string]bool{}
 	for _, m := range auth.FrozenManifest.Members {

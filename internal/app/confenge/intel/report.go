@@ -47,6 +47,7 @@ func BuildObservabilityReport(store Store, orgID, month string, includeSynthetic
 
 	chains, _ := store.ListChains(orgID)
 	view := Rollup(chains, month, includeSynthetic)
+	AttachControlledEmail(&rep, ControlledEmailEventsFromChains(chains, includeSynthetic))
 	xs, _ := store.ListExceptions(orgID)
 	learn, _ := store.ListLearning(orgID)
 

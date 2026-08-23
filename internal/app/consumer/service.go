@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -49,7 +50,8 @@ type JobsService struct {
 	// ConfengeOutcomes attributes reply/bounce/DNC back to staged leads (optional).
 	ConfengeOutcomes confenge.OutcomeSink
 	ConfengeSends    interface {
-		CompleteCampaignEmail(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, providerMessageID string) error
+		ObserveCampaignEmailAttempt(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, attemptedAt time.Time) error
+		CompleteCampaignEmail(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, providerMessageID string, acceptedAt time.Time) error
 	}
 
 	// Cache for dead worker detection

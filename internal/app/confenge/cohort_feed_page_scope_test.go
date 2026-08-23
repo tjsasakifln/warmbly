@@ -94,7 +94,7 @@ func TestAccountsFromOrgForRunFindsMembersBeyondFirstPage(t *testing.T) {
 		RepositorySHA:  "sha-1",
 		FeedIdentity:   "run-target",
 		Limit:          50,
-		MaxDailyVolume: 50,
+		MaxDailyVolume: 10,
 	})
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
@@ -152,7 +152,7 @@ func TestPrepareRefusesPersistedAccountWithoutCanonicalID(t *testing.T) {
 	}}
 
 	_, err := PrepareControlledCohort(accounts, CohortPrepareOptions{
-		RepositorySHA: "sha-1", FeedIdentity: "run-1", Limit: 50, MaxDailyVolume: 50,
+		RepositorySHA: "sha-1", FeedIdentity: "run-1", Limit: 50, MaxDailyVolume: 10,
 	})
 	if err == nil {
 		t.Fatal("freezing a persisted account without a canonical id must fail")

@@ -351,6 +351,10 @@ func main() {
 		if primaryDB == nil || primaryDB.Pool == nil {
 			log.Fatalf("confenge: postgres required for bounded cohort authority")
 		}
+		// Replies and DSNs are observed in this process. Without the durable
+		// commercial store they would fall back to process memory and disappear
+		// before the backend/Control Center can reconstruct cohort outcomes.
+		confengeSvc.WireIntel(primaryDB.Pool)
 		confengeSvc.WireCohortAuth(confenge.NewPostgresCohortStore(primaryDB.Pool))
 		if sink, ok := confengeSvc.(confenge.OutcomeSink); ok {
 			confengeSink = sink

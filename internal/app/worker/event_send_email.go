@@ -79,6 +79,9 @@ func (w *WorkerService) HandleSendEmail(ctx context.Context, sendEmail models.Se
 
 	// Use unified Send method
 	w.recordSendAttempt()
+	if err := w.sendEmailAttempted(sendEmail.TaskID); err != nil {
+		return fmt.Errorf("publish EMAIL_ATTEMPTED before transport: %w", err)
+	}
 	sendStart := time.Now()
 	result := mail.Send(ctx, &wmail.SendRequest{
 		TaskID:         sendEmail.TaskID,
@@ -217,6 +220,14 @@ func (w *WorkerService) fetchAttachments(ctx context.Context, refs []emsg.Attach
 		})
 	}
 	return out, nil
+}
+
+// sendEmailAttempted is emitted immediately before the provider transport is
+// called. Failing to publish is fail-closed for controlled email: an SMTP
+// attempt must never occur without a durable observation path.
+func (w *WorkerService) sendEmailAttempted(taskID uuid.UUID) error {
+	result := models.SendEmailResult{TaskID: taskID, SentAt: time.Now()}
+	return w.Produce(models.JobEventTypeEmailAttempted, taskID.String(), result)
 }
 
 // sendEmailSuccess sends a success result back to the jobs service

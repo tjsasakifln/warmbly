@@ -66,15 +66,16 @@ func cmdCohortPrepare(args []string) int {
 	maybeLoadDotEnv()
 	cfg := confenge.LoadConfig()
 	opts := confenge.CohortPrepareOptions{
-		Now:               time.Now().UTC(),
-		Limit:             *limit,
-		MaxDailyVolume:    *volume,
-		TTL:               dur,
-		RepositorySHA:     firstFlag(*sha, cfg.RepositorySHA),
-		FeedSchemaVersion: firstNonEmpty(cfg.FeedSchemaVersion, models.OutreachSchemaV1),
-		EvidenceVersion:   firstNonEmpty(cfg.EvidenceVersion, confenge.DefaultEvidenceVersion),
-		ComposerVersion:   confenge.ComposerVersion,
-		PolicyVersion:     confenge.BoundedCohortPolicyV1,
+		Now:                           time.Now().UTC(),
+		Limit:                         *limit,
+		MaxDailyVolume:                *volume,
+		TTL:                           dur,
+		RepositorySHA:                 firstFlag(*sha, cfg.RepositorySHA),
+		FeedSchemaVersion:             firstNonEmpty(cfg.FeedSchemaVersion, models.OutreachSchemaV1),
+		EvidenceVersion:               firstNonEmpty(cfg.EvidenceVersion, confenge.DefaultEvidenceVersion),
+		ComposerVersion:               confenge.ComposerVersion,
+		PolicyVersion:                 confenge.BoundedCohortPolicyV1,
+		RequireAuthoritativeFreshness: cfg.IsProduction(),
 	}
 
 	var snap *confenge.FrozenCohortSnapshot
@@ -101,6 +102,7 @@ func cmdCohortPrepare(args []string) int {
 		opts.SnapshotHash = firstNonEmpty(opts.SnapshotHash, feed.Source.SnapshotHash)
 		opts.FeedSchemaVersion = firstNonEmpty(feed.SchemaVersion, opts.FeedSchemaVersion)
 		opts.Source = firstNonEmpty(feed.Source.System, "extra-cli")
+		opts.AuthoritativeSourceFreshness = feed.Source.AuthoritativeFreshness
 		orgID := parseOrg(*orgStr)
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
@@ -240,6 +242,10 @@ func cmdCohortAuthorize(args []string) int {
 	}
 	orgID := parseOrg(*orgStr)
 	now := time.Now().UTC()
+	if err := confenge.ValidateFrozenSourceFreshness(snap, now, confenge.LoadConfig().IsProduction()); err != nil {
+		fmt.Fprintf(os.Stderr, "BLOCKED: %v\n", err)
+		return 1
+	}
 	if !*confirm {
 		auth, err := confenge.GrantFromFrozenSnapshot(snap, orgID, actorID, now)
 		if err != nil {
@@ -340,12 +346,12 @@ func cmdCohortDispatch(args []string) int {
 	fs := flag.NewFlagSet("cohort dispatch", flag.ExitOnError)
 	idStr := fs.String("id", "", "authorization UUID")
 	actor := fs.String("actor", "", "human actor UUID")
-	limit := fs.Int("limit", confenge.DefaultCohortDispatchCap, "max messages this run (1-50)")
+	limit := fs.Int("limit", confenge.DefaultCohortDispatchCap, "max messages this run (1-10)")
 	confirm := fs.Bool("confirm", false, "dispatch through the shipped transport path")
 	_ = fs.Parse(args)
 	id, err := uuid.Parse(strings.TrimSpace(*idStr))
 	if err != nil || id == uuid.Nil {
-		fmt.Fprintln(os.Stderr, "usage: confenge cohort dispatch --id UUID --actor UUID [--limit 50] [--confirm]")
+		fmt.Fprintln(os.Stderr, "usage: confenge cohort dispatch --id UUID --actor UUID [--limit 10] [--confirm]")
 		return 2
 	}
 	actorID, err := uuid.Parse(strings.TrimSpace(*actor))
@@ -353,8 +359,8 @@ func cmdCohortDispatch(args []string) int {
 		fmt.Fprintln(os.Stderr, "BLOCKED: --actor (human UUID) is required")
 		return 2
 	}
-	if *limit < 1 || *limit > 50 {
-		fmt.Fprintln(os.Stderr, "BLOCKED: --limit must be 1-50")
+	if *limit < 1 || *limit > confenge.DefaultCohortDispatchCap {
+		fmt.Fprintf(os.Stderr, "BLOCKED: --limit must be 1-%d\n", confenge.DefaultCohortDispatchCap)
 		return 2
 	}
 	pool, store, err := openCohortStore()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -31,6 +32,7 @@ func (r emailSentCampaignRepo) GetByID(context.Context, uuid.UUID) (*models.Camp
 }
 
 type emailSentCompletion struct {
+	attempted  int
 	called     int
 	orgID      uuid.UUID
 	campaignID uuid.UUID
@@ -40,7 +42,16 @@ type emailSentCompletion struct {
 	err        error
 }
 
-func (c *emailSentCompletion) CompleteCampaignEmail(_ context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, providerMessageID string) error {
+func (c *emailSentCompletion) ObserveCampaignEmailAttempt(_ context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, _ time.Time) error {
+	c.attempted++
+	c.orgID = orgID
+	c.campaignID = campaignID
+	c.contactID = contactID
+	c.sequenceID = sequenceID
+	return c.err
+}
+
+func (c *emailSentCompletion) CompleteCampaignEmail(_ context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, providerMessageID string, _ time.Time) error {
 	c.called++
 	c.orgID = orgID
 	c.campaignID = campaignID
@@ -72,6 +83,36 @@ func TestHandleEmailSentProjectsOnlyProviderSuccess(t *testing.T) {
 	require.Equal(t, contactID, completion.contactID)
 	require.Equal(t, sequenceID, completion.sequenceID)
 	require.Equal(t, "provider-message", completion.messageID)
+}
+
+func TestHandleEmailAttemptedProjectsBeforeProviderAcceptance(t *testing.T) {
+	taskID, orgID, campaignID, contactID, sequenceID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	completion := &emailSentCompletion{}
+	svc := &JobsService{
+		TaskRepo: emailSentTaskRepo{task: &repository.CampaignTask{
+			TaskID: taskID, CampaignID: &campaignID, ContactID: &contactID, SequenceID: &sequenceID,
+		}},
+		CampaignRepo:  emailSentCampaignRepo{campaign: &models.Campaign{ID: campaignID, OrganizationID: &orgID, Name: "CONFENGE pilot"}},
+		ConfengeSends: completion,
+	}
+
+	require.NoError(t, svc.HandleEmailAttempted(context.Background(), &models.SendEmailResult{TaskID: taskID}))
+	require.Equal(t, 1, completion.attempted)
+	require.Zero(t, completion.called, "attempted must not claim provider acceptance")
+	require.Equal(t, sequenceID, completion.sequenceID)
+}
+
+func TestHandleEmailAttemptedDoesNotPoisonOrdinaryCampaign(t *testing.T) {
+	taskID, orgID, campaignID, contactID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	completion := &emailSentCompletion{err: confenge.ErrCampaignTouchpointNotFound}
+	svc := &JobsService{
+		TaskRepo:      emailSentTaskRepo{task: &repository.CampaignTask{TaskID: taskID, CampaignID: &campaignID, ContactID: &contactID}},
+		CampaignRepo:  emailSentCampaignRepo{campaign: &models.Campaign{ID: campaignID, OrganizationID: &orgID, Name: "Ordinary campaign"}},
+		ConfengeSends: completion,
+	}
+
+	require.NoError(t, svc.HandleEmailAttempted(context.Background(), &models.SendEmailResult{TaskID: taskID}))
+	require.Equal(t, 1, completion.attempted)
 }
 
 func TestHandleEmailSentDoesNotPoisonOrdinaryCampaignEvents(t *testing.T) {

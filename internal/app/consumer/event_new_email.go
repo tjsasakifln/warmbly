@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
+	"github.com/warmbly/warmbly/internal/app/confenge"
 	"github.com/warmbly/warmbly/internal/config"
 	"github.com/warmbly/warmbly/internal/infrastructure/pubsub"
 	"github.com/warmbly/warmbly/internal/models"
@@ -80,14 +81,75 @@ func (s *JobsService) HandleNewEmail(ctx context.Context, e *models.JobEventNewE
 		if account, err := s.EmailRepository.GetByID(ctx, e.Message.EmailID); err == nil && account != nil && account.OrganizationID != nil {
 			// Same normalizer as ProcessIncomingReply so Hostinger " (a@b)" From matches candidates.
 			from := emailaddr.ExtractFirst(e.Message.FromAddr)
-			_ = s.ConfengeOutcomes.NoteReply(ctx, *account.OrganizationID, from, map[string]any{
-				"subject":    e.Message.Subject,
-				"message_id": e.Message.ID.String(),
-			})
+			meta := map[string]any{
+				"subject":       e.Message.Subject,
+				"message_id":    e.Message.ID.String(),
+				"provider_name": account.Provider,
+				"reply_class": confenge.ClassifyControlledReply(
+					e.Message.Subject,
+					e.Message.Snippet,
+					controlledReplyHeaders(e.Message),
+				),
+			}
+			s.attachReplyCorrelation(ctx, e.Message, meta)
+			_ = s.ConfengeOutcomes.NoteReply(ctx, *account.OrganizationID, from, meta)
 		}
 	}
 
 	return nil
+}
+
+func controlledReplyHeaders(message *models.EmailMessageStoreData) map[string][]string {
+	if message == nil {
+		return nil
+	}
+	headers := map[string][]string{}
+	if len(message.FromAddr) > 0 {
+		headers["From"] = message.FromAddr
+	}
+	if len(message.ReplyTo) > 0 {
+		headers["Reply-To"] = message.ReplyTo
+	}
+	if message.Subject != "" {
+		headers["Subject"] = []string{message.Subject}
+	}
+	for _, flag := range message.Flags {
+		if i := strings.Index(flag, ":"); i > 0 {
+			name := strings.TrimSpace(flag[:i])
+			value := strings.TrimSpace(flag[i+1:])
+			if name != "" && !strings.HasPrefix(name, "\\") {
+				headers[name] = append(headers[name], value)
+			}
+		}
+	}
+	return headers
+}
+
+// attachReplyCorrelation prefers RFC In-Reply-To -> outbound task -> campaign
+// enrollment identifiers. Address/subject matching remains only a fallback for
+// inbound messages that genuinely lack reply headers.
+func (s *JobsService) attachReplyCorrelation(ctx context.Context, message *models.EmailMessageStoreData, meta map[string]any) {
+	if s == nil || s.TaskRepo == nil || message == nil || meta == nil {
+		return
+	}
+	for i := len(message.InReplyTo) - 1; i >= 0; i-- {
+		originalID := strings.Trim(strings.TrimSpace(message.InReplyTo[i]), "<>")
+		if originalID == "" {
+			continue
+		}
+		meta["original_message_id"] = originalID
+		task, err := s.TaskRepo.GetTaskByMessageID(ctx, originalID)
+		if err != nil || task == nil {
+			continue
+		}
+		campaignTask, err := s.TaskRepo.GetCampaignTask(ctx, task.ID)
+		if err != nil || campaignTask == nil || campaignTask.CampaignID == nil || campaignTask.ContactID == nil {
+			continue
+		}
+		meta["campaign_id"] = campaignTask.CampaignID.String()
+		meta["contact_id"] = campaignTask.ContactID.String()
+		return
+	}
 }
 
 func (s *JobsService) publishEmailUpdated(ctx context.Context, userID uuid.UUID, message *models.EmailMessageStoreData) {

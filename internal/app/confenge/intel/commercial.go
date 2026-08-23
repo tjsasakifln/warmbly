@@ -867,6 +867,18 @@ func appendReceipt(tl []CommercialReceipt, ev CommercialEvent, typ string) []Com
 		RawStatus:       ev.RawProviderStatus,
 		CanonicalStatus: ev.Type,
 		ActorRef:        ev.ActorRef,
+		EmailRouteClass: ev.EmailRouteClass,
+		Source:          ev.Source,
+		ProviderName:    ev.ProviderName,
+		CohortID:        ev.CohortID,
+		PolicyVersion:   ev.PolicyVersion,
+		BounceClass:     ev.BounceClass,
+		ReplyClass:      ev.ReplyClass,
+		AccountPublicID: ev.AccountPublicID,
+		TouchpointID:    ev.EntityPublicID,
+		SMTPStatus:      ev.SMTPStatus,
+		EnhancedStatus:  ev.EnhancedStatus,
+		Diagnostic:      ev.Diagnostic,
 	})
 }
 
@@ -895,6 +907,8 @@ func NormalizeEventType(t string) (canonical, raw string, unknown bool) {
 		EventWon, EventLost, EventUnknownState, EventRevenueEvidenced,
 		EventLearningCandidate, EventXRayCompleted, EventPageView,
 		EventCitation, EventCorrection,
+		EventEmailAttempted, EventProviderAccepted, EventDelivered,
+		EventHardBounce, EventSoftBounce, EventOptOut, EventSpamComplaint, EventNoReply,
 		EventOfferViewed, EventOfferSelected, EventEligibilitySubmitted,
 		EventCapacityApproved, EventCapacityRejected, EventCapacityWaitlisted,
 		EventCapacityHoldExpired, EventCapacityReserved, EventCapacityReleased,
@@ -1002,7 +1016,10 @@ func isCommercialEvent(t string) bool {
 		EventOnboardingStarted, EventServiceActivated, EventServicePaused,
 		EventServiceEnded, EventRenewalDue, EventRenewed,
 		EventCommercialExceptionOpen, EventCommercialExceptionRes,
-		EventCommercialException, EventUnknownProvider:
+		EventCommercialException, EventUnknownProvider,
+		EventEmailAttempted, EventProviderAccepted, EventDelivered,
+		EventHardBounce, EventSoftBounce, EventReply, EventOptOut,
+		EventSpamComplaint, EventNoReply:
 		return true
 	default:
 		return false

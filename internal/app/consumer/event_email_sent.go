@@ -11,7 +11,9 @@ import (
 	"github.com/warmbly/warmbly/internal/models"
 )
 
-// HandleEmailSent projects provider-confirmed delivery into CONFENGE state.
+// HandleEmailSent projects a successful provider/SMTP acceptance callback into
+// CONFENGE state. It is not proof of final delivery; delivered remains UNKNOWN
+// until a DSN/webhook explicitly proves it.
 func (s *JobsService) HandleEmailSent(ctx context.Context, event *models.SendEmailResult) error {
 	if event == nil || !event.Success {
 		return fmt.Errorf("invalid EMAIL_SENT result")
@@ -49,6 +51,7 @@ func (s *JobsService) HandleEmailSent(ctx context.Context, event *models.SendEma
 		*campaignTask.ContactID,
 		valueOrNilUUID(campaignTask.SequenceID),
 		providerMessageID,
+		event.SentAt,
 	)
 	if errors.Is(completionErr, confenge.ErrCampaignTouchpointNotFound) && !confenge.IsConfengeCampaign(campaign.Name) {
 		return nil

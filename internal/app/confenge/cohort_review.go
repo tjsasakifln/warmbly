@@ -58,6 +58,11 @@ func RecordControlledEmailGOReview(
 		return nil, fmt.Errorf("bounded cohort cannot enable auto-send")
 	}
 	if verdict == ReleaseReadyForControlledEmailReview || verdict == ReleaseGOForControlledEmailPilot {
+		if auth.FrozenManifest != nil && (auth.FrozenManifest.AuthoritativeFreshnessRequired || auth.FrozenManifest.AuthoritativeSourceFreshness != nil) {
+			if err := ValidateFrozenSourceFreshness(auth.FrozenManifest, now, false); err != nil {
+				return nil, fmt.Errorf("review refused: authoritative_source_freshness_invalid")
+			}
+		}
 		want := expectedReleaseFromGrant(auth)
 		// Missing live evidence is a NO_GO.
 		// Never synthesize release readiness from expected state.
@@ -101,6 +106,16 @@ func PrepareControlledEmailGOReview(ctx context.Context, in LiveReleaseInput, id
 	live := CollectLiveReleaseManifest(ctx, in)
 	cmp := CompareControlledEmailRelease(expectedReleaseFromGrant(auth), live)
 	cmp.AuthorizationID = auth.ID
+	if auth.FrozenManifest != nil && (auth.FrozenManifest.AuthoritativeFreshnessRequired || auth.FrozenManifest.AuthoritativeSourceFreshness != nil) {
+		state := EvidencePass
+		reason := ""
+		if err := ValidateFrozenSourceFreshness(auth.FrozenManifest, live.EvaluatedAt, false); err != nil {
+			state = EvidenceFail
+			reason = "authoritative_source_freshness_invalid"
+			cmp.Verdict = ReleaseVerdict{Verdict: ReleaseNOGO, Reasons: append([]string{reason}, cmp.Verdict.Reasons...)}
+		}
+		cmp.Checks = append(cmp.Checks, ReleaseCheck{Name: "authoritative_source_freshness", State: state, Reason: reason})
+	}
 	if auth.RevokedAt != nil {
 		cmp.Verdict = ReleaseVerdict{Verdict: ReleaseNOGO, Reasons: append([]string{"authorization_revoked"}, cmp.Verdict.Reasons...)}
 	} else if !auth.EffectiveExpiry().IsZero() && (in.Now.IsZero() || !in.Now.Before(auth.EffectiveExpiry())) {
