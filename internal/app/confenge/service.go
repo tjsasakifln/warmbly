@@ -15,6 +15,7 @@ import (
 	"github.com/warmbly/warmbly/internal/app/whatsapp"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/pkg/emailverify"
 	"github.com/warmbly/warmbly/internal/pkg/generation"
 	"github.com/warmbly/warmbly/internal/repository"
 )
@@ -119,6 +120,16 @@ type Service interface {
 	// CAMPAIGN_POLICY_AUTHORIZATION + GREEN autorun (no fake approved_by).
 	WirePolicyAuth(store repository.ConfengePolicyRepository)
 	WireCohortAuth(store BoundedCohortStore)
+	// Human gate persists immutable cohort versions and review receipts. It is
+	// control-plane only and exposes no transport/send operation.
+	WireHumanGate(db *pgxpool.Pool)
+	CreateHumanGateCohort(ctx context.Context, orgID, actorID uuid.UUID, in HumanGateCreateInput) (*HumanGateCohort, *errx.Error)
+	ReproduceHumanGateCohort(ctx context.Context, orgID, actorID, id uuid.UUID, in HumanGateCreateInput) (*HumanGateCohort, *errx.Error)
+	ListHumanGateCohorts(ctx context.Context, orgID uuid.UUID, limit int, cursor time.Time, now time.Time) ([]HumanGateCohort, *errx.Error)
+	GetHumanGateCohort(ctx context.Context, orgID, id uuid.UUID, now time.Time) (*HumanGateCohort, *errx.Error)
+	RecordHumanGateValidation(ctx context.Context, orgID, actorID, versionID, candidateID uuid.UUID, result emailverify.Result, key, correlation string) (*HumanGateCohort, *errx.Error)
+	ReviewHumanGateCandidate(ctx context.Context, orgID, actorID, versionID, candidateID uuid.UUID, in HumanGateReviewInput) (*HumanGateCohort, *errx.Error)
+	DecideHumanGateCohort(ctx context.Context, orgID, actorID, versionID uuid.UUID, in HumanGateDecisionInput) (*HumanGateCohort, *errx.Error)
 
 	// confenge-dossier/1.0 manifest references. Card metadata, never a send path.
 	WireDossierReferences(store DossierReferenceStore)
@@ -177,6 +188,7 @@ type service struct {
 	governor       *dispatch.Governor
 	policyStore    repository.ConfengePolicyRepository
 	cohortStore    BoundedCohortStore
+	humanGateDB    *pgxpool.Pool
 	dossierStore   DossierReferenceStore
 	intel          intel.Store
 	operatorMail   func(to, subject, body string) error
