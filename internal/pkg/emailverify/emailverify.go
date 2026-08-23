@@ -104,12 +104,30 @@ type Config struct {
 	MXTimeout time.Duration
 }
 
-func (c Config) withDefaults() Config {
-	if c.HeloHost == "" {
-		c.HeloHost = "localhost"
+// usableHeloHost reports whether the announced name is a fully-qualified
+// hostname a remote MTA will accept. RFC 5321 4.1.1.1 requires a FQDN, and a
+// bare name such as "localhost" is rejected by any server that enforces it —
+// producing a 5xx that names *our* identity, not the recipient.
+func usableHeloHost(name string) bool {
+	name = strings.TrimSpace(strings.TrimSuffix(name, "."))
+	if name == "" || strings.EqualFold(name, "localhost") {
+		return false
 	}
-	if c.MailFrom == "" {
-		c.MailFrom = "verify@" + c.HeloHost
+	if strings.ContainsAny(name, " \t\r\n") || !strings.Contains(name, ".") {
+		return false
+	}
+	if strings.HasPrefix(name, ".") || strings.Contains(name, "..") {
+		return false
+	}
+	return true
+}
+
+func (c Config) withDefaults() Config {
+	// No fallback identity. An unset or unusable HeloHost must disable probing
+	// instead of silently announcing a name remote servers reject: a probe made
+	// with a broken identity can only produce false verdicts.
+	if c.MailFrom == "" && usableHeloHost(c.HeloHost) {
+		c.MailFrom = "verify@" + strings.TrimSuffix(strings.TrimSpace(c.HeloHost), ".")
 	}
 	if c.DialTimeout <= 0 {
 		c.DialTimeout = 5 * time.Second
@@ -182,6 +200,14 @@ func (v *SMTPVerifier) Verify(ctx context.Context, email string) Result {
 	res.HasMX = true
 
 	// 3. SMTP RCPT probe against the lowest-preference (highest priority) MX.
+	// Refuse to probe without a usable identity: an unset EMAIL_VERIFY_HELO_HOST
+	// would announce a name remote MTAs reject, and their refusal would be
+	// recorded against the recipient. Unknown is the only honest verdict here.
+	if !usableHeloHost(v.cfg.HeloHost) {
+		res.Status = StatusUnknown
+		res.Reason = "verifier identity not configured: EMAIL_VERIFY_HELO_HOST must be a fully-qualified hostname"
+		return res
+	}
 	probe := v.probe(ctx, hosts[0], localpart, domain)
 	switch probe.outcome {
 	case probeAccepted:
@@ -318,6 +344,23 @@ func (v *SMTPVerifier) probe(ctx context.Context, host, localpart, domain string
 	return probeResult{outcome: probeAccepted, catchAll: controlOutcome == probeAccepted}
 }
 
+// identityRejection reports whether a rejection text blames the connecting
+// client — its HELO/EHLO name, its reverse DNS or its envelope sender — rather
+// than the recipient address.
+func identityRejection(msg string) bool {
+	m := strings.ToLower(msg)
+	for _, marker := range []string{
+		"helo", "ehlo", "reverse", "rdns", "ptr",
+		"fully-qualified", "fully qualified", "sender address rejected",
+		"access denied",
+	} {
+		if strings.Contains(m, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // classifyRcpt maps the error from smtp.Client.Rcpt to a probe outcome. The
 // stdlib surfaces the SMTP reply code on *textproto.Error; 5xx is a hard
 // rejection, 4xx is transient (unknown), and a nil error is acceptance.
@@ -330,6 +373,12 @@ func classifyRcpt(err error) (probeOutcome, string) {
 		code := protoErr.Code
 		switch {
 		case code >= 500 && code < 600:
+			// A 5xx that names our own HELO/sender identity is a statement about
+			// the prober, not the mailbox. Postfix and others defer that refusal
+			// to RCPT, so trusting the code alone marks live addresses invalid.
+			if identityRejection(protoErr.Msg) {
+				return probeUnknown, "prober identity refused (" + strconv.Itoa(code) + "): " + protoErr.Msg
+			}
 			return probeRejected, "recipient rejected (" + strconv.Itoa(code) + "): " + protoErr.Msg
 		case code >= 400 && code < 500:
 			return probeUnknown, "transient/greylisted (" + strconv.Itoa(code) + "): " + protoErr.Msg
