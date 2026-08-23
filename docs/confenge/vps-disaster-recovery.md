@@ -8,6 +8,7 @@
 | Encryption roots | secrets bundle `keys-*.env` (0600) | `KMS_LOCAL_MASTER_KEY`, `CREDENTIALS_ENCRYPTION_KEY`, `AUTH_SECRET`, tokens |
 | Redacted env | `env.redacted` inside archive | Non-secret config snapshot |
 | confenge_ops volume | included indirectly via kill-switch host mirror | Prefer DB governor state |
+| Asaas transport queue | `asaas-events.sqlite3` inside the archive | Online SQLite backup; payload minimized, blocked/dead retained |
 
 **Do not back up:** plaintext Hostinger password, extra-cli datalake, unlimited logs, `node_modules`.
 
@@ -28,7 +29,7 @@ Schedule (example): daily cron under root, after business window.
 
 1. Install Docker stack (`install.sh`, `gen-secrets.sh` **or** restore keys from secrets bundle into `deploy/confenge-vps/.env` mode 0600).
 2. `deploy/confenge-vps/up.sh` until postgres healthy.
-3. `deploy/confenge-vps/restore.sh /path/to/warmbly_dev.sql` (destructive to current DB).
+3. `deploy/confenge-vps/restore.sh /path/to/archive.tar.gz` (destructive to current DB and adapter queue). The script validates the adapter schema and restores it with mode 0600 under a 0700 state directory.
 4. Restart backend/worker: `docker compose ... restart backend worker`.
 5. `deploy/confenge-vps/status.sh`
 6. Confirm mailbox still decrypts (list accounts / trigger IMAP). Do **not** re-enter password unless keys were wrong era.
@@ -69,6 +70,16 @@ deploy/confenge-vps/pause.sh "incident"
 | HOSTINGER IMAP FAIL | Check DNS/firewall; worker logs |
 | EXTRA FEED FAIL/STALE | Check `/opt/confenge-plane` + extra-cli feed generation |
 | OUTCOME LOOP FAIL | Check receptor systemd unit + nginx 8443 proxy |
+| ASAAS ADAPTER UNKNOWN | Check the versioned systemd unit and loopback `:8791`; do not infer provider delivery |
+| Asaas `blocked` / `dead` | Inspect occurrence code/owner/next action, then compare the provider Webhook Log before replay |
+| Asaas queue interrupted | Fix the endpoint first, then reactivate in Asaas; provider events older than 14 days may be irrecoverable |
+
+The Asaas provider retains webhook events for up to 14 days and interrupts a
+queue after 15 consecutive failures. The local queue is therefore recovery
+state, not a cache. Daily backup freshness is exposed by the adapter health
+endpoint. Restore is exercised in isolation by
+`deploy/confenge-vps/asaas-adapter/test_adapter.py`; a production restore still
+requires an operator window and financial reconciliation after restart.
 
 ## Parallel hardening
 

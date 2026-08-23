@@ -46,8 +46,11 @@ Public inbound edge (host nginx, not a new app):
 deploy/confenge-vps/inbound-edge-install.sh
 ```
 
-Only `GET .../inbound/health` and `POST .../inbound` are proxied to
-loopback `:8080`. Handoff: [inbound-edge.md](../../docs/confenge/inbound-edge.md).
+Only `GET .../inbound/health`, `POST .../inbound`,
+`GET .../asaas/health`, and `POST .../asaas` are public. The Asaas route
+terminates on the versioned persist-first adapter at loopback `:8791`; it does
+not create customers, checkouts, subscriptions, or charges. Handoff:
+[inbound-edge.md](../../docs/confenge/inbound-edge.md).
 
 Safety: GREEN autorun OFF, auto-send OFF, WhatsApp OFF, human approval ON.
 Operational pace 10→20/h, daily shell 200. Hostinger plan is **Business Email

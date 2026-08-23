@@ -107,6 +107,20 @@ if [[ "${CONFENGE_SENDING_PAUSED:-false}" == "true" ]]; then
 fi
 pass_fail DISPATCH "$DISPATCH"
 
+# Asaas adapter transport only. This is not proof of payment or revenue.
+ASAAS_HEALTH="$(curl -sS --max-time 5 http://127.0.0.1:8791/api/v1/webhooks/asaas/health 2>/dev/null || true)"
+if printf '%s' "$ASAAS_HEALTH" | grep -q '"schema_version":"confenge.asaas-adapter-health.v1"'; then
+  pass_fail "ASAAS ADAPTER" PASS
+  printf '%s\n' "$ASAAS_HEALTH"
+  if ! python3 "$ROOT/deploy/confenge-vps/asaas-adapter/adapter.py" permissions >/dev/null 2>&1; then
+    pass_fail "ASAAS QUEUE PERMISSIONS" FAIL
+  else
+    pass_fail "ASAAS QUEUE PERMISSIONS" PASS
+  fi
+else
+  pass_fail "ASAAS ADAPTER" UNKNOWN
+fi
+
 # Safety flags (profile must keep these OFF)
 GREEN="${CONFENGE_GREEN_AUTORUN_ENABLED:-false}"
 if [[ "$GREEN" == "true" ]]; then

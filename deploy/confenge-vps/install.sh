@@ -34,6 +34,9 @@ if command -v systemctl >/dev/null; then
   systemctl enable docker >/dev/null 2>&1 || true
 fi
 
+echo "Asaas adapter is versioned but remains unstarted until its protected env is filled."
+echo "Install explicitly with deploy/confenge-vps/asaas-adapter-install.sh."
+
 # UFW: do not open Warmbly ports publicly. Only document.
 if command -v ufw >/dev/null 2>&1; then
   echo "UFW present. Warmbly binds loopback only; do not allow 8080/5173/15432/16379/4222 publicly."

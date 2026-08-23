@@ -1,0 +1,31 @@
+[Unit]
+Description=CONFENGE persist-first Asaas webhook adapter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=confenge-asaas-adapter
+StateDirectoryMode=0700
+EnvironmentFile=/etc/confenge/asaas-adapter.env
+WorkingDirectory=/opt/warmbly-confenge/deploy/confenge-vps/asaas-adapter
+ExecStart=/usr/bin/python3 /opt/warmbly-confenge/deploy/confenge-vps/asaas-adapter/adapter.py serve
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ReadWritePaths=/var/lib/confenge-asaas-adapter
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

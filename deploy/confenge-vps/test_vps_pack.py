@@ -38,6 +38,8 @@ class TestConfengeVpsPack(unittest.TestCase):
             "docker-compose.override.yml",
             "inbound-edge-install.sh",
             "inbound-edge-monitor.sh",
+            "asaas-adapter-install.sh",
+            "asaas-adapter.env.example",
         ]
         for name in required:
             path = PACK / name
@@ -118,6 +120,9 @@ class TestConfengeVpsPack(unittest.TestCase):
         self.assertIn("server_name api.confenge.com.br;", https)
         self.assertIn("location = /api/v1/webhooks/confenge/inbound/health", https)
         self.assertIn("location = /api/v1/webhooks/confenge/inbound {", https)
+        self.assertIn("location = /api/v1/webhooks/asaas {", https)
+        self.assertIn("location = /api/v1/webhooks/asaas/health {", https)
+        self.assertIn("server 127.0.0.1:8791;", params)
         self.assertIn("proxy_pass http://warmbly_loopback;", https)
         self.assertIn("server 127.0.0.1:8080;", params)
         self.assertIn("limit_req zone=confenge_inbound", https)
@@ -150,6 +155,22 @@ class TestConfengeVpsPack(unittest.TestCase):
         self.assertIn("confenge_inbound_replay_total", monitor)
         self.assertIn("public_health_not_ready", monitor)
         self.assertNotIn("CONFENGE_INBOUND_WEBHOOK_SECRET", monitor)
+
+        unit = (PACK / "systemd/confenge-asaas-adapter.service").read_text(encoding="utf-8")
+        self.assertIn("DynamicUser=yes", unit)
+        self.assertIn("StateDirectoryMode=0700", unit)
+        self.assertIn("UMask=0077", unit)
+        self.assertIn("NoNewPrivileges=yes", unit)
+
+    def test_asaas_adapter_is_persist_first_and_backup_aware(self) -> None:
+        source = (PACK / "asaas-adapter/adapter.py").read_text(encoding="utf-8")
+        backup = (PACK / "backup.sh").read_text(encoding="utf-8")
+        restore = (PACK / "restore.sh").read_text(encoding="utf-8")
+        self.assertIn("asaas-access-token", source)
+        self.assertIn("INSERT OR IGNORE INTO events", source)
+        self.assertIn("warmbly_semantic_hold", source)
+        self.assertIn("asaas-events.sqlite3", backup)
+        self.assertIn("asaas-events.sqlite3", restore)
 
         override = (PACK / "docker-compose.override.yml").read_text(encoding="utf-8")
         self.assertIn("TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.1}", override)
