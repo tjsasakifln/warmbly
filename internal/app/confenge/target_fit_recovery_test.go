@@ -90,3 +90,38 @@ func TestCurrentTargetFitOutRemainsHardGenerationGate(t *testing.T) {
 		t.Fatalf("current target-fit OUT must stay blocked, got %v", xerr)
 	}
 }
+
+func TestEnrichmentPendingReturnsToReviewWhenTargetFitRecovers(t *testing.T) {
+	svc, repo, orgID, actorID, touchpointID := targetFitRecoveryFixture(t)
+	tp, _ := repo.GetTouchpoint(context.Background(), orgID, touchpointID)
+	acc := repo.byID[tp.AccountID]
+	acc.TargetFitFresh = false
+	acc.TargetFitEligible = false
+	acc.TargetFitSuppressionReason = TargetFitReasonStale
+	acc.EmailSendReady = false
+	acc.QueueState = models.OutreachQueueTargetFitSuppressed
+
+	pending, xerr := svc.GenerateTouchpointDraft(context.Background(), orgID, actorID, touchpointID)
+	if xerr != nil || pending.State != models.TouchpointEnrichmentPending {
+		t.Fatalf("create recoverable draft: state=%v err=%v", pending, xerr)
+	}
+	acc.TargetFitFresh = true
+	acc.TargetFitEligible = true
+	acc.TargetFitSuppressionReason = ""
+	acc.EmailSendReady = true
+	acc.QueueState = models.OutreachQueueReadyToGenerate
+
+	recovered, xerr := svc.GenerateTouchpointDraft(context.Background(), orgID, actorID, touchpointID)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if recovered.State != models.TouchpointNeedsReview {
+		t.Fatalf("recovered touchpoint must reach human review, got %s", recovered.State)
+	}
+	if recovered.StopReason != "" {
+		t.Fatalf("obsolete enrichment blocker was not cleared: %q", recovered.StopReason)
+	}
+	if recovered.ApprovedBy != nil || recovered.ApprovedContentHash != "" {
+		t.Fatal("recovery must not approve the touchpoint")
+	}
+}

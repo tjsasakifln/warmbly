@@ -1112,6 +1112,9 @@ func main() {
 		// Suboptimal and explicitly rejected copy is recoverable. AI rewrites run
 		// asynchronously and always return to human review.
 		go confenge.NewEditorialRecoveryWorker(confengeServiceForHandler, time.Minute).Run(ctx)
+		// Contact-ready accounts are planned and drafted asynchronously. This
+		// worker has no approval, queueing, scheduling or transport authority.
+		go confenge.NewDraftGenerationWorker(confengeServiceForHandler, 30*time.Second).Run(ctx)
 		// Continuous feed sync (fail-closed OFF by default). Single-flight inside SyncFeedManifest.
 		if confengeCfg.FeedSyncEnabled {
 			if orgRaw := strings.TrimSpace(os.Getenv("CONFENGE_FEED_SYNC_ORG_ID")); orgRaw != "" {
