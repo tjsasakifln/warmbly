@@ -1,0 +1,89 @@
+---
+title: CONFENGE editorial lifecycle
+description: A cohort version is operational only while the composer that wrote its copy is the one the platform ships. Older versions stay readable and are recomposed, never approved.
+---
+
+CONFENGE freezes outbound copy into immutable cohort versions. A frozen version records what one composer wrote at one moment, so the question a version number cannot answer is whether that text is still the text the platform would write today. Editorial authority answers that question in a single place, and every approve, authorize, queue and transport path asks it instead of comparing version strings on its own.
+
+## Two editorial states
+
+Every frozen artifact carries an editorial state: the cohort version, each candidate inside it, and each review draft.
+
+| State | Meaning |
+|-------|---------|
+| `CURRENT` | The composer and policy this build ships produced the copy. It can still be reviewed, approved, authorized, queued and sent. |
+| `LEGACY_SUPERSEDED` | An earlier composer or policy wrote it. It stays readable for audit and is refused by every operational path. |
+
+The same verdict is exposed as a boolean (`actionable`) so an interface never has to compare composer strings itself. Superseded artifacts also carry reason codes and a notice that must be shown above the text before the reader judges it:
+
+```json
+{
+  "editorial_state": "LEGACY_SUPERSEDED",
+  "actionable": false,
+  "editorial_reason_codes": ["composer_superseded"],
+  "editorial_notice": "Versão histórica, mantida apenas para auditoria. Não é enviável e não aceita aprovação."
+}
+```
+
+Evaluation fails closed. Copy with no composer stamp is treated as superseded, because nothing in it proves the current composer wrote it.
+
+## Reason codes
+
+| Code | Meaning |
+|------|---------|
+| `composer_superseded` | The stamped composer is not the one this build ships. |
+| `composer_unstamped` | The artifact carries no composer stamp at all, so authorship cannot be proven. |
+| `policy_superseded` | The stamped bounded-cohort policy version is not the current one. |
+
+A cohort artifact stamps both a composer and the bounded-cohort policy, and both are checked. A draft or touchpoint is identified by its `prompt_version`, which is the composer that wrote the text. The cadence policy stamped on a touchpoint is a schedule rather than a composer, so it is deliberately not read here.
+
+A version is current only when the version stamp and every member stamp are current. A member left behind by a partial recompose cannot ride under a current header.
+
+## What legacy copy can and cannot do
+
+| Action | `CURRENT` | `LEGACY_SUPERSEDED` |
+|--------|-----------|---------------------|
+| Read the version, its candidates and its audit trail | Allowed | Allowed |
+| `HOLD` or `REJECT` a candidate | Allowed | Allowed, so a reviewer can close an old version out |
+| `APPROVE` a candidate | Allowed | Refused with `409` |
+| `GO` on the cohort | Allowed | Blocked, and the reason codes appear in the version blockers |
+| Approve or queue a touchpoint | Allowed | Refused with `409` |
+| Transport and send | Allowed | Refused at the transport gate |
+| Recompose into version N+1 | Allowed | Allowed, and it is the only way forward |
+
+The transport check is absolute rather than relative. A send grant and the copy it authorizes can agree with each other and still both be the work of a composer this build no longer ships, so the grant is compared against the current composer and policy, not against the copy.
+
+Nothing is deleted when a version becomes legacy. The version, its candidates, its decisions and its receipts stay queryable, which is what makes the refusal safe: history remains auditable and only its ability to act is removed.
+
+## Recompose is the way forward
+
+`POST /confenge/cohorts/:id/recompose` creates version N+1 of the same cohort with the current composer. It never mutates the parent.
+
+The composer reads each member's own preserved fact, so recipient, mailbox, account, route class, evidence, provenance and source must survive byte-identical. Anything else is drift, and the whole operation is refused with `recompose_drift` instead of being stored. Re-reading upstream would be a new cohort, not a recompose.
+
+The request carries no copy. It requires an `Idempotency-Key`, a reason, a `confirmation` naming the version being recomposed (for example `v1`), and the `expected_frozen_hash` of that version. Canonical source evidence must still be `FRESH`: recompose rewrites copy, it cannot refresh evidence.
+
+Version N+1 is born with no validation, no review, no approval and no `GO`. It queues nothing, dispatches nothing, sends nothing and resumes nothing. Every decision is taken again on the new version.
+
+The response includes a report of what the composer kept, dropped and rewrote: `parent_members`, `kept_members`, `excluded_members`, `exclusions`, `by_reason_code`, `composer_before` and `composer_after`. Each member passes editorial QA again, so a member whose rewritten copy fails is excluded with its reason code rather than carried forward, and corpus QA still refuses survivors that read as the same mail merge as a neighbour.
+
+## Two editorial QA refusals worth knowing
+
+Editorial QA gained two deterministic checks that mostly show up as recompose exclusions:
+
+| Code | What it refuses |
+|------|-----------------|
+| `generic_cta` | The paragraph carrying the closing question neither says in the first person what the sender does nor shares a word with the observed public fact. A routing ask that does neither is copy that fits any company in the corpus. |
+| `personalization_without_fact` | Observation language ("Vi que", "Notei", "Reparei") is used while the message carries no observed fact. Observation language is a factual claim, so with no record behind it the mail asserts something the system cannot evidence. |
+
+## Where the state travels in the API
+
+- `GET /confenge/cohorts/:id` returns `editorial_state`, `actionable`, `editorial_reason_codes` and `editorial_notice` for the version, plus `is_current_version`, `current_version` and `current_version_id` so the reader can open the version that is still live. A superseded version also lists `superseded_by_version` among its reasons.
+- Each candidate in that version carries `editorial_state`, `actionable` and `editorial_reason_codes`, and superseded candidates list the same codes in `blocked_by`.
+- `GET /confenge/review/drafts` returns `editorial_state`, `editorial_actionable`, `editorial_reason_codes`, `editorial_notice`, `composer_version` and `prompt_version` per row, alongside the judging context the reviewer needs on the same request: `route_class`, `fact_source` and `target_fit`. Beside superseded copy `composer_version` is left empty on purpose, because naming the current composer there would read as if it wrote the text.
+
+## See also
+
+- [CONFENGE outreach staging](/guides/confenge-outreach/)
+- [Error codes](/api/error-codes/)
+- [Endpoint scope map](/api/endpoints/)

@@ -72,6 +72,8 @@ Cadence uses a versioned policy (`confenge.cadence.v1`): initial touch plus spac
 
 Dominant stops: `DO_NOT_CONTACT`, opt-out, bounce, and human reply cancel open future touches atomically. Reimport does not reactivate `SENT` or `DNC` touchpoints.
 
+Approval is also bounded in time, not only in scope. Frozen copy can be approved, authorized, queued and sent only while the composer that wrote it is the one the platform ships. Copy from an earlier composer becomes `LEGACY_SUPERSEDED`: readable for audit, refused by every operational path, and moved forward by recomposing the cohort into a new version. See [CONFENGE editorial lifecycle](/guides/confenge-editorial-lifecycle/).
+
 ## Import
 
 `POST /api/v1/confenge/import` accepts:
@@ -136,7 +138,11 @@ Target-fit is updated only by a current authoritative decision. A downgrade take
 | `POST /confenge/import` | Dry-run or apply feed |
 | `GET /confenge/import-runs` | Import audit history |
 | `GET /confenge/touchpoints/review` | Human review queue, including recoverable editorial states |
-| `GET /confenge/review/drafts` | Control Center review alias with exact content hashes |
+| `GET /confenge/review/drafts` | Control Center review alias with exact content hashes and the editorial verdict per row |
+| `GET /confenge/cohorts/:id` | One immutable cohort version, its candidates, and its editorial state |
+| `POST /confenge/cohorts/:id/candidates/:candidateId/review` | Human `APPROVE`, `HOLD` or `REJECT` on one candidate |
+| `POST /confenge/cohorts/:id/recompose` | Fork version N+1 with the current composer; inherits no approval and no `GO` |
+| `POST /confenge/cohorts/:id/decision` | `GO` or `NO_GO` on the version |
 | `GET /confenge/accounts/:id/touchpoints` | Account touch timeline |
 | `POST /confenge/accounts/:id/plan` | Plan cadence chain |
 | `POST /confenge/pilot/cohort/prepare` | Prepare up to 30 selected accounts with one explicit result per account |

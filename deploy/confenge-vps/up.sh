@@ -19,6 +19,14 @@ export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-warmbly-confenge}"
 # Fail closed on unsafe profile flips
 # shellcheck disable=SC1090
 set -a; . "$ENVF"; set +a
+# The image has to be able to prove which commit built it. Derive it from the
+# checkout so an operator cannot forget to pass it; an explicit value still wins.
+if [[ -z "${WARMBLY_RELEASE_SHA:-}" || "${WARMBLY_RELEASE_SHA}" == "local" ]]; then
+  WARMBLY_RELEASE_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo local)"
+fi
+export WARMBLY_RELEASE_SHA
+echo "Release SHA for this build: ${WARMBLY_RELEASE_SHA}"
+
 if [[ "${CONFENGE_GREEN_AUTORUN_ENABLED:-false}" == "true" ]]; then
   echo "REFUSE: CONFENGE_GREEN_AUTORUN_ENABLED=true is not allowed on VPS execution plane bootstrap" >&2
   exit 3

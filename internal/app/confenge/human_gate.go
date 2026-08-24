@@ -64,6 +64,11 @@ type HumanGateCandidate struct {
 	Validation *HumanGateValidation `json:"validation"`
 	Review     *HumanGateReview     `json:"review"`
 	BlockedBy  []string             `json:"blocked_by"`
+	// Editorial authority projection, so a renderer never has to compare
+	// composer strings itself to know whether this text is still operable.
+	EditorialState       string   `json:"editorial_state"`
+	Actionable           bool     `json:"actionable"`
+	EditorialReasonCodes []string `json:"editorial_reason_codes"`
 }
 
 type HumanGateDecision struct {
@@ -103,6 +108,16 @@ type HumanGateCohort struct {
 	Receipt          string               `json:"receipt"`
 	OperationReceipt string               `json:"-"`
 	CreatedAt        time.Time            `json:"created_at"`
+	// Editorial authority projection. The founder must be able to tell a
+	// current version from history without reading a version number, and must
+	// be handed the current version to open instead.
+	EditorialState       string     `json:"editorial_state"`
+	Actionable           bool       `json:"actionable"`
+	EditorialReasonCodes []string   `json:"editorial_reason_codes"`
+	EditorialNotice      string     `json:"editorial_notice,omitempty"`
+	IsCurrentVersion     bool       `json:"is_current_version"`
+	CurrentVersion       int        `json:"current_version"`
+	CurrentVersionID     *uuid.UUID `json:"current_version_id,omitempty"`
 }
 
 type HumanGateReviewInput struct {
@@ -393,8 +408,14 @@ func (s *service) GetHumanGateCohort(ctx context.Context, orgID, id uuid.UUID, n
 				c.Review.InvalidatedBy = append(c.Review.InvalidatedBy, liveReasons...)
 			}
 		}
+		ca := EvaluateCohortEditorialAuthority(m.ComposerVersion, v.PolicyVersion)
+		c.EditorialState, c.Actionable, c.EditorialReasonCodes = ca.State, ca.Actionable, ca.ReasonCodes
+		if !ca.Actionable {
+			c.BlockedBy = append(c.BlockedBy, ca.ReasonCodes...)
+		}
 		v.Candidates = append(v.Candidates, c)
 	}
+	s.projectHumanGateEditorialAuthority(ctx, orgID, v)
 	v.Decision = s.latestHumanGateDecision(ctx, orgID, id)
 	if v.Decision != nil && v.Decision.Decision == "GO" {
 		if blockers := humanGateDecisionBlockers(v); len(blockers) > 0 {
@@ -406,6 +427,34 @@ func (s *service) GetHumanGateCohort(ctx context.Context, orgID, id uuid.UUID, n
 		}
 	}
 	return v, nil
+}
+
+// projectHumanGateEditorialAuthority stamps the version-level verdict and, when
+// the version is history, names the version the founder should open instead.
+func (s *service) projectHumanGateEditorialAuthority(ctx context.Context, orgID uuid.UUID, v *HumanGateCohort) {
+	auth := SnapshotEditorialAuthority(&v.Manifest)
+	v.EditorialState, v.Actionable = auth.State, auth.Actionable
+	v.EditorialReasonCodes, v.EditorialNotice = auth.ReasonCodes, auth.Notice
+	if !auth.Actionable {
+		v.Reason = append(v.Reason, auth.ReasonCodes...)
+	}
+	v.CurrentVersion = v.Version
+	v.IsCurrentVersion = true
+	var latestID uuid.UUID
+	var latest int
+	err := s.humanGateDB.QueryRow(ctx,
+		`SELECT id,version FROM confenge_cohort_versions WHERE organization_id=$1 AND cohort_id=$2 ORDER BY version DESC LIMIT 1`,
+		orgID, v.CohortID).Scan(&latestID, &latest)
+	if err != nil {
+		return
+	}
+	v.CurrentVersion = latest
+	v.IsCurrentVersion = latest == v.Version
+	if !v.IsCurrentVersion {
+		id := latestID
+		v.CurrentVersionID = &id
+		v.Reason = append(v.Reason, "superseded_by_version")
+	}
 }
 
 func humanGateLiveInvalidations(m FrozenCohortMember, live CohortAccountInput, known bool) []string {
@@ -600,6 +649,17 @@ func (s *service) ReviewHumanGateCandidate(ctx context.Context, orgID, actorID, 
 	if c == nil {
 		return nil, humanGateError(errx.NotFound, "candidate_not_found", "candidate is not in this immutable version")
 	}
+	if in.Decision == "APPROVE" {
+		// History is readable, never approvable. HOLD and REJECT stay open so a
+		// reviewer can still close an old version out.
+		stamped := c.ComposerVersion
+		if ComposerSuperseded(v.Manifest.ComposerVersion) {
+			stamped = v.Manifest.ComposerVersion
+		}
+		if auth := EvaluateCohortEditorialAuthority(stamped, v.PolicyVersion); !auth.Actionable {
+			return nil, humanGateError(errx.Conflict, ReasonComposerSuperseded, auth.Blocker("APPROVE"))
+		}
+	}
 	if in.Decision == "APPROVE" && v.PolicyVersion != BoundedCohortPolicyV1 {
 		return nil, humanGateError(errx.Conflict, "policy_drift", "APPROVE requires a cohort created under the current policy version")
 	}
@@ -752,6 +812,12 @@ func humanGateDecisionBlockers(v *HumanGateCohort) []string {
 	blocked := []string{}
 	if v == nil || len(v.Candidates) == 0 {
 		blocked = append(blocked, "cohort_empty")
+	}
+	// GO mints send authority, so it is refused outright on superseded copy.
+	if v != nil {
+		if auth := SnapshotEditorialAuthority(&v.Manifest); !auth.Actionable {
+			blocked = append(blocked, auth.ReasonCodes...)
+		}
 	}
 	if v == nil || v.Freshness != "FRESH" {
 		blocked = append(blocked, "source_evidence_stale")

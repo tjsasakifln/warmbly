@@ -149,6 +149,11 @@ func BuildMessageBrief(acc *models.OutreachAccount, cand *models.OutreachContact
 		return b
 	}
 	b.Company = editorialCompanyName(acc)
+	if b.Company == "" && strings.TrimSpace(firstNonEmpty(acc.NomeFantasia, acc.RazaoSocial)) != "" {
+		// The account has a name and it is unsayable; enrichment, not copy.
+		b.ReasonCodes = append(b.ReasonCodes, "company_name_unusable")
+		return b
+	}
 	b.Practice = practiceForAccount(acc)
 
 	// Only a proven person may be named, and only on a direct-person route.
@@ -168,6 +173,14 @@ func BuildMessageBrief(acc *models.OutreachAccount, cand *models.OutreachContact
 
 	b.Fact = DigestPublicFact(firstNonEmpty(acc.FactToMention, acc.MomentSummary))
 	if b.Fact.Phrase == "" {
+		// Our own earlier sentence is not evidence. Falling back on it would let
+		// a recompose launder its own output as a public record.
+		for _, r := range b.Fact.Reasons {
+			if r == "fact_is_composed_prose" {
+				b.ReasonCodes = append(b.ReasonCodes, r)
+				return b
+			}
+		}
 		// Tier B keeps the lead alive without laundering a missing procurement
 		// record into a claim. Target-fit/imported company identity is enough to
 		// ask a short routing question about contracts of engineering.
@@ -185,10 +198,29 @@ func BuildMessageBrief(acc *models.OutreachAccount, cand *models.OutreachContact
 	return b
 }
 
-// editorialCompanyName picks the readable trade name and drops legal form.
+// registryTailWords are the activity nouns a registry appends to a brand. A
+// person drops them and says the brand: "Inplenitus", not the whole entry.
+var registryTailWords = map[string]bool{
+	"projetos": true, "projeto": true, "gerenciamento": true,
+	"fiscalizacao": true, "consultoria": true, "assessoria": true,
+	"servicos": true, "servico": true, "empreendimentos": true,
+	"participacoes": true, "incorporacoes": true, "construcoes": true,
+	"montagens": true, "instalacoes": true, "representacoes": true,
+	"comercio": true, "industria": true, "terraplenagem": true,
+	"transportes": true, "locacoes": true, "obras": true, "sistemas": true,
+	"solucoes": true, "planejamento": true, "manutencao": true,
+}
+
+// editorialCompanyName picks the readable trade name and drops legal form. It
+// returns empty when the registry entry cannot be spoken, which refuses the
+// message rather than putting a cut name in front of a reader.
 func editorialCompanyName(acc *models.OutreachAccount) string {
 	name := firstNonEmpty(acc.NomeFantasia, acc.RazaoSocial)
 	name = stripLegalVocative(strings.TrimSpace(name))
+	if name == "" {
+		return ""
+	}
+	name = shortTradingName(name)
 	if name == "" {
 		return ""
 	}
@@ -200,7 +232,35 @@ func editorialCompanyName(acc *models.OutreachAccount) string {
 			return titleWordPT(w)
 		}), " ")
 	}
-	return strings.TrimSpace(name)
+	name = strings.TrimSpace(name)
+	// A registry field cut at its width limit ends mid word; never say it.
+	if truncatedWordIn(name) {
+		return ""
+	}
+	return name
+}
+
+// shortTradingName reduces a registry entry to the brand a person says out
+// loud, dropping the enumerated activities the registry appends to it.
+func shortTradingName(name string) string {
+	if i := strings.IndexAny(name, ",;/"); i > 0 {
+		if head := strings.TrimSpace(name[:i]); head != "" {
+			name = head
+		}
+	}
+	fields := strings.Fields(name)
+	for len(fields) > 1 {
+		last := foldASCII(strings.ToLower(strings.Trim(fields[len(fields)-1], ".")))
+		if !registryTailWords[last] && !prepositionsPT[last] {
+			break
+		}
+		fields = fields[:len(fields)-1]
+	}
+	// Nobody says a five word company name in a first sentence.
+	if len(fields) > 4 {
+		fields = fields[:4]
+	}
+	return strings.Join(fields, " ")
 }
 
 func mapFields(in []string, f func(string) string) []string {

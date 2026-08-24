@@ -206,7 +206,10 @@ func cleanEditorialBody() string {
 // everything, which would be an equally broken gate.
 func TestCleanEditorialBodyPasses(t *testing.T) {
 	codes := EditorialQA("Ponte sobre o Rio Sapucaí", cleanEditorialBody(), EditorialQAContext{
-		RouteClass:      RouteClassGenericCompany,
+		RouteClass: RouteClassGenericCompany,
+		// The body says "Vi uma contratação". The record it saw travels with it,
+		// because a claim to have observed something is only clean with evidence.
+		RawFact:         liveV1RawFact,
 		SenderFirstName: "Tiago",
 	})
 	if len(codes) > 0 {

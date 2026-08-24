@@ -49,8 +49,8 @@ func TestHumanGateGOBlockersCoverEmptyStaleValidationAndLateState(t *testing.T) 
 	candidateID := uuid.New()
 	approved := &HumanGateReview{Decision: "APPROVE", Effective: true}
 	for _, status := range []string{"RISKY", "INVALID", "UNKNOWN", "STALE"} {
-		cohort := &HumanGateCohort{Freshness: "FRESH", Candidates: []HumanGateCandidate{{
-			FrozenCohortMember: FrozenCohortMember{CandidateID: candidateID},
+		cohort := &HumanGateCohort{Freshness: "FRESH", Manifest: currentComposerManifest(), Candidates: []HumanGateCandidate{{
+			FrozenCohortMember: FrozenCohortMember{CandidateID: candidateID, ComposerVersion: ComposerVersion},
 			Validation:         &HumanGateValidation{Status: status},
 			Review:             approved,
 		}}}
@@ -61,8 +61,8 @@ func TestHumanGateGOBlockersCoverEmptyStaleValidationAndLateState(t *testing.T) 
 	if got := humanGateDecisionBlockers(&HumanGateCohort{Freshness: "STALE"}); !slices.Contains(got, "cohort_empty") || !slices.Contains(got, "source_evidence_stale") {
 		t.Fatalf("empty stale cohort must report both blockers: %v", got)
 	}
-	validButSuppressed := &HumanGateCohort{Freshness: "FRESH", Candidates: []HumanGateCandidate{{
-		FrozenCohortMember: FrozenCohortMember{CandidateID: candidateID},
+	validButSuppressed := &HumanGateCohort{Freshness: "FRESH", Manifest: currentComposerManifest(), Candidates: []HumanGateCandidate{{
+		FrozenCohortMember: FrozenCohortMember{CandidateID: candidateID, ComposerVersion: ComposerVersion},
 		Validation:         &HumanGateValidation{Status: "VALID"},
 		Review:             approved,
 		BlockedBy:          []string{"late_recipient_suppression"},
@@ -181,4 +181,10 @@ func TestHumanGateValidApprovalRemainsEffectiveAndHoldNeverDoes(t *testing.T) {
 			t.Fatalf("%s effective=%v", decision, r.Effective)
 		}
 	}
+}
+
+// currentComposerManifest is a manifest stamped by the composer this build
+// ships, so a test about some other blocker is not refused for copy age.
+func currentComposerManifest() FrozenCohortSnapshot {
+	return FrozenCohortSnapshot{ComposerVersion: ComposerVersion, PolicyVersion: BoundedCohortPolicyV1}
 }

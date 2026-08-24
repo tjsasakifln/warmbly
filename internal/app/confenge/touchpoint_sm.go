@@ -230,6 +230,11 @@ func CanTransportCohort(tp *models.OutreachTouchpoint, auth *BoundedCohortAuthor
 	if auth == nil || auth.ID == uuid.Nil || auth.ID != *tp.CampaignPolicyAuthorizationID {
 		return fmt.Errorf("bounded cohort grant missing at transport")
 	}
+	// Absolute, not relative: a grant and its copy can agree with each other and
+	// still both be the work of a composer this build no longer ships.
+	if a := EvaluateCohortEditorialAuthority(auth.ComposerVersion, auth.PolicyVersion); !a.Actionable {
+		return fmt.Errorf("%s", a.Blocker("TRANSPORT"))
+	}
 	if strings.TrimSpace(tp.AuthorizationPolicyHash) == "" || tp.AuthorizationPolicyHash != auth.FrozenHash() {
 		return fmt.Errorf("bounded cohort hash mismatch")
 	}

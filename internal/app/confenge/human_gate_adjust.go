@@ -394,7 +394,7 @@ func (s *service) humanGateCommitAdjust(ctx context.Context, orgID, actorID, ver
 		return uuid.Nil, 0, nil, humanGateError(errx.Conflict, "version_superseded", fmt.Sprintf("version %d is no longer the latest version of this cohort (latest is %d); re-read it before adjusting", lockedVersion, maxVersion))
 	}
 
-	revoked, x := humanGateRevokePriorAuthority(ctx, tx, orgID, actorID, versionID, adjustment.reason)
+	revoked, x := humanGateRevokePriorAuthority(ctx, tx, orgID, actorID, versionID, "human_gate_adjust:"+adjustment.reason)
 	if x != nil {
 		return uuid.Nil, 0, nil, x
 	}
@@ -449,6 +449,8 @@ func humanGateAdjustWriteError(err error, id, message string) *errx.Error {
 	return humanGateError(errx.Internal, id, message)
 }
 
+// The reason is stored verbatim, so the caller names the operation: a recompose
+// must not be filed in the audit trail as an adjust.
 // humanGateRevokePriorAuthority revokes, inside the caller's transaction, any
 // live bounded authority the parent version carries. There must never be two
 // valid authorities over the same cohort. If the authority cannot be proven
@@ -491,7 +493,7 @@ func humanGateRevokePriorAuthority(ctx context.Context, tx pgx.Tx, orgID, actorI
 	}
 	tag, err := tx.Exec(ctx, `UPDATE confenge_bounded_cohort_authorizations
 		SET revoked_at=$2, revoke_actor=$3, revoke_reason=$4, updated_at=$2
-		WHERE id=$1 AND organization_id=$5 AND revoked_at IS NULL`, *authorizationID, now, actorID, "human_gate_adjust:"+reason, orgID)
+		WHERE id=$1 AND organization_id=$5 AND revoked_at IS NULL`, *authorizationID, now, actorID, reason, orgID)
 	if err != nil || tag.RowsAffected() != 1 {
 		return nil, humanGateError(errx.Conflict, "authority_active", "the prior version's authorization could not be atomically revoked; revoke it explicitly, then adjust")
 	}
