@@ -3,6 +3,7 @@ package confenge
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -246,6 +247,92 @@ func TestRestartPreservesStates(t *testing.T) {
 	r, x := svc2.GetTouchpoint(context.Background(), org, list[0].ID)
 	if x != nil || r.State != models.TouchpointNeedsReview || r.BodyText == "" {
 		t.Fatal("restart")
+	}
+}
+
+func TestPlanSupersedesOnlyRecoverableCancelledCadence(t *testing.T) {
+	repo := newMemRepo()
+	svc := testSvc(repo).(*service)
+	org, user := uuid.New(), uuid.New()
+	acc := &models.OutreachAccount{
+		ID: uuid.New(), OrganizationID: org, CNPJ14: "12345678000144",
+		RazaoSocial: "Empresa", QueueState: models.OutreachQueueReadyToGenerate,
+		SourceLeadID: "L-recovery", ServiceCode: "ADITIVOS",
+		FactToMention:     "termo aditivo 1 ao contrato 88/2021 publicado",
+		MomentEvidenceIDs: []string{"ev-recovery"},
+	}
+	_, _ = repo.UpsertAccount(context.Background(), acc)
+	cand := &models.OutreachContactCandidate{
+		ID: uuid.New(), OrganizationID: org, AccountID: acc.ID,
+		Email: "contato@empresa.com.br", VerificationStatus: models.OutreachVerifyOfficialSource,
+	}
+	applyValidatedIdentity(cand)
+	_, _ = repo.UpsertCandidate(context.Background(), cand)
+	_, _ = repo.UpsertEvidence(context.Background(), &models.OutreachEvidence{
+		OrganizationID: org, AccountID: acc.ID, SourceEvidenceID: "ev-recovery",
+		Synthesis: acc.FactToMention, EpistemicClass: models.OutreachEpistemicConfirmedFact,
+	})
+	cancelledAt := time.Now().UTC().Add(-time.Hour)
+	oldIDs := map[uuid.UUID]bool{}
+	for ordinal := 1; ordinal <= len(CadencePolicyV1()); ordinal++ {
+		old := &models.OutreachTouchpoint{
+			ID: uuid.New(), OrganizationID: org, AccountID: acc.ID, Ordinal: ordinal,
+			Channel: models.OutreachChannelEmail, State: models.TouchpointCancelled,
+			StopReason: StopComposerStale, UpdatedAt: cancelledAt,
+			IdempotencyKey: "legacy-cadence:" + uuid.NewString(),
+		}
+		oldIDs[old.ID] = true
+		_ = repo.InsertTouchpoint(context.Background(), old)
+	}
+
+	planned, xerr := svc.PlanAccountCadence(context.Background(), org, user, acc.ID, &cand.ID, models.OutreachChannelEmail)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if len(planned) != len(CadencePolicyV1()) || planned[0].State != models.TouchpointDue {
+		t.Fatalf("recoverable cadence was not replanned: %+v", planned)
+	}
+	for _, tp := range planned {
+		if oldIDs[tp.ID] || !strings.Contains(tp.IdempotencyKey, ":recovery:"+PromptVersion+":") {
+			t.Fatalf("cancelled history was reused instead of superseded: %+v", tp)
+		}
+	}
+	again, xerr := svc.PlanAccountCadence(context.Background(), org, user, acc.ID, &cand.ID, models.OutreachChannelEmail)
+	if xerr != nil {
+		t.Fatalf("recovery plan is not idempotent: %+v err=%v", again, xerr)
+	}
+	foundPlannedDue := false
+	for _, tp := range again {
+		if tp.ID == planned[0].ID && tp.State == models.TouchpointDue {
+			foundPlannedDue = true
+			break
+		}
+	}
+	all, _ := repo.ListTouchpoints(context.Background(), org, acc.ID, "", 50, 0)
+	if !foundPlannedDue || len(all) != 2*len(CadencePolicyV1()) {
+		t.Fatalf("recovery plan duplicated or lost the active cadence: %+v all=%+v", again, all)
+	}
+}
+
+func TestPlanDoesNotRecoverHumanRejectedCadence(t *testing.T) {
+	repo := newMemRepo()
+	svc := testSvc(repo).(*service)
+	org, user := uuid.New(), uuid.New()
+	acc := &models.OutreachAccount{
+		ID: uuid.New(), OrganizationID: org, CNPJ14: "12345678000133",
+		RazaoSocial: "Empresa", QueueState: models.OutreachQueueReadyToGenerate, SourceLeadID: "L-rejected",
+	}
+	_, _ = repo.UpsertAccount(context.Background(), acc)
+	rejected := &models.OutreachTouchpoint{
+		ID: uuid.New(), OrganizationID: org, AccountID: acc.ID, Ordinal: 1,
+		Channel: models.OutreachChannelEmail, State: models.TouchpointRejected,
+		StopReason: "human_rejected", IdempotencyKey: "human-rejected",
+	}
+	_ = repo.InsertTouchpoint(context.Background(), rejected)
+
+	planned, xerr := svc.PlanAccountCadence(context.Background(), org, user, acc.ID, nil, models.OutreachChannelEmail)
+	if xerr != nil || len(planned) != 1 || planned[0].ID != rejected.ID || planned[0].State != models.TouchpointRejected {
+		t.Fatalf("human rejection was silently replanned: %+v err=%v", planned, xerr)
 	}
 }
 
