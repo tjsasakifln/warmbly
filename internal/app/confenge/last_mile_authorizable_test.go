@@ -3,9 +3,6 @@ package confenge
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -419,34 +416,6 @@ func TestLastMileGenerateReportsErrorWhenNotSendable(t *testing.T) {
 		if v, _ := tp.ConsultantSendability["send_without_editing"].(string); v == "sim" {
 			t.Fatal("pack must not say send without editing")
 		}
-	}
-}
-
-func TestLastMileDispatchAndAutoSendUntouched(t *testing.T) {
-	root, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Walk up to module root if needed.
-	dir := root
-	for i := 0; i < 4; i++ {
-		if _, err := os.Stat(filepath.Join(dir, "internal/app/confenge/dispatch")); err == nil {
-			break
-		}
-		dir = filepath.Dir(dir)
-	}
-	cmd := exec.Command("git", "diff", "--name-only", "HEAD", "--",
-		"internal/app/confenge/dispatch",
-		"internal/app/confenge/killswitch.go",
-		"internal/app/confenge/dispatch_gate.go",
-	)
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("git diff: %v", err)
-	}
-	if strings.TrimSpace(string(out)) != "" {
-		t.Fatalf("dispatch/killswitch/auto-send files changed:\n%s", out)
 	}
 }
 

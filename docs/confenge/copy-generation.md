@@ -12,6 +12,7 @@ There is **no research** in this path: the model receives structured JSON and re
 | `confenge.draft.v3` | Strategy-first composition (`OutreachStrategy`), doctrine `confenge-outreach-v1`, micro-offers, doctrine QA |
 | `confenge.draft.v4` | Messageability gate + outbound-safe plan (`confenge.composer.v2`, doctrine `confenge-outreach-v2`). Internal strategy fields are never interpolated. Unsent prior-version drafts must be regenerated. |
 | `confenge.draft.v5` | Authorizable NEEDS_REVIEW. Renderer reads only `RecipientFacingCopy`. `validation_ok` means only human authorization remains. P0 hard QA: leak phrases, crédito frame, near-dup, stale composer, dumps, empty copy, missing CTA `?`. |
+| `confenge.draft.v6` | Semantic brief first, written event subjects, safe company-context fallback when a specific fact is absent, deterministic editorial QA, and bounded AI rewrite recovery. Suboptimal copy remains recoverable and always returns to human review. |
 
 Constant: `internal/app/confenge/validators.go` → `PromptVersion`.
 Doctrine: `OutreachDoctrineVersion` + `internal/app/confenge/outreach_playbook/`.

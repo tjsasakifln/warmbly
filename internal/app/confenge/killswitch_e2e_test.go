@@ -13,7 +13,7 @@ import (
 )
 
 // TestKillSwitchE2EBlocksEnrollQueueAndFinalGate drives the shipped pause path
-// twice. Both runs must refuse new send jobs with a paused/deferred reason.
+// twice. Approval scheduling remains durable while transport stays blocked.
 func TestKillSwitchE2EBlocksEnrollQueueAndFinalGate(t *testing.T) {
 	for i := 1; i <= 2; i++ {
 		if err := runKillSwitchE2E(t, i); err != nil {
@@ -81,14 +81,12 @@ func runKillSwitchE2E(t *testing.T, run int) error {
 		return err
 	}
 
-	if _, xerr := svc.QueueTouchpoint(ctx, org, user, tp.ID); xerr == nil {
-		t.Fatalf("run %d: queue must refuse while paused", run)
-	} else if !containsFold(xerr.Message, "paused") {
-		t.Fatalf("run %d: queue reason %q want paused", run, xerr.Message)
+	if _, xerr := svc.QueueTouchpoint(ctx, org, user, tp.ID); xerr != nil {
+		t.Fatalf("run %d: approval must remain schedulable while transport is paused: %v", run, xerr)
 	}
 	stored, _ := repo.GetTouchpoint(ctx, org, tp.ID)
-	if stored.State != models.TouchpointApproved {
-		t.Fatalf("run %d: pause must preserve approval state=%s", run, stored.State)
+	if stored.State != models.TouchpointQueued {
+		t.Fatalf("run %d: approval must enter durable queue, state=%s", run, stored.State)
 	}
 
 	if _, xerr := svc.EnrollDraft(ctx, org, user, d.ID); xerr == nil {

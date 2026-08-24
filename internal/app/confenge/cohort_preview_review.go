@@ -2,7 +2,6 @@ package confenge
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -19,9 +18,8 @@ const (
 	// The authorization stays cohort-bounded, so this is a judgement aid, not a
 	// per-message approval queue.
 	DefaultPreviewSamplesPerClass = 2
-	// DefaultPreviewFullBodies is small on purpose: a raw enum or a pasted
-	// database row is usually only visible in the whole message, and two or
-	// three whole messages are still readable in one sitting.
+	// DefaultPreviewFullBodies is kept for CLI compatibility only. Every sampled
+	// member now renders its whole body, so this bounds nothing.
 	DefaultPreviewFullBodies = 2
 )
 
@@ -29,7 +27,9 @@ const (
 // what was admitted; the frozen snapshot is already decided by the time it runs.
 type CohortPreviewOptions struct {
 	SamplesPerClass int
-	FullBodies      int
+	// FullBodies is accepted for CLI compatibility and controls nothing: every
+	// sampled member's whole body is always rendered.
+	FullBodies int
 	// ShowMailbox reveals the real destination address. Default off, because the
 	// same rendered text ends up in aggregated logs; a founder deciding whether
 	// to authorize a send legitimately needs the real address and asks for it.
@@ -76,11 +76,16 @@ func absentDate(t *time.Time) string {
 // QA alone; the target-fit, moment and priority values below are evidence the
 // feed carried, not gates this path applied, so they are labelled feed_* and are
 // never presented as the reason the account got in.
+//
+// copy_qa names the gate that actually ran. Cohort v1 asserted a bare
+// "copy_qa=passed" next to copy carrying ",." and a repeated three-word run,
+// so the label now records which gate cleared the member.
 func admissionEvidence(acc *models.OutreachAccount, class string) []string {
 	out := []string{
 		"admitted_by=controlled_route_eligible",
 		"route_class=" + orAbsent(class),
-		"copy_qa=passed",
+		"copy_qa=passed_editorial_gate",
+		"composer=" + ComposerVersion,
 	}
 	if acc == nil {
 		return append(out, "feed_target_fit="+previewAbsent, "feed_moment="+previewAbsent, "feed_priority="+previewAbsent)
@@ -218,74 +223,6 @@ func sampleMailbox(s CohortClassSample, show bool) string {
 		return orAbsent(s.Mailbox)
 	}
 	return orAbsent(s.RedactedMailbox)
-}
-
-// writeFounderSamples renders what the founder is actually being asked to judge:
-// the wrong company, strange copy, a raw enum in prose, a pasted database row, a
-// personalization that was never observed, a fact that should not be said out
-// loud. Counts and hashes cannot show any of that.
-func writeFounderSamples(b *strings.Builder, snap *FrozenCohortSnapshot, opts CohortPreviewOptions) {
-	opts = opts.normalized()
-	samples := selectPreviewSamples(snap.Members, opts.SamplesPerClass)
-	if len(samples) == 0 {
-		// Fall back to whatever the frozen report carried: a snapshot read back
-		// without members is still worth previewing, and printing nothing would
-		// look like an empty cohort rather than a narrower render.
-		samples = snap.Preview.SamplesByClass
-	}
-	classes := make([]string, 0, len(samples))
-	for k := range samples {
-		classes = append(classes, k)
-	}
-	sort.Strings(classes)
-	if len(classes) == 0 {
-		return
-	}
-
-	mailboxNote := "mailbox redacted; pass --show-mailbox to reveal the real destination"
-	if opts.ShowMailbox {
-		mailboxNote = "REAL DESTINATION ADDRESSES SHOWN"
-	}
-	fmt.Fprintf(b, "\nreview sample (up to %d per route class; %s):\n", opts.SamplesPerClass, mailboxNote)
-
-	n := 0
-	var ordered []CohortClassSample
-	for _, class := range classes {
-		for _, s := range samples[class] {
-			n++
-			ordered = append(ordered, s)
-			fmt.Fprintf(b, "\n  [%d] %s account_ref=%s\n", n, orAbsent(s.RouteClass), orAbsent(s.AccountRef))
-			fmt.Fprintf(b, "      company=%s\n", orAbsent(s.Company))
-			fmt.Fprintf(b, "      mailbox=%s mailbox_purpose=%s\n", sampleMailbox(s, opts.ShowMailbox), orAbsent(s.MailboxPurpose))
-			fmt.Fprintf(b, "      subject=%s\n", quoteOrAbsent(s.Subject))
-			fmt.Fprintf(b, "      greeting=%s person_unknown=%v\n", quoteOrAbsent(s.Greeting), s.PersonUnknown)
-			fmt.Fprintf(b, "      fact=%s (source=%s)\n", quoteOrAbsent(s.ObservedFact), orAbsent(s.FactSource))
-			fmt.Fprintf(b, "      cta=%s (source=%s)\n", quoteOrAbsent(s.CTA), orAbsent(s.CTASource))
-			writeReasonList(b, "why_admitted", s.AdmissionReasons)
-			writeReasonList(b, "why_this_route", s.RouteReasons)
-		}
-	}
-
-	if opts.FullBodies <= 0 || len(ordered) == 0 {
-		return
-	}
-	shown := opts.FullBodies
-	if shown > len(ordered) {
-		shown = len(ordered)
-	}
-	fmt.Fprintf(b, "\nfull composed body (%d of %d sampled; read for raw enums, pasted records and unearned personalization):\n", shown, len(ordered))
-	for i := 0; i < shown; i++ {
-		s := ordered[i]
-		fmt.Fprintf(b, "\n  --- [%d] %s %s %s\n", i+1, orAbsent(s.RouteClass), orAbsent(s.AccountRef), sampleMailbox(s, opts.ShowMailbox))
-		if strings.TrimSpace(s.BodyText) == "" {
-			fmt.Fprintf(b, "  body=%s\n", previewAbsent)
-		} else {
-			for _, line := range strings.Split(s.BodyText, "\n") {
-				fmt.Fprintf(b, "  | %s\n", line)
-			}
-		}
-		fmt.Fprintf(b, "  --- end [%d]\n", i+1)
-	}
 }
 
 func writeReasonList(b *strings.Builder, label string, reasons []string) {

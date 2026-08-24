@@ -288,6 +288,10 @@ func (g *Governor) MarkQueue(ctx context.Context, id uuid.UUID, status, errText 
 	return g.store.UpdateQueueStatus(ctx, id, status, errText)
 }
 
+func (g *Governor) RetryQueue(ctx context.Context, id uuid.UUID, dueAt time.Time, errText string) error {
+	return g.store.RetryQueue(ctx, id, dueAt.UTC(), errText)
+}
+
 func (g *Governor) countSince(ctx context.Context, since time.Time) int {
 	n, _ := g.store.CountSendsSince(ctx, since)
 	return n

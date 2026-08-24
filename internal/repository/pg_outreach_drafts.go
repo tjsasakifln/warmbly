@@ -186,7 +186,10 @@ func (r *outreachRepository) GetActiveDraftForAccount(ctx context.Context, orgID
 	row := r.db.QueryRow(ctx, outreachDraftSelect+`
 		FROM outreach_drafts
 		WHERE organization_id=$1 AND account_id=$2
-		  AND status IN ('NOT_GENERATED','GENERATING','NEEDS_REVIEW','APPROVED')
+		  AND status IN (
+			'NOT_GENERATED','GENERATING','AI_REWRITE_PENDING','ENRICHMENT_PENDING',
+			'REJECTED_REWRITE_PENDING','NEEDS_REVIEW','APPROVED'
+		  )
 		ORDER BY updated_at DESC LIMIT 1`, orgID, accountID)
 	d, err := scanDraft(row)
 	if errors.Is(err, pgx.ErrNoRows) {
