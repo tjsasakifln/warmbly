@@ -360,8 +360,14 @@ services:
     build:
       context: .
       dockerfile: deploy/docker/consumer.Dockerfile
+      labels:
+        org.opencontainers.image.revision: "${WARMBLY_RELEASE_SHA:-local}"
+        org.opencontainers.image.version: "${WARMBLY_RELEASE_SHA:-local}"
+        org.opencontainers.image.source: "https://github.com/tjsasakifln/warmbly"
+        br.com.confenge.service: "warmbly-consumer"
     environment:
       <<: *selfhost-env
+      WARMBLY_RELEASE_SHA: "${WARMBLY_RELEASE_SHA:-local}"
       ENCRYPTED_KEYS_PROVIDER: postgres
     volumes:
       - blobs:/data/blobs
@@ -376,8 +382,14 @@ services:
     build:
       context: .
       dockerfile: deploy/docker/worker.Dockerfile
+      labels:
+        org.opencontainers.image.revision: "${WARMBLY_RELEASE_SHA:-local}"
+        org.opencontainers.image.version: "${WARMBLY_RELEASE_SHA:-local}"
+        org.opencontainers.image.source: "https://github.com/tjsasakifln/warmbly"
+        br.com.confenge.service: "warmbly-worker"
     environment:
       <<: *selfhost-env
+      WARMBLY_RELEASE_SHA: "${WARMBLY_RELEASE_SHA:-local}"
       # Dovecot in the sandbox profile uses a self-signed cert. Set
       # MAIL_TLS_INSECURE=false once you only connect real mailboxes.
       MAIL_TLS_INSECURE: ${MAIL_TLS_INSECURE:-true}
