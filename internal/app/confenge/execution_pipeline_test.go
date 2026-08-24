@@ -88,7 +88,7 @@ func TestResolveRecipientValidatedRequiresProvenIdentity(t *testing.T) {
 	}
 }
 
-func TestGenerateTouchpointDraftGenericMailboxFailClosed(t *testing.T) {
+func TestGenerateTouchpointDraftGenericMailboxNeedsHumanReview(t *testing.T) {
 	repo := newMemRepo()
 	svc := testSvc(repo).(*service)
 	org, user := uuid.New(), uuid.New()
@@ -122,11 +122,11 @@ func TestGenerateTouchpointDraftGenericMailboxFailClosed(t *testing.T) {
 	if xerr != nil {
 		t.Fatal(xerr)
 	}
-	if strings.TrimSpace(tp.BodyText) != "" {
-		t.Fatalf("generic mailbox must not produce a sendable body: %q", tp.BodyText)
+	if strings.TrimSpace(tp.BodyText) == "" {
+		t.Fatal("generic mailbox must produce reviewable copy")
 	}
-	if tp.State == models.TouchpointNeedsReview {
-		t.Fatalf("generic mailbox must not enter NEEDS_REVIEW: %+v", tp)
+	if (tp.State != models.TouchpointNeedsReview && tp.State != models.TouchpointAIRewritePending) || tp.ApprovedBy != nil {
+		t.Fatalf("generic mailbox must stop in the unapproved editorial pipeline: %+v", tp)
 	}
 	if tp.DraftID == nil {
 		t.Fatal("fail-closed draft must still be persisted")
@@ -135,18 +135,15 @@ func TestGenerateTouchpointDraftGenericMailboxFailClosed(t *testing.T) {
 	if err != nil || draft == nil {
 		t.Fatalf("draft: %v", err)
 	}
-	if draft.Status == models.OutreachDraftNeedsReview || strings.TrimSpace(draft.BodyText) != "" {
-		t.Fatalf("draft must not be sendable: status=%s body=%q", draft.Status, draft.BodyText)
+	if (draft.Status != models.OutreachDraftNeedsReview && draft.Status != models.OutreachDraftAIRewritePending) || strings.TrimSpace(draft.BodyText) == "" {
+		t.Fatalf("draft must be reviewable: status=%s body=%q", draft.Status, draft.BodyText)
 	}
-	if rec := recipientFromDraft(draft); rec == nil || rec.State == RecipientValidated {
-		t.Fatalf("recipient must not be VALIDATED: %+v", rec)
-	}
-	if _, xerr := svc.ApproveTouchpoint(context.Background(), org, user, tp.ID, ApprovalOptions{GenericRecipientAcknowledged: true}); xerr == nil {
-		t.Fatal("acknowledgement must not authorize a generic mailbox")
+	if rec := recipientFromDraft(draft); rec == nil || rec.State != RecipientControlledEligible {
+		t.Fatalf("recipient must preserve CONTROLLED_ELIGIBLE instead of VALIDATED: %+v", rec)
 	}
 }
 
-func TestResolveRecipientNeverPromotesGeneric(t *testing.T) {
+func TestResolveRecipientNeverPromotesGenericToPersonValidation(t *testing.T) {
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	acc := testAccount("REAJUSTE", "ANUALIDADE", "contrato 1149/2022 atingiu aniversário de reajuste")
 	c := validatedCand("Pessoa Histórica", "Contato", "contato@encopav.com.br")
@@ -155,14 +152,14 @@ func TestResolveRecipientNeverPromotesGeneric(t *testing.T) {
 	if res.State == RecipientValidated {
 		t.Fatal("generic mailbox must not be VALIDATED")
 	}
-	if res.State != RecipientException {
-		t.Fatalf("generic want EXCEPTION got %s %v", res.State, res.ReasonCodes)
+	if res.State != RecipientControlledEligible {
+		t.Fatalf("generic want CONTROLLED_ELIGIBLE got %s %v", res.State, res.ReasonCodes)
 	}
 	if res.Name != "" {
 		t.Fatalf("must not surface invented/generic name: %q", res.Name)
 	}
-	if res.HumanDecision == "" || res.NextAction == "" {
-		t.Fatal("exception must tell the human what to decide")
+	if !CandidatePersonUnknown(&c) {
+		t.Fatal("controlled generic route must preserve unknown person")
 	}
 }
 

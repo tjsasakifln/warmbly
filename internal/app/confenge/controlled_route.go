@@ -83,11 +83,14 @@ func CandidateControlledEligible(c *models.OutreachContactCandidate) bool {
 		return false
 	}
 	d := parseControlledDiscovery(c)
-	if d.ControlledEmailEligible == nil || !*d.ControlledEmailEligible {
+	if d.ControlledEmailEligible == nil {
 		class := CandidateRouteClass(c)
 		if class == RouteClassDirectPerson {
 			return c.EmailSendReady && provenPersonName(c)
 		}
+		return legacyControlledPublicRoute(c, class)
+	}
+	if !*d.ControlledEmailEligible {
 		return false
 	}
 	class := CandidateRouteClass(c)
@@ -95,6 +98,43 @@ func CandidateControlledEligible(c *models.OutreachContactCandidate) bool {
 		return false
 	}
 	return defaultPilotRouteClasses[class]
+}
+
+// legacyControlledPublicRoute bridges pre-contract institutional candidates
+// whose imported fields already prove a public company-owned route.
+func legacyControlledPublicRoute(c *models.OutreachContactCandidate, class string) bool {
+	if c == nil || !c.EmailSendReady || c.MailboxPurposeSendBlocked || !c.EnrollableIgnoringVerification() {
+		return false
+	}
+	if !validExactEmail(c.Email) {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(c.OwnershipStatus), "COMPANY_OWNED") {
+		return false
+	}
+	if isFreemailAddress(c.Email) || (class != RouteClassRoleOrDepartment && class != RouteClassGenericCompany) {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(c.EmailDerivation), "INFERRED") {
+		return false
+	}
+	if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(c.RecipientCommercialSuitability)), "UNSUITABLE") {
+		return false
+	}
+	if suppression := strings.ToUpper(strings.TrimSpace(c.RouteSuppression)); suppression != "" && suppression != "NONE" {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(c.VerificationStatus)) {
+	case models.OutreachVerifyOfficialSource,
+		models.OutreachVerifyPublicDocumentRecent,
+		models.OutreachVerifyMultipleSources,
+		models.OutreachVerifyInstitutionalGeneric,
+		models.OutreachVerifyHumanConfirmed,
+		models.OutreachVerifyVerified:
+		return true
+	default:
+		return false
+	}
 }
 
 // CandidateEnrollable is the controlled-route enrollability rule: a classified
