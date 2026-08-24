@@ -485,7 +485,7 @@ func TestPilotEditInvalidatesApproval(t *testing.T) {
 	}
 }
 
-func TestGenericRecipientApprovalNeverSucceeds(t *testing.T) {
+func TestGenericRecipientCanPrepareAndRequiresExplicitHumanApproval(t *testing.T) {
 	fixture := newPilotFixture(t)
 	accountID := fixture.addReadyAccount(t, 51)
 	valid := fixture.repo.cands[accountID][1]
@@ -498,23 +498,22 @@ func TestGenericRecipientApprovalNeverSucceeds(t *testing.T) {
 	if xerr != nil {
 		t.Fatal(xerr)
 	}
-	if result.Prepared != 0 || result.Results[0].Status == PilotPrepared {
-		t.Fatalf("generic mailbox must not prepare a sendable review item: %+v", result.Results[0])
+	if result.Prepared != 1 || result.Results[0].Status != PilotPrepared {
+		t.Fatalf("generic mailbox must prepare a human review item: %+v", result.Results[0])
 	}
-	candidateID := valid.ID
-	touchpoints, pxerr := fixture.service.PlanAccountCadence(context.Background(), fixture.orgID, fixture.userID, accountID, &candidateID, models.OutreachChannelEmail)
-	if pxerr != nil || len(touchpoints) == 0 {
-		t.Fatalf("plan: %v", pxerr)
+	if result.Results[0].TouchpointID == nil {
+		t.Fatal("prepared generic route must bind a touchpoint")
 	}
-	generated, gxerr := fixture.service.GenerateTouchpointDraft(context.Background(), fixture.orgID, fixture.userID, touchpoints[0].ID)
-	if gxerr != nil {
-		t.Fatal(gxerr)
+	generated, err := fixture.repo.GetTouchpoint(context.Background(), fixture.orgID, *result.Results[0].TouchpointID)
+	if err != nil || generated == nil {
+		t.Fatalf("touchpoint: %v", err)
 	}
-	if strings.TrimSpace(generated.BodyText) != "" || generated.State == models.TouchpointNeedsReview {
-		t.Fatalf("generic must fail closed: state=%s body=%q", generated.State, generated.BodyText)
+	if strings.TrimSpace(generated.BodyText) == "" || generated.State != models.TouchpointNeedsReview || generated.ApprovedBy != nil {
+		t.Fatalf("generic route must stop at unapproved NEEDS_REVIEW: %+v", generated)
 	}
-	if _, axerr := fixture.service.ApproveTouchpoint(context.Background(), fixture.orgID, fixture.userID, generated.ID, ApprovalOptions{GenericRecipientAcknowledged: true}); axerr == nil {
-		t.Fatal("acknowledgement must not authorize a generic mailbox")
+	approved, axerr := fixture.service.ApproveTouchpoint(context.Background(), fixture.orgID, fixture.userID, generated.ID, ApprovalOptions{GenericRecipientAcknowledged: true})
+	if axerr != nil || approved.ApprovedBy == nil {
+		t.Fatalf("explicit human approval of exact generic draft failed: %+v err=%v", approved, axerr)
 	}
 }
 

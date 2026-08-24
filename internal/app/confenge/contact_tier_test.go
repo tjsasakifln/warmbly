@@ -100,7 +100,7 @@ func TestContactTiersContractualFixture(t *testing.T) {
 	}
 }
 
-func TestContactTierGenericCannotApproveViaHumanPath(t *testing.T) {
+func TestContactTierGenericCanReachHumanReviewWithoutPersonValidation(t *testing.T) {
 	repo := newMemRepo()
 	svc := testSvc(repo).(*service)
 	org, user := uuid.New(), uuid.New()
@@ -127,15 +127,15 @@ func TestContactTierGenericCannotApproveViaHumanPath(t *testing.T) {
 	if xerr != nil {
 		t.Fatal(xerr)
 	}
-	if tp.State == models.TouchpointNeedsReview {
-		t.Fatalf("generic cannot enter NEEDS_REVIEW: %+v", tp)
+	if (tp.State != models.TouchpointNeedsReview && tp.State != models.TouchpointAIRewritePending) || strings.TrimSpace(tp.BodyText) == "" {
+		t.Fatalf("generic company route must enter the editorial review pipeline: %+v", tp)
 	}
-	if _, xerr := svc.ApproveTouchpoint(context.Background(), org, user, tp.ID, ApprovalOptions{GenericRecipientAcknowledged: true}); xerr == nil {
-		t.Fatal("generic acknowledgement must not approve")
+	if tp.ApprovedBy != nil {
+		t.Fatalf("generation must not approve or schedule: %+v", tp)
 	}
 }
 
-func TestContactTierRoleMailboxGenerateNeverNeedsReview(t *testing.T) {
+func TestContactTierRoleMailboxGeneratesForHumanReview(t *testing.T) {
 	repo := newMemRepo()
 	svc := testSvc(repo).(*service)
 	org, user := uuid.New(), uuid.New()
@@ -164,8 +164,11 @@ func TestContactTierRoleMailboxGenerateNeverNeedsReview(t *testing.T) {
 	if xerr != nil {
 		t.Fatal(xerr)
 	}
-	if tp.State == models.TouchpointNeedsReview {
-		t.Fatalf("role mailbox must not enter NEEDS_REVIEW: %+v", tp)
+	if tp.State != models.TouchpointNeedsReview || strings.TrimSpace(tp.BodyText) == "" {
+		t.Fatalf("role mailbox must enter NEEDS_REVIEW with copy: %+v", tp)
+	}
+	if tp.ApprovedBy != nil {
+		t.Fatalf("generation must not approve or schedule: %+v", tp)
 	}
 }
 

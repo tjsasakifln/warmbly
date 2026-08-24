@@ -44,11 +44,11 @@ The browser skips login, registration, workspace selection, and onboarding. Inte
 
 ## Recipient and messageability gates
 
-Every target ends in `VALIDATED`, `EXCEPTION`, or `BLOCKED`. A generic mailbox is never auto-promoted to `VALIDATED`. Warmbly never invents a name, role, ownership, personal email, consent, or evidence.
+Every target ends in `VALIDATED`, `CONTROLLED_ELIGIBLE`, `EXCEPTION`, or `BLOCKED`. A public role, department, generic-company, or company-associated freemail route may be `CONTROLLED_ELIGIBLE` without a known person, but it is never auto-promoted to `VALIDATED`. Warmbly never invents a name, role, ownership, personal email, consent, or evidence. Pre-contract institutional candidates remain eligible only when the imported record already says `email_send_ready=true`, `COMPANY_OWNED`, carries a defensible public verification status, and is not inferred, suppressed, blocked, bounced, or freemail without explicit company evidence.
 
 Copy is planned only after extra-cli intelligence is reduced to an internal `OutreachStrategy`. The messageability gate then decides `READY`, `NEEDS_ENRICHMENT`, or `BLOCKED`. Only a `READY` plan is rendered into a recipient-safe facing copy (greeting, public observation, relevance, micro-offer, CTA). Internal hypothesis, rationale, and operator warnings never enter the email. `NEEDS_REVIEW` and `validation_ok=true` mean the exact body is already sendable if a human presses Approve. Unready items go to a separate exception or enrichment queue. Passive MX or DNS from extra-cli never becomes `VERIFIED`, `VALIDATED`, or `email_send_ready`.
 
-`NEEDS_REVIEW` is assigned only when recipient resolution is `VALIDATED`, the contact tier is `DIRECT_EMAIL_VALIDATED`, messageability is `READY`, and the composed body is non-empty. An `EXCEPTION` never becomes `NEEDS_REVIEW`. Two individually valid named humans on the same account stay `EXCEPTION` and land in `MANUAL_OUTREACH` until a human picks one recipient.
+`NEEDS_REVIEW` is assigned only when recipient resolution is `VALIDATED` or `CONTROLLED_ELIGIBLE`, messageability is `READY`, and the composed body is non-empty. `CONTROLLED_ELIGIBLE` preserves the institutional route class and an unknown person instead of pretending to validate an individual. An `EXCEPTION` never becomes `NEEDS_REVIEW`. Two individually valid named humans on the same account stay `EXCEPTION` and land in `MANUAL_OUTREACH` until a human picks one recipient.
 
 Human `APPROVE`, `EDIT`, `REJECT`, `RECIPIENT_CHANGE`, and `SKIP` persist as `HumanCorrection`. Edits keep before/after. AI never substitutes the human gate.
 

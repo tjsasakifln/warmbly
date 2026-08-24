@@ -95,11 +95,11 @@ func TestReachabilityContractualFixtures(t *testing.T) {
 	}
 
 	r4 := byLead["r4-role-mailbox"]
-	if r4.Action.ActionType != models.ActionRoleEmail || r4.Action.Lane != models.LaneRoleEmailQueue {
+	if r4.Action.ActionType != models.ActionRoleEmail || r4.Action.Lane != models.LaneEmailNeedsReview {
 		t.Fatalf("R4 want ROLE_EMAIL: %+v", r4.Action)
 	}
-	if r4.Action.PersonName != "" || r4.Action.EmailSendable {
-		t.Fatalf("R4 must not become personal email: %+v", r4.Action)
+	if r4.Action.PersonName != "" || !r4.Action.EmailSendable || r4.Action.Dispatchable || r4.RecipientState != RecipientControlledEligible {
+		t.Fatalf("R4 must be reviewable without becoming personal or dispatchable: %+v rec=%s", r4.Action, r4.RecipientState)
 	}
 
 	r5 := byLead["r5-corporate-generic"]
@@ -291,9 +291,10 @@ func TestCommercialAdversarialPromotions(t *testing.T) {
 		t.Fatal("duplicate snapshot must reuse id")
 	}
 
-	// Manual action never becomes email send.
-	if r3.Action.EmailSendable || r3.Action.Dispatchable || r4.Action.EmailSendable {
-		t.Fatal("manual route must not create email send bypass")
+	// A manual call stays outside email. A public role route is reviewable but
+	// never dispatchable without the downstream human and transport gates.
+	if r3.Action.EmailSendable || r3.Action.Dispatchable || !r4.Action.EmailSendable || r4.Action.Dispatchable {
+		t.Fatal("route classification created an action or dispatch bypass")
 	}
 
 	// Unknown reachability fails closed.
@@ -509,7 +510,7 @@ func TestCommercialTodaySurvivesKillSwitchAndPause(t *testing.T) {
 		if _, ok := ids[c.ActionID]; !ok {
 			t.Fatalf("pause invented a new card: %+v", c)
 		}
-		if c.Dispatchable || (c.ActionType != models.ActionDirectEmail && c.EmailSendable) {
+		if c.Dispatchable || c.EmailSendable != ids[c.ActionID].EmailSendable {
 			t.Fatalf("pause must not promote sendability: %+v", c)
 		}
 		if c.ActionType == models.ActionRoutedCall && !c.Actionable {

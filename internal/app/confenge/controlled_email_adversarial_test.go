@@ -102,6 +102,104 @@ func TestUnassociatedGmailAndInferredStayOut(t *testing.T) {
 	}
 }
 
+func TestLegacyPublicInstitutionalRoutesAreControlledWithoutPersonValidation(t *testing.T) {
+	now := time.Now().UTC()
+	account := &models.OutreachAccount{CNPJ14: "12345678000190", RazaoSocial: "EMPRESA"}
+	for _, tc := range []struct {
+		name         string
+		email        string
+		purpose      string
+		verification string
+		wantClass    string
+	}{
+		{
+			name: "official generic", email: "contato@empresa.com.br", purpose: "GENERIC_CONTACT",
+			verification: models.OutreachVerifyOfficialSource, wantClass: RouteClassGenericCompany,
+		},
+		{
+			name: "verified department", email: "licitacoes@empresa.com.br", purpose: "LICITACOES",
+			verification: models.OutreachVerifyVerified, wantClass: RouteClassRoleOrDepartment,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := &models.OutreachContactCandidate{
+				Email: tc.email, MailboxPurpose: tc.purpose, VerificationStatus: tc.verification,
+				EmailSendReady: true, OwnershipStatus: "COMPANY_OWNED",
+			}
+			if !CandidateControlledEligible(candidate) {
+				t.Fatal("legacy public institutional route should be controlled eligible")
+			}
+			if CandidateEmailValidated(candidate) {
+				t.Fatal("institutional route must not become EMAIL_VALIDATED")
+			}
+			resolved := ResolveRecipient(account, []models.OutreachContactCandidate{*candidate}, now)
+			if resolved.State != RecipientControlledEligible {
+				t.Fatalf("state=%s reasons=%v", resolved.State, resolved.ReasonCodes)
+			}
+			if resolved.Name != "" || CandidatePersonUnknown(candidate) == false {
+				t.Fatalf("person truth was invented: name=%q unknown=%v", resolved.Name, CandidatePersonUnknown(candidate))
+			}
+			if CandidateRouteClass(candidate) != tc.wantClass {
+				t.Fatalf("class=%s want=%s", CandidateRouteClass(candidate), tc.wantClass)
+			}
+		})
+	}
+}
+
+func TestLegacyControlledFallbackRemainsFailClosed(t *testing.T) {
+	base := models.OutreachContactCandidate{
+		Email: "contato@empresa.com.br", MailboxPurpose: "GENERIC_CONTACT",
+		VerificationStatus: models.OutreachVerifyOfficialSource,
+		EmailSendReady:     true, OwnershipStatus: "COMPANY_OWNED",
+	}
+
+	withoutOwnership := base
+	withoutOwnership.OwnershipStatus = "UNKNOWN"
+	if CandidateControlledEligible(&withoutOwnership) {
+		t.Fatal("missing company ownership must stay ineligible")
+	}
+
+	unverified := base
+	unverified.VerificationStatus = models.OutreachVerifyCandidateUnverified
+	if CandidateControlledEligible(&unverified) {
+		t.Fatal("unverified legacy route must stay ineligible")
+	}
+
+	inferred := base
+	inferred.EmailDerivation = "INFERRED"
+	if CandidateControlledEligible(&inferred) {
+		t.Fatal("inferred legacy route must stay ineligible")
+	}
+
+	invalid := base
+	invalid.Email = "contato@empresa"
+	if CandidateControlledEligible(&invalid) {
+		t.Fatal("syntactically invalid legacy route must stay ineligible")
+	}
+
+	unsuitable := base
+	unsuitable.RecipientCommercialSuitability = "UNSUITABLE_ROLE"
+	if CandidateControlledEligible(&unsuitable) {
+		t.Fatal("commercially unsuitable legacy route must stay ineligible")
+	}
+
+	freemail := base
+	freemail.Email = "comercial@gmail.com"
+	freemail.MailboxPurpose = "COMERCIAL"
+	if CandidateControlledEligible(&freemail) {
+		t.Fatal("legacy freemail without observed mailbox-company evidence must stay ineligible")
+	}
+
+	explicitlyRefused := base
+	eligible := false
+	explicitlyRefused.DiscoveryJSON = discoveryJSON(t, controlledDiscovery{
+		RouteClass: RouteClassGenericCompany, ControlledEmailEligible: &eligible,
+	})
+	if CandidateControlledEligible(&explicitlyRefused) {
+		t.Fatal("explicit controlled_email_eligible=false must override legacy fields")
+	}
+}
+
 func TestCopyQARejectsInventionAndGmailCorporateClaim(t *testing.T) {
 	c := &models.OutreachContactCandidate{Email: "contato@empresa.com.br"}
 	errs := ValidateCopyForRouteClass(RouteClassGenericCompany, "Olá, Ana, você é o gerente.", "Oi Ana", c)
