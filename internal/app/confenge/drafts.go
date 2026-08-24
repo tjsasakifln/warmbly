@@ -27,10 +27,6 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 	if acc.DoNotContact || acc.Blocked {
 		return nil, errx.New(errx.BadRequest, "account is blocked or DO_NOT_CONTACT")
 	}
-	if err := RequireTargetFit(acc); err != nil {
-		return nil, errx.New(errx.BadRequest, err.Error())
-	}
-
 	var cand *models.OutreachContactCandidate
 	if contactID != nil {
 		cand, err = s.repo.GetCandidate(ctx, orgID, *contactID)
@@ -47,8 +43,9 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 	if cand == nil {
 		return nil, errx.New(errx.BadRequest, "no contact candidate; resolve NEEDS_CONTACT first")
 	}
-	if err := RequireEmailOutbound(acc, cand); err != nil {
-		return nil, errx.New(errx.BadRequest, err.Error())
+	targetFitRecoveryReason, gateErr := requireEmailCandidateForDraft(acc, cand)
+	if gateErr != nil {
+		return nil, errx.New(errx.BadRequest, gateErr.Error())
 	}
 
 	allCands, listErr := s.repo.ListCandidates(ctx, orgID, accountID)
@@ -171,6 +168,12 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 			val.Errors = appendUnique(val.Errors, rec.Reason)
 		}
 	}
+	if targetFitRecoveryReason != "" {
+		flags = appendUnique(flags, strings.ToLower(targetFitRecoveryReason))
+		risk = "RED"
+		val.OK = false
+		val.Errors = appendUnique(val.Errors, targetFitRecoveryReason)
+	}
 	val.Claims = out.Claims
 	val.Rationale = out.Rationale
 	val.Channel = out.Channel
@@ -202,6 +205,8 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 	case rec.State == RecipientBlocked:
 		draft.Status = models.OutreachDraftBlocked
 		draft.Subject, draft.BodyText = "", ""
+	case targetFitRecoveryReason != "":
+		draft.Status = models.OutreachDraftEnrichmentPending
 	case !RecipientStateAuthorizable(rec.State) || plan.Messageability != MessageabilityReady:
 		draft.Status = models.OutreachDraftEnrichmentPending
 		draft.Subject, draft.BodyText = "", ""
@@ -214,6 +219,10 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 	}
 	if err := s.repo.UpsertDraft(ctx, draft); err != nil {
 		return nil, errx.New(errx.Internal, "failed to save draft: "+err.Error())
+	}
+	if targetFitRecoveryReason != "" {
+		did := draft.ID
+		s.recordEditorialSignal(ctx, orgID, &did, nil, models.OutreachDraftEnrichmentPending, targetFitRecoveryReason, draft.Channel)
 	}
 
 	// Move account into review queue only when the message is sendable.

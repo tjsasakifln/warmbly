@@ -68,9 +68,46 @@ func RequireTargetFit(acc *models.OutreachAccount) error {
 	return nil
 }
 
+// targetFitForDraft distinguishes a missing or stale fit assertion from a
+// current negative commercial decision. Drafting may continue for the former
+// so the lead remains recoverable, but approval and transport stay fail-closed
+// through RequireTargetFit.
+func targetFitForDraft(acc *models.OutreachAccount) (string, error) {
+	d := EvaluateTargetFit(acc)
+	if d.Eligible {
+		return "", nil
+	}
+	if d.Reason == TargetFitReasonMissing || d.Reason == TargetFitReasonStale {
+		return d.Reason, nil
+	}
+	return "", fmt.Errorf("commercial outreach blocked: %s", d.Reason)
+}
+
 func RequireEmailOutbound(acc *models.OutreachAccount, cand *models.OutreachContactCandidate) error {
 	if err := RequireTargetFit(acc); err != nil {
 		return err
+	}
+	return requireEmailCandidate(acc, cand, true)
+}
+
+// requireEmailCandidateForDraft keeps recipient suppressions strict while
+// allowing target-fit absence or staleness to land in ENRICHMENT_PENDING. A
+// stale fit reconciliation also clears account EMAIL_SEND_READY, so that
+// derived bit is ignored only for this recoverable drafting path.
+func requireEmailCandidateForDraft(acc *models.OutreachAccount, cand *models.OutreachContactCandidate) (string, error) {
+	recoveryReason, err := targetFitForDraft(acc)
+	if err != nil {
+		return "", err
+	}
+	if err := requireEmailCandidate(acc, cand, recoveryReason == ""); err != nil {
+		return "", err
+	}
+	return recoveryReason, nil
+}
+
+func requireEmailCandidate(acc *models.OutreachAccount, cand *models.OutreachContactCandidate, requireAccountReady bool) error {
+	if acc == nil {
+		return fmt.Errorf("account is missing")
 	}
 	if acc.DoNotContact || acc.Blocked {
 		return fmt.Errorf("account blocked or DNC")
@@ -90,7 +127,7 @@ func RequireEmailOutbound(acc *models.OutreachAccount, cand *models.OutreachCont
 		}
 		return nil
 	}
-	if !acc.EmailSendReady {
+	if requireAccountReady && !acc.EmailSendReady {
 		return fmt.Errorf("company EMAIL_SEND_READY is false")
 	}
 	if !cand.EmailSendReady {
