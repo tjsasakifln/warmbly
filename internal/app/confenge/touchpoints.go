@@ -616,6 +616,7 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	tp.DraftID = &draft.ID
 	if draftStatus == models.OutreachDraftNeedsReview {
 		tp.State = models.TouchpointNeedsReview
+		tp.StopReason = ""
 	} else if draftStatus == models.OutreachDraftAIRewritePending {
 		tp.State = models.TouchpointAIRewritePending
 	} else if draftStatus == models.OutreachDraftEnrichmentPending {

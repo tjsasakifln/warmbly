@@ -103,6 +103,7 @@ type Service interface {
 	ObserveCampaignEmailAttempt(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, attemptedAt time.Time) error
 	ProcessDispatchQueueOnce(ctx context.Context) (bool, error)
 	ProcessEditorialRecoveryOnce(ctx context.Context) (bool, error)
+	ProcessDraftGenerationOnce(ctx context.Context) (bool, error)
 
 	// Per-touchpoint human approval cadence.
 	PreparePilotCohort(ctx context.Context, orgID, userID uuid.UUID, accountIDs []uuid.UUID, operation PilotOperation) (*PilotCohortResult, *errx.Error)

@@ -59,3 +59,16 @@ issue outbox item. Operators can inspect or publish those items with
 versioned guideline proposals are managed with
 `confenge editorial guidelines list|propose|activate`; activation also requires
 explicit confirmation.
+
+## Continuous generation into Comercial -> Rascunhos
+
+Accounts in `READY_TO_GENERATE` are leased with `FOR UPDATE SKIP LOCKED` and
+processed asynchronously. The worker creates the idempotent cadence, generates
+only its first due touchpoint, and stops at `NEEDS_REVIEW` (Comercial ->
+Rascunhos). Each tick drains a bounded burst of up to 100 accounts; failures
+use exponential retry from 15 minutes up to 24 hours.
+
+`ENRICHMENT_PENDING` touchpoints are also retried by the editorial recovery
+worker. When target fit or contact evidence becomes valid, the same touchpoint
+returns to `NEEDS_REVIEW` and its obsolete stop reason is cleared. Neither
+worker can approve, schedule, queue or send a message.

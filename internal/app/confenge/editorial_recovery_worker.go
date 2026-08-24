@@ -45,17 +45,19 @@ func (w *EditorialRecoveryWorker) Run(ctx context.Context) {
 }
 
 func (s *service) ProcessEditorialRecoveryOnce(ctx context.Context) (bool, error) {
-	if s == nil || s.humanGateDB == nil || s.ai == nil {
+	if s == nil || s.humanGateDB == nil {
 		return false, nil
 	}
 	now := time.Now().UTC()
 	var orgID, touchpointID uuid.UUID
+	var state string
 	var attempts int
 	err := s.humanGateDB.QueryRow(ctx, `
 		WITH next AS (
 			SELECT id
 			FROM outreach_touchpoints
-			WHERE state IN ('AI_REWRITE_PENDING','REJECTED_REWRITE_PENDING')
+			WHERE (state = 'ENRICHMENT_PENDING'
+			       OR ($3 AND state IN ('AI_REWRITE_PENDING','REJECTED_REWRITE_PENDING')))
 			  AND editorial_retry_at <= $1
 			  AND (editorial_reserved_until IS NULL OR editorial_reserved_until <= $1)
 			ORDER BY editorial_retry_at, created_at, id
@@ -66,7 +68,7 @@ func (s *service) ProcessEditorialRecoveryOnce(ctx context.Context) (bool, error
 		SET editorial_reserved_until=$2, editorial_attempts=t.editorial_attempts+1, updated_at=$1
 		FROM next
 		WHERE t.id=next.id
-		RETURNING t.organization_id,t.id,t.editorial_attempts`, now, now.Add(editorialRecoveryLease)).Scan(&orgID, &touchpointID, &attempts)
+		RETURNING t.organization_id,t.id,t.state,t.editorial_attempts`, now, now.Add(editorialRecoveryLease), s.ai != nil).Scan(&orgID, &touchpointID, &state, &attempts)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
@@ -83,8 +85,8 @@ func (s *service) ProcessEditorialRecoveryOnce(ctx context.Context) (bool, error
 		s.deferEditorialRecovery(ctx, touchpointID, attempts, xerr.Message)
 		return true, xerr
 	}
-	if tp == nil || tp.State == models.TouchpointAIRewritePending || tp.State == models.TouchpointRejectedRewritePending {
-		s.deferEditorialRecovery(ctx, touchpointID, attempts, "rewrite did not clear editorial gates")
+	if tp == nil || tp.State == models.TouchpointAIRewritePending || tp.State == models.TouchpointEnrichmentPending || tp.State == models.TouchpointRejectedRewritePending {
+		s.deferEditorialRecovery(ctx, touchpointID, attempts, "recovery did not clear "+state)
 		return true, nil
 	}
 	_, err = s.humanGateDB.Exec(ctx, `
