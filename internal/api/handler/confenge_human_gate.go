@@ -333,3 +333,51 @@ func (h *Handler) AdjustConfengeHumanGateCandidate(c *gin.Context) {
 		"receipt":          result.Adjustment.Receipt,
 	})
 }
+
+// RecomposeConfengeHumanGateCohort forks the addressed immutable version into
+// N+1 with copy re-derived by the composer. It is an operator action
+// (manage-contacts), not an admin one: GO stays manage-campaigns.
+//
+// It neither queues, dispatches, sends nor resumes anything.
+func (h *Handler) RecomposeConfengeHumanGateCohort(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	actor, ok := humanGateActor(c)
+	if !ok {
+		return
+	}
+	versionID, _, ok := humanGateIDs(c)
+	if !ok {
+		return
+	}
+	// The raw body is read first and kept: the server has to be able to see a
+	// key the typed struct would silently drop, such as "mailbox".
+	raw, err := c.GetRawData()
+	if err != nil {
+		errx.JSON(c, errx.NewWithIdentifier(errx.BadRequest, "invalid_payload", "JSON body is invalid"))
+		return
+	}
+	var in confenge.HumanGateRecomposeInput
+	if json.Unmarshal(raw, &in) != nil {
+		errx.JSON(c, errx.NewWithIdentifier(errx.BadRequest, "invalid_payload", "JSON body is invalid"))
+		return
+	}
+	in.RawBody = raw
+	in.IdempotencyKey = strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	in.CorrelationID = c.GetString("request_id")
+	result, x := h.ConfengeService.RecomposeHumanGateCohort(c.Request.Context(), orgID, actor, versionID, in)
+	if x != nil {
+		errx.JSON(c, x)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{
+		"contract_version":         result.ContractVersion,
+		"cohort":                   result.Cohort,
+		"report":                   result.Report,
+		"revoked_authorization_id": result.RevokedAuthorizationID,
+		"meta":                     humanGateMeta(c, result.Cohort, result.Cohort.Reason),
+		"receipt":                  result.Receipt,
+	})
+}

@@ -377,16 +377,19 @@ type OutreachImportRunListResult struct {
 
 // Draft statuses.
 const (
-	OutreachDraftNotGenerated = "NOT_GENERATED"
-	OutreachDraftGenerating   = "GENERATING"
-	OutreachDraftNeedsReview  = "NEEDS_REVIEW"
-	OutreachDraftApproved     = "APPROVED"
-	OutreachDraftRejected     = "REJECTED"
-	OutreachDraftSkipped      = "SKIPPED"
-	OutreachDraftBlocked      = "BLOCKED"
-	OutreachDraftEnrolled     = "ENROLLED"
-	OutreachDraftSent         = "SENT"
-	OutreachDraftReplied      = "REPLIED"
+	OutreachDraftNotGenerated           = "NOT_GENERATED"
+	OutreachDraftGenerating             = "GENERATING"
+	OutreachDraftAIRewritePending       = "AI_REWRITE_PENDING"
+	OutreachDraftEnrichmentPending      = "ENRICHMENT_PENDING"
+	OutreachDraftRejectedRewritePending = "REJECTED_REWRITE_PENDING"
+	OutreachDraftNeedsReview            = "NEEDS_REVIEW"
+	OutreachDraftApproved               = "APPROVED"
+	OutreachDraftRejected               = "REJECTED"
+	OutreachDraftSkipped                = "SKIPPED"
+	OutreachDraftBlocked                = "BLOCKED"
+	OutreachDraftEnrolled               = "ENROLLED"
+	OutreachDraftSent                   = "SENT"
+	OutreachDraftReplied                = "REPLIED"
 )
 
 // Outreach draft channels.
@@ -520,20 +523,23 @@ type OutreachPilotMembership struct {
 
 // Touchpoint states (per-message human approval authority).
 const (
-	TouchpointPlanned     = "PLANNED"
-	TouchpointDue         = "DUE"
-	TouchpointDrafted     = "DRAFTED"
-	TouchpointNeedsReview = "NEEDS_REVIEW"
-	TouchpointApproved    = "APPROVED"
-	TouchpointQueued      = "QUEUED"
-	TouchpointSent        = "SENT"
-	TouchpointSkipped     = "SKIPPED"
-	TouchpointRejected    = "REJECTED"
-	TouchpointReplied     = "REPLIED"
-	TouchpointDNC         = "DNC"
-	TouchpointBounced     = "BOUNCED"
-	TouchpointCancelled   = "CANCELLED"
-	TouchpointFailed      = "FAILED"
+	TouchpointPlanned                = "PLANNED"
+	TouchpointDue                    = "DUE"
+	TouchpointDrafted                = "DRAFTED"
+	TouchpointAIRewritePending       = "AI_REWRITE_PENDING"
+	TouchpointEnrichmentPending      = "ENRICHMENT_PENDING"
+	TouchpointRejectedRewritePending = "REJECTED_REWRITE_PENDING"
+	TouchpointNeedsReview            = "NEEDS_REVIEW"
+	TouchpointApproved               = "APPROVED"
+	TouchpointQueued                 = "QUEUED"
+	TouchpointSent                   = "SENT"
+	TouchpointSkipped                = "SKIPPED"
+	TouchpointRejected               = "REJECTED"
+	TouchpointReplied                = "REPLIED"
+	TouchpointDNC                    = "DNC"
+	TouchpointBounced                = "BOUNCED"
+	TouchpointCancelled              = "CANCELLED"
+	TouchpointFailed                 = "FAILED"
 )
 
 const (
@@ -546,6 +552,8 @@ const (
 var TouchpointOpenStates = map[string]bool{
 	TouchpointPlanned: true, TouchpointDue: true, TouchpointDrafted: true,
 	TouchpointNeedsReview: true, TouchpointApproved: true, TouchpointQueued: true,
+	TouchpointAIRewritePending: true, TouchpointEnrichmentPending: true,
+	TouchpointRejectedRewritePending: true,
 }
 
 var TouchpointTerminalStates = map[string]bool{

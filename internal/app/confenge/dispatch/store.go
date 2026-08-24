@@ -56,6 +56,7 @@ type Store interface {
 	// ClaimNextQueued transactionally selects the next fair due item and marks it reserved.
 	ClaimNextQueued(ctx context.Context, now time.Time) (*QueueItem, error)
 	UpdateQueueStatus(ctx context.Context, id uuid.UUID, status, errText string) error
+	RetryQueue(ctx context.Context, id uuid.UUID, dueAt time.Time, errText string) error
 
 	RecordFailure(ctx context.Context, f FailureRecord) error
 	ListRecentFailures(ctx context.Context, limit int) ([]FailureRecord, error)

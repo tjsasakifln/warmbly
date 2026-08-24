@@ -716,7 +716,12 @@ func (m *memRepo) ListTouchpoints(ctx context.Context, orgID, accountID uuid.UUI
 func (m *memRepo) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, limit, offset int) ([]models.OutreachTouchpoint, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	review := map[string]bool{models.TouchpointDue: true, models.TouchpointDrafted: true, models.TouchpointNeedsReview: true, models.TouchpointApproved: true}
+	review := map[string]bool{
+		models.TouchpointDue: true, models.TouchpointDrafted: true,
+		models.TouchpointAIRewritePending: true, models.TouchpointEnrichmentPending: true,
+		models.TouchpointRejectedRewritePending: true,
+		models.TouchpointNeedsReview:            true, models.TouchpointApproved: true,
+	}
 	var out []models.OutreachTouchpoint
 	for _, t := range m.touchpoints {
 		if t.OrganizationID == orgID && review[t.State] {
@@ -749,6 +754,19 @@ func (m *memRepo) CASQueueTouchpoint(ctx context.Context, orgID, id uuid.UUID, e
 	t.UpdatedAt = now
 	cp := *t
 	return &cp, nil
+}
+func (m *memRepo) CASScheduleTouchpoint(ctx context.Context, orgID, id uuid.UUID, expectedContentHash, messageKey string, dueAt time.Time) (*models.OutreachTouchpoint, error) {
+	_ = messageKey
+	out, err := m.CASQueueTouchpoint(ctx, orgID, id, expectedContentHash)
+	if out != nil && err == nil {
+		out.DueAt = dueAt.UTC()
+		m.mu.Lock()
+		if stored := m.touchpoints[id]; stored != nil {
+			stored.DueAt = out.DueAt
+		}
+		m.mu.Unlock()
+	}
+	return out, err
 }
 func (m *memRepo) ListDuePlannedTouchpoints(ctx context.Context, orgID uuid.UUID, now time.Time, limit int) ([]models.OutreachTouchpoint, error) {
 	m.mu.Lock()

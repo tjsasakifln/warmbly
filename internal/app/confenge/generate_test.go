@@ -379,19 +379,20 @@ func TestDraftUserPromptContainsNoResearchInstruction(t *testing.T) {
 	}
 }
 
-func TestPromptVersionV5(t *testing.T) {
-	if PromptVersion != "confenge.draft.v5" {
+func TestPromptVersionV6(t *testing.T) {
+	if PromptVersion != "confenge.draft.v6" {
 		t.Fatalf("PromptVersion=%s", PromptVersion)
 	}
 	if OutreachDoctrineVersion != "confenge-outreach-v2" {
 		t.Fatalf("doctrine=%s", OutreachDoctrineVersion)
 	}
-	// v4 (2026-08-23) de-shouts edital prose, collapses verbatim repeated
-	// n-grams, removes the "contratação pública: contratação" label stutter and
-	// terminates a fact without producing ",.". The bump is deliberate: copy
-	// composed by v3 is materially different text, so a v3 grant must not
-	// authorize v4 output. Bump this pin only together with that reasoning.
-	if ComposerVersion != "confenge.composer.v4" {
+	// v5 (2026-08-23) replaces hygiene-over-raw-object with a semantic brief:
+	// prose is rendered from decided meaning, the subject is written rather
+	// than sliced from the fact, the sender is a resolved human, and a lead
+	// whose fact cannot be said plainly is refused instead of padded. The bump
+	// is deliberate: copy composed by v4 is materially different text, so a v4
+	// grant must not authorize v5 output. Bump this pin only with that reasoning.
+	if ComposerVersion != "confenge.composer.v5" {
 		t.Fatalf("composer=%s", ComposerVersion)
 	}
 }

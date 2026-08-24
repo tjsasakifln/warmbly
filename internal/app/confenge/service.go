@@ -101,6 +101,8 @@ type Service interface {
 	ResumeDispatch(ctx context.Context, orgID, userID uuid.UUID) *errx.Error
 	CompleteCampaignEmail(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, providerMessageID string, acceptedAt time.Time) error
 	ObserveCampaignEmailAttempt(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, attemptedAt time.Time) error
+	ProcessDispatchQueueOnce(ctx context.Context) (bool, error)
+	ProcessEditorialRecoveryOnce(ctx context.Context) (bool, error)
 
 	// Per-touchpoint human approval cadence.
 	PreparePilotCohort(ctx context.Context, orgID, userID uuid.UUID, accountIDs []uuid.UUID, operation PilotOperation) (*PilotCohortResult, *errx.Error)
@@ -114,6 +116,8 @@ type Service interface {
 	RejectOrSkipTouchpoint(ctx context.Context, orgID, userID, id uuid.UUID, action string) (*models.OutreachTouchpoint, *errx.Error)
 	RejectOrSkipTouchpointReason(ctx context.Context, orgID, userID, id uuid.UUID, action, reason string) (*models.OutreachTouchpoint, *errx.Error)
 	QueueTouchpoint(ctx context.Context, orgID, userID, id uuid.UUID) (*models.OutreachTouchpoint, *errx.Error)
+	DecideReviewTouchpoint(ctx context.Context, orgID, actorID, id uuid.UUID, in ReviewDecisionInput) (*ReviewDecisionResult, *errx.Error)
+	ApproveReviewBatch(ctx context.Context, orgID, actorID uuid.UUID, items []ReviewBatchItem) ([]ReviewBatchItemResult, *errx.Error)
 	DispatchBoundedCohort(ctx context.Context, orgID, actor, authID uuid.UUID, now time.Time, limit int) (*CohortDispatchResult, *errx.Error)
 	CancelAccountTouchpoints(ctx context.Context, orgID, userID, accountID uuid.UUID, reason string) (int, *errx.Error)
 
@@ -133,6 +137,10 @@ type Service interface {
 	// human copy edit for one candidate. It queues, dispatches, sends and
 	// resumes nothing.
 	AdjustHumanGateCandidate(ctx context.Context, orgID, actorID, versionID, candidateID uuid.UUID, in HumanGateAdjustInput) (*HumanGateAdjustResult, *errx.Error)
+	// RecomposeHumanGateCohort forks an immutable version into N+1 by re-running
+	// the composer. Copy may change and members may drop out; recipients and
+	// provenance may not. It queues, dispatches, sends and resumes nothing.
+	RecomposeHumanGateCohort(ctx context.Context, orgID, actorID, versionID uuid.UUID, in HumanGateRecomposeInput) (*HumanGateRecomposeResult, *errx.Error)
 	DecideHumanGateCohort(ctx context.Context, orgID, actorID, versionID uuid.UUID, in HumanGateDecisionInput) (*HumanGateCohort, *errx.Error)
 
 	// confenge-dossier/1.0 manifest references. Card metadata, never a send path.

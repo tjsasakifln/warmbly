@@ -4,11 +4,23 @@ Every CONFENGE outbound (email or WhatsApp) requires explicit human approval of
 that exact message before queue/send. AI never writes `approved_by`.
 
 States: PLANNED → DUE → DRAFTED/NEEDS_REVIEW → APPROVED → QUEUED → SENT.
+Recoverable editorial states: AI_REWRITE_PENDING, ENRICHMENT_PENDING, and
+REJECTED_REWRITE_PENDING. A copy rejection does not discard the lead.
 Terminals: SKIPPED, REJECTED, REPLIED, DNC, BOUNCED, CANCELLED, FAILED.
 
 Transport requires `approved_content_hash == content_hash` and human `approved_by`.
 Edit/regenerate clears approval. CAS on APPROVED→QUEUED. Migration `000085`.
 Cadence policy `confenge.cadence.v1` (no fixed multi-step campaign sequences).
+
+Human approval atomically schedules the exact approved hash for the next
+eligible business window. Scheduling is allowed while dispatch is paused; it
+does not call a provider. The durable worker checks the business window, pause,
+kill switch, DNC, policy authority, recipient and exact hash again before
+transport. Transient transport failures retry with bounded backoff.
+
+An institutional or departmental mailbox requires an explicit human
+acknowledgement on the approval action. That acknowledgement does not turn the
+mailbox into a named person and does not weaken any suppression gate.
 
 ## Fail-closed transport
 
@@ -32,3 +44,18 @@ this filter.
 Transport re-hashes the live draft subject/body/recipient against the touchpoint
 `approved_content_hash`. Editing the draft after approval clears touchpoint
 approval and blocks send until re-approve.
+
+## Editorial recovery and learning
+
+The semantic composer runs first. If its output remains suboptimal and an AI
+provider is configured, a bounded evidence-only rewrite may run synchronously
+or through the editorial recovery worker. A successful rewrite always returns
+to NEEDS_REVIEW. AI cannot approve, queue or send.
+
+Failures and human rejection reasons are aggregated without recipient PII in
+`confenge_editorial_signals`. The same transaction creates a redacted GitHub
+issue outbox item. Operators can inspect or publish those items with
+`confenge editorial issues list|sync`; `sync` requires `--confirm`. Structured,
+versioned guideline proposals are managed with
+`confenge editorial guidelines list|propose|activate`; activation also requires
+explicit confirmation.

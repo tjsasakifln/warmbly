@@ -85,7 +85,11 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 		draft.CreatedAt = existing.CreatedAt
 	}
 
-	recent := recentDraftBodies(ctx, s, orgID, accountID, models.OutreachChannelEmail)
+	excludeDraftID := uuid.Nil
+	if existing != nil {
+		excludeDraftID = existing.ID
+	}
+	recent := recentDraftBodiesExcept(ctx, s, orgID, accountID, models.OutreachChannelEmail, excludeDraftID)
 	in := BuildGenerateInput(ChannelEmailInitial, acc, cand, evidence, recent)
 	pb, _ := LoadPlaybook()
 	st, plan := BuildOutboundPlan(pb, acc, cand, evidence, 1)
@@ -195,16 +199,15 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 	draft.RiskFlags = flags
 	// NEEDS_REVIEW is only for sendable copy awaiting human authorization.
 	switch {
-	case rec.State == RecipientBlocked || plan.Messageability == MessageabilityBlocked:
+	case rec.State == RecipientBlocked:
 		draft.Status = models.OutreachDraftBlocked
 		draft.Subject, draft.BodyText = "", ""
 	case !RecipientStateAuthorizable(rec.State) || plan.Messageability != MessageabilityReady:
-		draft.Status = models.OutreachDraftSkipped
+		draft.Status = models.OutreachDraftEnrichmentPending
 		draft.Subject, draft.BodyText = "", ""
 	default:
 		if !val.OK || strings.TrimSpace(out.BodyText) == "" {
-			draft.Status = models.OutreachDraftSkipped
-			draft.Subject, draft.BodyText = "", ""
+			draft.Status = models.OutreachDraftAIRewritePending
 		} else {
 			draft.Status = models.OutreachDraftNeedsReview
 		}
@@ -566,6 +569,14 @@ func (s *service) SetAI(p generation.Provider) {
 }
 
 func recentDraftBodies(ctx context.Context, s *service, orgID, accountID uuid.UUID, channel string) []string {
+	return recentDraftBodiesExcept(ctx, s, orgID, accountID, channel, uuid.Nil)
+}
+
+// recentDraftBodiesExcept excludes the draft currently being regenerated.
+// Comparing a replacement with its own previous version makes every material
+// context refresh look like a cross-account clone and permanently strands it
+// in AI_REWRITE_PENDING.
+func recentDraftBodiesExcept(ctx context.Context, s *service, orgID, accountID uuid.UUID, channel string, excludeDraftID uuid.UUID) []string {
 	if s == nil || s.repo == nil {
 		return nil
 	}
@@ -576,6 +587,9 @@ func recentDraftBodies(ctx context.Context, s *service, orgID, accountID uuid.UU
 	}
 	var others, same []string
 	for _, d := range list {
+		if excludeDraftID != uuid.Nil && d.ID == excludeDraftID {
+			continue
+		}
 		if channel != "" && d.Channel != "" && d.Channel != channel {
 			continue
 		}

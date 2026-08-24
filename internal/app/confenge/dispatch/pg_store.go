@@ -403,10 +403,17 @@ func (s *PGStore) ClaimNextQueued(ctx context.Context, now time.Time) (*QueueIte
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
+	// A crashed worker must not strand an approved message forever.
+	if _, err := tx.Exec(ctx, `
+		UPDATE confenge_dispatch_queue
+		SET status='queued', reserved_until=NULL, last_error='claim_lease_expired', updated_at=now()
+		WHERE status='reserved' AND reserved_until IS NOT NULL AND reserved_until <= $1`, now); err != nil {
+		return nil, err
+	}
 
 	var q QueueItem
 	err = tx.QueryRow(ctx, `
-		SELECT id, organization_id, channel, draft_id, message_key, COALESCE(recipient_ref,''), due_at, priority, status,
+		SELECT id, organization_id, channel, draft_id, message_key, COALESCE(recipient_ref,''), due_at, priority, attempts, status,
 		       cancel_reason, last_error, created_at
 		FROM confenge_dispatch_queue
 		WHERE status = 'queued' AND due_at <= $1
@@ -414,7 +421,7 @@ func (s *PGStore) ClaimNextQueued(ctx context.Context, now time.Time) (*QueueIte
 		LIMIT 1
 		FOR UPDATE SKIP LOCKED`, now,
 	).Scan(&q.ID, &q.OrganizationID, &q.Channel, &q.DraftID, &q.MessageKey, &q.RecipientRef, &q.DueAt,
-		&q.Priority, &q.Status, &q.CancelReason, &q.LastError, &q.CreatedAt)
+		&q.Priority, &q.Attempts, &q.Status, &q.CancelReason, &q.LastError, &q.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		_ = tx.Commit(ctx)
 		return nil, nil
@@ -423,7 +430,9 @@ func (s *PGStore) ClaimNextQueued(ctx context.Context, now time.Time) (*QueueIte
 		return nil, err
 	}
 	_, err = tx.Exec(ctx, `
-		UPDATE confenge_dispatch_queue SET status = 'reserved', updated_at = now() WHERE id = $1`, q.ID)
+		UPDATE confenge_dispatch_queue
+		SET status='reserved', reserved_until=$2, attempts=attempts+1, updated_at=now()
+		WHERE id=$1`, q.ID, now.Add(DefaultLeaseTTL))
 	if err != nil {
 		return nil, err
 	}
@@ -431,14 +440,26 @@ func (s *PGStore) ClaimNextQueued(ctx context.Context, now time.Time) (*QueueIte
 		return nil, err
 	}
 	q.Status = QueueReserved
+	q.Attempts++
 	return &q, nil
 }
 
 func (s *PGStore) UpdateQueueStatus(ctx context.Context, id uuid.UUID, status, errText string) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE confenge_dispatch_queue
-		SET status = $2, last_error = CASE WHEN $3 <> '' THEN $3 ELSE last_error END, updated_at = now()
+		SET status = $2,
+			last_error = CASE WHEN $3 <> '' THEN $3 ELSE last_error END,
+			reserved_until = CASE WHEN $2 = 'reserved' THEN reserved_until ELSE NULL END,
+			updated_at = now()
 		WHERE id = $1`, id, status, errText)
+	return err
+}
+
+func (s *PGStore) RetryQueue(ctx context.Context, id uuid.UUID, dueAt time.Time, errText string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE confenge_dispatch_queue
+		SET status='queued', due_at=$2, last_error=$3, reserved_until=NULL, updated_at=now()
+		WHERE id=$1 AND status='reserved'`, id, dueAt.UTC(), errText)
 	return err
 }
 

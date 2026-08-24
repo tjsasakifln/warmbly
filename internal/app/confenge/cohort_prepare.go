@@ -307,9 +307,27 @@ func PrepareControlledCohort(accounts []CohortAccountInput, opts CohortPrepareOp
 			continue
 		}
 
-		comp := ComposeControlledInitialDetailed(&in.Account, cand, class)
+		// The composer decides the message and may refuse the lead outright:
+		// a company with no sayable public fact is enrichment work, not filler.
+		comp, briefReasons := ComposeEditorialInitial(&in.Account, cand, class)
+		if len(briefReasons) > 0 {
+			exclude(ref, primaryExclusionReason(briefReasons), mailbox, class)
+			continue
+		}
 		if qa := ValidateCopyForRouteClass(class, comp.Body, comp.Subject, cand); len(qa) > 0 {
 			exclude(ref, "copy_qa_failure", mailbox, class)
+			continue
+		}
+		// The editorial gate is what makes copy_qa=passed a computed claim
+		// rather than a label. It runs on every member, never on a sample.
+		if qa := EditorialQA(comp.Subject, comp.Body, EditorialQAContext{
+			RouteClass:      class,
+			RawFact:         firstNonEmpty(in.Account.FactToMention, in.Account.MomentSummary),
+			SenderFirstName: editorialSenderFirstName(),
+			PersonProven:    composerMaySeePersonName(cand),
+			PersonName:      strings.TrimSpace(cand.Name),
+		}); len(qa) > 0 {
+			exclude(ref, "insufficient_human_quality", mailbox, class)
 			continue
 		}
 		if len(members) >= opts.Limit {
@@ -678,7 +696,7 @@ func FormatCohortPreviewWithOptions(snap *FrozenCohortSnapshot, opts CohortPrevi
 			fmt.Fprintf(&b, "  %s=%d\n", k, p.ByExclusionReason[k])
 		}
 	}
-	writeFounderSamples(&b, snap, opts)
+	writeFounderReview(&b, snap, opts)
 	for _, w := range snap.Warnings {
 		fmt.Fprintf(&b, "\nWARNING: %s\n", w)
 	}

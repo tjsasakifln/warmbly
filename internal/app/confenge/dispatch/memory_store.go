@@ -371,6 +371,7 @@ func (m *MemoryStore) ClaimNextQueued(ctx context.Context, now time.Time) (*Queu
 	})
 	chosen := candidates[0]
 	chosen.Status = QueueReserved
+	chosen.Attempts++
 	cp := *chosen
 	return &cp, nil
 }
@@ -386,6 +387,19 @@ func (m *MemoryStore) UpdateQueueStatus(ctx context.Context, id uuid.UUID, statu
 	if errText != "" {
 		q.LastError = errText
 	}
+	return nil
+}
+
+func (m *MemoryStore) RetryQueue(ctx context.Context, id uuid.UUID, dueAt time.Time, errText string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	q := m.queueByID[id]
+	if q == nil {
+		return fmt.Errorf("queue item not found")
+	}
+	q.Status = QueueQueued
+	q.DueAt = dueAt.UTC()
+	q.LastError = errText
 	return nil
 }
 

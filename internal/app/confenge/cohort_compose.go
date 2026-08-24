@@ -8,7 +8,9 @@ import (
 	"github.com/warmbly/warmbly/internal/models"
 )
 
-var greetingAddresseeRe = regexp.MustCompile(`(?i)(?:ol[áa]|prezad[oa]|dear)\s*,?\s+([A-Za-zÁ-ÿ]+)`)
+// Bounded to the greeting line: \s would run past the newline and read the
+// first word of the next paragraph as the addressee's name.
+var greetingAddresseeRe = regexp.MustCompile(`(?i)(?:ol[áa]|prezad[oa]|dear)[ \t]*,?[ \t]+([A-Za-zÁ-ÿ]+)`)
 
 var teamGreetingTokens = map[string]bool{
 	"equipe": true, "time": true, "pessoal": true, "departamento": true,

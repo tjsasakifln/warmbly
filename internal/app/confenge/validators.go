@@ -10,8 +10,9 @@ import (
 )
 
 // PromptVersion tags generation prompt revisions (see docs/confenge/copy-generation.md).
-// v5: authorizable NEEDS_REVIEW — recipient-safe plan only; P0 hard QA catalog.
-const PromptVersion = "confenge.draft.v5"
+// v6: semantic editorial composition, recoverable soft-failure states and
+// exact-hash approval scheduling. Prior unsent copy must be regenerated.
+const PromptVersion = "confenge.draft.v6"
 
 // DraftClaim is one auditable fact/phrase anchored to evidence ids.
 type DraftClaim struct {

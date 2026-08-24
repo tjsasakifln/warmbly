@@ -150,6 +150,7 @@ type QueueItem struct {
 	RecipientRef   string // email or E.164 for DNC/opt-out cancel before reserve
 	DueAt          time.Time
 	Priority       int
+	Attempts       int
 	Status         string
 	CancelReason   string
 	LastError      string

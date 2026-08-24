@@ -812,7 +812,7 @@ func (h *Handler) ListConfengeReviewTouchpoints(c *gin.Context) {
 	if !ok {
 		return
 	}
-	limit, offset := 50, 0
+	limit, offset := confengeReviewPage(c.Query("limit"), c.Query("offset"))
 	list, xerr := h.ConfengeService.ListReviewTouchpoints(c.Request.Context(), orgID, limit, offset)
 	if xerr != nil {
 		errx.JSON(c, xerr)
@@ -820,6 +820,18 @@ func (h *Handler) ListConfengeReviewTouchpoints(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"data": list})
 }
+
+func confengeReviewPage(limitRaw, offsetRaw string) (int, int) {
+	limit, offset := 100, 0
+	if n, err := strconv.Atoi(strings.TrimSpace(limitRaw)); err == nil && n > 0 && n <= 200 {
+		limit = n
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(offsetRaw)); err == nil && n >= 0 && n <= 100000 {
+		offset = n
+	}
+	return limit, offset
+}
+
 func (h *Handler) GetConfengeTouchpoint(c *gin.Context) {
 	orgID, ok := h.confengeOrg(c)
 	if !ok {
@@ -1065,6 +1077,63 @@ func (h *Handler) QueueConfengeTouchpoint(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": tp})
+}
+
+// DecideConfengeReviewDraft is the exact-hash review contract used by the
+// Control Center. APPROVE schedules for the next eligible business slot and
+// never invokes transport in the request.
+func (h *Handler) DecideConfengeReviewDraft(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errx.JSON(c, errx.ErrUuid)
+		return
+	}
+	var body confenge.ReviewDecisionInput
+	if err := c.ShouldBindJSON(&body); err != nil {
+		errx.JSON(c, errx.New(errx.BadRequest, "invalid review decision body"))
+		return
+	}
+	body.IdempotencyKey = strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	result, xerr := h.ConfengeService.DecideReviewTouchpoint(c.Request.Context(), orgID, userID, id, body)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+func (h *Handler) ApproveConfengeReviewBatch(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		errx.JSON(c, errx.ErrUnauthorized)
+		return
+	}
+	var body struct {
+		Items []confenge.ReviewBatchItem `json:"items"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		errx.JSON(c, errx.New(errx.BadRequest, "invalid review batch body"))
+		return
+	}
+	result, xerr := h.ConfengeService.ApproveReviewBatch(c.Request.Context(), orgID, userID, body.Items)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
 }
 
 func (h *Handler) DispatchConfengeCohort(c *gin.Context) {

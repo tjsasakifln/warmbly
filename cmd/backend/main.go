@@ -1106,6 +1106,12 @@ func main() {
 		}
 		// Async outcome outbox → extra-cli HMAC webhook (idle when URL/secret unset).
 		go confenge.NewOutcomeDeliveryWorker(outreachRepo, confengeCfg, confenge.OutcomeDeliveryOptions{}).Run(ctx)
+		// Exact-hash human approvals are durable schedules. This worker is idle
+		// while paused or outside the configured business window.
+		go confenge.NewDispatchQueueWorker(confengeServiceForHandler, 30*time.Second).Run(ctx)
+		// Suboptimal and explicitly rejected copy is recoverable. AI rewrites run
+		// asynchronously and always return to human review.
+		go confenge.NewEditorialRecoveryWorker(confengeServiceForHandler, time.Minute).Run(ctx)
 		// Continuous feed sync (fail-closed OFF by default). Single-flight inside SyncFeedManifest.
 		if confengeCfg.FeedSyncEnabled {
 			if orgRaw := strings.TrimSpace(os.Getenv("CONFENGE_FEED_SYNC_ORG_ID")); orgRaw != "" {

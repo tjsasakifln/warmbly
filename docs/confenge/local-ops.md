@@ -48,6 +48,10 @@ at `http://localhost:18025`. Nothing real is sent.
 | `go run ./cmd/confenge cohort authorize --manifest PATH --actor UUID --confirm` | Persist the frozen grant and apply it fail-closed to touchpoints |
 | `go run ./cmd/confenge cohort review --id UUID --actor UUID` | Collect live release evidence and print PASS/FAIL/UNKNOWN (not persisted) |
 | `go run ./cmd/confenge cohort review --id UUID --actor UUID --verdict READY_FOR_CONTROLLED_EMAIL_GO_REVIEW --confirm` | Persist the human GO review against the collected live manifest (not a live GO) |
+| `go run ./cmd/confenge editorial issues list` | List redacted editorial engineering work items from the durable outbox |
+| `go run ./cmd/confenge editorial issues sync --confirm` | Publish pending redacted items through the authenticated GitHub CLI |
+| `go run ./cmd/confenge editorial guidelines propose --org-id UUID --actor UUID --version VERSION --rules rules.json` | Store a structured, immutable guideline proposal |
+| `go run ./cmd/confenge editorial guidelines activate --org-id UUID --actor UUID --id UUID --confirm` | Activate one reviewed guideline version and supersede the prior active version |
 | `make confenge-stop-sending` | Operational kill switch (enroll/send refuse) |
 | `make confenge-resume-sending` | Clear kill-switch file |
 | `make confenge-db-backup` | `pg_dump` into `data/backups/` |

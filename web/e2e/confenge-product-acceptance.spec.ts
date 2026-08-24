@@ -5,9 +5,9 @@ import { fileURLToPath } from "node:url";
 
 /**
  * Full Phase L/M path against a live stack with HARD asserts:
- * healthchecks → auth → import → confenge → approve (content_hash + APPROVED)
- * → edit (clears ApprovedContentHash, NEEDS_REVIEW)
- * → re-approve → queue (QUEUED)
+ * healthchecks → auth → import → confenge
+ * → adjust (changes content_hash, stays NEEDS_REVIEW)
+ * → approve exact hash and durably queue (QUEUED)
  * → needs attention
  *
  * Opt-in: CONFENGE_E2E=1
@@ -106,6 +106,7 @@ type Touchpoint = {
   subject?: string;
   account_id?: string;
   draft_id?: string;
+  due_at?: string;
 };
 
 async function loginViaAPIAndMailpit(): Promise<Record<string, string>> {
@@ -693,7 +694,7 @@ async function healthcheckOrThrow(): Promise<void> {
 test.describe("CONFENGE product acceptance UI", () => {
   test.skip(!enabled, "Set CONFENGE_E2E=1 with backend + web + CONFENGE enabled");
 
-  test("import, approve hash, edit invalidates, re-approve queues", async ({ page }) => {
+  test("import, adjust draft, approve exact hash into queue", async ({ page }) => {
     await healthcheckOrThrow();
 
     const tokens = await loginViaAPIAndMailpit();
@@ -822,7 +823,7 @@ test.describe("CONFENGE product acceptance UI", () => {
     const markPass1 = " [pass1]";
     const bodyPass1 = beforeEdit.replace(/\s+$/, "") + markPass1;
 
-    // ── Hard path A: API approve → edit clears hash → re-approve → queue ──
+    // ── Hard path A: API adjust → approve exact hash → durable queue ──
     // (authoritative SM proof; independent of UI transport toast noise)
     let tp = await ensureDraftLinked(
       tokens.access_token,
@@ -830,6 +831,7 @@ test.describe("CONFENGE product acceptance UI", () => {
     );
     expect(tp.draft_id, "queue requires draft_id; generate must link a draft").toBeTruthy();
 
+    const hashBeforeAdjustment = tp.content_hash || "";
     tp = (
       await apiJSON<{ data: Touchpoint }>(
         tokens.access_token,
@@ -843,6 +845,8 @@ test.describe("CONFENGE product acceptance UI", () => {
       )
     ).data;
     expect((tp.state || "").toUpperCase()).toBe("NEEDS_REVIEW");
+    expect(tp.content_hash).not.toBe(hashBeforeAdjustment);
+    expect(tp.approved_content_hash || "").toBe("");
     expect(tp.draft_id).toBeTruthy();
 
     tp = (
@@ -854,37 +858,9 @@ test.describe("CONFENGE product acceptance UI", () => {
       )
     ).data;
     const st1 = (tp.state || "").toUpperCase();
-    expect(st1).toBe("APPROVED");
+    expect(st1).toBe("QUEUED");
     expect((tp.content_hash || "").length).toBeGreaterThanOrEqual(32);
     expect((tp.approved_content_hash || "").length).toBeGreaterThanOrEqual(32);
-    expect(tp.approved_content_hash).toBe(tp.content_hash);
-    const hashAfterApprove = tp.approved_content_hash as string;
-
-    const editedBody = bodyPass1.replace(/\s+$/, "") + " [edited]";
-    tp = (
-      await apiJSON<{ data: Touchpoint }>(
-        tokens.access_token,
-        "POST",
-        `/v1/confenge/touchpoints/${seeded.touchpointId}/edit`,
-        { body_text: editedBody },
-      )
-    ).data;
-    expect((tp.state || "").toUpperCase()).toBe("NEEDS_REVIEW");
-    expect(tp.approved_content_hash || "").toBe("");
-    expect(tp.content_hash).not.toBe(hashAfterApprove);
-    expect((tp.content_hash || "").length).toBeGreaterThanOrEqual(32);
-    // Edit must not wipe draft_id (transport needs it after re-approve).
-    expect(tp.draft_id).toBeTruthy();
-
-    tp = (
-      await apiJSON<{ data: Touchpoint }>(
-        tokens.access_token,
-        "POST",
-        `/v1/confenge/touchpoints/${seeded.touchpointId}/approve`,
-        { generic_recipient_acknowledged: true },
-      )
-    ).data;
-    expect((tp.state || "").toUpperCase()).toBe("APPROVED");
     expect(tp.approved_content_hash).toBe(tp.content_hash);
 
     const approvedSubject = (tp.subject || "").trim();
@@ -904,61 +880,51 @@ test.describe("CONFENGE product acceptance UI", () => {
     // Local enroll may land SENT immediately; governor may leave QUEUED.
     expect(["QUEUED", "SENT"]).toContain(st3);
 
-    // ── Phase H: product queue→SMTP→Mailpit exact delivery ──
-    // Product path: dispatchEmailTouch enrolls then deliverApprovedSMTP when
-    // SMTP_HOST is set (CI confenge job configures Mailpit). No test-side SMTP.
+    // ── Phase H: durable next-window scheduling without premature delivery ──
     const normalize = (s: string) =>
       s.replace(/\r\n/g, "\n").replace(/\s+$/gm, "").trim();
     const wantBody = normalize(approvedBody);
     const wantSubject = normalize(approvedSubject);
+    const scheduledAt = new Date(tp.due_at || "");
+    expect(Number.isNaN(scheduledAt.getTime())).toBe(false);
+    expect(scheduledAt.getTime()).toBeGreaterThan(Date.now());
+
+    // Approval must schedule only. The worker is allowed to transport this
+    // exact payload after due_at, never during the human review request.
     type MailpitMsg = {
       ID: string;
       Subject?: string;
       To?: Array<{ Address?: string }>;
     };
-    let mailpitMatch: {
+    let prematureMailpitMatch: {
       id: string;
       subject: string;
       body: string;
       to: string;
     } | null = null;
-    // After queue, product may have already SMTP'd; poll for exact approved payload.
-    for (let i = 0; i < 50; i++) {
-      const listRes = await fetch(`${MAILPIT}/api/v1/messages`);
-      const list = (await listRes.json()) as { messages?: MailpitMsg[] };
-      for (const m of list.messages || []) {
-        const subj = normalize(m.Subject || "");
-        if (/Login Code|password|verify/i.test(subj)) continue;
-        if (wantSubject && subj !== wantSubject) continue;
-        const bodyRes = await fetch(`${MAILPIT}/api/v1/message/${m.ID}`);
-        const bodyJ = (await bodyRes.json()) as { Text?: string; HTML?: string };
-        const got = normalize(bodyJ.Text || bodyJ.HTML || "");
-        // Exact body after CRLF normalize (product MIME text/plain).
-        if (wantBody.length > 10 && got === wantBody) {
-          const to = (m.To || []).map((t) => t.Address || "").join(",");
-          // Recipient is approved recipient or CONFENGE_SMTP_SINK_EMAIL rewrite.
-          const expectTo = (
-            process.env.CONFENGE_SMTP_SINK_EMAIL ||
-            process.env.CONFENGE_E2E_SINK_EMAIL ||
-            approvedRecipient
-          ).toLowerCase();
-          if (expectTo && !to.toLowerCase().includes(expectTo.split("@")[0] || expectTo)) {
-            // still accept if body/subject exact (sink rewrite may change host)
-            if (!to) continue;
-          }
-          mailpitMatch = { id: m.ID, subject: subj, body: got, to };
-          break;
-        }
+    const listRes = await fetch(`${MAILPIT}/api/v1/messages`);
+    const list = (await listRes.json()) as { messages?: MailpitMsg[] };
+    for (const m of list.messages || []) {
+      const subj = normalize(m.Subject || "");
+      if (/Login Code|password|verify/i.test(subj)) continue;
+      if (wantSubject && subj !== wantSubject) continue;
+      const bodyRes = await fetch(`${MAILPIT}/api/v1/message/${m.ID}`);
+      const bodyJ = (await bodyRes.json()) as { Text?: string; HTML?: string };
+      const got = normalize(bodyJ.Text || bodyJ.HTML || "");
+      if (wantBody.length > 10 && got === wantBody) {
+        prematureMailpitMatch = {
+          id: m.ID,
+          subject: subj,
+          body: got,
+          to: (m.To || []).map((t) => t.Address || "").join(","),
+        };
+        break;
       }
-      if (mailpitMatch) break;
-      await new Promise((r) => setTimeout(r, 300));
     }
     expect(
-      mailpitMatch,
-      "product queue must SMTP approved content to Mailpit (set SMTP_HOST; no test-side SMTP)",
-    ).toBeTruthy();
-    expect(mailpitMatch!.subject).toBe(wantSubject);
-    expect(mailpitMatch!.body).toBe(wantBody);
+      prematureMailpitMatch,
+      "approval must not deliver before the scheduled business-window due_at",
+    ).toBeNull();
 
     // ── UI path B: surface still works (second isolated review TP) ──
     const uiSeed = await ensureReviewTouchpoint(tokens.access_token);
@@ -1025,41 +991,37 @@ test.describe("CONFENGE product acceptance UI", () => {
       code_sha: codeSha || undefined,
       tested_sha: codeSha || undefined,
       command: "playwright confenge-product-acceptance",
-      test_id: "import-approve-edit-invalidate-queue-mailpit",
+      test_id: "import-adjust-approve-next-window-queue",
       touchpoint_id: seeded.touchpointId,
       account_id: seeded.accountId,
       after_approve: {
         state: st1,
-        content_hash_len: (hashAfterApprove || "").length,
+        content_hash_len: (approvedHash || "").length,
         approved_matches_content: true,
         approved_content_hash: approvedHash,
         subject: approvedSubject,
         body_len: approvedBody.length,
         recipient: approvedRecipient,
       },
-      after_edit: {
+      after_adjustment: {
         state: "NEEDS_REVIEW",
-        approved_content_hash_cleared: true,
+        no_stale_approval: true,
         content_hash_changed: true,
-        not_valid_approved_for_send: true,
       },
-      after_reapprove_queue: {
+      after_approve_queue: {
         state: st3,
         approved_matches_content: true,
         queued_or_sent: true,
       },
-      mailpit_exact_delivery: {
-        required_when_sent: true,
+      next_business_window_queue: {
         transport_state: st3,
-        matched: !!mailpitMatch,
-        mailpit_message_id: mailpitMatch?.id || null,
+        scheduled_for: scheduledAt.toISOString(),
+        scheduled_in_future: true,
+        premature_delivery: !!prematureMailpitMatch,
         approved_subject: approvedSubject,
-        mailpit_subject: mailpitMatch?.subject || null,
         approved_body_prefix: approvedBody.slice(0, 120),
-        body_match: !!mailpitMatch,
         recipient_meta: approvedRecipient,
-        mailpit_to: mailpitMatch?.to || null,
-        note: "Body must match approved content; recipient may be controlled sink",
+        note: "Worker may transport only this approved hash at or after due_at",
       },
       ui_approve_queue: {
         touchpoint_id: uiSeed.touchpointId,
@@ -1077,37 +1039,26 @@ test.describe("CONFENGE product acceptance UI", () => {
       path.join(PROOF_DIR, "playwright-live-pass.json"),
       JSON.stringify(proof, null, 2),
     );
-    // Dedicated mailpit gate evidence (mechanical, same run as Playwright).
-    if (mailpitMatch && st3 === "SENT") {
-      fs.writeFileSync(
-        path.join(PROOF_DIR, "mailpit_exact_delivery.json"),
-        JSON.stringify(
-          {
-            result: "PASS",
-            pass: true,
-            gate: "PASS",
-            hard_asserts: true,
-            generated_at: new Date().toISOString(),
-            at: new Date().toISOString(),
-            code_sha: codeSha || undefined,
-            tested_sha: codeSha || undefined,
-            command: "playwright confenge-product-acceptance mailpit compare",
-            test_id: "mailpit-exact-body-match",
-            touchpoint_id: seeded.touchpointId,
-            approved_content_hash: approvedHash,
-            approved_subject: approvedSubject,
-            approved_body: approvedBody,
-            approved_recipient_meta: approvedRecipient,
-            mailpit_message_id: mailpitMatch.id,
-            mailpit_subject: mailpitMatch.subject,
-            mailpit_to: mailpitMatch.to,
-            body_match: true,
-            subject_present: mailpitMatch.subject.length > 0,
-          },
-          null,
-          2,
-        ),
-      );
-    }
+    fs.writeFileSync(
+      path.join(PROOF_DIR, "next_window_queue.json"),
+      JSON.stringify(
+        {
+          result: "PASS",
+          pass: true,
+          gate: "PASS",
+          hard_asserts: true,
+          generated_at: new Date().toISOString(),
+          code_sha: codeSha || undefined,
+          tested_sha: codeSha || undefined,
+          test_id: "approved-exact-hash-next-window-no-premature-delivery",
+          touchpoint_id: seeded.touchpointId,
+          approved_content_hash: approvedHash,
+          scheduled_for: scheduledAt.toISOString(),
+          premature_delivery: false,
+        },
+        null,
+        2,
+      ),
+    );
   });
 });

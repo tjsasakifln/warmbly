@@ -88,6 +88,9 @@ type OutreachRepository interface {
 	ListTouchpoints(ctx context.Context, orgID, accountID uuid.UUID, state string, limit, offset int) ([]models.OutreachTouchpoint, error)
 	ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, limit, offset int) ([]models.OutreachTouchpoint, error)
 	CASQueueTouchpoint(ctx context.Context, orgID, id uuid.UUID, expectedContentHash string) (*models.OutreachTouchpoint, error)
+	// CASScheduleTouchpoint atomically binds an approved hash to the durable
+	// dispatch queue. It schedules only, and never invokes transport.
+	CASScheduleTouchpoint(ctx context.Context, orgID, id uuid.UUID, expectedContentHash, messageKey string, dueAt time.Time) (*models.OutreachTouchpoint, error)
 	CancelOpenTouchpoints(ctx context.Context, orgID, accountID uuid.UUID, terminalState, stopReason string) (int, error)
 	// ListDuePlannedTouchpoints returns PLANNED rows with due_at <= now (caller filters prior release).
 	ListDuePlannedTouchpoints(ctx context.Context, orgID uuid.UUID, now time.Time, limit int) ([]models.OutreachTouchpoint, error)

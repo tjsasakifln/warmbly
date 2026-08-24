@@ -25,12 +25,13 @@ const (
 
 // ComposerVersion stamps the outbound-safe composer. Prior-version unsent
 // drafts are identifiable and must be regenerated.
-// Bumped to v4 on 2026-08-23: the projection now de-shouts edital prose,
-// collapses verbatim repeated n-grams, stops the "contratação pública:
-// contratação" label stutter and terminates a fact without producing ",.".
-// Copy composed by v3 is materially different text, so a v3 grant must not
-// authorize v4 output — release_manifest.go already fails closed on drift.
-const ComposerVersion = "confenge.composer.v4"
+// Bumped to v5 on 2026-08-23: composition is no longer a hygiene pass over the
+// raw PNCP object. The composer now builds a semantic brief and renders prose
+// from it, writes the subject instead of slicing the fact, resolves a real
+// human sender and refuses a lead whose fact cannot be said plainly. v4 output
+// and v5 output are materially different text, so a v4 grant must not
+// authorize v5 copy; release_manifest.go already fails closed on drift.
+const ComposerVersion = "confenge.composer.v5"
 
 // Outbound hook classes from the service playbook.
 const (
