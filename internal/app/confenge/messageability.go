@@ -28,10 +28,13 @@ const (
 // Bumped to v5 on 2026-08-23: composition is no longer a hygiene pass over the
 // raw PNCP object. The composer now builds a semantic brief and renders prose
 // from it, writes the subject instead of slicing the fact, resolves a real
-// human sender and refuses a lead whose fact cannot be said plainly. v4 output
-// and v5 output are materially different text, so a v4 grant must not
-// authorize v5 copy; release_manifest.go already fails closed on drift.
-const ComposerVersion = "confenge.composer.v5"
+// human sender and refuses a lead whose fact cannot be said plainly.
+// Bumped to v6 on 2026-08-24: the sentence saying what the sender does is read
+// from the lead's own service playbook instead of collapsing to one string, and
+// the closing ask follows the route class. Two v5 messages to different services
+// were byte-identical below the fact; two v6 messages are not. A v5 grant must
+// not authorize v6 copy; release_manifest.go already fails closed on drift.
+const ComposerVersion = "confenge.composer.v6"
 
 // Outbound hook classes from the service playbook.
 const (

@@ -362,24 +362,162 @@ func TestCorpusQADetectsMailMerge(t *testing.T) {
 	}
 }
 
-// TestCorpusQAAllowsSharedBoilerplate pins that presentation and sign-off are
-// allowed to repeat, so the corpus check does not force fake variety.
-func TestCorpusQAAllowsSharedBoilerplate(t *testing.T) {
-	mk := func(ref, fact, subject string) FrozenCohortMember {
-		return FrozenCohortMember{
-			AccountRef: ref,
-			Subject:    subject,
-			BodyText: "Olá,\n\nMeu nome é Tiago, da CONFENGE. Vi uma contratação envolvendo a empresa na " + fact + ".\n\n" +
-				"Trabalho com apoio a empresas de engenharia em contratos públicos e queria falar com quem cuida dessa frente por aí. Você consegue me indicar a pessoa certa?\n\nObrigado,\nTiago",
-		}
+// corpusMember writes one cohort member the way the composer does: a shared
+// greeting and sign-off around a fact and a practice line of its own.
+func corpusMember(ref, fact, subject, practice string) FrozenCohortMember {
+	return FrozenCohortMember{
+		AccountRef: ref,
+		Subject:    subject,
+		BodyText: "Olá,\n\nMeu nome é Tiago, da CONFENGE. Vi uma contratação envolvendo a empresa na " + fact + ".\n\n" +
+			practice + ". Queria falar com quem cuida dessa frente por aí. Você consegue me indicar a pessoa certa?\n\nObrigado,\nTiago",
 	}
+}
+
+// TestCorpusQAAllowsSharedBoilerplate pins that presentation and sign-off are
+// allowed to repeat, so the corpus check does not force fake variety. A real
+// person does open and close mail the same way; the defect is a shared middle.
+func TestCorpusQAAllowsSharedBoilerplate(t *testing.T) {
 	members := []FrozenCohortMember{
-		mk("a", "recuperação estrutural da ponte sobre o Rio Sapucaí", "Ponte sobre o Rio Sapucaí"),
-		mk("b", "pavimentação asfáltica em CBUQ na avenida Brasil", "Pavimentação asfáltica em CBUQ"),
-		mk("c", "reforma da escola municipal do centro", "Reforma da escola municipal"),
+		corpusMember("a", "recuperação estrutural da ponte sobre o Rio Sapucaí", "Ponte sobre o Rio Sapucaí",
+			"Trabalho com reajuste contratual em contratos públicos de engenharia"),
+		corpusMember("b", "pavimentação asfáltica em CBUQ na avenida Brasil", "Pavimentação asfáltica em CBUQ",
+			"Acompanho carteiras de contratos públicos de engenharia e o que muda neles"),
+		corpusMember("c", "reforma da escola municipal do centro", "Reforma da escola municipal",
+			"Trabalho com diagnóstico de contratos públicos em empresas de engenharia"),
 	}
 	if findings := CorpusQA(members); len(findings) > 0 {
 		t.Fatalf("distinct facts were flagged as a mail merge: %v", findings)
+	}
+}
+
+// TestCorpusQAFlagsSharedPracticeLine pins the corpus defect this gate exists
+// for: every fact is different, so each message reads fine alone, and the one
+// sentence that is supposed to say what CONFENGE would do for THIS lead is the
+// same sentence in all of them.
+func TestCorpusQAFlagsSharedPracticeLine(t *testing.T) {
+	const shared = "Trabalho com apoio a empresas de engenharia em contratos públicos"
+	members := []FrozenCohortMember{
+		corpusMember("a", "recuperação estrutural da ponte sobre o Rio Sapucaí", "Ponte sobre o Rio Sapucaí", shared),
+		corpusMember("b", "pavimentação asfáltica em CBUQ na avenida Brasil", "Pavimentação asfáltica em CBUQ", shared),
+		corpusMember("c", "reforma da escola municipal do centro", "Reforma da escola municipal", shared),
+		corpusMember("d", "drenagem urbana do bairro industrial", "Drenagem urbana do bairro", shared),
+	}
+	findings := CorpusQA(members)
+	for _, ref := range []string{"a", "b", "c", "d"} {
+		if !containsStr(findings[ref], "corpus_uniform_practice_line") {
+			t.Errorf("member %s kept a shared practice line: %v", ref, findings[ref])
+		}
+	}
+}
+
+// TestCorpusQAAllowsAPracticeLineAMinorityShares pins that repetition tracking
+// a real service is not a defect. Two leads on the same service legitimately
+// say the same thing; the gate refuses uniformity, not agreement.
+func TestCorpusQAAllowsAPracticeLineAMinorityShares(t *testing.T) {
+	const monitoring = "Acompanho carteiras de contratos públicos de engenharia e o que muda neles"
+	const diagnostic = "Trabalho com diagnóstico de contratos públicos em empresas de engenharia"
+	members := []FrozenCohortMember{
+		corpusMember("a", "recuperação estrutural da ponte sobre o Rio Sapucaí", "Ponte sobre o Rio Sapucaí", monitoring),
+		corpusMember("b", "pavimentação asfáltica em CBUQ na avenida Brasil", "Pavimentação asfáltica em CBUQ", monitoring),
+		corpusMember("c", "reforma da escola municipal do centro", "Reforma da escola municipal", diagnostic),
+		corpusMember("d", "drenagem urbana do bairro industrial", "Drenagem urbana do bairro", diagnostic),
+	}
+	if findings := CorpusQA(members); len(findings) > 0 {
+		t.Fatalf("a practice line shared by half the cohort was flagged: %v", findings)
+	}
+}
+
+// TestPracticeLineVariesByServiceCode pins the mechanism: the sentence differs
+// because the work differs, read from the service playbook and from no other
+// source. Nothing here is random, hashed or rotated.
+func TestPracticeLineVariesByServiceCode(t *testing.T) {
+	monitoring := practiceForAccount(&models.OutreachAccount{ServiceCode: "MONITORAMENTO_CONTRATUAL"})
+	diagnostic := practiceForAccount(&models.OutreachAccount{ServiceCode: "DIAGNOSTICO"})
+	if monitoring == diagnostic {
+		t.Fatalf("two different services produced one sentence: %q", monitoring)
+	}
+	for _, p := range []string{monitoring, diagnostic} {
+		if p == basePractice {
+			t.Fatalf("a service with a playbook entry fell back to the generic line: %q", p)
+		}
+	}
+	// The real feed writes lowercase alias codes; they must resolve the same way.
+	if got := practiceForAccount(&models.OutreachAccount{ServiceCode: "gestao_monitoramento_contratual"}); got != monitoring {
+		t.Fatalf("alias code resolved to %q, want %q", got, monitoring)
+	}
+	// A service nobody has a playbook for claims no specialty.
+	if got := practiceForAccount(&models.OutreachAccount{ServiceCode: "SERVICO_INEXISTENTE"}); got != basePractice {
+		t.Fatalf("an unknown service invented a specialty: %q", got)
+	}
+	// Determinism: same input, same output, every time.
+	for i := 0; i < 50; i++ {
+		if practiceForAccount(&models.OutreachAccount{ServiceCode: "DIAGNOSTICO"}) != diagnostic {
+			t.Fatal("practiceForAccount is not deterministic")
+		}
+	}
+}
+
+// TestMomentRefinesPracticeOnlyWhenItNamesAnEvent pins that an unmatched or
+// context-only moment can no longer collapse the corpus onto one sentence,
+// which is what PORTFOLIO_REVIEW did to every account in production.
+func TestMomentRefinesPracticeOnlyWhenItNamesAnEvent(t *testing.T) {
+	monitoring := practiceForAccount(&models.OutreachAccount{ServiceCode: "MONITORAMENTO_CONTRATUAL"})
+	diagnostic := practiceForAccount(&models.OutreachAccount{ServiceCode: "DIAGNOSTICO"})
+
+	// PORTFOLIO_REVIEW is the moment every production account carries. It names
+	// context, not work, so each account keeps its own service line.
+	if got := practiceForAccount(&models.OutreachAccount{ServiceCode: "MONITORAMENTO_CONTRATUAL", MomentCode: "PORTFOLIO_REVIEW"}); got != monitoring {
+		t.Fatalf("a context moment overrode the service: %q", got)
+	}
+	if got := practiceForAccount(&models.OutreachAccount{ServiceCode: "DIAGNOSTICO", MomentCode: "PORTFOLIO_REVIEW"}); got != diagnostic {
+		t.Fatalf("a context moment collapsed two services onto one line: %q", got)
+	}
+	// A concrete contractual event is the honest reason for writing, so it wins.
+	aditivo := practiceForAccount(&models.OutreachAccount{ServiceCode: "DIAGNOSTICO", MomentCode: "ADITIVO_RECENTE"})
+	if aditivo == diagnostic || aditivo == basePractice {
+		t.Fatalf("a named contractual event did not sharpen the practice line: %q", aditivo)
+	}
+}
+
+// TestEveryServicePracticeLineClearsTheEditorialGate pins that no service can
+// be added to the playbook with a practice sentence the composer could not send.
+func TestEveryServicePracticeLineClearsTheEditorialGate(t *testing.T) {
+	t.Setenv(EnvSenderName, "Tiago Sasaki")
+	pb := MustPlaybook()
+	seen := map[string]string{}
+	for _, svc := range pb.Services.Services {
+		acc := &models.OutreachAccount{
+			NomeFantasia:  "Construtora Exemplo",
+			FactToMention: liveV1RawFact,
+			ServiceCode:   svc.Code,
+		}
+		practice := practiceForAccount(acc)
+		if practice == basePractice {
+			t.Errorf("service %s has no outbound practice of its own", svc.Code)
+		}
+		if prev, dup := seen[practice]; dup {
+			t.Errorf("services %s and %s share one practice line: %q", prev, svc.Code, practice)
+		}
+		seen[practice] = svc.Code
+		for _, class := range []string{
+			RouteClassGenericCompany,
+			RouteClassPublicCompanyFreemail,
+			RouteClassRoleOrDepartment,
+			RouteClassDirectPerson,
+		} {
+			out, reasons := ComposeEditorialInitial(acc, &models.OutreachContactCandidate{Email: "contato@exemplo.com.br"}, class)
+			if len(reasons) > 0 {
+				t.Fatalf("service %s route %s refused: %v", svc.Code, class, reasons)
+			}
+			codes := EditorialQA(out.Subject, out.Body, EditorialQAContext{
+				RouteClass:      class,
+				RawFact:         liveV1RawFact,
+				SenderFirstName: "Tiago",
+			})
+			if len(codes) > 0 {
+				t.Fatalf("service %s route %s emitted copy its own gate refuses: %v\n%s", svc.Code, class, codes, out.Body)
+			}
+		}
 	}
 }
 

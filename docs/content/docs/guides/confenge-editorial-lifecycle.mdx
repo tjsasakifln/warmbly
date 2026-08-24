@@ -67,6 +67,34 @@ Version N+1 is born with no validation, no review, no approval and no `GO`. It q
 
 The response includes a report of what the composer kept, dropped and rewrote: `parent_members`, `kept_members`, `excluded_members`, `exclusions`, `by_reason_code`, `composer_before` and `composer_after`. Each member passes editorial QA again, so a member whose rewritten copy fails is excluded with its reason code rather than carried forward, and corpus QA still refuses survivors that read as the same mail merge as a neighbour.
 
+## What makes one message different from the next
+
+Two first emails to two companies share a greeting and a sign-off, because a real person opens and closes mail the same way. What they must not share is the middle.
+
+The sentence saying what CONFENGE would do for this lead is read from the service playbook entry that matches the account's `service_code`, so a lead on contract monitoring and a lead on contractual diagnosis say different things because the work is different. A `moment_code` sharpens that sentence only when it names a concrete contractual event such as an aditivo, a medição or a prorrogação. A context moment such as a portfolio review names no work, so it leaves the service line standing instead of pulling every lead onto one sentence. A service with no playbook entry falls back to a line that claims no specialty, because claiming one nobody can tie to a service would be inventing the reason for writing.
+
+The closing question follows the route class rather than being one fixed routing ask:
+
+| Route class | What the message asks |
+|-------------|-----------------------|
+| `GENERIC_COMPANY`, `PUBLIC_COMPANY_FREEMAIL` | To be routed: a company-wide mailbox is a door, never proof of the right reader. |
+| `ROLE_OR_DEPARTMENT` | Whether the frontier belongs to that area, since a department mailbox may already be the right team. |
+| `DIRECT_PERSON` with a proven name | Whether it makes sense to talk. It never asks to be forwarded. |
+| `DIRECT_PERSON` with no proven name | Whether the subject passes through the mailbox owner. It addresses nobody by name and invents none. |
+
+## Corpus QA refuses a shared middle
+
+Corpus QA judges a cohort as a corpus, not message by message, and removes the offending members rather than injecting synonyms: artificial variation reads worse than repetition.
+
+| Code | What it refuses |
+|------|-----------------|
+| `corpus_identical_body` | Two members whose bodies are byte-identical. |
+| `corpus_identical_subject` | One subject shared by more than two recipients. |
+| `corpus_uniform_opening` | Nearly every message opening on the same distinctive sentence. |
+| `corpus_uniform_practice_line` | Nearly every message carrying the same sentence about what CONFENGE would do for this lead. Repetition that tracks a real shared service is allowed; near-total uniformity means the sentence is not tracking the service at all. |
+| `corpus_near_duplicate` | Two members whose company-specific content is a near copy of each other. |
+| `corpus_no_distinctive_content` | A member with nothing left once the shared frame is stripped. |
+
 ## Two editorial QA refusals worth knowing
 
 Editorial QA gained two deterministic checks that mostly show up as recompose exclusions:

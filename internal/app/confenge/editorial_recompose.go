@@ -112,6 +112,8 @@ func recomposeMember(m *FrozenCohortMember) (FrozenCohortMember, []string) {
 	acc := &models.OutreachAccount{
 		NomeFantasia:  m.Company,
 		FactToMention: sourceFact,
+		ServiceCode:   m.ServiceCode,
+		MomentCode:    m.MomentCode,
 	}
 	cand := &models.OutreachContactCandidate{
 		Email:          m.Mailbox,

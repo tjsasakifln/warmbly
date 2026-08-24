@@ -84,10 +84,15 @@ func senderFromFullName(full string) (SenderIdentity, error) {
 	return SenderIdentity{FirstName: titleWordPT(first), FullName: strings.Join(cleaned, " ")}, nil
 }
 
-// AskKind is the single action the message asks for.
+// AskKind is the single action the message asks for. The ask follows the route:
+// a company-wide mailbox genuinely needs routing, a department mailbox may
+// already be the right team, and a personal mailbox is never asked to forward
+// the mail to somebody else.
 const (
-	AskRouting     = "ASK_ROUTING"
-	AskOwnerDirect = "ASK_OWNER_DIRECT"
+	AskRouting         = "ASK_ROUTING"
+	AskOwnerDirect     = "ASK_OWNER_DIRECT"
+	AskDepartmentOwns  = "ASK_DEPARTMENT_OWNS"
+	AskPersonalMailbox = "ASK_PERSONAL_MAILBOX"
 )
 
 // BriefRecipient carries only what is proven about the reader.
@@ -114,24 +119,76 @@ type MessageBrief struct {
 // Messageable reports whether the brief can be rendered at all.
 func (b MessageBrief) Messageable() bool { return len(b.ReasonCodes) == 0 }
 
-// practiceForAccount says what CONFENGE does, tied to the account's own
-// service context so the sentence is not identical across the corpus.
+// basePractice is what CONFENGE can say when the lead carries no service the
+// playbook knows. It claims no specialty, because claiming one we cannot tie to
+// a service code would be inventing the reason for writing.
+const basePractice = "Trabalho com apoio a empresas de engenharia em contratos públicos"
+
+// practiceForAccount says what CONFENGE would actually do for this lead, read
+// from the service playbook. Two accounts on different services say different
+// things because the work differs, not because a phrase was rotated.
 func practiceForAccount(acc *models.OutreachAccount) string {
-	const base = "Trabalho com apoio a empresas de engenharia em contratos públicos"
 	if acc == nil {
-		return base
+		return basePractice
 	}
-	switch strings.ToUpper(strings.TrimSpace(acc.MomentCode)) {
-	case "REAJUSTE", "REAJUSTE_14133":
-		return "Trabalho com reajuste e reequilíbrio em contratos públicos de engenharia"
-	case "ADITIVO", "ADDENDUM", "CONTRACT_EXTENSION":
-		return "Trabalho com aditivos e prorrogação em contratos públicos de engenharia"
-	case "GLOSA_MEDICAO":
-		return "Trabalho com medição e glosa em contratos públicos de engenharia"
-	case "LICITACAO", "EDITAL":
-		return "Trabalho com apoio a empresas de engenharia em licitações públicas"
+	pb, err := LoadPlaybook()
+	if err != nil {
+		return basePractice
 	}
-	return base
+	svc := pb.ResolveServicePlaybook(acc.ServiceCode)
+	// With no service on the account the moment is the only thing that says what
+	// work is in play, so it is read as the service. With a service already set
+	// the moment may only sharpen it, and only when it names a concrete
+	// contractual event: a context moment such as a portfolio review names no
+	// work and must not pull every lead onto one sentence.
+	if svc == nil {
+		svc = pb.ResolveServicePlaybook(acc.MomentCode)
+	} else if t := pb.ResolveTrigger(acc.MomentCode); t != nil && strings.TrimSpace(t.RefinesService) != "" {
+		if sharper := pb.ResolveServicePlaybook(t.RefinesService); sharper != nil {
+			svc = sharper
+		}
+	}
+	if svc != nil {
+		if p := strings.TrimSpace(svc.OutboundPractice); p != "" {
+			return p
+		}
+	}
+	return basePractice
+}
+
+// askKindForRoute picks the one question that fits the door being knocked on.
+func askKindForRoute(class string, personProven bool) string {
+	switch strings.ToUpper(strings.TrimSpace(class)) {
+	case RouteClassDirectPerson:
+		if personProven {
+			return AskOwnerDirect
+		}
+		// A personal mailbox with no proven name: ask whether the subject is
+		// theirs, never ask the owner of the box to route us past themselves.
+		return AskPersonalMailbox
+	case RouteClassRoleOrDepartment:
+		return AskDepartmentOwns
+	default:
+		return AskRouting
+	}
+}
+
+// renderAsk writes the closing paragraph. Every branch states the practice
+// first, so the question is anchored to a reason and not to a template slot.
+// The practice line is always closed with a period rather than joined with a
+// conjunction, because a practice sentence that already contains one would
+// otherwise read as two clauses stapled together.
+func renderAsk(practice, kind string) string {
+	switch kind {
+	case AskOwnerDirect:
+		return practice + ". Faz sentido conversarmos sobre essa frente?"
+	case AskPersonalMailbox:
+		return practice + ". Essa frente passa por você ou por outra pessoa aí?"
+	case AskDepartmentOwns:
+		return practice + ". Essa frente fica com a área de vocês ou devo procurar outra?"
+	default:
+		return practice + ". Queria falar com quem cuida dessa frente por aí. Você consegue me indicar a pessoa certa?"
+	}
 }
 
 // BuildMessageBrief decides the message. It refuses rather than padding: a
@@ -163,13 +220,8 @@ func BuildMessageBrief(acc *models.OutreachAccount, cand *models.OutreachContact
 		}
 	}
 
-	// A department mailbox is the right door, never proof of the right reader,
-	// so every route but a proven person asks to be routed.
-	if b.Recipient.PersonProven && b.RouteClass == RouteClassDirectPerson {
-		b.AskKind = AskOwnerDirect
-	} else {
-		b.AskKind = AskRouting
-	}
+	// A department mailbox is the right door, never proof of the right reader.
+	b.AskKind = askKindForRoute(b.RouteClass, b.Recipient.PersonProven)
 
 	b.Fact = DigestPublicFact(firstNonEmpty(acc.FactToMention, acc.MomentSummary))
 	if b.Fact.Phrase == "" {
@@ -305,13 +357,7 @@ func RenderBrief(b MessageBrief) ComposedInitial {
 		observation = "Entrei em contato por causa da atuação " + companyRef + " em contratos públicos de engenharia."
 	}
 
-	ask := ""
-	switch b.AskKind {
-	case AskOwnerDirect:
-		ask = b.Practice + ". Faz sentido conversarmos sobre essa frente?"
-	default:
-		ask = b.Practice + " e queria falar com quem cuida dessa frente por aí. Você consegue me indicar a pessoa certa?"
-	}
+	ask := renderAsk(b.Practice, b.AskKind)
 
 	var sb strings.Builder
 	sb.WriteString(greeting)
@@ -331,7 +377,7 @@ func RenderBrief(b MessageBrief) ComposedInitial {
 	out.FactSource = FactSourceFactToMention
 	out.CTA = ask
 	out.Theme = b.Practice
-	if b.AskKind == AskOwnerDirect {
+	if b.AskKind == AskOwnerDirect || b.AskKind == AskPersonalMailbox {
 		out.CTASource = CTASourceAccount
 	}
 	return out
@@ -364,8 +410,13 @@ func ComposeEditorialTouch(acc *models.OutreachAccount, cand *models.OutreachCon
 		greeting = "Olá, " + b.Recipient.PersonFirstName
 	}
 	ask := "Você consegue me indicar quem cuida dessa frente por aí?"
-	if b.AskKind == AskOwnerDirect {
+	switch b.AskKind {
+	case AskOwnerDirect:
 		ask = "Faz sentido conversarmos sobre essa frente?"
+	case AskPersonalMailbox:
+		ask = "Essa frente passa por você ou por outra pessoa aí?"
+	case AskDepartmentOwns:
+		ask = "Essa frente fica com vocês ou devo procurar outra área?"
 	}
 	body := greeting + ",\n\nRetomo meu contato sobre " + b.Fact.Phrase + ". " + ask +
 		"\n\nObrigado,\n" + b.Sender.FirstName

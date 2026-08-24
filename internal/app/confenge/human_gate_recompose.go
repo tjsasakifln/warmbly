@@ -124,6 +124,7 @@ func (s *service) RecomposeHumanGateCohort(ctx context.Context, orgID, actorID, 
 	if err != nil {
 		return nil, humanGateError(errx.Internal, "cohort_read_failed", "cohort version could not be read")
 	}
+	s.recoverMemberServiceClassification(ctx, orgID, source)
 	next, report, err := RecomposeManifest(source)
 	if err != nil {
 		return nil, humanGateError(errx.Unprocessable, "recompose_failed", err.Error())
@@ -395,4 +396,29 @@ func humanGateRecomposeReplayReport(parent, stored *FrozenCohortSnapshot) Recomp
 		report.ByReasonCode[e.ReasonCode]++
 	}
 	return report
+}
+
+// recoverMemberServiceClassification fills the service and moment codes on the
+// working copy of a manifest frozen before those fields existed. It reads
+// CONFENGE's own classification of the account, never the lead's public record,
+// so this is not the upstream re-read that would make a recomposition a CREATE.
+// The stored parent is untouched: source is already a deep copy.
+func (s *service) recoverMemberServiceClassification(ctx context.Context, orgID uuid.UUID, source *FrozenCohortSnapshot) {
+	if source == nil || s.repo == nil {
+		return
+	}
+	for i := range source.Members {
+		m := &source.Members[i]
+		if strings.TrimSpace(m.ServiceCode) != "" || m.AccountID == uuid.Nil {
+			continue
+		}
+		acc, err := s.repo.GetAccount(ctx, orgID, m.AccountID)
+		if err != nil || acc == nil {
+			continue
+		}
+		m.ServiceCode = strings.TrimSpace(acc.ServiceCode)
+		if strings.TrimSpace(m.MomentCode) == "" {
+			m.MomentCode = strings.TrimSpace(acc.MomentCode)
+		}
+	}
 }
