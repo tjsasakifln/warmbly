@@ -309,16 +309,22 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	if acc.DoNotContact || acc.Blocked {
 		return nil, errx.New(errx.BadRequest, "account blocked or DNC")
 	}
-	if err := RequireTargetFit(acc); err != nil {
-		return nil, errx.New(errx.BadRequest, err.Error())
-	}
 	var cand *models.OutreachContactCandidate
 	if tp.ContactCandidateID != nil {
 		cand, _ = s.repo.GetCandidate(ctx, orgID, *tp.ContactCandidateID)
 	}
+	var targetFitRecoveryReason string
 	if tp.Channel != models.OutreachChannelWhatsApp {
-		if err := RequireEmailOutbound(acc, cand); err != nil {
-			return nil, errx.New(errx.BadRequest, err.Error())
+		var gateErr error
+		targetFitRecoveryReason, gateErr = requireEmailCandidateForDraft(acc, cand)
+		if gateErr != nil {
+			return nil, errx.New(errx.BadRequest, gateErr.Error())
+		}
+	} else {
+		var gateErr error
+		targetFitRecoveryReason, gateErr = targetFitForDraft(acc)
+		if gateErr != nil {
+			return nil, errx.New(errx.BadRequest, gateErr.Error())
 		}
 	}
 	allCands, listErr := s.repo.ListCandidates(ctx, orgID, tp.AccountID)
@@ -478,6 +484,10 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 			val.Errors = appendUnique(val.Errors, rec.Reason)
 		}
 	}
+	if targetFitRecoveryReason != "" {
+		val.OK = false
+		val.Errors = appendUnique(val.Errors, targetFitRecoveryReason)
+	}
 	risk, flags := ClassifyRisk(acc, cand, synth, val)
 	for _, code := range editorialReasons {
 		flags = appendUnique(flags, "editorial_"+code)
@@ -491,6 +501,10 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 		risk = "RED"
 		flags = appendUnique(flags, "recipient_"+strings.ToLower(rec.State))
 		flags = appendUnique(flags, rec.ReasonCodes...)
+	}
+	if targetFitRecoveryReason != "" {
+		risk = "RED"
+		flags = appendUnique(flags, strings.ToLower(targetFitRecoveryReason))
 	}
 	valJSON := PackValidationWithPlan(val, st, plan, recipient)
 	allowTemplateGREEN := false
@@ -526,6 +540,8 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	case rec.State == RecipientBlocked:
 		draftStatus = models.OutreachDraftBlocked
 		subject, body = "", ""
+	case targetFitRecoveryReason != "":
+		draftStatus = models.OutreachDraftEnrichmentPending
 	case !RecipientStateAuthorizable(rec.State):
 		draftStatus = models.OutreachDraftEnrichmentPending
 	case plan.Messageability == MessageabilityBlocked:
@@ -583,7 +599,9 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	}
 	if draftStatus == models.OutreachDraftAIRewritePending || draftStatus == models.OutreachDraftEnrichmentPending {
 		reason := "suboptimal_copy"
-		if len(editorialReasons) > 0 {
+		if targetFitRecoveryReason != "" {
+			reason = targetFitRecoveryReason
+		} else if len(editorialReasons) > 0 {
 			reason = editorialReasons[0]
 		} else if len(plan.ReasonCodes) > 0 {
 			reason = plan.ReasonCodes[0]
@@ -609,7 +627,7 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 		tp.State = models.TouchpointDrafted
 	}
 	if draftStatus != models.OutreachDraftNeedsReview {
-		tp.StopReason = firstNonEmpty(rec.Reason, plan.Reason, "recipient_"+strings.ToLower(rec.State), "messageability_"+strings.ToLower(plan.Messageability))
+		tp.StopReason = firstNonEmpty(targetFitRecoveryReason, rec.Reason, plan.Reason, "recipient_"+strings.ToLower(rec.State), "messageability_"+strings.ToLower(plan.Messageability))
 	}
 	tp.ServiceCode, tp.FactUsed, tp.EvidenceIDs = acc.ServiceCode, draft.FactUsed, draft.EvidenceIDs
 	// Capture message-material context at generation for stale-approval guard.
