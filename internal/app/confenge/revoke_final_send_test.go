@@ -157,6 +157,9 @@ func TestQueueTouchpointAfterRevokeBlocks(t *testing.T) {
 		Channel: models.OutreachChannelEmail, Subject: "S", BodyText: "body",
 		RecipientEmail: cand.Email, Status: models.OutreachDraftApproved,
 		ServiceCode: "REAJUSTE", RiskClass: "GREEN",
+		// Stamped current on purpose: this test proves revoke blocks queue, so
+		// the copy must not be refused earlier for being a prior composer's.
+		PromptVersion: PromptVersion,
 	}
 	_ = repo.UpsertDraft(ctx, draft)
 

@@ -63,6 +63,8 @@ func runKillSwitchE2E(t *testing.T, run int) error {
 		Subject: "Sobre ACME", BodyText: "Ola Ana,\n\nNotei a prorrogacao do contrato. Faz sentido conversarmos?\n\nPosso enviar checklist?",
 		FactUsed: "prorrogacao do contrato", ServiceCode: "ADDITIVE_REVIEW",
 		Status: models.OutreachDraftApproved, RiskClass: "GREEN", RecipientEmail: cand.Email,
+		// Current composer: this test is about the kill switch, not about copy age.
+		PromptVersion: PromptVersion,
 	}
 	ok := true
 	d.ValidationOK = &ok

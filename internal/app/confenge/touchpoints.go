@@ -205,6 +205,7 @@ func (s *service) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, li
 			}
 			pack := BuildConsultantSendabilityPack(acc, cand, rec, plan, synth, val)
 			list[i].ConsultantSendability = pack.AsMap()
+			projectTouchpointEditorial(&list[i], acc, cand, promptVer)
 			// Live QA wins over a leftover stored true so the API cannot lie.
 			if d := list[i].Draft; d != nil {
 				ok := val.OK && pack.SendWithoutEditing == "sim"
@@ -823,6 +824,9 @@ func (s *service) ApproveTouchpoint(ctx context.Context, orgID, userID, id uuid.
 	if xerr := s.assertPriorReleased(ctx, orgID, tp); xerr != nil {
 		return nil, xerr
 	}
+	if xerr := s.assertTouchpointEditorialAuthority(ctx, orgID, tp, "APPROVE"); xerr != nil {
+		return nil, xerr
+	}
 	acc, _ := s.repo.GetAccount(ctx, orgID, tp.AccountID)
 	if acc == nil {
 		return nil, errx.New(errx.NotFound, "account not found")
@@ -1041,6 +1045,9 @@ func (s *service) QueueTouchpoint(ctx context.Context, orgID, userID, id uuid.UU
 		return nil, errx.New(errx.NotFound, "touchpoint not found")
 	}
 	if xerr := s.assertPriorReleased(ctx, orgID, tp); xerr != nil {
+		return nil, xerr
+	}
+	if xerr := s.assertTouchpointEditorialAuthority(ctx, orgID, tp, "QUEUE"); xerr != nil {
 		return nil, xerr
 	}
 	// Scheduling is allowed while transport is paused. The exact hash and
@@ -1301,4 +1308,65 @@ func (s *service) PromoteDueTouchpoints(ctx context.Context, orgID uuid.UUID) (i
 		n++
 	}
 	return n, nil
+}
+
+// assertTouchpointEditorialAuthority refuses any operational step on a
+// touchpoint whose copy an earlier composer wrote. Fail-closed: a touchpoint
+// with no draft to identify carries no proof the current composer wrote it.
+func (s *service) assertTouchpointEditorialAuthority(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint, action string) *errx.Error {
+	if tp == nil {
+		return errx.New(errx.NotFound, "touchpoint not found")
+	}
+	prompt := ""
+	if tp.Draft != nil {
+		prompt = tp.Draft.PromptVersion
+	} else if tp.DraftID != nil {
+		if d, _ := s.repo.GetDraft(ctx, orgID, *tp.DraftID); d != nil {
+			prompt = d.PromptVersion
+		}
+	}
+	if auth := EvaluateDraftEditorialAuthority(prompt); !auth.Actionable {
+		return errx.New(errx.Conflict, auth.Blocker(action))
+	}
+	return nil
+}
+
+// projectTouchpointEditorial fills the read-only judging context the review
+// screen shows next to the editable copy. Absent facts stay visible as absent
+// rather than being omitted, because a blank field a reader can see is honest
+// and a key that was never written is not.
+func projectTouchpointEditorial(tp *models.OutreachTouchpoint, acc *models.OutreachAccount, cand *models.OutreachContactCandidate, promptVersion string) {
+	auth := EvaluateDraftEditorialAuthority(promptVersion)
+	tp.EditorialState = auth.State
+	tp.EditorialActionable = auth.Actionable
+	tp.EditorialReasonCodes = auth.ReasonCodes
+	tp.EditorialNotice = auth.Notice
+	tp.PromptVersion = promptVersion
+	tp.ComposerVersion = ComposerVersion
+	if !auth.Actionable {
+		// The stamp we can prove is the prompt version; naming the current
+		// composer beside superseded copy would read as if it wrote it.
+		tp.ComposerVersion = ""
+	}
+	if cand != nil {
+		tp.RouteClass = CandidateRouteClass(cand)
+	}
+	if acc != nil {
+		if strings.TrimSpace(acc.FactToMention) != "" && strings.TrimSpace(tp.FactUsed) == acc.FactToMention {
+			tp.FactSource = "fact_to_mention"
+		}
+		d := EvaluateTargetFit(acc)
+		fit := map[string]any{
+			"state":    acc.TargetFitClass,
+			"eligible": d.Eligible,
+			"reason":   d.Reason,
+			"fresh":    acc.TargetFitFresh,
+			"tier":     acc.TargetFitSendTier,
+			"version":  acc.TargetFitVersion,
+		}
+		if acc.TargetFitObservedAt != nil {
+			fit["as_of"] = acc.TargetFitObservedAt.UTC().Format(time.RFC3339)
+		}
+		tp.TargetFit = fit
+	}
 }

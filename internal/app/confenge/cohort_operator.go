@@ -86,6 +86,16 @@ func NormalizeBoundedCohortGrant(auth *BoundedCohortAuthorization, now time.Time
 	if auth.ComposerVersion == "" {
 		auth.ComposerVersion = ComposerVersion
 	}
+	// A grant may not be stamped with the current composer over copy an older
+	// one wrote: defaulting the field would otherwise launder the manifest.
+	if auth.FrozenManifest != nil {
+		if a := SnapshotEditorialAuthority(auth.FrozenManifest); !a.Actionable {
+			return fmt.Errorf("%s", a.Blocker("AUTHORIZE"))
+		}
+	}
+	if a := EvaluateCohortEditorialAuthority(auth.ComposerVersion, auth.PolicyVersion); !a.Actionable {
+		return fmt.Errorf("%s", a.Blocker("AUTHORIZE"))
+	}
 	if auth.EvidenceVersion == "" {
 		auth.EvidenceVersion = DefaultEvidenceVersion
 	}

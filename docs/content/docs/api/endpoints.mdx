@@ -80,6 +80,16 @@ All paths below are relative to the versioned base URL `https://api.warmbly.com/
 | POST | `/contacts/research/batch` | `AI_RESEARCH` |
 | POST | `/confenge/pilot/cohort/prepare` | `WRITE_CONTACTS` |
 | POST | `/confenge/drafts/invalidate-prior-composer` | `WRITE_CONTACTS` |
+| GET | `/confenge/cohorts` | `READ_CONTACTS` |
+| GET | `/confenge/cohorts/:id` | `READ_CONTACTS` |
+| GET | `/confenge/cohorts/:id/candidates/:candidateId` | `READ_CONTACTS` |
+| POST | `/confenge/cohorts/:id/candidates/:candidateId/review` | `WRITE_CONTACTS` |
+| POST | `/confenge/cohorts/:id/recompose` | `WRITE_CONTACTS` |
+| POST | `/confenge/cohorts/:id/decision` | `WRITE_CAMPAIGNS` |
+| GET | `/confenge/review/drafts` | `READ_CONTACTS` |
+| POST | `/confenge/review/drafts/:id/decision` | `WRITE_CONTACTS` |
+| POST | `/confenge/touchpoints/:id/approve` | `WRITE_CONTACTS` |
+| POST | `/confenge/touchpoints/:id/queue` | `WRITE_CONTACTS` |
 | GET | `/confenge/cockpit` | `READ_CONTACTS` |
 | GET | `/confenge/inbound` | `READ_CONTACTS` |
 | POST | `/confenge/inbound/:leadId/outcome` | `WRITE_CONTACTS` |
@@ -124,6 +134,12 @@ Public `GET /api/v1/webhooks/confenge/inbound/health` advertises `accepted_event
 `GET /confenge/intel/report` is the inbound learning observability payload (IQP, lanes, exceptions, latency baseline, learning candidates, `READY_FOR_REAL_EVENTS` / `ADJUST` / `NO_GO`). It is not a CRM and not a forecast.
 
 `GET /confenge/intel/exceptions` is the operator queue. Filter with `type`, `lane`, `source`, `severity`, `status`, `age_min_seconds`, and `age_max_seconds`. Each row includes evidence, history, `next_action` or an explicit open status, and only the legal actions `link`, `defer`, `reject`, and `mark_external_evidence_required`. `GET /confenge/intel/exceptions/:id` is the detail. `POST /confenge/intel/exceptions/:id/resolve` records before/after, actor, and reason. Send `Idempotency-Key`. The same command replays the first result. Illegal lifecycle moves and any attempt to invent WON, LOST, revenue, or identity are refused and the exception stays open.
+
+`GET /confenge/cohorts/:id` returns one immutable cohort version with its manifest, candidates and decision, plus the editorial verdict on the frozen copy: `editorial_state` (`CURRENT` or `LEGACY_SUPERSEDED`), `actionable`, `editorial_reason_codes`, `editorial_notice`, and the pointers `is_current_version`, `current_version` and `current_version_id`. Each candidate repeats `editorial_state`, `actionable` and `editorial_reason_codes`, and a superseded candidate carries the same codes in `blocked_by`. A version is current only when the version stamp and every member stamp are current.
+
+Superseded copy is readable and never operational. `POST /confenge/cohorts/:id/candidates/:candidateId/review` refuses `decision=APPROVE` with `409` and code `composer_superseded` (`HOLD` and `REJECT` still work), and `POST /confenge/cohorts/:id/decision` blocks `GO` with the same reason codes. `POST /confenge/cohorts/:id/recompose` is the way forward: it forks version N+1 with the current composer, requires `Idempotency-Key`, `reason`, `confirmation` and `expected_frozen_hash`, preserves every recipient and provenance fact byte-identical (drift is refused, not stored), and is born with no validation, no review, no approval and no `GO`.
+
+`GET /confenge/review/drafts` (and its alias `GET /confenge/touchpoints/review`) returns the same verdict per row as `editorial_state`, `editorial_actionable`, `editorial_reason_codes`, `editorial_notice`, `composer_version` and `prompt_version`, alongside the judging context `route_class`, `fact_source` and `target_fit`. Next to superseded copy `composer_version` is empty on purpose, because naming the current composer there would read as if it wrote the text. `POST /confenge/touchpoints/:id/approve`, `POST /confenge/touchpoints/:id/queue`, and `POST /confenge/review/drafts/:id/decision` when the decision approves return `409` on a draft an earlier composer wrote, and transport refuses the send grant by the same rule. See [CONFENGE editorial lifecycle](/guides/confenge-editorial-lifecycle/) and [error codes](/api/error-codes/).
 
 AI contact research charges credits (2 per run, billable even when it finds nothing) and only saves cited findings. See the [AI contact research](/guides/ai-contact-research/) guide. The batch endpoint accepts up to 500 contact ids and drains in the background.
 

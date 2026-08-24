@@ -64,6 +64,11 @@ type FrozenCohortMember struct {
 	CTASource        string   `json:"cta_source"`
 	AdmissionReasons []string `json:"admission_reasons"`
 	RouteReasons     []string `json:"route_reasons"`
+	// SourceFact is the public record the copy was written from, kept verbatim
+	// so a later recomposition reads the record again instead of re-reading the
+	// sentence the last composer wrote. omitempty on purpose: manifests frozen
+	// before this field existed must keep hashing exactly as they did.
+	SourceFact string `json:"source_fact,omitempty"`
 }
 
 // CohortExclusion is one account left out of the frozen set.
@@ -358,6 +363,7 @@ func PrepareControlledCohort(accounts []CohortAccountInput, opts CohortPrepareOp
 			Company:          accountCompany(&in.Account),
 			MailboxPurpose:   strings.TrimSpace(cand.MailboxPurpose),
 			ObservedFact:     comp.ObservedFact,
+			SourceFact:       firstNonEmpty(in.Account.FactToMention, in.Account.MomentSummary),
 			FactSource:       comp.FactSource,
 			CTA:              comp.CTA,
 			CTASource:        comp.CTASource,

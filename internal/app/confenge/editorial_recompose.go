@@ -106,9 +106,12 @@ func RecomposeManifest(parent *FrozenCohortSnapshot) (*FrozenCohortSnapshot, Rec
 
 // recomposeMember rewrites one member's copy from its own preserved facts.
 func recomposeMember(m *FrozenCohortMember) (FrozenCohortMember, []string) {
+	// The record, not the last composer's sentence: re-digesting our own prose
+	// is what made a second recomposition throw the lead away.
+	sourceFact := firstNonEmpty(m.SourceFact, m.ObservedFact)
 	acc := &models.OutreachAccount{
 		NomeFantasia:  m.Company,
-		FactToMention: m.ObservedFact,
+		FactToMention: sourceFact,
 	}
 	cand := &models.OutreachContactCandidate{
 		Email:          m.Mailbox,
@@ -124,7 +127,7 @@ func recomposeMember(m *FrozenCohortMember) (FrozenCohortMember, []string) {
 	}
 	qa := EditorialQA(composed.Subject, composed.Body, EditorialQAContext{
 		RouteClass:      m.RouteClass,
-		RawFact:         m.ObservedFact,
+		RawFact:         sourceFact,
 		SenderFirstName: sender.FirstName,
 		PersonProven:    !m.PersonUnknown && composerRouteNamesPerson(m.RouteClass),
 	})
@@ -137,6 +140,7 @@ func recomposeMember(m *FrozenCohortMember) (FrozenCohortMember, []string) {
 	out.BodyText = composed.Body
 	out.Greeting = composed.Greeting
 	out.ObservedFact = composed.ObservedFact
+	out.SourceFact = sourceFact
 	out.FactSource = composed.FactSource
 	out.CTA = composed.CTA
 	out.CTASource = composed.CTASource

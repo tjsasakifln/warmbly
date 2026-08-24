@@ -41,10 +41,16 @@ var (
 	qaURLRe       = regexp.MustCompile(`(?i)https?://`)
 	// Punctuation a person never types.
 	qaBadPunctRe = regexp.MustCompile(`,\.|\.\.|,,|;\.|::|:\.|!\.|\?\.|\s+[,.;:!?]|\(\s*\)`)
-	// A sentence that stops on a connective was cut, not written.
-	qaDanglingTailRe = regexp.MustCompile(`(?i)\b(de|da|do|dos|das|para|por|com|em|na|no|e|ou|a|o|que|sob|sobre|entre)\s*$`)
+	// A sentence that stops on a connective was cut, not written. The boundary
+	// is written out because \b is ASCII only and would split "mineração".
+	qaDanglingTailRe = regexp.MustCompile(`(?i)(^|\s)(de|da|do|dos|das|para|por|com|em|na|no|e|ou|a|o|que|sob|sobre|entre)\s*$`)
 	// Addressing the reader as the owner of a role nobody proved.
 	qaAssertedRoleRe = regexp.MustCompile(`(?i)\bcomo (o |a )?(respons[aá]vel|gestor|diretor|gerente|propriet[aá]rio|s[oó]cio)\b`)
+	// A first person statement of what the sender does. This is what turns a
+	// routing request into a reason the reader can act on.
+	qaPracticeRe = regexp.MustCompile(`(?i)\b(trabalho|atuo|apoio|ajudo|presto|acompanho|cuido|atendo|assessoro|represento)\b`)
+	// Language that claims a specific observation about this recipient.
+	qaObservationRe = regexp.MustCompile(`(?i)\b(vi que|vi uma|vi um|vi a|vi o|vi esse|vi essa|notei|reparei|percebi|observei|acompanhei|soube que|li que|encontrei|localizei)\b`)
 )
 
 // syntheticPhrases are the constructions that mark machine-written outbound.
@@ -110,6 +116,118 @@ var subjectAdministrativePrefixes = []string{
 	"tomada de precos",
 	"dispensa de licitacao",
 	"aviso de licitacao",
+}
+
+// administrativeSubjectWords is the procurement vocabulary that names a
+// category instead of a job. A line built only from these says nothing about
+// the reader, however grammatical it is.
+var administrativeSubjectWords = map[string]bool{
+	"contrato": true, "contratos": true, "contratacao": true, "contratacoes": true,
+	"contratada": true, "contratante": true, "publico": true, "publica": true,
+	"publicos": true, "publicas": true, "licitacao": true, "licitacoes": true,
+	"licitatorio": true, "pregao": true, "eletronico": true, "presencial": true,
+	"edital": true, "editais": true, "processo": true, "processos": true,
+	"administrativo": true, "administrativa": true, "objeto": true, "aviso": true,
+	"dispensa": true, "inexigibilidade": true, "tomada": true, "registro": true,
+	"preco": true, "precos": true, "ata": true, "termo": true, "servico": true,
+	"servicos": true, "prestacao": true, "execucao": true, "fornecimento": true,
+	"sobre": true, "o": true, "a": true, "os": true, "as": true, "um": true,
+	"uma": true, "de": true, "do": true, "da": true, "dos": true, "das": true,
+	"e": true, "em": true, "no": true, "na": true, "nos": true, "nas": true,
+	"para": true, "por": true, "com": true, "ao": true, "aos": true,
+}
+
+// truncatableWords are the long words a width-limited registry or feed field
+// cuts in half. A prose token that is a shortened one of these is a paste.
+var truncatableWords = []string{
+	"fiscalizacao", "gerenciamento", "administracao", "planejamento",
+	"manutencao", "terraplenagem", "saneamento", "incorporacao",
+	"participacoes", "empreendimentos", "edificacoes", "infraestrutura",
+	"instalacoes", "representacoes", "arquitetura", "engenharia",
+	"construcao", "construcoes", "construtora", "consultoria", "assessoria",
+	"tecnologia", "ambiental", "urbanismo", "eletrica", "hidraulica",
+	"mineracao", "licenciamento", "supervisao", "drenagem", "montagem",
+	"projetos", "servicos", "comercio", "industria", "transportes",
+	"materiais", "equipamentos", "sistemas", "solucoes", "energia",
+	"qualidade", "laboratorio", "topografia", "geotecnia", "rodovias",
+	"ferrovias", "aeroportos", "imobiliaria", "incorporadora", "empreiteira",
+}
+
+// wholeWordsPT are real words that happen to open one of the words above.
+// Listing them keeps the truncation check from firing on ordinary prose.
+var wholeWordsPT = map[string]bool{
+	"gerencia": true, "licencia": true, "elabora": true, "recupera": true,
+	"administra": true, "pavimenta": true, "sinaliza": true, "segura": true,
+	"educa": true, "projeta": true, "empresa": true, "servico": true,
+	"projeto": true, "sistema": true, "transporte": true, "industria": true,
+	"comercio": true, "material": true, "ambiente": true, "energia": true,
+	"obra": true, "ponte": true, "monta": true, "rodovia": true,
+	"ferrovia": true, "aeroporto": true, "equipamento": true,
+	"construtor": true, "incorporador": true,
+}
+
+// subjectNamesSpecificWork reports a subject carrying at least one word about
+// the job itself. "Contrato público" carries none and fits every recipient.
+func subjectNamesSpecificWork(subject string) bool {
+	for _, w := range strings.Fields(subject) {
+		key := foldASCII(strings.ToLower(strings.Trim(w, ".,;:!?()[]\"'")))
+		if key == "" || administrativeSubjectWords[key] {
+			continue
+		}
+		letters := 0
+		for _, r := range key {
+			if unicode.IsLetter(r) {
+				letters++
+			}
+		}
+		if letters >= 3 {
+			return true
+		}
+	}
+	return false
+}
+
+// truncatedWordIn reports a token cut mid word, e.g. the registry name
+// "Inplenitus Projetos, Gerenciamento E Fiscaliz".
+func truncatedWordIn(s string) bool {
+	for _, w := range strings.Fields(s) {
+		core := strings.Trim(w, ".,;:!?()[]\"'")
+		key := foldASCII(strings.ToLower(core))
+		if len([]rune(key)) < 4 || wholeWordsPT[key] {
+			continue
+		}
+		// No Portuguese word ends in "ç"; that is always a cut.
+		if strings.HasSuffix(strings.ToLower(core), "ç") {
+			return true
+		}
+		if len([]rune(key)) < 5 {
+			continue
+		}
+		for _, full := range truncatableWords {
+			if len(key) < len(full) && strings.HasPrefix(full, key) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// administrativeLabelIn reports an edital label sitting inside prose. The
+// leaked form has no colon: "na contratação pública licenciamento ambiental".
+func administrativeLabelIn(s string) bool {
+	tokens := make([]string, 0, 64)
+	for _, w := range strings.Fields(foldASCII(strings.ToLower(s))) {
+		if t := strings.Trim(w, ".,;:!?()[]\"'"); t != "" {
+			tokens = append(tokens, t)
+		}
+	}
+	padded := " " + strings.Join(tokens, " ") + " "
+	for _, p := range subjectAdministrativePrefixes {
+		if strings.Contains(padded, " "+p+" ") {
+			return true
+		}
+	}
+	return false
 }
 
 // EditorialQA returns the reason codes that block a message. Empty means the
@@ -181,6 +299,14 @@ func checkEditorialSubject(subject string, ctx EditorialQAContext, add func(stri
 	}
 	if containsDumpLabel(subject) || qaEnumRe.MatchString(subject) || qaScoreRe.MatchString(subject) {
 		add("subject_metadata")
+	}
+	// A subject built only from procurement vocabulary names no work, so every
+	// recipient in the cohort could receive it unchanged.
+	if !subjectNamesSpecificWork(subject) {
+		add("subject_generic_boilerplate")
+	}
+	if truncatedWordIn(subject) {
+		add("subject_truncated_word")
 	}
 	// A subject sliced out of the raw record reads as a paste, not a line
 	// somebody wrote. Any long literal overlap is treated as a slice.
@@ -275,6 +401,14 @@ func checkEditorialBody(body string, ctx EditorialQAContext, add func(string)) {
 	if containsDumpLabel(body) || looksLikeMetadataDump(body) {
 		add("metadata_dump")
 	}
+	// An edital label surviving into a sentence makes the prose stutter, as in
+	// "uma contratação envolvendo a empresa na contratação pública ...".
+	if administrativeLabelIn(body) {
+		add("body_administrative_label")
+	}
+	if truncatedWordIn(body) {
+		add("truncated_word")
+	}
 	if qaEnumRe.MatchString(body) {
 		add("raw_enum")
 	}
@@ -297,6 +431,56 @@ func checkEditorialBody(body string, ctx EditorialQAContext, add func(string)) {
 	if !ctx.PersonProven && qaAssertedRoleRe.MatchString(folded) {
 		add("unproven_role")
 	}
+	// Observation language is a factual claim. With no record behind it the
+	// mail asserts something the system cannot evidence, so it fails closed.
+	if qaObservationRe.MatchString(folded) && strings.TrimSpace(ctx.RawFact) == "" {
+		add("personalization_without_fact")
+	}
+	checkEditorialAsk(body, ctx, add)
+}
+
+// checkEditorialAsk refuses an ask with nothing tying it to this reader. The
+// paragraph carrying the question must either say in the first person what the
+// sender does or name a word from the observed public fact; a routing request
+// that does neither is copy that fits any company in the corpus.
+func checkEditorialAsk(body string, ctx EditorialQAContext, add func(string)) {
+	ask := ""
+	for _, p := range nonEmptyParagraphs(body) {
+		if strings.Contains(p, "?") {
+			ask = p
+			break
+		}
+	}
+	if ask == "" {
+		return
+	}
+	foldedAsk := foldASCII(strings.ToLower(ask))
+	if qaPracticeRe.MatchString(foldedAsk) {
+		return
+	}
+	if sharesContentWord(foldedAsk, foldASCII(strings.ToLower(ctx.RawFact))) {
+		return
+	}
+	add("generic_cta")
+}
+
+// sharesContentWord reports a word long enough to carry meaning present
+// verbatim in both texts.
+func sharesContentWord(a, b string) bool {
+	if strings.TrimSpace(b) == "" {
+		return false
+	}
+	have := map[string]bool{}
+	for _, w := range strings.Fields(b) {
+		have[strings.Trim(w, ".,;:!?()[]\"'")] = true
+	}
+	for _, w := range strings.Fields(a) {
+		w = strings.Trim(w, ".,;:!?()[]\"'")
+		if len([]rune(w)) >= 5 && have[w] {
+			return true
+		}
+	}
+	return false
 }
 
 func checkEditorialShared(subject, body string, ctx EditorialQAContext, add func(string)) {

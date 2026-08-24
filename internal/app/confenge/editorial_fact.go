@@ -2,6 +2,7 @@ package confenge
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -57,6 +58,11 @@ var (
 	factBridgePrepRe = regexp.MustCompile(`(?i)\bsob\s+(o|a)\s+(rio|c[óo]rrego|ribeir[ãa]o)\b`)
 	// Pipeline telemetry describing our own ingestion, not the recipient's world.
 	factTelemetryRe = regexp.MustCompile(`\b(no input|observado com|contrato\(s\)|portfolio publico observado|registros? no feed|snapshot)\b`)
+	// Our own sentence coming back as a fact: a recompose reading the prose it
+	// wrote last time, never a public record.
+	factComposedProseRe = regexp.MustCompile(`(?i)^(vi|entrei|notei|reparei|percebi|observei|acompanhei|soube|retomo|escrevo|escrevi)\b|\bmeu nome e\b`)
+	// A record separates the work from its qualifier with a dash.
+	factDashQualifierRe = regexp.MustCompile(`\s+[-–—]\s+`)
 )
 
 // editalLeadIns are the procurement boilerplate openings that carry no
@@ -105,6 +111,43 @@ var editalLeadIns = []string{
 	"o presente objeto e a",
 	"tem por objeto a",
 	"tem por objeto o",
+}
+
+// factLeadIns is every boilerplate opening a phrase may lose, longest first, so
+// a full lead-in always wins over the shorter administrative label inside it.
+var factLeadIns = buildFactLeadIns()
+
+// buildFactLeadIns derives the bare openings a feed also publishes without the
+// "contratação de" head, e.g. "empresa especializada para execução de".
+func buildFactLeadIns() []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(editalLeadIns)*2)
+	add := func(v string) {
+		if v = strings.TrimSpace(v); v != "" && !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	for _, lead := range editalLeadIns {
+		add(lead)
+		for _, head := range []string{"contratacao de empresa", "contratacao de pessoa juridica"} {
+			if strings.HasPrefix(lead, head) {
+				add(strings.TrimPrefix(lead, "contratacao de "))
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
+	return out
+}
+
+// factAdministrativeLabels is the subject gate's list of administrative
+// openings, longest first, reused so a label never has two definitions.
+var factAdministrativeLabels = sortedByLengthDesc(subjectAdministrativePrefixes)
+
+func sortedByLengthDesc(in []string) []string {
+	out := append([]string(nil), in...)
+	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
+	return out
 }
 
 // factStopPhrases mark the point where the object stops describing the work
@@ -175,8 +218,10 @@ func DigestPublicFact(raw string) PublicFactDigest {
 		return out
 	}
 	core = collapseRepeatedNGrams(core)
+	core = stripAdministrativeLabel(core)
 	core = stripEditalLeadIn(core)
 	core = truncateAtStopPhrase(core)
+	core = resolveDashQualifier(core)
 	core = strings.Trim(core, " \t.,;:-–—")
 	core = multiSpaceRe.ReplaceAllString(core, " ")
 	if core == "" {
@@ -191,7 +236,7 @@ func DigestPublicFact(raw string) PublicFactDigest {
 		out.Reasons = reasons
 		return out
 	}
-	subject := subjectFromPhrase(phrase)
+	subject := subjectFromPhrase(phrase, raw)
 	if subject == "" {
 		out.Reasons = []string{"fact_no_subject_head"}
 		return out
@@ -240,7 +285,7 @@ func stripEditalLeadIn(s string) string {
 	for changed := true; changed; {
 		changed = false
 		orig, folded := runeFold(s)
-		for _, lead := range editalLeadIns {
+		for _, lead := range factLeadIns {
 			n := len([]rune(lead))
 			if n > len(folded) || string(folded[:n]) != lead {
 				continue
@@ -256,6 +301,54 @@ func stripEditalLeadIn(s string) string {
 		}
 	}
 	return strings.TrimSpace(stripLeadingPrepositions(s))
+}
+
+// stripAdministrativeLabel drops a labelled procurement opening such as
+// "contratação pública: X", which otherwise survives into prose and makes the
+// sentence stutter. The separator is required so an object that merely starts
+// with one of those words is never cut mid sentence.
+func stripAdministrativeLabel(s string) string {
+	for changed := true; changed; {
+		changed = false
+		orig, folded := runeFold(s)
+		for _, label := range factAdministrativeLabels {
+			n := len([]rune(label))
+			if n >= len(folded) || string(folded[:n]) != label {
+				continue
+			}
+			rest := []rune(strings.TrimLeft(string(orig[n:]), " \t"))
+			if len(rest) == 0 || !strings.ContainsRune(":-–—", rest[0]) {
+				continue
+			}
+			trimmed := strings.TrimSpace(strings.TrimLeft(string(rest), ":-–— \t"))
+			if len(strings.Fields(trimmed)) < 2 {
+				continue
+			}
+			s = trimmed
+			changed = true
+			break
+		}
+	}
+	return strings.TrimSpace(s)
+}
+
+// resolveDashQualifier rewrites the record's "work - qualifier" shorthand as
+// prose: the head alone when it already says something, otherwise bound with
+// "para", which is how a person reads that dash out loud.
+func resolveDashQualifier(s string) string {
+	loc := factDashQualifierRe.FindStringIndex(s)
+	if loc == nil {
+		return s
+	}
+	head := strings.TrimSpace(s[:loc[0]])
+	tail := strings.TrimSpace(s[loc[1]:])
+	if head == "" || tail == "" {
+		return s
+	}
+	if len(strings.Fields(head)) >= 3 {
+		return head
+	}
+	return head + " para " + tail
 }
 
 // stripLeadingPrepositions drops the connective left behind by a lead-in cut,
@@ -376,6 +469,9 @@ func factPhraseDefects(phrase string) []string {
 	if factTelemetryRe.MatchString(foldASCII(strings.ToLower(phrase))) {
 		reasons = append(reasons, "fact_is_internal_telemetry")
 	}
+	if factComposedProseRe.MatchString(foldASCII(strings.ToLower(phrase))) {
+		reasons = append(reasons, "fact_is_composed_prose")
+	}
 	if strings.ContainsAny(phrase, "()[]{}") {
 		reasons = append(reasons, "fact_carries_record_punctuation")
 	}
@@ -414,27 +510,20 @@ func allCapsWordIn(s string) bool {
 }
 
 // subjectFromPhrase writes a short nominal head. It selects whole words from
-// the phrase's noun group; it never cuts at a character budget.
-func subjectFromPhrase(phrase string) string {
+// the phrase's noun group; it never cuts at a character budget. An empty
+// return refuses the fact, which is better than a subject naming no work.
+func subjectFromPhrase(phrase, raw string) string {
 	words := strings.Fields(phrase)
 	if len(words) < 2 {
 		return ""
 	}
 	folded := foldASCII(strings.ToLower(phrase))
+	foldedRaw := foldASCII(strings.ToLower(strings.TrimSpace(raw)))
 	// Event subjects are written from the meaning of the fact, not copied from
 	// its first N words. Besides reading better, this keeps the subject stable
 	// when upstream changes administrative wording around the same event.
-	switch {
-	case strings.Contains(folded, "reequilibr"):
-		return "Reequilíbrio do contrato público"
-	case strings.Contains(folded, "reajust"):
-		return "Reajuste do contrato público"
-	case strings.Contains(folded, "prorrog"):
-		return "Prorrogação do contrato público"
-	case strings.Contains(folded, "aditivo"):
-		return "Aditivo do contrato público"
-	case strings.Contains(folded, "edital"), strings.Contains(folded, "licit"):
-		return "Licitação pública"
+	if s := eventSubjectFor(folded); s != "" && subjectNamesSpecificWork(s) {
+		return s
 	}
 	// Prefer the group that names something real, so "recuperação estrutural
 	// da ponte sobre o Rio Sapucaí" yields "Ponte sobre o Rio Sapucaí".
@@ -443,7 +532,9 @@ func subjectFromPhrase(phrase string) string {
 		// A two-word place name alone ("Avenida Brasil") is vaguer than the
 		// work itself; only prefer the place group when it is descriptive.
 		if len(tail) >= 3 && len(tail) <= 6 {
-			return upperFirstRune(strings.Join(tail, " "))
+			if s := writtenSubject(tail, foldedRaw); s != "" {
+				return s
+			}
 		}
 	}
 	limit := len(words)
@@ -460,13 +551,43 @@ func subjectFromPhrase(phrase string) string {
 	if len(head) < 2 || prepositionsPT[foldASCII(strings.ToLower(head[0]))] {
 		return ""
 	}
-	if strings.Contains(folded, "contrat") {
-		return "Contrato público"
+	return writtenSubject(head, foldedRaw)
+}
+
+// eventSubjectFor names the procurement event the phrase is about.
+func eventSubjectFor(folded string) string {
+	switch {
+	case strings.Contains(folded, "reequilibr"):
+		return "Reequilíbrio do contrato público"
+	case strings.Contains(folded, "reajust"):
+		return "Reajuste do contrato público"
+	case strings.Contains(folded, "prorrog"):
+		return "Prorrogação do contrato público"
+	case strings.Contains(folded, "aditivo"):
+		return "Aditivo do contrato público"
 	}
-	// Prefixing with "Sobre" makes this a written subject rather than a raw
-	// record slice. It also preserves the useful nominal head for uncommon
-	// events that do not match the vocabulary above.
-	return "Sobre " + strings.ToLower(strings.Join(head, " "))
+	return ""
+}
+
+// writtenSubject turns a word group into a subject line. It refuses a group
+// that names no work, and prefixes "Sobre" only when the plain head would read
+// as a literal slice of the record.
+func writtenSubject(words []string, foldedRaw string) string {
+	if len(words) < 2 {
+		return ""
+	}
+	plain := strings.Join(words, " ")
+	if !subjectNamesSpecificWork(plain) {
+		return ""
+	}
+	folded := foldASCII(strings.ToLower(plain))
+	if foldedRaw == "" || !strings.Contains(foldedRaw, folded) {
+		return upperFirstRune(plain)
+	}
+	if strings.HasPrefix(folded, "sobre ") {
+		return ""
+	}
+	return "Sobre " + strings.ToLower(plain)
 }
 
 func indexOfProperCue(words []string) int {
