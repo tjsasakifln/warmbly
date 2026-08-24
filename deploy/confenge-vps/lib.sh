@@ -16,9 +16,12 @@ confenge_repo_root() {
 }
 
 load_vps_env() {
-  local root envf
+  local root envf caller_release_sha
   root="$(confenge_repo_root)"
   envf="${CONFENGE_VPS_ENV:-$root/deploy/confenge-vps/.env}"
+  # A caller that named the release explicitly outranks the file, and the
+  # checkout outranks a value the file kept from an earlier deploy.
+  caller_release_sha="${WARMBLY_RELEASE_SHA:-}"
   if [[ -f "$envf" ]]; then
     set -a
     # shellcheck disable=SC1090
@@ -31,6 +34,12 @@ load_vps_env() {
     . "$root/.env.confenge"
     set +a
   fi
+  if [[ -n "$caller_release_sha" ]]; then
+    WARMBLY_RELEASE_SHA="$caller_release_sha"
+  else
+    WARMBLY_RELEASE_SHA="$(git -C "$root" rev-parse HEAD 2>/dev/null || echo local)"
+  fi
+  export WARMBLY_RELEASE_SHA
 }
 
 compose_cmd() {
