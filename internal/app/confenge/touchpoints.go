@@ -33,6 +33,9 @@ func (s *service) PlanAccountCadence(ctx context.Context, orgID, userID, account
 	if err != nil {
 		return nil, errx.New(errx.Internal, "list touchpoints failed")
 	}
+	recoveryRevision := ""
+	latestRecoverableCancellation := time.Time{}
+	recoverableCancelledCadence := len(existing) > 0
 	for _, t := range existing {
 		if t.State == models.TouchpointSent || t.State == models.TouchpointDNC {
 			return nil, errx.New(errx.BadRequest, "cannot replan cadence: account has SENT or DNC touchpoints")
@@ -40,6 +43,22 @@ func (s *service) PlanAccountCadence(ctx context.Context, orgID, userID, account
 		if IsOpen(t.State) {
 			return existing, nil
 		}
+		if !recoverableCadenceCancellation(t.State, t.StopReason) {
+			recoverableCancelledCadence = false
+		}
+		if t.UpdatedAt.After(latestRecoverableCancellation) {
+			latestRecoverableCancellation = t.UpdatedAt
+		}
+	}
+	if len(existing) > 0 && !recoverableCancelledCadence {
+		return existing, nil
+	}
+	if recoverableCancelledCadence {
+		revision := latestRecoverableCancellation.UTC().Format("20060102T150405.000000000Z")
+		if latestRecoverableCancellation.IsZero() {
+			revision = existing[len(existing)-1].ID.String()
+		}
+		recoveryRevision = ":recovery:" + PromptVersion + ":" + revision
 	}
 	var cand *models.OutreachContactCandidate
 	if contactID != nil {
@@ -90,7 +109,7 @@ func (s *service) PlanAccountCadence(ctx context.Context, orgID, userID, account
 		if i == 0 {
 			state = models.TouchpointDue
 		}
-		idem := fmt.Sprintf("tp:%s:%s:%d:%s", orgID, accountID, step.Ordinal, step.CadenceStep)
+		idem := fmt.Sprintf("tp:%s:%s:%d:%s%s", orgID, accountID, step.Ordinal, step.CadenceStep, recoveryRevision)
 		tp := &models.OutreachTouchpoint{
 			OrganizationID: orgID, AccountID: accountID, Ordinal: step.Ordinal,
 			CadenceStep: step.CadenceStep, Channel: ch, Purpose: step.Purpose,
@@ -116,6 +135,14 @@ func (s *service) PlanAccountCadence(ctx context.Context, orgID, userID, account
 	}
 	_ = userID
 	return out, nil
+}
+
+func recoverableCadenceCancellation(state, reason string) bool {
+	if state != models.TouchpointCancelled {
+		return false
+	}
+	reason = strings.TrimSpace(reason)
+	return strings.EqualFold(reason, StopComposerStale) || strings.EqualFold(reason, TargetFitReasonStale)
 }
 
 func (s *service) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, limit, offset int) ([]models.OutreachTouchpoint, *errx.Error) {
