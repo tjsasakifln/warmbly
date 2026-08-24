@@ -63,7 +63,11 @@ func TestPreviewShowsCopyRouteAndAdmissionForSampledMember(t *testing.T) {
 		"Olá",                           // greeting verbatim, without invented team identity
 		"contrato 12/2023 com reajuste", // the observed fact the copy is built on
 		"source=" + FactSourceFactToMention,
-		"indicar a pessoa certa", // the routing CTA
+		// The ask follows the route: a department mailbox is asked whether the
+		// frontier is theirs, not asked to forward the mail to a stranger.
+		"ou devo procurar outra?",
+		// The practice line is read from the lead's own service context.
+		"Trabalho com reajuste contratual",
 		RouteClassRoleOrDepartment,
 		"mailbox_purpose=LICITACOES",
 		"why_admitted:",

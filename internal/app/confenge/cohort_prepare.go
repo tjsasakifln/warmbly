@@ -69,6 +69,12 @@ type FrozenCohortMember struct {
 	// sentence the last composer wrote. omitempty on purpose: manifests frozen
 	// before this field existed must keep hashing exactly as they did.
 	SourceFact string `json:"source_fact,omitempty"`
+	// ServiceCode and MomentCode are why the practice line says what it says.
+	// A recompose that could not read them would rewrite every message onto the
+	// generic practice sentence, which is the corpus defect itself. omitempty on
+	// purpose: manifests frozen before these fields existed keep hashing as they did.
+	ServiceCode string `json:"service_code,omitempty"`
+	MomentCode  string `json:"moment_code,omitempty"`
 }
 
 // CohortExclusion is one account left out of the frozen set.
@@ -364,6 +370,8 @@ func PrepareControlledCohort(accounts []CohortAccountInput, opts CohortPrepareOp
 			MailboxPurpose:   strings.TrimSpace(cand.MailboxPurpose),
 			ObservedFact:     comp.ObservedFact,
 			SourceFact:       firstNonEmpty(in.Account.FactToMention, in.Account.MomentSummary),
+			ServiceCode:      strings.TrimSpace(in.Account.ServiceCode),
+			MomentCode:       strings.TrimSpace(in.Account.MomentCode),
 			FactSource:       comp.FactSource,
 			CTA:              comp.CTA,
 			CTASource:        comp.CTASource,

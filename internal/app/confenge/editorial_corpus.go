@@ -15,6 +15,10 @@ const (
 	corpusMinCohort         = 3
 	corpusUniformOpenShare  = 0.9
 	corpusDistinctiveJacard = 0.9
+	// A practice line repeats legitimately across leads that really are on the
+	// same service. Near-total uniformity across the cohort is the merge tell:
+	// it means the sentence is not tracking the service at all.
+	corpusUniformPracticeShare = 0.9
 )
 
 // CorpusQA returns, per account ref, the corpus-level reason codes that block
@@ -36,15 +40,19 @@ func CorpusQA(members []FrozenCohortMember) map[string][]string {
 	byBody := map[string][]int{}
 	bySubject := map[string][]int{}
 	distinctive := make([]string, len(members))
+	practice := make([]string, len(members))
 	openings := map[string]int{}
+	practices := map[string]int{}
 
 	for i, m := range members {
 		bodyKey := normalizeForCorpus(m.BodyText)
 		subjKey := normalizeForCorpus(m.Subject)
 		byBody[bodyKey] = append(byBody[bodyKey], i)
 		bySubject[subjKey] = append(bySubject[subjKey], i)
+		practice[i] = practiceSentenceOf(m.BodyText)
 		distinctive[i] = distinctiveContent(m.BodyText)
 		openings[firstSentenceOf(distinctive[i])]++
+		practices[practice[i]]++
 	}
 
 	// Byte-identical bodies are a mail merge with the merge field missing.
@@ -79,6 +87,21 @@ func CorpusQA(members []FrozenCohortMember) map[string][]string {
 			}
 		}
 	}
+	// The middle of the mail is where a mail merge shows. A greeting and a
+	// sign-off may repeat forever; the sentence saying what CONFENGE would do
+	// for this lead may not, because it is supposed to track the lead's service.
+	for line, n := range practices {
+		if line == "" {
+			continue
+		}
+		if float64(n)/float64(len(members)) >= corpusUniformPracticeShare && n >= corpusMinCohort {
+			for i, m := range members {
+				if practice[i] == line {
+					add(m.AccountRef, "corpus_uniform_practice_line")
+				}
+			}
+		}
+	}
 	// Pairwise near-duplication of the company-specific content.
 	for i := 0; i < len(members); i++ {
 		if strings.TrimSpace(distinctive[i]) == "" {
@@ -98,21 +121,46 @@ func CorpusQA(members []FrozenCohortMember) map[string][]string {
 
 // corpusBoilerplateMarkers are the sentences a first email is allowed to share
 // with every other first email: how the sender introduces themself and signs.
+// The practice line is deliberately absent; it is judged on its own.
 var corpusBoilerplateMarkers = []string{
 	"meu nome e",
 	"da confenge",
-	"trabalho com",
 	"obrigado",
 	"ola",
 }
 
+// practiceSentenceOf returns the sentence stating what the sender does, taken
+// from the paragraph carrying the ask, where the composer always puts it. It is
+// looked for there and nowhere else so a public fact that happens to contain a
+// practice verb is not mistaken for the sender's own claim.
+func practiceSentenceOf(body string) string {
+	for _, p := range nonEmptyParagraphs(body) {
+		if !strings.Contains(p, "?") {
+			continue
+		}
+		for _, sentence := range splitSentencesPT(p) {
+			if qaPracticeRe.MatchString(foldASCII(strings.ToLower(sentence))) {
+				return normalizeForCorpus(sentence)
+			}
+		}
+		return ""
+	}
+	return ""
+}
+
 // distinctiveContent strips the sentences that are boilerplate by design, so
-// similarity is measured on what should be about this company.
+// similarity is measured on what should be about this company. The practice
+// line is stripped too: it is neither free boilerplate nor company-specific,
+// and it has its own check above.
 func distinctiveContent(body string) string {
+	practice := practiceSentenceOf(body)
 	var kept []string
 	for _, sentence := range splitSentencesPT(body) {
 		s := strings.TrimSpace(sentence)
 		if s == "" {
+			continue
+		}
+		if practice != "" && normalizeForCorpus(s) == practice {
 			continue
 		}
 		folded := foldASCII(strings.ToLower(s))
