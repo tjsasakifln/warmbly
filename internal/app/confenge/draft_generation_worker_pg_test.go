@@ -35,6 +35,19 @@ func TestDraftGenerationWorkerLeasesControlledRouteWithoutNamedPersonRollup(t *t
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM organizations WHERE id=$1`, orgID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM users WHERE id=$1`, actor)
 	})
+	staleRun, currentRun := uuid.New(), uuid.New()
+	for _, run := range []struct {
+		id, source, snapshot string
+	}{
+		{staleRun.String(), "controlled-draft-stale", "controlled-draft-stale-snapshot"},
+		{currentRun.String(), "controlled-draft-current", "controlled-draft-current-snapshot"},
+	} {
+		if _, err = pool.Exec(ctx, `INSERT INTO outreach_import_runs
+			(id,organization_id,source_run_id,snapshot_hash,status,idempotency_key)
+			VALUES($1,$2,$3,$4,'completed',$5)`, run.id, orgID, run.source, run.snapshot, "controlled-draft-"+run.id); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	repo := repository.NewOutreachRepository(pool)
@@ -47,7 +60,8 @@ func TestDraftGenerationWorkerLeasesControlledRouteWithoutNamedPersonRollup(t *t
 		NomeFantasia:             "Controlled Route Fixture",
 		QueueState:               models.OutreachQueueReadyToGenerate,
 		SourceSystem:             "extra-cli",
-		SourceRunID:              "controlled-draft-run",
+		SourceRunID:              "controlled-draft-current",
+		LastImportRunID:          &currentRun,
 		ActivationState:          ActivationActionableNow,
 		TargetFitSendTier:        "A_AUTOMATIC",
 		TargetFitClass:           TargetFitConfirmed,
@@ -78,6 +92,7 @@ func TestDraftGenerationWorkerLeasesControlledRouteWithoutNamedPersonRollup(t *t
 		MailboxPurposeSendBlocked:      true,
 		OwnershipStatus:                "COMPANY_OWNED",
 		RecipientCommercialSuitability: "SUITABLE_GENERIC",
+		LastImportRunID:                &currentRun,
 		DiscoveryJSON: eligibleDisc(
 			t,
 			RouteClassGenericCompany,
@@ -86,6 +101,23 @@ func TestDraftGenerationWorkerLeasesControlledRouteWithoutNamedPersonRollup(t *t
 		),
 	}
 	if _, err = repo.UpsertCandidate(ctx, candidate); err != nil {
+		t.Fatal(err)
+	}
+	staleAccount := *account
+	staleAccount.ID = uuid.Nil
+	staleAccount.SourceLeadID = "controlled-draft-stale-route"
+	staleAccount.CNPJ14 = "76271049000347"
+	staleAccount.QueueState = models.OutreachQueueReadyToGenerate
+	if _, err = repo.UpsertAccount(ctx, &staleAccount); err != nil {
+		t.Fatal(err)
+	}
+	staleCandidate := *candidate
+	staleCandidate.ID = uuid.Nil
+	staleCandidate.AccountID = staleAccount.ID
+	staleCandidate.SourceContactID = "controlled-generic-route-stale"
+	staleCandidate.Email = "stale@controlled-route.example"
+	staleCandidate.LastImportRunID = &staleRun
+	if _, err = repo.UpsertCandidate(ctx, &staleCandidate); err != nil {
 		t.Fatal(err)
 	}
 
@@ -101,6 +133,12 @@ func TestDraftGenerationWorkerLeasesControlledRouteWithoutNamedPersonRollup(t *t
 	}
 	if attempts != 1 {
 		t.Fatalf("draft_generation_attempts=%d want 1", attempts)
+	}
+	if err = pool.QueryRow(ctx, `SELECT draft_generation_attempts FROM outreach_accounts WHERE id=$1`, staleAccount.ID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 0 {
+		t.Fatalf("stale route draft_generation_attempts=%d want 0", attempts)
 	}
 
 	// The preparation workers share a per-org first-touch review ceiling. Once

@@ -42,6 +42,9 @@ The corrected path stores the complete extra-cli decision, rejects temporal regr
 | `CONFENGE_EXTRA_CLI_ALLOWED_HOSTS` | empty | Required in prod with remote URL |
 
 Shadow mode: flag off still **imports** activation fields; queue order stays legacy `priority_rank`.
+The CONFENGE VPS overlay sets the review backlog target to `500`, the maximum
+accepted by one bulk-review request. The application default remains `100` for
+other deployments.
 
 ## Activation fields on `outreach_accounts`
 

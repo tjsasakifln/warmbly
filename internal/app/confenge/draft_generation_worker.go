@@ -93,6 +93,7 @@ func (s *service) ProcessDraftGenerationOnce(ctx context.Context) (bool, error) 
 				FROM outreach_contact_candidates c
 				WHERE c.organization_id = a.organization_id
 				  AND c.account_id = a.id
+				  AND (a.last_import_run_id IS NULL OR c.last_import_run_id = a.last_import_run_id)
 				  AND c.email <> ''
 				  AND c.blocked = false
 				  AND c.do_not_contact = false

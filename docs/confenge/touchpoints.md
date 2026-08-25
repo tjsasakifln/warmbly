@@ -69,7 +69,11 @@ person is not a generation blocker, while target fit, suppression, bounce and
 opt-out remain fail-closed. The worker creates the idempotent cadence, generates
 only its first due touchpoint, and stops at `NEEDS_REVIEW` (Comercial ->
 Rascunhos). Each tick drains a bounded burst of up to 100 accounts; failures
-use exponential retry from 15 minutes up to 24 hours.
+use exponential retry from 15 minutes up to 24 hours. A versioned account is
+leased only when its usable candidate belongs to the account's current import;
+historical routes cannot keep the worker retrying after a feed refresh. The
+CONFENGE VPS maintains up to 500 first-touch reviews, matching one bulk-review
+request without approving or sending them.
 
 `ENRICHMENT_PENDING` touchpoints are also retried by the editorial recovery
 worker. After a complete feed import, newly fresh and eligible accounts with a
