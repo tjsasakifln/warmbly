@@ -77,3 +77,10 @@ usable strict or controlled route have stale retry timers moved to `now`; stale,
 suppressed, bounced and probabilistic-only routes stay untouched. The same
 touchpoint can then return to `NEEDS_REVIEW`. Neither worker can approve,
 schedule, queue or send a message.
+
+After a complete feed refresh, a `NEEDS_REVIEW` first touch whose bound contact
+is absent from the account's current import is retired as `CANCELLED`; its draft
+is kept as `BLOCKED` for audit. The remaining unapproved cadence is retired with
+it. If the same supplier has another current eligible route, the account returns
+to `READY_TO_GENERATE` and a new cadence is bound only to that current route.
+Approved, queued and sent states are outside this recovery path.
