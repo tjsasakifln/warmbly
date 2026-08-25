@@ -167,9 +167,10 @@ services:
       resources:
         limits:
           cpus: "1.5"
-          memory: 1536M
+          # Full authoritative feeds are validated before the first DB mutation.
+          memory: ${CONFENGE_BACKEND_MEMORY_LIMIT:-5G}
         reservations:
-          memory: 384M
+          memory: ${CONFENGE_BACKEND_MEMORY_RESERVATION:-512M}
 
   consumer:
     <<: *restart
