@@ -83,9 +83,19 @@ func (s *service) ProcessDraftGenerationOnce(ctx context.Context) (bool, error) 
 			  AND (
 				SELECT count(*)
 				FROM outreach_touchpoints review_backlog
+				JOIN outreach_accounts review_account
+				  ON review_account.organization_id=review_backlog.organization_id
+				 AND review_account.id=review_backlog.account_id
 				WHERE review_backlog.organization_id=a.organization_id
 				  AND review_backlog.ordinal=1
 				  AND review_backlog.state='NEEDS_REVIEW'
+				  AND NOT EXISTS (
+					SELECT 1
+					FROM confenge_delegated_first_touch_decisions decision
+					WHERE decision.organization_id=review_backlog.organization_id
+					  AND decision.account_id=review_backlog.account_id
+					  AND decision.evidence_source_run_id=review_account.source_run_id
+				  )
 			  ) < $3
 			  AND a.target_fit_eligible = true
 			  AND a.blocked = false
