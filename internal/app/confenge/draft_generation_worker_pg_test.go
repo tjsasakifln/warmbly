@@ -52,6 +52,13 @@ func TestDraftGenerationWorkerLeasesControlledRouteWithoutNamedPersonRollup(t *t
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	repo := repository.NewOutreachRepository(pool)
+	if err = repo.UpsertFeedSyncState(ctx, &models.OutreachFeedSyncState{
+		OrganizationID: orgID, LastSnapshotHash: "controlled-draft-current-snapshot",
+		LastRunID: "controlled-draft-current", LastManifestURI: "file:///controlled-draft-current.json",
+		LastStatus: "completed", LastSuccessAt: &now, LastAttemptAt: &now, SourceGeneratedAt: &now,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	account := &models.OutreachAccount{
 		OrganizationID:           orgID,
 		SourceLeadID:             "controlled-draft-lease",
@@ -108,6 +115,7 @@ func TestDraftGenerationWorkerLeasesControlledRouteWithoutNamedPersonRollup(t *t
 	staleAccount.ID = uuid.Nil
 	staleAccount.SourceLeadID = "controlled-draft-stale-route"
 	staleAccount.CNPJ14 = "76271049000347"
+	staleAccount.SourceRunID = "controlled-draft-stale"
 	staleAccount.QueueState = models.OutreachQueueReadyToGenerate
 	if _, err = repo.UpsertAccount(ctx, &staleAccount); err != nil {
 		t.Fatal(err)

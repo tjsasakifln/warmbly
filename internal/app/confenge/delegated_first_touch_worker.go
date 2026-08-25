@@ -93,9 +93,11 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (bool, err
 		SELECT t.id,t.account_id,t.contact_candidate_id
 		FROM outreach_touchpoints t
 		JOIN outreach_accounts a ON a.organization_id=t.organization_id AND a.id=t.account_id
+		JOIN outreach_feed_sync_state feed ON feed.organization_id=t.organization_id
 		WHERE t.organization_id=$1
 		  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
 		  AND t.state='NEEDS_REVIEW' AND t.contact_candidate_id IS NOT NULL
+		  AND feed.last_status='completed' AND a.source_run_id=feed.last_run_id
 		  AND NOT EXISTS (
 		    SELECT 1 FROM confenge_delegated_first_touch_decisions d
 		    WHERE d.organization_id=t.organization_id AND d.account_id=t.account_id
