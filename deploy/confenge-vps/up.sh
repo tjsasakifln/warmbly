@@ -84,7 +84,10 @@ if [[ "${CONFENGE_VPS_SEED:-false}" == "true" ]]; then
 fi
 
 echo "Bringing up project=$COMPOSE_PROJECT_NAME ..."
-compose_cmd up -d --remove-orphans
+# A release checkout is not a release deployment until the local application
+# images have been rebuilt from that checkout.  Compose otherwise reuses the
+# previous tag and can report healthy containers that still run the prior SHA.
+compose_cmd up -d --build --remove-orphans
 
 
 # Keep the kill-switch volume private and writable by the backend user (uid 1000).
