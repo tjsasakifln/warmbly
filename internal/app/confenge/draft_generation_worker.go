@@ -77,9 +77,31 @@ func (s *service) ProcessDraftGenerationOnce(ctx context.Context) (bool, error) 
 			FROM outreach_accounts a
 			WHERE a.queue_state = 'READY_TO_GENERATE'
 			  AND a.target_fit_eligible = true
-			  AND a.email_send_ready = true
 			  AND a.blocked = false
 			  AND a.do_not_contact = false
+			  AND EXISTS (
+				SELECT 1
+				FROM outreach_contact_candidates c
+				WHERE c.organization_id = a.organization_id
+				  AND c.account_id = a.id
+				  AND c.email <> ''
+				  AND c.blocked = false
+				  AND c.do_not_contact = false
+				  AND c.bounced = false
+				  AND (
+					(c.email_send_ready = true
+					  AND c.mailbox_purpose_send_blocked = false
+					  AND c.verification_status NOT IN (
+						'CANDIDATE_UNVERIFIED','NOT_FOUND','INVALID','BOUNCED','DO_NOT_CONTACT'
+					  ))
+					OR (
+					  c.discovery_json @> '{"controlled_email_eligible":true}'::jsonb
+					  AND upper(COALESCE(c.discovery_json->>'route_class','')) IN (
+						'DIRECT_PERSON','ROLE_OR_DEPARTMENT','GENERIC_COMPANY','PUBLIC_COMPANY_FREEMAIL'
+					  )
+					)
+				  )
+			  )
 			  AND a.draft_generation_retry_at <= $1
 			  AND (a.draft_generation_reserved_until IS NULL OR a.draft_generation_reserved_until <= $1)
 			  AND NOT EXISTS (

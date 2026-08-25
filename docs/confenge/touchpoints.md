@@ -63,7 +63,10 @@ explicit confirmation.
 ## Continuous generation into Comercial -> Rascunhos
 
 Accounts in `READY_TO_GENERATE` are leased with `FOR UPDATE SKIP LOCKED` and
-processed asynchronously. The worker creates the idempotent cadence, generates
+processed asynchronously when they have either a strict send-ready mailbox or
+an explicitly controlled DIRECT/ROLE/GENERIC/FREEMAIL route. A missing named
+person is not a generation blocker, while target fit, suppression, bounce and
+opt-out remain fail-closed. The worker creates the idempotent cadence, generates
 only its first due touchpoint, and stops at `NEEDS_REVIEW` (Comercial ->
 Rascunhos). Each tick drains a bounded burst of up to 100 accounts; failures
 use exponential retry from 15 minutes up to 24 hours.
