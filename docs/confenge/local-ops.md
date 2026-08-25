@@ -44,6 +44,9 @@ at `http://localhost:18025`. Nothing real is sent.
 | `make confenge-bootstrap` | Workspace settings without raw SQL |
 | `make confenge-import FEED=... [DRY_RUN=true]` | Import feed; prints creates/updates/blocked |
 | `go run ./cmd/confenge reconcile-target-fit [--dry-run] --org-id UUID` | Reconcile historical target-fit and revoke ineligible unsent work |
+| `go run ./cmd/confenge first-touch seal --org-id UUID --manifest research.json --out sealed.json` | Bind chosen candidate IDs to exact operational mailboxes in a new mode `0600` manifest without printing addresses |
+| `go run ./cmd/confenge first-touch apply --org-id UUID --manifest sealed.json --dry-run` | Validate contractor role, reconciliation, copy and adversarial QA without writes |
+| `go run ./cmd/confenge first-touch apply --org-id UUID --manifest sealed.json --confirm CFG-FIRST-TOUCH-ROUTING-v1` | Record delegated approval, queue through the canonical cadence and require readback |
 | `go run ./cmd/confenge cohort prepare --feed PATH --out PATH` | Derive hashes, select one route/account, print a reconciling preview |
 | `go run ./cmd/confenge cohort authorize --manifest PATH --actor UUID --confirm` | Persist the frozen grant and apply it fail-closed to touchpoints |
 | `go run ./cmd/confenge cohort review --id UUID --actor UUID` | Collect live release evidence and print PASS/FAIL/UNKNOWN (not persisted) |
@@ -61,7 +64,8 @@ at `http://localhost:18025`. Nothing real is sent.
 
 - `CONFENGE_AUTO_SEND_ENABLED` must stay `false`
 - `CONFENGE_REQUIRE_HUMAN_APPROVAL=true` (fail-closed)
-- AI never approves or sends
+- runtime AI never approves or sends; the CLI agent can authorize only the
+  separately enabled, founder-approved first-touch routing policy
 - `DO_NOT_CONTACT` / opt-out / bounce / reply block cadences
 - Reimport does not re-activate DNC accounts
 - Current extra-cli target-fit is mandatory through the final send gate
@@ -97,6 +101,8 @@ go run ./cmd/confenge bootstrap
 go run ./cmd/confenge import --feed internal/app/confenge/testdata/demo_3_companies.json --dry-run
 go run ./cmd/confenge reconcile-target-fit --dry-run --org-id <uuid>
 go run ./cmd/confenge reconcile-target-fit --org-id <uuid>
+go run ./cmd/confenge first-touch seal --org-id <uuid> --manifest research.json --out sealed.json
+go run ./cmd/confenge first-touch apply --org-id <uuid> --manifest sealed.json --dry-run
 go run ./cmd/confenge stop-sending
 go run ./cmd/confenge resume-sending
 go run ./cmd/confenge intel-exceptions list --fixture --format json

@@ -529,6 +529,7 @@ func Run(
 				confengeGroup.GET("/status", h.GetConfengeStatus)
 				confengeGroup.GET("/dispatch/status", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeDispatchStatus)
 				confengeGroup.GET("/summary", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeSummary)
+				confengeGroup.GET("/first-touch/status", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeDelegatedFirstTouchStatus)
 				confengeGroup.GET("/working-overview", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeWorkingOverview)
 				confengeGroup.GET("/working-queue", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeWorkingQueue)
 				confengeGroup.GET("/cockpit", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeContactCockpit)

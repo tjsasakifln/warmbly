@@ -20,8 +20,10 @@ type draftGenerationProcessor interface {
 	ProcessDraftGenerationOnce(context.Context) (bool, error)
 }
 
-// DraftGenerationWorker drains contact-ready accounts into the human review
-// surface. It has no approval, scheduling, queueing or transport authority.
+// DraftGenerationWorker drains contact-ready accounts into first-touch drafts.
+// It has no approval, scheduling, queueing or transport authority itself: a
+// separate delegated-policy evaluator may authorize an eligible first touch,
+// while every exception remains on the human review surface.
 type DraftGenerationWorker struct {
 	processor draftGenerationProcessor
 	interval  time.Duration
@@ -62,8 +64,8 @@ func (w *DraftGenerationWorker) Run(ctx context.Context) {
 }
 
 // ProcessDraftGenerationOnce atomically leases one eligible account, creates
-// its idempotent cadence, and generates only the first reviewable touchpoint.
-// Every transport and human-authorization gate remains downstream and intact.
+// its idempotent cadence, and generates only the first touchpoint. Every
+// approval and transport gate remains downstream and intact.
 func (s *service) ProcessDraftGenerationOnce(ctx context.Context) (bool, error) {
 	if s == nil || s.humanGateDB == nil {
 		return false, nil

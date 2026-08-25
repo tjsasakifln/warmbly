@@ -32,14 +32,17 @@ intelligence (dossier)
   → outbound-safe plan (hook, relevance, value_unit, cta)
   → constrained generation (plan only)
   → deterministic hard QA
-  → human approval (authorization, not rewrite)
+  → CFG-FIRST-TOUCH-ROUTING-v1 evaluation
+      ↳ eligible first touch: DELEGATED_POLICY_APPROVE
+      ↳ exception / follow-up: human approval or HOLD
   → send (existing gates)
   → outcomes / experiments
 ```
 
 Never: lead data → freestyle LLM → email.
 Never: interpolate ProblemHypothesis / metadata dumps into copy.
-`NEEDS_REVIEW` means the message is already sendable and only human authorization remains.
+`NEEDS_REVIEW` is an exception queue. It is not the expected terminal state for
+an eligible first touch. Delegated approval is never recorded as a human action.
 
 ## First email
 
@@ -87,4 +90,7 @@ Account-level assignment; single dimension when possible; small-n → INCONCLUSI
 
 ## Safety non-goals of this layer
 
-Does not change: governor, green_autorun, policy_auth, transport, activation scoring, DNC transport gate, WhatsApp runtime (stays OFF).
+Does not change: governor, green_autorun, transport scheduler, activation
+scoring, DNC transport gate, WhatsApp runtime (stays OFF), pause or kill switch.
+The only automatic authorization is the versioned, fail-closed first-touch
+policy; follow-ups remain outside its scope.

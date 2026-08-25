@@ -74,7 +74,9 @@ terminates on the versioned persist-first adapter at loopback `:8791`; it does
 not create customers, checkouts, subscriptions, or charges. Handoff:
 [inbound-edge.md](../../docs/confenge/inbound-edge.md).
 
-Safety: GREEN autorun OFF, auto-send OFF, WhatsApp OFF, human approval ON.
+Safety: GREEN autorun OFF, auto-send OFF, WhatsApp OFF and the global human
+fallback gate ON. An eligible first touch may instead use the explicit
+`CFG-FIRST-TOUCH-ROUTING-v1` delegated path; every exception remains human.
 Operational pace 10→20/h, daily shell 200. Hostinger plan is **Business Email
 Starter** (1000 msgs/rolling 24h/mailbox); that is only the provider ceiling,
 not the commercial target (`HOSTINGER_PLAN_CLASS=BUSINESS_EMAIL_STARTER`).

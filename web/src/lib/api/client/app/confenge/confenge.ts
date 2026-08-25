@@ -21,6 +21,7 @@ import type {
     ConfengeIntelException,
     ConfengeIntelExceptionFilter,
     ConfengeIntelResolveResult,
+	ConfengeDelegatedFirstTouchStatus,
 } from "@/lib/api/models/app/confenge/Confenge";
 import Request from "../../Request";
 
@@ -30,6 +31,15 @@ export async function getConfengeStatus(): Promise<ConfengeStatus> {
         url: "/confenge/status",
         authorization: true,
     });
+}
+
+export async function getConfengeDelegatedFirstTouchStatus(): Promise<ConfengeDelegatedFirstTouchStatus> {
+    const res = await Request<{ data: ConfengeDelegatedFirstTouchStatus }>({
+        method: "GET",
+        url: "/confenge/first-touch/status",
+        authorization: true,
+    });
+    return res.data;
 }
 
 export async function getConfengeSummary(): Promise<ConfengeSummary> {

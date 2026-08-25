@@ -34,7 +34,7 @@ if [[ "${CONFENGE_GREEN_AUTORUN_ENABLED:-false}" == "true" ]]; then
   exit 3
 fi
 if [[ "${CONFENGE_AUTO_SEND_ENABLED:-false}" == "true" ]]; then
-  echo "REFUSE: CONFENGE_AUTO_SEND_ENABLED=true is not allowed (human approval path only)" >&2
+  echo "REFUSE: CONFENGE_AUTO_SEND_ENABLED=true is not allowed; use the narrow delegated first-touch policy" >&2
   exit 3
 fi
 if [[ "${CONFENGE_REQUIRE_HUMAN_APPROVAL:-true}" != "true" ]]; then

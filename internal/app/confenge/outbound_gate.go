@@ -385,7 +385,7 @@ func (s *service) revalidateCampaignPolicyAtSend(ctx context.Context, orgID uuid
 	if block := s.revalidateCampaignPolicyGrant(ctx, orgID, tp, true); block != nil {
 		return block
 	}
-	if err := CanTransport(tp); err != nil {
+	if err := CanTransportCampaignPolicy(tp); err != nil {
 		ClearApproval(tp)
 		tp.StopReason = "transport_invalid"
 		_ = s.repo.UpdateTouchpoint(ctx, tp)
@@ -402,7 +402,17 @@ func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *
 	if tp != nil {
 		mode = strings.TrimSpace(tp.AuthorizationMode)
 	}
-	if mode != AuthorizationModeBoundedCohort {
+	if mode == AuthorizationModeCampaignPolicy {
+		if !s.cfg.DelegatedFirstTouchEnabled {
+			return fmt.Errorf("campaign_policy cannot transport; delegated first-touch is disabled")
+		}
+		if err := CanTransportCampaignPolicy(tp); err != nil {
+			if tp != nil {
+				_ = s.cancelDelegatedDecision(ctx, orgID, tp.ID, "delegated_structural_binding_drift")
+			}
+			return err
+		}
+	} else if mode != AuthorizationModeBoundedCohort {
 		if err := CanTransport(tp); err != nil {
 			return err
 		}
@@ -412,13 +422,16 @@ func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *
 	// A frozen bounded cohort carries its own membership (the grant manifest,
 	// re-validated by CanTransportCohort). The legacy confenge-pilot-v1
 	// membership table is not written for it and must not gate it.
-	if s.cfg.OperatorMode && mode != AuthorizationModeBoundedCohort && mode != AuthorizationModeHumanGate {
+	if s.cfg.OperatorMode && mode != AuthorizationModeCampaignPolicy && mode != AuthorizationModeBoundedCohort && mode != AuthorizationModeHumanGate {
 		if err := s.requirePilotMembershipForTouchpoint(ctx, orgID, tp); err != nil {
 			return fmt.Errorf("controlled pilot membership: %w", err)
 		}
 	}
 	acc, err := s.repo.GetAccount(ctx, orgID, tp.AccountID)
 	if err != nil || acc == nil {
+		if mode == AuthorizationModeCampaignPolicy {
+			_ = s.cancelDelegatedDecision(ctx, orgID, tp.ID, "account_or_recipient_missing")
+		}
 		return fmt.Errorf("target-fit account lookup failed")
 	}
 	var cand *models.OutreachContactCandidate
@@ -430,6 +443,24 @@ func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *
 		}
 	}
 	linkedHumanGate, humanGateReason := s.humanGateDispatchInvalidation(ctx, orgID, tp)
+	if mode == AuthorizationModeCampaignPolicy {
+		if linkedHumanGate {
+			_ = s.cancelDelegatedDecision(ctx, orgID, tp.ID, "authorization_mode_conflict")
+			return fmt.Errorf("human-gate touchpoint authorization mode mismatch")
+		}
+		// The delegated assertion owns every material live binding and cancels
+		// approval + queue atomically on drift. Run it before generic guards so
+		// recipient/source changes cannot merely return an error while leaving a
+		// stale delegated decision in QUEUED.
+		if err := s.assertDelegatedFirstTouchDecision(ctx, orgID, tp); err != nil {
+			return err
+		}
+		if block := s.revalidateCampaignPolicyAtSend(ctx, orgID, tp); block != nil {
+			_ = s.cancelDelegatedDecision(ctx, orgID, tp.ID, "delegated_policy_revalidation_failed:"+block.Reason)
+			return fmt.Errorf("campaign policy revalidation: %s", block.Reason)
+		}
+		return nil
+	}
 	if mode == AuthorizationModeHumanGate {
 		if !linkedHumanGate {
 			return fmt.Errorf("human-gate scheduling binding missing")
@@ -482,10 +513,32 @@ func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *
 	if strings.TrimSpace(tp.AuthorizationMode) == AuthorizationModeBoundedCohort {
 		return s.assertBoundedCohortTransport(ctx, tp, cand, "")
 	}
-	if strings.TrimSpace(tp.AuthorizationMode) != AuthorizationModeCampaignPolicy {
-		return nil
+	return nil
+}
+
+// assertCampaignPolicyQueueable proves the exact delegated decision and live
+// revocable grant without requiring transport to be open. The dispatch worker
+// invokes AssertTransportable again before provider handoff, where the durable
+// kill switch and process pause remain mandatory gates.
+func (s *service) assertCampaignPolicyQueueable(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint) error {
+	if !s.cfg.DelegatedFirstTouchEnabled {
+		return fmt.Errorf("campaign_policy cannot queue; delegated first-touch is disabled")
 	}
-	if block := s.revalidateCampaignPolicyAtSend(ctx, orgID, tp); block != nil {
+	if err := CanQueueCampaignPolicy(tp); err != nil {
+		if tp != nil {
+			_ = s.cancelDelegatedDecision(ctx, orgID, tp.ID, "delegated_structural_binding_drift")
+		}
+		return err
+	}
+	if linked, _ := s.humanGateDispatchInvalidation(ctx, orgID, tp); linked {
+		_ = s.cancelDelegatedDecision(ctx, orgID, tp.ID, "authorization_mode_conflict")
+		return fmt.Errorf("human-gate touchpoint authorization mode mismatch")
+	}
+	if err := s.assertDelegatedFirstTouchDecision(ctx, orgID, tp); err != nil {
+		return err
+	}
+	if block := s.revalidateCampaignPolicyGrant(ctx, orgID, tp, true); block != nil {
+		_ = s.cancelDelegatedDecision(ctx, orgID, tp.ID, "delegated_policy_revalidation_failed:"+block.Reason)
 		return fmt.Errorf("campaign policy revalidation: %s", block.Reason)
 	}
 	return nil
@@ -552,6 +605,9 @@ func (s *service) CompleteCampaignEmail(ctx context.Context, orgID, campaignID, 
 		if err := commitProviderSend(); err != nil {
 			return err
 		}
+		if err := s.markDelegatedFirstTouchSent(ctx, orgID, touchpoint.ID, firstNonZeroTime(touchpoint.SentAt, acceptedAt)); err != nil {
+			return err
+		}
 		return s.releaseNextTouch(ctx, orgID, touchpoint)
 	}
 	now := acceptedAt.UTC()
@@ -564,10 +620,23 @@ func (s *service) CompleteCampaignEmail(ctx context.Context, orgID, campaignID, 
 	if err := s.repo.UpdateTouchpoint(ctx, touchpoint); err != nil {
 		return err
 	}
+	if err := s.markDelegatedFirstTouchSent(ctx, orgID, touchpoint.ID, now); err != nil {
+		return err
+	}
 	if err := commitProviderSend(); err != nil {
 		return err
 	}
 	return s.releaseNextTouch(ctx, orgID, touchpoint)
+}
+
+func firstNonZeroTime(value *time.Time, fallback time.Time) time.Time {
+	if value != nil && !value.IsZero() {
+		return value.UTC()
+	}
+	if !fallback.IsZero() {
+		return fallback.UTC()
+	}
+	return time.Now().UTC()
 }
 
 // ObserveCampaignEmailAttempt records that the worker reached the provider

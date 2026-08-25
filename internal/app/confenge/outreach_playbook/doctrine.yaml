@@ -36,8 +36,8 @@ principles:
     summary: No empty following-up; each touch adds value.
   - id: fail_closed_on_claims
     summary: Unsupported material claims block approval path.
-  - id: human_approval_unchanged
-    summary: Strategy and generation may be automatic; send approval stays human.
+  - id: explicit_approval_authority
+    summary: Eligible first touches may use CFG-FIRST-TOUCH-ROUTING-v1; every other message stays human-approved.
 
 first_email_defaults:
   min_words: 40

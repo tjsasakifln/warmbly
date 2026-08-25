@@ -544,6 +544,44 @@ export type ConfengeAccount = {
     evidence?: ConfengeEvidence[];
 };
 
+export type ConfengeDelegatedFirstTouchItem = {
+    batch_id: string;
+    account_id?: string;
+    cnpj14: string;
+    supplier_cnpj14: string;
+    buyer_cnpj14?: string;
+    recipient?: string;
+    route_class: string;
+    decision: "DELEGATED_POLICY_APPROVE" | "HOLD";
+    approval_source: "DELEGATED_POLICY_APPROVE" | "POLICY_EVALUATION_HOLD";
+    state: string;
+    evidence_reference?: string;
+    evidence_hash?: string;
+    source_run_id: string;
+    source_snapshot_hash: string;
+    reason_codes?: string[];
+    blocker_codes?: string[];
+    content_hash?: string;
+    runtime_release_sha?: string;
+    due_at?: string | null;
+    readback_at?: string | null;
+    decided_at: string;
+};
+
+export type ConfengeDelegatedFirstTouchStatus = {
+    batch_id?: string;
+    policy_id: string;
+    policy_version: string;
+    policy_hash: string;
+    policy_active: boolean;
+    counts: Record<string, number>;
+    human_approved: number;
+    queued_readback: number;
+    duplicate_live_account: number;
+    duplicate_live_root: number;
+    items: ConfengeDelegatedFirstTouchItem[];
+};
+
 export type ConfengeWorkingQueueSummary = {
     reservoir_monitored: number;
     actionable_now: number;

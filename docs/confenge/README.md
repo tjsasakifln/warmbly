@@ -11,10 +11,10 @@ for go-live. Mailpit is for local tests only. See
 [architecture-split.md](./architecture-split.md).
 
 ```text
-datalake (VPS) → extra-cli → versioned feed → Warmbly staging → review → campaign → outcomes → extra-cli
+datalake (VPS) → extra-cli → versioned feed → Warmbly staging → QA/policy → scheduling → outcomes → extra-cli
 ```
 
-Product acceptance matrix (email + WhatsApp sum, human approval, governor,
+Product acceptance matrix (email + WhatsApp sum, explicit approval authority, governor,
 outcomes): [PRODUCT-ACCEPTANCE.md](./PRODUCT-ACCEPTANCE.md).
 
 This tree also covers feed contract, import, staging models, review, WhatsApp
@@ -49,7 +49,7 @@ Warmbly **must not**:
 | --- | --- | --- |
 | `CONFENGE_OUTREACH_ENABLED` | `false` | Master switch for API + import |
 | `CONFENGE_AUTO_SEND_ENABLED` | `false` | Reserved; never default on |
-| `CONFENGE_REQUIRE_HUMAN_APPROVAL` | `true` | Per-touch approval required (see [touchpoints.md](./touchpoints.md)) |
+| `CONFENGE_REQUIRE_HUMAN_APPROVAL` | `true` | Keeps unscoped/global automatic approval disabled; eligible first touches use the separately versioned policy (see [touchpoints.md](./touchpoints.md)) |
 | `CONFENGE_EXTRA_CLI_FEED_URL` | empty | HTTPS or `file://` feed |
 | `CONFENGE_EXTRA_CLI_FEED_TOKEN` | empty | Optional Bearer for HTTPS |
 | `CONFENGE_EXTRA_CLI_ALLOWED_HOSTS` | empty | Required in prod when feed URL set |

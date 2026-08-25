@@ -1,9 +1,13 @@
 # CONFENGE product acceptance
 
-Version: 1.2  
-Date: 2026-08-07  
-Branch: `feat/confenge-product-acceptance`  
-Scope: prove that `extra-cli` + Warmbly form a local commercial engine for CONFENGE multichannel outreach (email + eligible WhatsApp) with factual personalization and human approval of every message.
+Version: 1.3
+Date: 2026-08-25
+Branch: `feat/confenge-product-acceptance`
+Scope: prove that `extra-cli` + Warmbly form a local commercial engine for
+CONFENGE multichannel outreach with factual personalization and explicit,
+auditable approval authority. The original scenarios below exercise the human
+path; `CFG-FIRST-TOUCH-ROUTING-v1` additionally covers eligible first touches
+without impersonating a human. All exceptions and follow-ups remain human.
 
 ## Preconditions
 
@@ -24,7 +28,7 @@ If any surface were missing, this matrix would mark product readiness **BLOCKED*
 | Replies | PASS | `ProcessInboundHandoff` cancels open **touchpoints** and drafts, sets queue REPLIED; `ListAttention` without test re-flagging |
 | Outcomes | PASS | HMAC sign/verify + test receiver idempotency; reimport preserves DNC |
 | Local startup | PASS | `cmd/confenge`, preflight, readiness, kill switch, `docs/confenge/local-ops.md` |
-| Security | PASS | Fail-closed flags; AI cannot approve/send; multi-tenant org scoping; no secrets in fixtures |
+| Security | PASS | Fail-closed flags; runtime AI cannot approve/send; the CLI agent can only execute an active founder-authorized policy; multi-tenant org scoping; no secrets in fixtures |
 | No-real-send tests | PASS | Mailpit (local/CI service) + WhatsApp mock provider + httptest outcome receiver; no real leads |
 | UI (Playwright) | PARTIAL | Spec + config ship (`web/e2e/confenge-product-acceptance.spec.ts`); **CI/static PASS** via `TestConfengeUIAcceptanceAffordancesPresent` (required data-testids + route). **Live browser run BLOCKED** in this environment: `web:5173` not listening; Playwright attempt failed with `net::ERR_ABORTED` on `/login` (captured under scratch `playwright-confenge.log`). Service E2E remains the behavioral gate for approval/quota/Needs attention. |
 

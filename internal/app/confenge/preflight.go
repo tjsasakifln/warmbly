@@ -165,7 +165,7 @@ func RunPreflight(cfg Config, deps PreflightDeps) PreflightReport {
 	if ai == "" {
 		add("ai", CheckWarn, "AI_PROVIDER unset; drafts use deterministic template fallback")
 	} else {
-		add("ai", CheckPass, "AI_PROVIDER="+ai+" (AI never approves or sends)")
+		add("ai", CheckPass, "AI_PROVIDER="+ai+" (runtime AI never approves or sends)")
 	}
 
 	if cfg.FeedURL == "" {

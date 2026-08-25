@@ -6,7 +6,7 @@ Observed at start of this campaign.
 - Branch: `campaign/CONFENGE-WARMBLY-OFFER-REVENUE-04` (exclusive worktree)
 - Canonical issue: #47 (OPEN). #55 consumes latencies only.
 - Inbound public READY; HMAC validated on controlled owner canary (prior campaigns).
-- `CONFENGE_AUTO_SEND_ENABLED` default false. Dispatch/sending paused. Human approval required.
+- Historical baseline: `CONFENGE_AUTO_SEND_ENABLED` default false and dispatch/sending paused; human approval was then required for every message. This line is superseded, only for an eligible first touch, by `CFG-FIRST-TOUCH-ROUTING-v1`. Exceptions and every other scope remain human-gated.
 - No real external commercial lead, action, or outcome exists.
 - Shipped intel plane: `confenge.commercial_intel.v1` + `confenge.commercial_event.v1` (migrations 000101, 000102).
 - Provider: none. No Asaas production key. No billing ledger.

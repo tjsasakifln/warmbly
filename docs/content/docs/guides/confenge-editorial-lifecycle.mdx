@@ -62,7 +62,7 @@ The composer reads each member's own preserved fact, so recipient, mailbox, acco
 
 The request carries no copy. It requires an `Idempotency-Key`, a reason, a `confirmation` naming the version being recomposed (for example `v1`), and the `expected_frozen_hash` of that version. Canonical source evidence must still be `FRESH`: recompose rewrites copy, it cannot refresh evidence.
 
-Version N+1 is born with no validation, no review, no approval and no scheduling. It queues nothing, sends nothing and resumes nothing. Validation and individual approval are taken again on the new version; APPROVE then schedules the exact reviewed message.
+Version N+1 is born with no validation, no review, no approval and no scheduling. It queues nothing, sends nothing and resumes nothing. On the human-cohort path, validation and individual approval are taken again and APPROVE schedules the exact reviewed message. An eligible first touch may instead be evaluated afresh under `CFG-FIRST-TOUCH-ROUTING-v1`; the old authorization is never carried across the recompose.
 
 The response includes a report of what the composer kept, dropped and rewrote: `parent_members`, `kept_members`, `excluded_members`, `exclusions`, `by_reason_code`, `composer_before` and `composer_after`. Each member passes editorial QA again, so a member whose rewritten copy fails is excluded with its reason code rather than carried forward, and corpus QA still refuses survivors that read as the same mail merge as a neighbour.
 

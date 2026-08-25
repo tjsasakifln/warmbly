@@ -1,15 +1,15 @@
 # Commercial Action Cockpit
 
-Warmbly turns extra-cli Decision-Unit + Reachability into human commercial
-work. It does not discover people, invent identity, or auto-send.
+Warmbly turns extra-cli Decision-Unit + Reachability into controlled commercial
+work. It does not discover people, invent identity, or bypass transport gates.
 
 ```
 extra-cli  WHO + WHY NOW + DECISION UNIT + REACHABILITY
     ↓
-Warmbly    what is the next commercial action?
+Warmbly    what is the next commercial action and approval authority?
     ↓
-human executes CALL / ROUTED_CALL / EMAIL / ROLE_EMAIL / WHATSAPP /
-            PROFESSIONAL_SOCIAL / CONTACT_FORM / OTHER
+policy or human executes CALL / ROUTED_CALL / EMAIL / ROLE_EMAIL / WHATSAPP /
+                      PROFESSIONAL_SOCIAL / CONTACT_FORM / OTHER
     ↓
 OUTCOME + structured feedback upstream
 ```
@@ -17,11 +17,14 @@ OUTCOME + structured feedback upstream
 Actionability and email sendability are independent. Missing a `VALIDATED`
 email is not "no commercial work".
 
-## Email guards (unchanged)
+## Email guards
 
-`VALIDATED` + messageability `READY` → `NEEDS_REVIEW` → human approval →
-dispatch. Generic, role, inferred, and blocked recipients never promote to
-validated email. Kill switch, dispatch pause, rate limits, stop-on-reply,
+An attributed recipient + messageability `READY` + all hard gates may receive
+`DELEGATED_POLICY_APPROVE` only for first touch under
+`CFG-FIRST-TOUCH-ROUTING-v1`. Generic, role and public-company freemail routes
+must have defensive company attribution and routing CTA. Inferred, stale,
+conflicting and blocked recipients go to HOLD/review and never promote through
+the policy. Kill switch, dispatch pause, rate limits, stop-on-reply,
 suppression, and `ResolveRecipient` stay fail-closed.
 
 ## Reachability mapping (`confenge.reachability.v1`)
@@ -33,7 +36,7 @@ empty (current contact-tier contract). An unknown non-empty class maps to
 
 | Upstream token | Canonical class | Action | Lane |
 | --- | --- | --- | --- |
-| `R1`, `R1_DIRECT` | `R1_DIRECT` | `DIRECT_EMAIL` | `EMAIL_NEEDS_REVIEW` only if VALIDATED+READY |
+| `R1`, `R1_DIRECT` | `R1_DIRECT` | `DIRECT_EMAIL` | delegated first touch if every v1 gate passes; otherwise `EMAIL_NEEDS_REVIEW` |
 | `R2`, `R2_HIGH_CONFIDENCE_DIRECT`, `INFERRED_DIRECT` | `R2_HIGH_CONFIDENCE_DIRECT` | `INFERRED_EMAIL_REVIEW` | `HUMAN_REVIEW_EMAIL` (never VALIDATED, never dispatch) |
 | `R3`, `R3_ROUTED_TO_NAMED_PERSON`, `ROUTES_TO_NAMED_PERSON` | `R3_ROUTED_TO_NAMED_PERSON` | `ROUTED_CALL` | `ROUTED_CALL_QUEUE` |
 | `R4`, `R4_ROLE_ROUTE`, `ROLE_MAILBOX` | `R4_ROLE_ROUTE` | `ROLE_EMAIL` | `ROLE_EMAIL_QUEUE` |
@@ -43,10 +46,12 @@ empty (current contact-tier contract). An unknown non-empty class maps to
 
 Published extra-cli ActionMode tokens map the same way. `MANUAL_ROUTED_CALL`
 is `R3` and is executable without a VALIDATED email. `DIRECT_EMAIL_VALIDATED`
-still requires VALIDATED + messageability READY + human approval before
+requires VALIDATED + messageability READY plus either an exact human approval
+or `DELEGATED_POLICY_APPROVE` for an eligible first touch before
 `EmailSendable`. `NAMED_HUMAN_MANUAL_CHANNEL` is a first-class manual lane.
-`ROLE_MAILBOX` / `GENERIC` stay exception or low-confidence manual. Unknown
-tokens fail closed to `UNMAPPED`.
+`ROLE_MAILBOX` / `GENERIC` remain manual unless the typed first-touch contract
+proves attribution and every policy gate passes. Unknown tokens fail closed to
+`UNMAPPED`.
 
 A named person plus a company phone without `BELONGS_TO_NAMED_PERSON` is
 `ROUTED_CALL`, never a direct phone.
