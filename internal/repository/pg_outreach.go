@@ -1551,7 +1551,22 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 				recommended = EXCLUDED.recommended,
 				do_not_contact = outreach_contact_candidates.do_not_contact OR EXCLUDED.do_not_contact,
 				bounced = outreach_contact_candidates.bounced OR EXCLUDED.bounced,
-				blocked = outreach_contact_candidates.blocked OR EXCLUDED.blocked,
+				-- DNC and bounce are sticky in their own columns. Import-derived
+				-- strict-lane blocks may recover when a later authoritative feed
+				-- explicitly publishes a controlled route; manual/terminal blocks
+				-- remain sticky.
+				blocked = CASE
+					WHEN outreach_contact_candidates.blocked
+						AND outreach_contact_candidates.block_reason NOT IN ('published_exhausted','provenance_chain_invalid')
+						THEN true
+					ELSE EXCLUDED.blocked
+				END,
+				block_reason = CASE
+					WHEN outreach_contact_candidates.blocked
+						AND outreach_contact_candidates.block_reason NOT IN ('published_exhausted','provenance_chain_invalid')
+						THEN outreach_contact_candidates.block_reason
+					ELSE EXCLUDED.block_reason
+				END,
 				email_send_ready = EXCLUDED.email_send_ready,
 				mailbox_purpose = EXCLUDED.mailbox_purpose,
 				mailbox_purpose_send_blocked = EXCLUDED.mailbox_purpose_send_blocked,

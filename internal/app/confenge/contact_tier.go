@@ -365,6 +365,17 @@ func applyPublishedContactTier(c *models.OutreachContactCandidate, published str
 			c.MailboxPurpose = "GENERIC_CONTACT"
 		}
 	case ContactTierE:
+		// The published contact tier describes the strict/named-person lane.
+		// An explicit controlled-email route is a separate human-review lane:
+		// extra-cli may legitimately publish EXHAUSTED for autorun while also
+		// authorizing an institutional mailbox for controlled review. Preserve
+		// DNC, bounce, suppression and fixture blockers; only avoid inventing a
+		// generic Blocked flag from the strict tier itself.
+		d := parseControlledDiscovery(c)
+		if d.ControlledEmailEligible != nil && *d.ControlledEmailEligible &&
+			defaultPilotRouteClasses[CandidateRouteClass(c)] {
+			return
+		}
 		if !c.Blocked && !c.DoNotContact && !c.Bounced {
 			c.Blocked = true
 			if c.BlockReason == "" {

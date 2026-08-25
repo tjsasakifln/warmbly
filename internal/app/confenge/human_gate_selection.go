@@ -380,9 +380,9 @@ func finalizeHumanGateSelectionReport(ctx context.Context, tx pgx.Tx, orgID uuid
 			SELECT 1 FROM outreach_contact_candidates c
 			WHERE c.organization_id=a.organization_id AND c.account_id=a.id
 			  AND c.email<>'' AND c.blocked=false AND c.do_not_contact=false AND c.bounced=false
-			  AND c.mailbox_purpose_send_blocked=false
 			  AND (
-				(c.email_send_ready=true AND c.verification_status NOT IN ('CANDIDATE_UNVERIFIED','NOT_FOUND','INVALID','BOUNCED','DO_NOT_CONTACT'))
+				(c.email_send_ready=true AND c.mailbox_purpose_send_blocked=false
+				  AND c.verification_status NOT IN ('CANDIDATE_UNVERIFIED','NOT_FOUND','INVALID','BOUNCED','DO_NOT_CONTACT'))
 				OR (
 				  c.discovery_json @> '{"controlled_email_eligible":true}'::jsonb
 				  AND upper(COALESCE(c.discovery_json->>'route_class','')) IN ('DIRECT_PERSON','ROLE_OR_DEPARTMENT','GENERIC_COMPANY','PUBLIC_COMPANY_FREEMAIL')

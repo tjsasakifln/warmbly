@@ -210,12 +210,43 @@ func TestHumanGatePostgresCreatesOneHundredDisjointSupplierMessages(t *testing.T
 			Recommended:                    true,
 			EmailSendReady:                 false,
 			MailboxPurpose:                 "GENERIC_CONTACT",
+			MailboxPurposeSendBlocked:      true,
 			OwnershipStatus:                "COMPANY_OWNED",
 			RecipientCommercialSuitability: "SUITABLE",
 			DiscoveryJSON:                  eligibleDisc(t, RouteClassGenericCompany, true, controlledDiscovery{PersonUnknown: &unknown}),
 		}
+		// Reproduce a route imported before the controlled-email contract. Its
+		// strict lane was exhausted and the repository persisted a recoverable
+		// provenance block. The current authoritative stamp must clear that
+		// non-terminal block without weakening DNC/bounce/manual suppression.
+		cand.Blocked = true
+		cand.BlockReason = "provenance_chain_invalid"
 		if _, err = repo.UpsertCandidate(ctx, cand); err != nil {
-			t.Fatalf("upsert recipient %d: %v", i, err)
+			t.Fatalf("upsert legacy recipient %d: %v", i, err)
+		}
+		cand.Blocked = false
+		if _, err = repo.UpsertCandidate(ctx, cand); err != nil {
+			t.Fatalf("recover controlled recipient %d: %v", i, err)
+		}
+		stored, getErr := repo.GetCandidate(ctx, orgID, cand.ID)
+		if getErr != nil || stored == nil || stored.Blocked {
+			t.Fatalf("controlled recipient %d stayed blocked: candidate=%+v err=%v", i, stored, getErr)
+		}
+		if i == 119 {
+			cand.Blocked = true
+			cand.BlockReason = "manual_suppression"
+			if _, err = repo.UpsertCandidate(ctx, cand); err != nil {
+				t.Fatalf("upsert manual suppression: %v", err)
+			}
+			cand.Blocked = false
+			cand.BlockReason = ""
+			if _, err = repo.UpsertCandidate(ctx, cand); err != nil {
+				t.Fatalf("replay after manual suppression: %v", err)
+			}
+			stored, getErr = repo.GetCandidate(ctx, orgID, cand.ID)
+			if getErr != nil || stored == nil || !stored.Blocked || stored.BlockReason != "manual_suppression" {
+				t.Fatalf("manual suppression was softened: candidate=%+v err=%v", stored, getErr)
+			}
 		}
 	}
 
