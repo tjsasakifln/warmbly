@@ -194,6 +194,11 @@ type ImportOptions struct {
 	DryRun         bool
 	IdempotencyKey string
 	SourceURI      string
+
+	// resumeStaleRunningAfter is set only by the manifest synchronizer, which
+	// holds the organization feed lock. Public imports keep the original
+	// idempotent readback behavior and never reclaim an in-flight run.
+	resumeStaleRunningAfter time.Duration
 }
 
 type ApprovalOptions struct {
@@ -314,7 +319,8 @@ func (s *service) ImportFromBytes(ctx context.Context, orgID uuid.UUID, userID *
 	}
 
 	payloadHash := CanonicalPayloadHash(raw)
-	var resumableRun *models.OutreachImportRun
+	var run *models.OutreachImportRun
+	resumedStaleRun := false
 	if opts.IdempotencyKey != "" {
 		existing, err := s.repo.GetImportRunByIdempotency(ctx, orgID, opts.IdempotencyKey)
 		if err != nil {
@@ -324,15 +330,14 @@ func (s *service) ImportFromBytes(ctx context.Context, orgID uuid.UUID, userID *
 			if existing.PayloadHash != payloadHash {
 				return nil, errx.New(errx.Conflict, "idempotency key already used with a different payload")
 			}
-			lastProgress := existing.UpdatedAt
-			if lastProgress.IsZero() {
-				lastProgress = existing.StartedAt
-			}
-			if existing.Status != models.OutreachImportRunning || time.Since(lastProgress) < 15*time.Minute {
+			// Completed and fresh in-flight runs retain ordinary idempotent
+			// readback. A manifest worker may reclaim only an abandoned running
+			// run after the lock from its prior process has disappeared.
+			if !staleRunningImport(existing, opts.resumeStaleRunningAfter, time.Now().UTC()) {
 				return existing, nil
 			}
-			// Reuse abandoned run identity so retries cannot duplicate the import.
-			resumableRun = existing
+			run = existing
+			resumedStaleRun = true
 		}
 	}
 
@@ -348,7 +353,6 @@ func (s *service) ImportFromBytes(ctx context.Context, orgID uuid.UUID, userID *
 		sourceGeneratedAt = &parsed
 	}
 
-	run := resumableRun
 	if run == nil {
 		run = &models.OutreachImportRun{
 			OrganizationID:    orgID,
@@ -369,29 +373,16 @@ func (s *service) ImportFromBytes(ctx context.Context, orgID uuid.UUID, userID *
 			Warnings:          nil,
 			Errors:            nil,
 		}
-	} else {
-		run.Status = models.OutreachImportRunning
-		run.FinishedAt = nil
-		run.Counts = models.OutreachImportCounts{}
-		run.Errors = nil
-		run.Warnings = nil
-		run.CreatedByUserID = userID
-		run.SourceURI = opts.SourceURI
-		run.SourceGeneratedAt = sourceGeneratedAt
-	}
-	if feed.Pagination.Cursor != nil {
-		run.CursorIn = *feed.Pagination.Cursor
-	}
-	if feed.Pagination.NextCursor != nil {
-		run.CursorOut = *feed.Pagination.NextCursor
-	}
+		if feed.Pagination.Cursor != nil {
+			run.CursorIn = *feed.Pagination.Cursor
+		}
+		if feed.Pagination.NextCursor != nil {
+			run.CursorOut = *feed.Pagination.NextCursor
+		}
 
-	if resumableRun == nil {
 		if err := s.repo.CreateImportRun(ctx, run); err != nil {
 			return nil, errx.New(errx.Internal, "failed to create import run: "+err.Error())
 		}
-	} else if err := s.repo.UpdateImportRun(ctx, run); err != nil {
-		return nil, errx.New(errx.Internal, "failed to resume import run: "+err.Error())
 	}
 
 	counts, leadErrs, warns := s.applyFeed(ctx, orgID, run, feed, run.DryRun)
@@ -399,6 +390,9 @@ func (s *service) ImportFromBytes(ctx context.Context, orgID uuid.UUID, userID *
 	applyOperatorSummary(&run.Counts, SummarizeOperatorProjection(feed))
 	run.Errors = leadErrs
 	run.Warnings = warns
+	if resumedStaleRun {
+		run.Warnings = appendUnique(run.Warnings, "resumed_stale_running_import")
+	}
 	now := time.Now().UTC()
 	run.FinishedAt = &now
 	if len(leadErrs) > 0 && counts.Creates+counts.Updates > 0 {
@@ -436,6 +430,17 @@ func (s *service) ImportFromBytes(ctx context.Context, orgID uuid.UUID, userID *
 		})
 	}
 	return run, nil
+}
+
+func staleRunningImport(run *models.OutreachImportRun, after time.Duration, now time.Time) bool {
+	if run == nil || run.Status != models.OutreachImportRunning || after <= 0 {
+		return false
+	}
+	lastActivity := run.UpdatedAt
+	if lastActivity.IsZero() {
+		lastActivity = run.StartedAt
+	}
+	return !lastActivity.IsZero() && lastActivity.Before(now.Add(-after))
 }
 
 func mustJSON(v any) []byte {

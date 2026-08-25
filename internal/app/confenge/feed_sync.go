@@ -30,6 +30,8 @@ type FeedSyncResult struct {
 	Counts         map[string]int `json:"counts,omitempty"`
 }
 
+const feedChunkStaleImportRecoveryAfter = 2 * time.Minute
+
 // outreachManifest is confenge.outreach.manifest.v1 (extra-cli export).
 type outreachManifest struct {
 	SchemaVersion string `json:"schema_version"`
@@ -235,8 +237,9 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 		chunkURI := joinURI(baseURI, ch.File)
 		idem := fmt.Sprintf("sync:%s:%s:%d", orgID, man.Source.SnapshotHash, ch.ChunkIndex)
 		importRun, xerr := s.ImportFromBytes(ctx, orgID, userID, chunkRaw, ImportOptions{
-			IdempotencyKey: idem,
-			SourceURI:      chunkURI,
+			IdempotencyKey:          idem,
+			SourceURI:               chunkURI,
+			resumeStaleRunningAfter: feedChunkStaleImportRecoveryAfter,
 		})
 		if xerr != nil {
 			partialErrs = append(partialErrs, fmt.Sprintf("%s import: %s", ch.File, xerr.Message))

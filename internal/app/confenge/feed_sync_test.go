@@ -168,6 +168,90 @@ func TestSyncFeedManifestIdempotentAndHashFailClosed(t *testing.T) {
 	}
 }
 
+func TestSyncFeedManifestRecoversAbandonedChunkWithoutDuplicateRun(t *testing.T) {
+	dir := t.TempDir()
+	org := uuid.New()
+	r := newMemRepo()
+	svc := NewService(Config{
+		Enabled: true, DefaultDailyLimit: 100, MaxInitialEmailWords: 120,
+		RequireHumanApproval: true, MaxFeedPayloadBytes: 8 << 20,
+	}, r, nil).(*service)
+	generatedAt := time.Now().UTC().Add(-time.Minute).Truncate(time.Second).Format(time.RFC3339)
+	chunk := Feed{
+		SchemaVersion: models.OutreachSchemaV1,
+		GeneratedAt:   generatedAt,
+		Source: FeedSource{
+			System: "extra-cli", RunID: "run-stale-recovery", SnapshotHash: "snap-stale-recovery",
+			ProfileID: "p", ProfileVersion: "1",
+		},
+		Pagination: FeedPagination{HasMore: false},
+		Leads:      []FeedLead{sampleLeadWithActivation(70, ActivationActionableNow)},
+	}
+	chunkRaw, err := json.Marshal(chunk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunkHash := sha256.Sum256(chunkRaw)
+	chunkName := "chunk_0000.json"
+	if err = os.WriteFile(filepath.Join(dir, chunkName), chunkRaw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifest := map[string]any{
+		"schema_version": "confenge.outreach.manifest.v1", "generated_at": generatedAt,
+		"source": map[string]any{
+			"system": "extra-cli", "run_id": "run-stale-recovery", "snapshot_hash": "snap-stale-recovery",
+			"profile_id": "p", "profile_version": "1",
+		},
+		"lead_count": 1, "chunk_count": 1,
+		"chunks": []map[string]any{{
+			"file": chunkName, "chunk_index": 0, "content_hash": hex.EncodeToString(chunkHash[:]), "lead_count": 1,
+		}},
+		"deactivations": []any{},
+	}
+	manifestRaw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(dir, "manifest.json")
+	if err = os.WriteFile(manifestPath, manifestRaw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	staleAt := time.Now().UTC().Add(-10 * time.Minute)
+	stale := &models.OutreachImportRun{
+		ID: uuid.New(), OrganizationID: org, SourceSystem: "extra-cli",
+		SourceRunID: "run-stale-recovery", SchemaVersion: models.OutreachSchemaV1,
+		SnapshotHash: "snap-stale-recovery", PayloadHash: CanonicalPayloadHash(chunkRaw),
+		Status:         models.OutreachImportRunning,
+		IdempotencyKey: "sync:" + org.String() + ":snap-stale-recovery:0",
+		StartedAt:      staleAt, UpdatedAt: staleAt,
+	}
+	if err = r.CreateImportRun(context.Background(), stale); err != nil {
+		t.Fatal(err)
+	}
+
+	result, xerr := svc.SyncFeedManifest(context.Background(), org, nil, "file://"+manifestPath)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if result.Status != "completed" || result.ChunksImported != 1 {
+		t.Fatalf("stale chunk did not recover: %+v", result)
+	}
+	readback, err := r.GetImportRun(context.Background(), org, stale.ID)
+	if err != nil || readback == nil || readback.Status != models.OutreachImportCompleted ||
+		!containsString(readback.Warnings, "resumed_stale_running_import") {
+		t.Fatalf("recovery did not finalize original audit row: run=%+v err=%v", readback, err)
+	}
+	account, err := r.GetAccountByCNPJ(context.Background(), org, "11222333000181")
+	if err != nil || account == nil || account.LastImportRunID == nil || *account.LastImportRunID != stale.ID {
+		t.Fatalf("recovery created a divergent import binding: account=%+v err=%v", account, err)
+	}
+	result, xerr = svc.SyncFeedManifest(context.Background(), org, nil, "file://"+manifestPath)
+	if xerr != nil || result.Status != "noop" || !result.SkippedSame {
+		t.Fatalf("recovered snapshot replay was not idempotent: result=%+v err=%v", result, xerr)
+	}
+}
+
 func TestLastAppliedSnapshotNeverPromotesPartialChunkRun(t *testing.T) {
 	orgID := uuid.New()
 	sourceTime := time.Now().UTC().Add(-time.Hour)
