@@ -228,6 +228,9 @@ func (s *schedulerService) CalculateNextCampaignTime(ctx context.Context, campai
 	if campaign.OrganizationID != nil && s.orgRisk != nil {
 		orgCap = s.orgRisk.EffectiveCap(ctx, *campaign.OrganizationID, orgCap)
 	}
+	if orgCap <= 0 {
+		return time.Now().UTC().Add(24 * time.Hour), nil, accounts[0].ID, ErrCampaignDeferred
+	}
 	coldCeilings := make(map[uuid.UUID]int, len(accounts))
 	for i := range accounts {
 		acct := &accounts[i]

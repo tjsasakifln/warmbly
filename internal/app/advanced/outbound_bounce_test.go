@@ -2,6 +2,7 @@ package advanced
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -15,17 +16,24 @@ type outboundAdvancedRepo struct {
 	repository.AdvancedOutreachRepository
 	event         *models.DeliverabilityEvent
 	settingsReads int
+	createCalls   int
+	settingsErr   error
+	autoSuppress  bool
+	suppressErr   error
+	suppressCalls int
 	seen          map[string]bool
 }
 
 func (r *outboundAdvancedRepo) CreateDeliverabilityEvent(_ context.Context, event *models.DeliverabilityEvent) (bool, error) {
+	r.createCalls++
 	if r.seen == nil {
 		r.seen = make(map[string]bool)
 	}
-	if r.seen[event.IdempotencyKey] {
+	key := event.OrganizationID.String() + ":" + event.IdempotencyKey
+	if r.seen[key] {
 		return false, nil
 	}
-	r.seen[event.IdempotencyKey] = true
+	r.seen[key] = true
 	copy := *event
 	r.event = &copy
 	return true, nil
@@ -33,7 +41,17 @@ func (r *outboundAdvancedRepo) CreateDeliverabilityEvent(_ context.Context, even
 
 func (r *outboundAdvancedRepo) GetOutreachSettings(context.Context, uuid.UUID) (*models.AdvancedOutreachSettings, error) {
 	r.settingsReads++
-	return &models.AdvancedOutreachSettings{}, nil
+	if r.settingsErr != nil {
+		return nil, r.settingsErr
+	}
+	settings := &models.AdvancedOutreachSettings{}
+	settings.BouncePipeline.AutoSuppressOnBounce = r.autoSuppress
+	return settings, nil
+}
+
+func (r *outboundAdvancedRepo) UpsertSuppressedRecipient(context.Context, *models.SuppressedRecipient) error {
+	r.suppressCalls++
+	return r.suppressErr
 }
 
 type outboundTaskRepo struct {
@@ -88,5 +106,38 @@ func TestRecordOutboundBounceResolvesTaskAndDeduplicatesSideEffects(t *testing.T
 	require.Equal(t, "worker_smtp", repo.event.Provider)
 	require.Equal(t, "lead@example.com", repo.event.RecipientEmail)
 	require.Equal(t, "smtp_reject:"+taskID.String(), repo.event.IdempotencyKey)
-	require.Equal(t, 1, repo.settingsReads)
+	require.Equal(t, 2, repo.settingsReads)
+}
+
+func TestIngestDeliverabilityEventRetriesCoreSideEffectsAfterClaim(t *testing.T) {
+	repoErr := errors.New("suppression unavailable")
+	repo := &outboundAdvancedRepo{autoSuppress: true, suppressErr: repoErr}
+	svc := &service{repo: repo}
+	req := &models.IngestDeliverabilityEventRequest{
+		EventType:      models.DeliverabilityEventBounce,
+		RecipientEmail: "lead@example.com",
+		IdempotencyKey: "bounce:retry-core",
+	}
+
+	orgID := uuid.New()
+	require.NotNil(t, svc.IngestDeliverabilityEvent(context.Background(), orgID, req))
+	repo.suppressErr = nil
+	require.Nil(t, svc.IngestDeliverabilityEvent(context.Background(), orgID, req))
+	require.Equal(t, 2, repo.createCalls)
+	require.Equal(t, 2, repo.suppressCalls)
+}
+
+func TestIngestDeliverabilityEventLoadsSettingsBeforeClaim(t *testing.T) {
+	repoErr := errors.New("settings unavailable")
+	repo := &outboundAdvancedRepo{settingsErr: repoErr}
+	svc := &service{repo: repo}
+
+	xerr := svc.IngestDeliverabilityEvent(context.Background(), uuid.New(), &models.IngestDeliverabilityEventRequest{
+		EventType:      models.DeliverabilityEventBounce,
+		RecipientEmail: "lead@example.com",
+		IdempotencyKey: "bounce:settings-first",
+	})
+
+	require.NotNil(t, xerr)
+	require.Zero(t, repo.createCalls)
 }

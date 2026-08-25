@@ -216,15 +216,16 @@ func (s *campaignService) StartCampaign(ctx context.Context, orgID uuid.UUID, ca
 		if summary.ProjectedHardBounceRate > 0.05 {
 			return errx.ErrCampaignProjectedBounce
 		}
-		if summary.ProjectedHardBounceRate >= 0.02 && s.campaignLogRepo != nil {
+		if (summary.ProjectedHardBounceRate >= 0.02 || summary.Risky > 0) && s.campaignLogRepo != nil {
 			_ = s.campaignLogRepo.CreateLog(ctx, &repository.CampaignLogEntry{
 				CampaignID: cID,
 				EventType:  "verification_warning",
-				Message:    "Campaign list has an elevated projected hard-bounce rate",
+				Message:    "Campaign list needs verification review",
 				Metadata: map[string]interface{}{
 					"projected_hard_bounce_rate": summary.ProjectedHardBounceRate,
 					"invalid":                    summary.Invalid,
 					"disposable":                 summary.Disposable,
+					"risky":                      summary.Risky,
 				},
 			})
 		}

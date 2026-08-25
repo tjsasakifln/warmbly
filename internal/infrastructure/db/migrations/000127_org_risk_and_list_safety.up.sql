@@ -2,6 +2,11 @@
 ALTER TYPE public.task_status ADD VALUE IF NOT EXISTS 'skipped_content_guardrail';
 ALTER TYPE public.task_status ADD VALUE IF NOT EXISTS 'skipped_org_suspended';
 
+ALTER TABLE deliverability_events
+    DROP CONSTRAINT IF EXISTS deliverability_events_idempotency_unique,
+    ADD CONSTRAINT deliverability_events_idempotency_unique
+        UNIQUE (organization_id, idempotency_key);
+
 ALTER TABLE organizations
     ADD COLUMN IF NOT EXISTS risk_state text NOT NULL DEFAULT 'trusted',
     ADD COLUMN IF NOT EXISTS risk_score integer NOT NULL DEFAULT 0,

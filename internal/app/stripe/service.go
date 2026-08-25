@@ -4,6 +4,7 @@ package stripe
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -792,7 +793,7 @@ func (s *stripeService) handleCheckoutCompleted(ctx context.Context, event *stri
 			StripeCustomerID: customerID,
 			Status:           models.SubscriptionStatusIncomplete,
 		}
-		newSub.PaymentFingerprint = paymentFingerprintForCustomer(customerID)
+		newSub.PaymentFingerprint = paymentFingerprintForCheckout(&checkoutSession)
 
 		if checkoutSession.Subscription != nil {
 			newSub.StripeSubscriptionID = &checkoutSession.Subscription.ID
@@ -810,7 +811,9 @@ func (s *stripeService) handleCheckoutCompleted(ctx context.Context, event *stri
 		if checkoutSession.Subscription != nil {
 			sub.StripeSubscriptionID = &checkoutSession.Subscription.ID
 		}
-		sub.PaymentFingerprint = paymentFingerprintForCustomer(sub.StripeCustomerID)
+		if fingerprint := paymentFingerprintForCheckout(&checkoutSession); fingerprint != "" {
+			sub.PaymentFingerprint = fingerprint
+		}
 		if err := s.subRepo.Update(ctx, sub); err != nil {
 			return errx.New(errx.Internal, "failed to update subscription")
 		}
@@ -839,6 +842,74 @@ func (s *stripeService) handleCheckoutCompleted(ctx context.Context, event *stri
 	return nil
 }
 
+func paymentFingerprintForCheckout(checkout *stripe.CheckoutSession) string {
+	if checkout == nil {
+		return ""
+	}
+	if fingerprint := checkoutPaymentFingerprint(checkout); fingerprint != "" {
+		return hashPaymentFingerprint(fingerprint)
+	}
+	if checkout.ID != "" {
+		params := &stripe.CheckoutSessionParams{}
+		params.AddExpand("payment_intent.payment_method")
+		params.AddExpand("setup_intent.payment_method")
+		params.AddExpand("subscription.default_payment_method")
+		params.AddExpand("subscription.latest_invoice.payment_intent.payment_method")
+		if expanded, err := session.Get(checkout.ID, params); err == nil {
+			if fingerprint := checkoutPaymentFingerprint(expanded); fingerprint != "" {
+				return hashPaymentFingerprint(fingerprint)
+			}
+		}
+	}
+	customerID := ""
+	if checkout.Customer != nil {
+		customerID = checkout.Customer.ID
+	}
+	return hashPaymentFingerprint(paymentFingerprintForCustomer(customerID))
+}
+
+func checkoutPaymentFingerprint(checkout *stripe.CheckoutSession) string {
+	if checkout == nil {
+		return ""
+	}
+	if checkout.PaymentIntent != nil {
+		if fingerprint := paymentMethodFingerprint(checkout.PaymentIntent.PaymentMethod); fingerprint != "" {
+			return fingerprint
+		}
+	}
+	if checkout.SetupIntent != nil {
+		if fingerprint := paymentMethodFingerprint(checkout.SetupIntent.PaymentMethod); fingerprint != "" {
+			return fingerprint
+		}
+	}
+	if checkout.Subscription != nil {
+		if fingerprint := paymentMethodFingerprint(checkout.Subscription.DefaultPaymentMethod); fingerprint != "" {
+			return fingerprint
+		}
+		if checkout.Subscription.LatestInvoice != nil && checkout.Subscription.LatestInvoice.PaymentIntent != nil {
+			return paymentMethodFingerprint(checkout.Subscription.LatestInvoice.PaymentIntent.PaymentMethod)
+		}
+	}
+	return ""
+}
+
+func paymentMethodFingerprint(method *stripe.PaymentMethod) string {
+	if method == nil {
+		return ""
+	}
+	if method.Card != nil && method.Card.Fingerprint != "" {
+		return method.Card.Fingerprint
+	}
+	if method.ID == "" {
+		return ""
+	}
+	resolved, err := paymentmethod.Get(method.ID, nil)
+	if err != nil || resolved == nil || resolved.Card == nil {
+		return ""
+	}
+	return resolved.Card.Fingerprint
+}
+
 func paymentFingerprintForCustomer(customerID string) string {
 	if customerID == "" {
 		return ""
@@ -852,6 +923,14 @@ func paymentFingerprintForCustomer(customerID string) string {
 		return ""
 	}
 	return method.Card.Fingerprint
+}
+
+func hashPaymentFingerprint(fingerprint string) string {
+	if fingerprint == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(fingerprint))
+	return fmt.Sprintf("%x", sum[:])
 }
 
 // handleCheckoutExpired releases a pending discount reservation when its

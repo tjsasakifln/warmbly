@@ -58,6 +58,7 @@ export interface ImportQuality {
     role: number;
     risky_tld: number;
     bad_address_ratio: number;
+    blocked: boolean;
 }
 
 export interface ImportResult {

@@ -148,31 +148,35 @@ func (s *contactService) ImportCommit(
 		line := i + dataStart + 1 // 1-based for "open in Excel and jump"
 		p := pendingRow{line: line, raw: row}
 
+		address := strings.ToLower(strings.TrimSpace(mappedImportEmail(row, opts.Mapping)))
+		if address == "" || !email.IsValid(address) {
+			quality.Invalid++
+		} else {
+			addressQuality := signuprisk.ClassifyAddress(address)
+			if addressQuality.Disposable {
+				quality.Disposable++
+			}
+			if addressQuality.Role {
+				quality.Role++
+			}
+			if addressQuality.RiskyTLD {
+				quality.RiskyTLD++
+			}
+		}
+
 		contact, err := buildAddContact(row, opts.Mapping, subscribedDefault, opts.CampaignIDs, opts.CategoryIDs)
 		if err != "" {
-			quality.Invalid++
 			p.errMsg = err
 			parsed = append(parsed, p)
 			continue
 		}
 		contact.Email = strings.TrimSpace(contact.Email)
 		if contact.Email == "" || !email.IsValid(contact.Email) {
-			quality.Invalid++
 			p.errMsg = "missing or invalid email"
 			parsed = append(parsed, p)
 			continue
 		}
 		contact.Email = strings.ToLower(contact.Email)
-		addressQuality := signuprisk.ClassifyAddress(contact.Email)
-		if addressQuality.Disposable {
-			quality.Disposable++
-		}
-		if addressQuality.Role {
-			quality.Role++
-		}
-		if addressQuality.RiskyTLD {
-			quality.RiskyTLD++
-		}
 		p.contact = contact
 		p.ok = true
 		parsed = append(parsed, p)
@@ -200,15 +204,27 @@ func (s *contactService) ImportCommit(
 		}
 	}
 	if (quality.BadAddressRatio >= 0.10 || quality.Role > 0 || quality.RiskyTLD > 0) && s.orgRisk != nil {
-		score := min(30, int(quality.BadAddressRatio*100))
+		addressRiskRatio := quality.BadAddressRatio
+		if len(parsed) > 0 {
+			addressRiskRatio += float64(quality.Role+quality.RiskyTLD) / float64(len(parsed)*2)
+		}
+		score := min(30, max(1, int(addressRiskRatio*100)))
 		_ = s.orgRisk.RecordSignal(ctx, orgID, "list_quality", score, "Contact import contains risky addresses", map[string]any{
 			"bad_address_ratio": quality.BadAddressRatio,
 			"role_addresses":    quality.Role,
 			"risky_tlds":        quality.RiskyTLD,
 		})
 	}
+	res := &models.ContactImportResult{
+		Total:     len(parsed),
+		StartedAt: startedAt,
+		Errors:    make([]models.ContactImportRowError, 0),
+		Quality:   quality,
+	}
 	if quality.Blocked {
-		return nil, errx.ErrContactImportQuality
+		res.Failed = len(parsed)
+		res.EndedAt = time.Now().UTC()
+		return res, errx.ErrContactImportQuality
 	}
 
 	// Pre-check existing emails in one shot so we can route rows to
@@ -222,13 +238,6 @@ func (s *contactService) ImportCommit(
 	existing, xerr := s.contactRepository.GetByEmailsAndUser(ctx, uid, emails)
 	if xerr != nil {
 		return nil, xerr
-	}
-
-	res := &models.ContactImportResult{
-		Total:     len(parsed),
-		StartedAt: startedAt,
-		Errors:    make([]models.ContactImportRowError, 0),
-		Quality:   quality,
 	}
 
 	// Bucket rows by target action. We send fresh inserts through
@@ -349,6 +358,16 @@ func (s *contactService) ImportCommit(
 		s.publishContactsReload(ctx, userID, "contacts:import")
 	}
 	return res, nil
+}
+
+func mappedImportEmail(row []string, mapping []models.ContactImportColumnMapping) string {
+	var address string
+	for _, column := range mapping {
+		if column.Target == models.ContactImportTargetEmail && column.Index >= 0 && column.Index < len(row) {
+			address = row[column.Index]
+		}
+	}
+	return address
 }
 
 // parseSpreadsheet returns rows as a 2-D slice and the detected format.

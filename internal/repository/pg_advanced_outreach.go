@@ -429,7 +429,7 @@ func (r *advancedOutreachRepository) CreateDeliverabilityEvent(ctx context.Conte
 			recipient_email, reason, idempotency_key, metadata, created_at
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
-		ON CONFLICT (idempotency_key) DO NOTHING
+		ON CONFLICT (organization_id, idempotency_key) DO NOTHING
 	`
 	tag, err := r.db.Exec(ctx, query,
 		event.OrganizationID,

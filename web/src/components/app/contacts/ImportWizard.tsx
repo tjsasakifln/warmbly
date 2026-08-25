@@ -131,6 +131,11 @@ export default function ImportWizard({ open, onClose, lockedCampaign }: Props) {
                 toast(`Done with ${res.failed} errors`, { icon: "⚠️" });
             }
         } catch (err) {
+            const appError = err as { code?: string; details?: ImportResult };
+            if (appError.code === "contact_import_quality_blocked" && appError.details?.quality) {
+                setResult(appError.details);
+                setStep("result");
+            }
             toast.error(describeError(err, "Import failed."));
         } finally {
             setCommitBusy(false);
@@ -658,6 +663,8 @@ function OptionsStep({
 // ----- Result step ----------------------------------------------
 
 export function ResultStep({ result, filename }: { result: ImportResult; filename: string }) {
+    const blocked = result.quality?.blocked === true;
+
     function downloadErrors() {
         if (!result.errors || result.errors.length === 0) return;
         const rows = [["line", "email", "reason"]];
@@ -685,11 +692,21 @@ export function ResultStep({ result, filename }: { result: ImportResult; filenam
                 )}
                 <div className="flex-1">
                     <p className="text-[13.5px] text-slate-900 font-semibold">
-                        {result.failed === 0 ? "Import complete" : "Import finished with errors"}
+                        {blocked
+                            ? "Import blocked"
+                            : result.failed === 0
+                              ? "Import complete"
+                              : "Import finished with errors"}
                     </p>
                     <p className="text-[11.5px] text-slate-500 leading-snug mt-0.5">
-                        Processed {result.total.toLocaleString()} rows in{" "}
-                        {durationText(result.started_at, result.ended_at)}.
+                        {blocked ? (
+                            <>No contacts were written because the list exceeded the quality threshold.</>
+                        ) : (
+                            <>
+                                Processed {result.total.toLocaleString()} rows in{" "}
+                                {durationText(result.started_at, result.ended_at)}.
+                            </>
+                        )}
                     </p>
                 </div>
             </div>

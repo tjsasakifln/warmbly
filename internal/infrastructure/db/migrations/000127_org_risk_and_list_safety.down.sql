@@ -3,6 +3,23 @@ UPDATE tasks
 SET status = 'completed', completed_at = COALESCE(completed_at, NOW())
 WHERE status IN ('skipped_content_guardrail', 'skipped_org_suspended');
 
+ALTER TABLE deliverability_events
+    DROP CONSTRAINT IF EXISTS deliverability_events_idempotency_unique;
+
+WITH duplicates AS (
+    SELECT id, idempotency_key,
+           row_number() OVER (PARTITION BY idempotency_key ORDER BY created_at, id) AS position
+    FROM deliverability_events
+)
+UPDATE deliverability_events AS event
+SET idempotency_key = duplicates.idempotency_key || ':rollback:' || event.id::text
+FROM duplicates
+WHERE event.id = duplicates.id
+  AND duplicates.position > 1;
+
+ALTER TABLE deliverability_events
+    ADD CONSTRAINT deliverability_events_idempotency_unique UNIQUE (idempotency_key);
+
 DROP TABLE IF EXISTS contact_import_assessments;
 
 ALTER TABLE campaigns

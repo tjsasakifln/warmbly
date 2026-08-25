@@ -225,7 +225,7 @@ Returned when validation fails on the request data.
 
 | `code` | Meaning |
 |--------|---------|
-| `contact_import_quality_blocked` | More than `25%` of the uploaded addresses are invalid or disposable. No contacts from that import were written |
+| `contact_import_quality_blocked` | More than `25%` of the uploaded addresses are invalid or disposable. No contacts from that import were written. The aggregate import result is returned in `details` |
 | `campaign_projected_bounce_rate_high` | Recipients that are invalid or disposable exceed `5%` of the campaign list. Fix or remove those leads before starting |
 
 ### 500 Internal Server Error

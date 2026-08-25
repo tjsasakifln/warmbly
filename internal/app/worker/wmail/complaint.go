@@ -9,7 +9,7 @@ import (
 
 func (w *WMail) maybeEmitComplaint(msg *models.EmailMessageData) error {
 	body := msg.BodyPlain + "\n" + msg.BodyHTML
-	if !fbl.Detect(headerFlagValue(msg.Flags, "Content-Type"), body) {
+	if !fbl.Detect(headerFlagValue(msg.Flags, "Content-Type")) {
 		return nil
 	}
 	report := fbl.Parse(body)

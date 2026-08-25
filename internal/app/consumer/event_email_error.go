@@ -2,8 +2,8 @@ package jobs
 
 import (
 	"context"
+	"fmt"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -38,7 +38,17 @@ func (s *JobsService) HandleEmailAuthError(ctx context.Context, event models.Ema
 		}
 	}
 
-	// Store error in database
+	if s.EmailRepository == nil {
+		return fmt.Errorf("email repository is not configured")
+	}
+	inactive := "inactive"
+	if _, xerr := s.EmailRepository.Update(ctx, event.UserID, event.EmailAccountID, &models.UpdateEmail{
+		Status: &inactive,
+	}); xerr != nil {
+		return fmt.Errorf("deactivate mailbox after authentication failure: %w", xerr)
+	}
+
+	// Store the user-facing error after the safety state is durable.
 	if s.EmailAccountErrorRepository != nil {
 		errorRecord := &repository.CreateEmailAccountError{
 			EmailAccountID: emailAccountID,
@@ -55,19 +65,6 @@ func (s *JobsService) HandleEmailAuthError(ctx context.Context, event models.Ema
 
 		if _, xerr := s.EmailAccountErrorRepository.Create(ctx, errorRecord); xerr != nil {
 			log.Error().Str("error", xerr.Message).Msg("Failed to store email auth error")
-		}
-	}
-
-	// Mark email account as needing re-auth (set status to inactive)
-	if s.EmailRepository != nil {
-		if err := s.EmailRepository.MarkAuthFailure(ctx, emailAccountID, event.Message, time.Now().UTC()); err != nil {
-			log.Error().Err(err).Msg("Failed to mark mailbox domain authentication as failing")
-		}
-		inactive := "inactive"
-		if _, xerr := s.EmailRepository.Update(ctx, event.UserID, event.EmailAccountID, &models.UpdateEmail{
-			Status: &inactive,
-		}); xerr != nil {
-			log.Error().Str("error", xerr.Message).Msg("Failed to update email account status")
 		}
 	}
 

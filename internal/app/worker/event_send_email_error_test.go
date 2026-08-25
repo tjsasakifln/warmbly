@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -17,12 +18,13 @@ import (
 type capturedWorkerBus struct {
 	payloads [][]byte
 	keys     []string
+	err      error
 }
 
 func (b *capturedWorkerBus) Publish(_ context.Context, _, key string, payload []byte) error {
 	b.keys = append(b.keys, key)
 	b.payloads = append(b.payloads, payload)
-	return nil
+	return b.err
 }
 
 func (b *capturedWorkerBus) Subscribe(context.Context, []string, string, eventbus.Handler) error {
@@ -42,7 +44,7 @@ func TestSendEmailErrorPublishesTypedAuthPayloadOnce(t *testing.T) {
 	svc := &WorkerService{Bus: bus, Codec: codec.NewJSON()}
 	taskID, emailID, userID := uuid.New(), uuid.New(), uuid.New()
 
-	svc.sendEmailError(taskID, emailID, &wmail.WMail{UserID: userID}, errx.ErrMailAuthenticationFailed)
+	require.NoError(t, svc.sendEmailError(taskID, emailID, &wmail.WMail{UserID: userID}, errx.ErrMailAuthenticationFailed))
 
 	require.Len(t, bus.payloads, 1)
 	require.Equal(t, emailID.String(), bus.keys[0])
@@ -61,7 +63,7 @@ func TestSendEmailErrorPublishesRecipientFailureForBounceBridge(t *testing.T) {
 	svc := &WorkerService{Bus: bus, Codec: codec.NewJSON()}
 	taskID, emailID, userID := uuid.New(), uuid.New(), uuid.New()
 
-	svc.sendEmailError(taskID, emailID, &wmail.WMail{UserID: userID}, errx.ErrMailRecipientRejected)
+	require.NoError(t, svc.sendEmailError(taskID, emailID, &wmail.WMail{UserID: userID}, errx.ErrMailRecipientRejected))
 
 	require.Len(t, bus.payloads, 1)
 	require.Equal(t, taskID.String(), bus.keys[0])
@@ -73,4 +75,23 @@ func TestSendEmailErrorPublishesRecipientFailureForBounceBridge(t *testing.T) {
 	require.Equal(t, taskID, body.TaskID)
 	require.NotNil(t, body.Error)
 	require.Equal(t, string(errx.MailErrorCodeRecipientRejected), body.Error.Code)
+}
+
+func TestSendEmailErrorReturnsRecipientEventPublishFailure(t *testing.T) {
+	busErr := errors.New("event bus unavailable")
+	svc := &WorkerService{Bus: &capturedWorkerBus{err: busErr}, Codec: codec.NewJSON()}
+
+	err := svc.sendEmailError(uuid.New(), uuid.New(), &wmail.WMail{UserID: uuid.New()}, errx.ErrMailRecipientRejected)
+
+	require.ErrorIs(t, err, busErr)
+}
+
+func TestSendEmailErrorReturnsAuthEventPublishFailure(t *testing.T) {
+	busErr := errors.New("event bus unavailable")
+	svc := &WorkerService{Bus: &capturedWorkerBus{err: busErr}, Codec: codec.NewJSON()}
+	require.Equal(t, models.JobEventTypeEmailAuthError, wmail.DetermineErrorEventType(errx.ErrMailInvalidCredentials))
+
+	err := svc.sendEmailError(uuid.New(), uuid.New(), &wmail.WMail{UserID: uuid.New()}, errx.ErrMailInvalidCredentials)
+
+	require.ErrorIs(t, err, busErr)
 }

@@ -79,7 +79,6 @@ type EmailRepository interface {
 	// domains.
 	UpdateDomainAuthState(ctx context.Context, domain, state string, spf, dkim, dmarc bool, dmarcPolicy, reason string, checkedAt time.Time) *errx.Error
 	StartColdRamp(ctx context.Context, emailAccountID uuid.UUID, startedAt time.Time) error
-	MarkAuthFailure(ctx context.Context, emailAccountID uuid.UUID, reason string, checkedAt time.Time) error
 	Delete(ctx context.Context, userID, emailAccountID string) *errx.Error
 
 	NewOauthAccount(ctx context.Context, userID string, data models.NewOauthAccount) (*models.Email, *errx.Error)
@@ -111,19 +110,6 @@ func (r *emailRepository) StartColdRamp(ctx context.Context, emailAccountID uuid
 		SET cold_ramp_started_at = COALESCE(cold_ramp_started_at, $2), updated_at = now()
 		WHERE id = $1
 	`, emailAccountID, startedAt.UTC())
-	return err
-}
-
-func (r *emailRepository) MarkAuthFailure(ctx context.Context, emailAccountID uuid.UUID, reason string, checkedAt time.Time) error {
-	_, err := r.DB.Exec(ctx, `
-		UPDATE email_accounts
-		SET auth_state = 'failing',
-		    auth_reason = $2,
-		    auth_checked_at = $3,
-		    auth_failing_since = COALESCE(auth_failing_since, $3),
-		    updated_at = now()
-		WHERE id = $1
-	`, emailAccountID, reason, checkedAt.UTC())
 	return err
 }
 

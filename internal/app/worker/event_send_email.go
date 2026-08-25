@@ -119,7 +119,10 @@ func (w *WorkerService) HandleSendEmail(ctx context.Context, sendEmail models.Se
 			Str("error_message", result.Error.Message).
 			Msg("Email send failed")
 
-		w.sendEmailError(sendEmail.TaskID, sendEmail.EmailID, mail, result.Error)
+		publishErr := w.sendEmailError(sendEmail.TaskID, sendEmail.EmailID, mail, result.Error)
+		if publishErr != nil && wmail.DetermineErrorEventType(result.Error) != models.JobEventTypeEmailServerError {
+			return fmt.Errorf("publish definitive email failure: %w", publishErr)
+		}
 	}
 
 	return nil
@@ -246,7 +249,7 @@ func (w *WorkerService) sendEmailSuccess(taskID uuid.UUID, messageID, providerMs
 }
 
 // sendEmailError sends a structured error result back to the jobs service
-func (w *WorkerService) sendEmailError(taskID uuid.UUID, emailID uuid.UUID, mail *wmail.WMail, mailErr *errx.MailError) {
+func (w *WorkerService) sendEmailError(taskID uuid.UUID, emailID uuid.UUID, mail *wmail.WMail, mailErr *errx.MailError) error {
 	eventType := wmail.DetermineErrorEventType(mailErr)
 	sendError := wmail.MailErrorToSendError(mailErr)
 
@@ -260,8 +263,9 @@ func (w *WorkerService) sendEmailError(taskID uuid.UUID, emailID uuid.UUID, mail
 		}
 		if err := w.Produce(eventType, taskID.String(), result); err != nil {
 			log.Error().Err(err).Str("task_id", taskID.String()).Msg("Failed to produce email error event")
+			return err
 		}
-		return
+		return nil
 	}
 
 	userInfo := mailErr.GetUserErrorInfo()
@@ -282,7 +286,9 @@ func (w *WorkerService) sendEmailError(taskID uuid.UUID, emailID uuid.UUID, mail
 
 	if err := w.Produce(eventType, emailID.String(), errorEvent); err != nil {
 		log.Error().Err(err).Str("email_id", emailID.String()).Msg("Failed to produce email error event")
+		return err
 	}
+	return nil
 }
 
 // sendEmailFailure sends a generic failure result (for non-MailError cases)

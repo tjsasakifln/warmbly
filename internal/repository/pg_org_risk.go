@@ -164,11 +164,18 @@ func (r *orgRiskRepository) ListCorrelationFindings(ctx context.Context) ([]OrgR
 			score:  35,
 			reason: "Multiple organizations share a payment fingerprint",
 			query: `
-				SELECT s.organization_id, s.payment_fingerprint, count(*) OVER (PARTITION BY s.payment_fingerprint)
+				WITH clusters AS (
+					SELECT payment_fingerprint, count(DISTINCT organization_id)::int AS organizations
+					FROM subscriptions
+					WHERE organization_id IS NOT NULL AND payment_fingerprint <> ''
+					GROUP BY payment_fingerprint
+					HAVING count(DISTINCT organization_id) >= 2
+				)
+				SELECT s.organization_id, s.payment_fingerprint, c.organizations
 				FROM subscriptions s
+				JOIN clusters c USING (payment_fingerprint)
 				WHERE s.organization_id IS NOT NULL
-				  AND s.payment_fingerprint <> ''
-				  AND (SELECT count(DISTINCT s2.organization_id) FROM subscriptions s2 WHERE s2.payment_fingerprint = s.payment_fingerprint) >= 2
+				GROUP BY s.organization_id, s.payment_fingerprint, c.organizations
 			`,
 		},
 		{
@@ -189,13 +196,15 @@ func (r *orgRiskRepository) ListCorrelationFindings(ctx context.Context) ([]OrgR
 					  AND ea.created_at >= now() - interval '30 days'
 					GROUP BY ea.organization_id, domain
 				), flagged AS (
-					SELECT organization_id, count(*) AS domains, sum(sends) AS sends
+					SELECT organization_id,
+					       regexp_replace(split_part(domain, '.', 1), '[0-9_-]+', '', 'g') AS family,
+					       count(DISTINCT domain)::int AS domains
 					FROM recent
 					WHERE sends BETWEEN 5 AND 49
-					GROUP BY organization_id
-					HAVING count(*) >= 5
+					GROUP BY organization_id, family
+					HAVING count(DISTINCT domain) >= 5 AND length(regexp_replace(split_part(domain, '.', 1), '[0-9_-]+', '', 'g')) >= 4
 				)
-				SELECT organization_id, domains::text, sends FROM flagged
+				SELECT organization_id, family, domains FROM flagged
 			`,
 		},
 	}

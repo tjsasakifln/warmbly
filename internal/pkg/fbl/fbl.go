@@ -18,12 +18,9 @@ var (
 	messageID    = regexp.MustCompile(`(?im)^\s*(?:Original-Message-ID|Message-ID):\s*<([^>\s]+)>`)
 )
 
-func Detect(contentType, body string) bool {
+func Detect(contentType string) bool {
 	lowerType := strings.ToLower(contentType)
-	if strings.Contains(lowerType, "report-type=feedback-report") || strings.Contains(lowerType, "message/feedback-report") {
-		return true
-	}
-	return feedbackType.MatchString(body)
+	return strings.Contains(lowerType, "report-type=feedback-report") || strings.Contains(lowerType, "message/feedback-report")
 }
 
 func Parse(body string) Report {

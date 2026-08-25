@@ -1125,6 +1125,11 @@ func (s *service) IngestDeliverabilityEvent(ctx context.Context, organizationID 
 		provider = "manual"
 	}
 
+	settings, err := s.repo.GetOutreachSettings(ctx, organizationID)
+	if err != nil {
+		return toErrx(err)
+	}
+
 	created, err := s.repo.CreateDeliverabilityEvent(ctx, &models.DeliverabilityEvent{
 		OrganizationID: organizationID,
 		CampaignID:     req.CampaignID,
@@ -1140,48 +1145,51 @@ func (s *service) IngestDeliverabilityEvent(ctx context.Context, organizationID 
 	if err != nil {
 		return toErrx(err)
 	}
-	if !created {
-		return nil
-	}
-
-	settings, err := s.repo.GetOutreachSettings(ctx, organizationID)
-	if err != nil {
-		return toErrx(err)
-	}
 
 	shouldSuppress := (eventType == models.DeliverabilityEventBounce && settings.BouncePipeline.AutoSuppressOnBounce) ||
 		(eventType == models.DeliverabilityEventComplaint && settings.BouncePipeline.AutoSuppressOnComplaint) ||
 		(eventType == models.DeliverabilityEventUnsubscribe && settings.BouncePipeline.AutoSuppressOnUnsubscribe)
 
 	if shouldSuppress {
-		_ = s.repo.UpsertSuppressedRecipient(ctx, &models.SuppressedRecipient{
+		if err := s.repo.UpsertSuppressedRecipient(ctx, &models.SuppressedRecipient{
 			OrganizationID: organizationID,
 			Email:          req.RecipientEmail,
 			Reason:         fmt.Sprintf("%s: %s", eventType, req.Reason),
 			Source:         eventType,
 			CampaignID:     req.CampaignID,
 			Metadata:       req.Metadata,
-		})
+		}); err != nil {
+			return toErrx(err)
+		}
 	}
 
 	if req.CampaignID != nil && req.ContactID != nil {
-		_ = s.repo.MarkVariantEvent(ctx, *req.CampaignID, *req.ContactID, string(eventType))
+		if err := s.repo.MarkVariantEvent(ctx, *req.CampaignID, *req.ContactID, string(eventType)); err != nil {
+			return toErrx(err)
+		}
 	}
 
-	// Record bounces + complaints in campaign progress so analytics and the
-	// breaker work correctly. Complaints were previously never recorded, which
-	// is why complaint-rate auto-pause could never fire.
+	// Keep campaign progress retryable after the event row is claimed.
 	if req.CampaignID != nil && req.ContactID != nil && req.TaskID != nil &&
 		(eventType == models.DeliverabilityEventBounce || eventType == models.DeliverabilityEventComplaint) {
 		campaignTask, cErr := s.taskRepo.GetCampaignTask(ctx, *req.TaskID)
-		if cErr == nil && campaignTask != nil && campaignTask.SequenceID != nil {
+		if cErr != nil {
+			return toErrx(cErr)
+		}
+		if campaignTask != nil && campaignTask.SequenceID != nil {
 			switch eventType {
 			case models.DeliverabilityEventBounce:
-				_ = s.campaignProgressRepo.RecordEmailBounced(ctx, *req.CampaignID, *req.ContactID, *campaignTask.SequenceID)
+				cErr = s.campaignProgressRepo.RecordEmailBounced(ctx, *req.CampaignID, *req.ContactID, *campaignTask.SequenceID)
 			case models.DeliverabilityEventComplaint:
-				_ = s.campaignProgressRepo.RecordEmailComplained(ctx, *req.CampaignID, *req.ContactID, *campaignTask.SequenceID)
+				cErr = s.campaignProgressRepo.RecordEmailComplained(ctx, *req.CampaignID, *req.ContactID, *campaignTask.SequenceID)
+			}
+			if cErr != nil {
+				return toErrx(cErr)
 			}
 		}
+	}
+	if !created {
+		return nil
 	}
 
 	if req.CampaignID != nil &&
