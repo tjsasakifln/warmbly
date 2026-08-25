@@ -71,7 +71,19 @@ func (s *service) PlanAccountCadence(ctx context.Context, orgID, userID, account
 		if err != nil {
 			return nil, errx.New(errx.Internal, "list candidates failed")
 		}
-		cand = pickRecommendedAny(list)
+		current := make([]models.OutreachContactCandidate, 0, len(list))
+		if acc.LastImportRunID != nil {
+			for i := range list {
+				if list[i].LastImportRunID != nil && *list[i].LastImportRunID == *acc.LastImportRunID {
+					current = append(current, list[i])
+				}
+			}
+		} else {
+			// Preserve the legacy/manual path for accounts that have never been
+			// bound to the versioned feed contract.
+			current = list
+		}
+		cand = pickRecommendedAny(current)
 	}
 	ch := strings.ToUpper(strings.TrimSpace(channel))
 	if ch == "" {
@@ -142,7 +154,9 @@ func recoverableCadenceCancellation(state, reason string) bool {
 		return false
 	}
 	reason = strings.TrimSpace(reason)
-	return strings.EqualFold(reason, StopComposerStale) || strings.EqualFold(reason, TargetFitReasonStale)
+	return strings.EqualFold(reason, StopComposerStale) ||
+		strings.EqualFold(reason, TargetFitReasonStale) ||
+		strings.EqualFold(reason, staleReviewStopReason)
 }
 
 func (s *service) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, limit, offset int) ([]models.OutreachTouchpoint, *errx.Error) {

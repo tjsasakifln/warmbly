@@ -261,6 +261,15 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 			return result, errx.New(errx.ServiceUnavailable, "feed deactivations failed; snapshot not committed")
 		}
 		result.Deactivations = n
+		retired, requeued, staleErr := s.retireStaleReviewBacklog(ctx, orgID)
+		if staleErr != nil {
+			result.Status = "partial"
+			result.Errors = append(result.Errors, "stale review retirement: "+staleErr.Error())
+			s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "partial", result, false, nil)
+			return result, errx.New(errx.ServiceUnavailable, "feed stale review retirement failed; snapshot not committed")
+		}
+		result.Counts["stale_reviews_retired"] = retired
+		result.Counts["stale_review_accounts_requeued"] = requeued
 		woken, wakeErr := s.wakeEligibleEnrichmentRecovery(ctx, orgID)
 		if wakeErr != nil {
 			result.Status = "partial"
