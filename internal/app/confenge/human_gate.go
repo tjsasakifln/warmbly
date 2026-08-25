@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
@@ -27,10 +28,30 @@ const (
 )
 
 type HumanGateCreateInput struct {
-	Limit          int    `json:"limit"`
-	SourceRunID    string `json:"source_run_id,omitempty"`
-	IdempotencyKey string `json:"-"`
-	CorrelationID  string `json:"-"`
+	Limit             int         `json:"limit"`
+	SourceRunID       string      `json:"source_run_id,omitempty"`
+	SelectionMode     string      `json:"selection_mode,omitempty"`
+	RecoverVersionIDs []uuid.UUID `json:"recover_version_ids,omitempty"`
+	IdempotencyKey    string      `json:"-"`
+	CorrelationID     string      `json:"-"`
+}
+
+const (
+	HumanGateSelectionLegacy        = "LEGACY"
+	HumanGateSelectionNextUnclaimed = "NEXT_UNCLAIMED"
+	HumanGateSelectionRecoverPrior  = "RECOVER_PRIOR"
+)
+
+type HumanGateSelection struct {
+	Mode               string         `json:"mode"`
+	SourceRunID        string         `json:"source_run_id"`
+	ClaimedCount       int            `json:"claimed_count"`
+	UniqueClaimedTotal int            `json:"unique_claimed_total"`
+	EligibleRemaining  int            `json:"eligible_remaining"`
+	Exhausted          bool           `json:"exhausted"`
+	RecoveredRequested int            `json:"recovered_requested,omitempty"`
+	RecoveredEligible  int            `json:"recovered_eligible,omitempty"`
+	ExclusionsByReason map[string]int `json:"exclusions_by_reason,omitempty"`
 }
 
 type HumanGateValidation struct {
@@ -138,6 +159,7 @@ type HumanGateCohort struct {
 	PolicyVersion    string               `json:"policy_version"`
 	FrozenHash       string               `json:"frozen_hash"`
 	Manifest         FrozenCohortSnapshot `json:"manifest"`
+	Selection        HumanGateSelection   `json:"selection"`
 	Candidates       []HumanGateCandidate `json:"candidates"`
 	Decision         *HumanGateDecision   `json:"decision"`
 	Reason           []string             `json:"reason"`
@@ -233,10 +255,10 @@ func (s *service) CreateHumanGateCohort(ctx context.Context, orgID, actorID uuid
 	if in.Limit < 1 || in.Limit > HumanGateMaxCohort {
 		return nil, humanGateError(errx.BadRequest, "invalid_cohort_limit", "limit must be between 1 and 10")
 	}
-	reqHash := humanGateRequestHash(struct {
-		Limit int
-		Run   string
-	}{in.Limit, strings.TrimSpace(in.SourceRunID)})
+	if x := normalizeHumanGateSelection(&in); x != nil {
+		return nil, x
+	}
+	reqHash := humanGateSelectionRequestHash(in)
 	if existing, x := s.humanGateByIdempotency(ctx, orgID, in.IdempotencyKey, reqHash); existing != nil || x != nil {
 		return existing, x
 	}
@@ -269,33 +291,74 @@ func (s *service) CreateHumanGateCohort(ctx context.Context, orgID, actorID uuid
 	if !now.Before(asOf.Add(maxAge)) {
 		return nil, humanGateError(errx.Conflict, "source_stale", "canonical source evidence is stale")
 	}
-	accounts, err := AccountsFromOrgForRun(ctx, s.repo, orgID, run.SourceSystem, run.SourceRunID)
-	if err != nil {
-		return nil, humanGateError(errx.Unprocessable, "source_accounts_unavailable", err.Error())
-	}
 	freshness := &FeedSourceFreshness{ContractVersion: AuthoritativeFreshnessContractV1, Status: "FRESH", AsOf: asOf.Format(time.RFC3339Nano), ExpiresAt: asOf.Add(maxAge).Format(time.RFC3339Nano), DeployedSHA: run.RepoSHA, PolicyVersion: run.ProfileVersion, RunID: run.SourceRunID}
-	manifest, err := PrepareControlledCohort(accounts, CohortPrepareOptions{
+	prepareOpts := CohortPrepareOptions{
 		Now: now, Limit: in.Limit, MaxDailyVolume: in.Limit, TTL: DefaultCohortTTL,
 		RepositorySHA: s.cfg.RepositorySHA, FeedSchemaVersion: firstNonEmpty(s.cfg.FeedSchemaVersion, run.SchemaVersion),
 		FeedIdentity: run.SourceRunID, SnapshotHash: run.SnapshotHash, PolicyVersion: BoundedCohortPolicyV1,
 		EvidenceVersion: firstNonEmpty(s.cfg.EvidenceVersion, DefaultEvidenceVersion), Source: run.SourceSystem,
 		AuthoritativeSourceFreshness: freshness, RequireAuthoritativeFreshness: true,
-	})
-	if err != nil {
-		return nil, humanGateError(errx.Unprocessable, "cohort_prepare_failed", err.Error())
+	}
+	selection := HumanGateSelection{Mode: in.SelectionMode, SourceRunID: run.SourceRunID}
+	var manifest *FrozenCohortSnapshot
+	var selectedAccounts map[uuid.UUID]models.OutreachAccount
+	var tx pgx.Tx
+	if in.SelectionMode == HumanGateSelectionLegacy {
+		accounts, readErr := AccountsFromOrgForRun(ctx, s.repo, orgID, run.SourceSystem, run.SourceRunID)
+		if readErr != nil {
+			return nil, humanGateError(errx.Unprocessable, "source_accounts_unavailable", readErr.Error())
+		}
+		manifest, err = PrepareControlledCohort(accounts, prepareOpts)
+		if err != nil {
+			return nil, humanGateError(errx.Unprocessable, "cohort_prepare_failed", err.Error())
+		}
+		selection.ClaimedCount = len(manifest.Members)
+	} else {
+		tx, err = s.humanGateDB.BeginTx(ctx, pgx.TxOptions{})
+		if err != nil {
+			return nil, humanGateError(errx.ServiceUnavailable, "human_gate_store_unavailable", "human gate transaction could not be started")
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		var x *errx.Error
+		manifest, selection, selectedAccounts, x = s.prepareHumanGateSelection(ctx, tx, orgID, run, in, prepareOpts)
+		if x != nil {
+			return nil, x
+		}
 	}
 	cohortID, versionID := uuid.New(), uuid.New()
 	b, _ := json.Marshal(manifest)
-	_, err = s.humanGateDB.Exec(ctx, `INSERT INTO confenge_cohort_versions
-		(id,organization_id,cohort_id,version,source_run_id,source_system,source_as_of,freshness_expires_at,policy_version,frozen_hash,frozen_manifest,created_by,correlation_id,idempotency_key,request_hash)
-		VALUES($1,$2,$3,1,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, versionID, orgID, cohortID,
-		run.SourceRunID, run.SourceSystem, asOf, asOf.Add(maxAge), manifest.PolicyVersion, manifest.CohortHash, b, actorID,
+	selectionJSON, _ := json.Marshal(selection)
+	store := interface {
+		Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	}(s.humanGateDB)
+	if tx != nil {
+		store = tx
+	}
+	_, err = store.Exec(ctx, `INSERT INTO confenge_cohort_versions
+		(id,organization_id,cohort_id,version,source_run_id,source_system,source_as_of,freshness_expires_at,policy_version,frozen_hash,frozen_manifest,selection_mode,selection_report,created_by,correlation_id,idempotency_key,request_hash)
+		VALUES($1,$2,$3,1,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, versionID, orgID, cohortID,
+		run.SourceRunID, run.SourceSystem, asOf, asOf.Add(maxAge), manifest.PolicyVersion, manifest.CohortHash, b, selection.Mode, selectionJSON, actorID,
 		strings.TrimSpace(in.CorrelationID), strings.TrimSpace(in.IdempotencyKey), reqHash)
 	if err != nil {
 		if existing, x := s.humanGateByIdempotency(ctx, orgID, in.IdempotencyKey, reqHash); existing != nil || x != nil {
 			return existing, x
 		}
 		return nil, humanGateError(errx.Internal, "cohort_store_failed", "cohort version could not be stored")
+	}
+	if tx != nil {
+		if x := storeHumanGateSelectionClaims(ctx, tx, orgID, versionID, run.SourceRunID, in.SelectionMode, manifest, selectedAccounts); x != nil {
+			return nil, x
+		}
+		if x := finalizeHumanGateSelectionReport(ctx, tx, orgID, run.SourceRunID, &selection); x != nil {
+			return nil, x
+		}
+		selectionJSON, _ = json.Marshal(selection)
+		if _, err = tx.Exec(ctx, `UPDATE confenge_cohort_versions SET selection_report=$1 WHERE id=$2 AND organization_id=$3`, selectionJSON, versionID, orgID); err != nil {
+			return nil, humanGateError(errx.Internal, "cohort_store_failed", "cohort selection report could not be stored")
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return nil, humanGateError(errx.Internal, "cohort_store_failed", "cohort selection could not be committed")
+		}
 	}
 	s.auditHumanGate(ctx, orgID, actorID, "cohort_version_created", versionID, map[string]string{"state": "absent"}, map[string]string{"state": "FROZEN", "frozen_hash": manifest.CohortHash})
 	return s.GetHumanGateCohort(ctx, orgID, versionID, now)
@@ -325,8 +388,8 @@ func (s *service) ReproduceHumanGateCohort(ctx context.Context, orgID, actorID, 
 	b, _ := json.Marshal(old.Manifest)
 	var version int
 	err := s.humanGateDB.QueryRow(ctx, `INSERT INTO confenge_cohort_versions
-		(id,organization_id,cohort_id,version,source_run_id,source_system,source_as_of,freshness_expires_at,policy_version,frozen_hash,frozen_manifest,reproduced_from_version,derivation,parent_version,created_by,correlation_id,idempotency_key,request_hash)
-		SELECT $1,organization_id,cohort_id,(SELECT max(version)+1 FROM confenge_cohort_versions WHERE organization_id=$2 AND cohort_id=$3),source_run_id,source_system,source_as_of,freshness_expires_at,policy_version,frozen_hash,$4,version,'REPRODUCE',version,$5,$6,$7,$8
+		(id,organization_id,cohort_id,version,source_run_id,source_system,source_as_of,freshness_expires_at,policy_version,frozen_hash,frozen_manifest,reproduced_from_version,derivation,parent_version,selection_mode,selection_report,created_by,correlation_id,idempotency_key,request_hash)
+		SELECT $1,organization_id,cohort_id,(SELECT max(version)+1 FROM confenge_cohort_versions WHERE organization_id=$2 AND cohort_id=$3),source_run_id,source_system,source_as_of,freshness_expires_at,policy_version,frozen_hash,$4,version,'REPRODUCE',version,selection_mode,selection_report,$5,$6,$7,$8
 		FROM confenge_cohort_versions WHERE id=$9 AND organization_id=$2 RETURNING version`, newID, orgID, old.CohortID, b, actorID, in.CorrelationID, in.IdempotencyKey, reqHash, id).Scan(&version)
 	if err != nil {
 		if existing, idemErr := s.humanGateByIdempotency(ctx, orgID, in.IdempotencyKey, reqHash); existing != nil || idemErr != nil {
@@ -373,13 +436,20 @@ func (s *service) GetHumanGateCohort(ctx context.Context, orgID, id uuid.UUID, n
 		now = time.Now().UTC()
 	}
 	v := &HumanGateCohort{ContractVersion: HumanGateContractV1, ID: id, Source: HumanGateSource, CorrelationID: uuid.NewString(), Receipt: humanGateReceipt("cohort", id)}
-	var raw []byte
-	err := s.humanGateDB.QueryRow(ctx, `SELECT cohort_id,version,derivation,parent_version,source_run_id,source_system,source_as_of,freshness_expires_at,policy_version,frozen_hash,frozen_manifest,correlation_id,created_at FROM confenge_cohort_versions WHERE id=$1 AND organization_id=$2`, id, orgID).Scan(&v.CohortID, &v.Version, &v.Derivation, &v.ParentVersion, &v.SourceRunID, &v.Source, &v.AsOf, &v.FreshUntil, &v.PolicyVersion, &v.FrozenHash, &raw, &v.CorrelationID, &v.CreatedAt)
+	var raw, selectionRaw []byte
+	var selectionMode string
+	err := s.humanGateDB.QueryRow(ctx, `SELECT cohort_id,version,derivation,parent_version,source_run_id,source_system,source_as_of,freshness_expires_at,policy_version,frozen_hash,frozen_manifest,selection_mode,selection_report,correlation_id,created_at FROM confenge_cohort_versions WHERE id=$1 AND organization_id=$2`, id, orgID).Scan(&v.CohortID, &v.Version, &v.Derivation, &v.ParentVersion, &v.SourceRunID, &v.Source, &v.AsOf, &v.FreshUntil, &v.PolicyVersion, &v.FrozenHash, &raw, &selectionMode, &selectionRaw, &v.CorrelationID, &v.CreatedAt)
 	if err == pgx.ErrNoRows {
 		return nil, humanGateError(errx.NotFound, "cohort_version_not_found", "cohort version was not found")
 	}
 	if err != nil || json.Unmarshal(raw, &v.Manifest) != nil {
 		return nil, humanGateError(errx.Internal, "cohort_read_failed", "cohort version could not be read")
+	}
+	v.Selection = HumanGateSelection{Mode: selectionMode, SourceRunID: v.SourceRunID}
+	if len(selectionRaw) > 0 && string(selectionRaw) != "{}" {
+		if err = json.Unmarshal(selectionRaw, &v.Selection); err != nil {
+			return nil, humanGateError(errx.Internal, "cohort_read_failed", "cohort selection report could not be read")
+		}
 	}
 	if now.Before(v.FreshUntil) {
 		v.Freshness = "FRESH"

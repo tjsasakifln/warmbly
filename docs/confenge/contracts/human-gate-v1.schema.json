@@ -16,6 +16,22 @@
     "validation_status": { "enum": ["VALID", "RISKY", "INVALID", "UNKNOWN", "STALE"] },
     "review_decision": { "enum": ["APPROVE", "REJECT", "HOLD"] },
     "cohort_decision": { "enum": ["GO", "NO_GO"] },
+    "selection": {
+      "type": "object",
+      "required": ["mode", "source_run_id", "claimed_count", "unique_claimed_total", "eligible_remaining", "exhausted"],
+      "properties": {
+        "mode": { "enum": ["LEGACY", "NEXT_UNCLAIMED", "RECOVER_PRIOR"] },
+        "source_run_id": { "type": "string" },
+        "claimed_count": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "unique_claimed_total": { "type": "integer", "minimum": 0 },
+        "eligible_remaining": { "type": "integer", "minimum": 0 },
+        "exhausted": { "type": "boolean" },
+        "recovered_requested": { "type": "integer", "minimum": 0 },
+        "recovered_eligible": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "exclusions_by_reason": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } }
+      },
+      "additionalProperties": false
+    },
     "auto_send_enabled": { "const": false }
   },
   "additionalProperties": true
