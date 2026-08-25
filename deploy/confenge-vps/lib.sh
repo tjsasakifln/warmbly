@@ -72,7 +72,7 @@ pass_fail() {
     printf '%-16s PASS\n' "$name"
   elif [[ "$ok" == "STALE" ]]; then
     printf '%-16s STALE\n' "$name"
-  elif [[ "$ok" == "ACTIVE" || "$ok" == "PAUSED" || "$ok" == "OFF" ]]; then
+  elif [[ "$ok" == "ACTIVE" || "$ok" == "PAUSED" || "$ok" == "OFF" || "$ok" == "ENABLED" ]]; then
     printf '%-16s %s\n' "$name" "$ok"
   else
     printf '%-16s FAIL\n' "$name"
