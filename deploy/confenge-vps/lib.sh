@@ -42,6 +42,18 @@ load_vps_env() {
   export WARMBLY_RELEASE_SHA
 }
 
+bind_release_identity() {
+  local release_sha="${1:-${WARMBLY_RELEASE_SHA:-}}"
+  if [[ -z "$release_sha" || "$release_sha" == *[!0-9a-f]* ]] ||
+     { [[ ${#release_sha} -ne 40 ]] && [[ ${#release_sha} -ne 64 ]]; }; then
+    echo "REFUSE: immutable release SHA must be a full 40- or 64-character lowercase hex digest" >&2
+    return 3
+  fi
+  WARMBLY_RELEASE_SHA="$release_sha"
+  CONFENGE_REPOSITORY_SHA="$release_sha"
+  export WARMBLY_RELEASE_SHA CONFENGE_REPOSITORY_SHA
+}
+
 compose_cmd() {
   local root
   root="$(confenge_repo_root)"
