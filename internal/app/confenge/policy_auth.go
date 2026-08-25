@@ -15,6 +15,7 @@ import (
 // AuthorizationMode distinguishes per-touch human approval from campaign policy.
 const (
 	AuthorizationModeHumanTouchpoint = "HUMAN_TOUCHPOINT_APPROVAL"
+	AuthorizationModeHumanGate       = "HUMAN_GATE_APPROVAL"
 	AuthorizationModeCampaignPolicy  = "CAMPAIGN_POLICY"
 )
 

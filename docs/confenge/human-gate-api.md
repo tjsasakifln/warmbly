@@ -17,25 +17,33 @@ send operation.
   forks the version into N+1 carrying a human copy edit for exactly that one
   candidate. See "Adjust" below.
 - `GET /v1/confenge/cohorts/{version_id}` returns the exact candidate/message
-  preview, validations, reviews, invalidations and GO/NO-GO receipt.
+  preview, validations, reviews, invalidations and scheduling state. Legacy
+  GO/NO-GO receipts, if any, remain read-only audit history.
 - `GET /v1/confenge/cohorts/{version_id}/candidates/{candidate_id}` returns one
   progressive detail.
 - `POST .../validation` requests pre-send syntax/MX/SMTP verification.
 - `POST .../review` records `APPROVE`, `REJECT` or `HOLD` with a reason;
-  `APPROVE` also requires `"acknowledged": true`.
-- `POST /v1/confenge/cohorts/{version_id}/decision` records `GO` or `NO_GO`
-  only when `confirmation` exactly names the immutable version (for example
-  `v3`).
+  `APPROVE` also requires `"acknowledged": true` and atomically schedules the
+  exact reviewed message for the next eligible business window.
+- `POST /v1/confenge/cohorts/reconcile-approved` replays that same scheduling
+  path for every latest durable `APPROVE`. It is naturally idempotent: repeated
+  calls converge on one touchpoint and one live queue item per candidate.
 
-All POSTs require `Idempotency-Key`. Reusing a key with the same payload returns
+The former cohort `decision` and `dispatch` write endpoints are removed.
+Individual `APPROVE` is the complete scheduling authority; there is no GO and
+no separate delivery-to-queue step.
+
+Candidate/version POSTs require `Idempotency-Key`. Reusing a key with the same payload returns
 the original resource/receipt; reusing it with another payload returns 409.
 Responses include source, `as_of`, freshness, policy/contract version, reason,
 correlation id and receipt. List responses use `data` plus `pagination`.
-The acknowledgement and typed version are included in the idempotent intent
-hash, so an ambiguous retry cannot silently change the human confirmation.
+The acknowledgement is included in the idempotent intent hash, so an ambiguous
+retry cannot silently change the human confirmation. Reconciliation has no
+payload and is safe to run repeatedly.
 
-Reads require read-contacts. Cohort/validation/review/adjust writes require
-manage-contacts. GO/NO-GO requires manage-campaigns, not send-campaigns. The
+Reads require read-contacts. Cohort/validation/review/adjust/reconcile writes
+require manage-contacts upstream. The Control Center edge exposes review to
+`operators` and reconcile only to `admins`. The
 authenticated API principal is audited by Warmbly; the edge separately audits
 the Authelia human identity and never accepts a browser actor header.
 
@@ -43,22 +51,18 @@ the Authelia human identity and never accepts a browser actor header.
 
 APPROVE is effective only while recipient, content, policy, evidence and the
 exact VALID result remain bound and unexpired. Live account/candidate state is
-read on detail/decision; late suppression, opt-out, bounce, removal or unknown
-live state invalidates approval. RISKY, INVALID, UNKNOWN and STALE cannot be
-approved. GO fails for empty cohorts, stale source evidence or any member
-without an effective APPROVE.
+read on detail and immediately before transport; late suppression, opt-out,
+bounce, removal, canonical-source drift, content drift or changed validation
+invalidates approval and cancels unsent queue work. RISKY, INVALID, UNKNOWN and
+STALE cannot be approved. A later `HOLD` or `REJECT` also cancels the unsent
+message immediately.
 
-GO is a human decision receipt, not an email send. It materializes the existing
-bounded authorization against the exact touchpoints as
-`READY_FOR_LIVE_PREFLIGHT`; it does not queue them. The existing bounded cohort
-transport authority remains responsible for queue admission and revalidates
-approval, suppression, opt-out, cap, window, kill switch, TTL and policy at the
-last mile. `CONFENGE_AUTO_SEND_ENABLED` and GREEN autorun remain false.
-
-The authorization TTL is narrowed to the earliest of the frozen snapshot TTL,
-canonical source-freshness expiry and every candidate-validation expiry. A
-failed NO_GO revocation fails closed and does not record a misleading NO_GO
-receipt.
+The scheduling row has `auto_send=true` per approved message. This means the
+Warmbly worker may collect it; it does **not** enable the prohibited global
+`CONFENGE_AUTO_SEND_ENABLED` or GREEN autorun flags. The worker still enforces
+the 09:00–18:00 America/Sao_Paulo business window, the 10/hour cap, pause,
+suppression and the file kill switch. Approval is allowed while those transport
+controls block outbound, so a queued message can honestly remain unsent.
 
 ## Derivation taxonomy
 
@@ -84,15 +88,13 @@ others become `CREATE`.
 `POST /v1/confenge/cohorts/{version_id}/candidates/{candidate_id}/adjust`
 
 Adjust is an **operator** action. It requires manage-contacts + write-contacts,
-exactly like review; it is deliberately *not* an admin action, and GO stays
-manage-campaigns. Like every other write it requires `Idempotency-Key` and
+exactly like review; it is deliberately *not* an admin action. Like every other version write it requires `Idempotency-Key` and
 carries the same correlation id header as the other human-gate writes.
 
 **Adjust neither queues, dispatches, sends nor resumes anything.** It creates an
-immutable draft version and nothing else. The new version is not authorized, not
-approved and not queue-ready; reaching a real send still requires validation,
-per-candidate APPROVE and a fresh GO on the new version, and the bounded
-transport authority still revalidates everything at the last mile.
+immutable draft version and nothing else. The new version is not approved and
+not queue-ready; reaching a real send requires validation and per-candidate
+APPROVE on the new version. The worker revalidates everything at the last mile.
 
 Request body — subject and body_text are the only mutable facts:
 
@@ -141,7 +143,7 @@ Success is `201` with:
   helpers the freeze path uses. There is no second hashing implementation.
 - The adjusted copy is re-run through the freeze-time copy QA
   (`ValidateCopyForRouteClass`) and is refused if it fails.
-- The new version is born with **no validation, no review and no GO**. Nothing
+- The new version is born with **no validation, no review and no scheduling**. Nothing
   is inherited: nothing that was approved about the old copy is evidence about
   the new copy.
 - Replaying the same `Idempotency-Key` returns the same adjustment and does not
@@ -189,8 +191,8 @@ by typing over them here.
 | 422    | `cohort_bounds_violation`     | the cohort size or daily cap is outside the bounded-cohort limits. |
 
 Live recipient state (late suppression, opt-out, hard bounce, removal) is not an
-adjust gate: it is read on every detail view and re-enforced at GO and at
-dispatch. Adjust edits a draft; it cannot make anything sendable. The live
+adjust gate: it is read on every detail view and re-enforced before scheduling
+and transport. Adjust edits a draft; it cannot make anything sendable. The live
 candidate is read only to give copy QA the same recipient context the freeze
 path had, and an unreadable live source degrades that context rather than
 blocking the edit.

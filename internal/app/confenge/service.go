@@ -125,8 +125,8 @@ type Service interface {
 	// CAMPAIGN_POLICY_AUTHORIZATION + GREEN autorun (no fake approved_by).
 	WirePolicyAuth(store repository.ConfengePolicyRepository)
 	WireCohortAuth(store BoundedCohortStore)
-	// Human gate persists immutable cohort versions and review receipts. It is
-	// control-plane only and exposes no transport/send operation.
+	// Human gate persists immutable cohort versions and review receipts.
+	// APPROVE schedules the exact message; transport remains worker-owned.
 	WireHumanGate(db *pgxpool.Pool)
 	CreateHumanGateCohort(ctx context.Context, orgID, actorID uuid.UUID, in HumanGateCreateInput) (*HumanGateCohort, *errx.Error)
 	ReproduceHumanGateCohort(ctx context.Context, orgID, actorID, id uuid.UUID, in HumanGateCreateInput) (*HumanGateCohort, *errx.Error)
@@ -134,6 +134,7 @@ type Service interface {
 	GetHumanGateCohort(ctx context.Context, orgID, id uuid.UUID, now time.Time) (*HumanGateCohort, *errx.Error)
 	RecordHumanGateValidation(ctx context.Context, orgID, actorID, versionID, candidateID uuid.UUID, result emailverify.Result, key, correlation string) (*HumanGateCohort, *errx.Error)
 	ReviewHumanGateCandidate(ctx context.Context, orgID, actorID, versionID, candidateID uuid.UUID, in HumanGateReviewInput) (*HumanGateCohort, *errx.Error)
+	ReconcileApprovedHumanGateCandidates(ctx context.Context, orgID, actorID uuid.UUID) (*HumanGateReconcileReport, *errx.Error)
 	// AdjustHumanGateCandidate forks an immutable version into N+1 carrying a
 	// human copy edit for one candidate. It queues, dispatches, sends and
 	// resumes nothing.
@@ -142,8 +143,6 @@ type Service interface {
 	// the composer. Copy may change and members may drop out; recipients and
 	// provenance may not. It queues, dispatches, sends and resumes nothing.
 	RecomposeHumanGateCohort(ctx context.Context, orgID, actorID, versionID uuid.UUID, in HumanGateRecomposeInput) (*HumanGateRecomposeResult, *errx.Error)
-	DecideHumanGateCohort(ctx context.Context, orgID, actorID, versionID uuid.UUID, in HumanGateDecisionInput) (*HumanGateCohort, *errx.Error)
-
 	// confenge-dossier/1.0 manifest references. Card metadata, never a send path.
 	WireDossierReferences(store DossierReferenceStore)
 	AttachDossierReference(ctx context.Context, orgID, actorID uuid.UUID, in DossierAttachInput) (*DossierReference, *errx.Error)

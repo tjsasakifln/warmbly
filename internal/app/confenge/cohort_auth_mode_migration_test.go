@@ -43,6 +43,7 @@ func TestBoundedCohortAuthModeIsAllowedByLatestCheckConstraint(t *testing.T) {
 	}
 	for _, mode := range []string{
 		AuthorizationModeHumanTouchpoint,
+		AuthorizationModeHumanGate,
 		AuthorizationModeCampaignPolicy,
 		AuthorizationModeBoundedCohort,
 	} {
