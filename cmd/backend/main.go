@@ -1124,6 +1124,11 @@ func main() {
 		// Contact-ready accounts are planned and drafted asynchronously. This
 		// worker has no approval, queueing, scheduling or transport authority.
 		go confenge.NewDraftGenerationWorker(confengeServiceForHandler, 30*time.Second).Run(ctx)
+		// The narrow delegated-policy worker keeps one canonical first touch queued.
+		if confengeCfg.DelegatedFirstTouchAutorunEnabled {
+			go confenge.NewDelegatedFirstTouchWorker(confengeServiceForHandler, 30*time.Second).Run(ctx)
+			log.Printf("confenge delegated first-touch autorun worker started")
+		}
 		// Continuous feed sync (fail-closed OFF by default). Single-flight inside SyncFeedManifest.
 		if confengeCfg.FeedSyncEnabled {
 			if orgRaw := strings.TrimSpace(os.Getenv("CONFENGE_FEED_SYNC_ORG_ID")); orgRaw != "" {

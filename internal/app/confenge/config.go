@@ -53,6 +53,8 @@ const (
 	// Delegated first-touch is an explicit, manifest-driven agent authority. It
 	// does not enable runtime generation or the legacy GREEN autorun path.
 	EnvDelegatedFirstTouch = "CONFENGE_DELEGATED_FIRST_TOUCH_ENABLED"
+	// Delegated first-touch autorun evaluates the prepared rolling backlog.
+	EnvDelegatedFirstTouchAutorun = "CONFENGE_DELEGATED_FIRST_TOUCH_AUTORUN_ENABLED"
 	// Adaptive rate (single capacity authority with dispatch governor).
 	EnvRateMode                     = "CONFENGE_RATE_MODE"
 	EnvRateStartPerHour             = "CONFENGE_RATE_START_PER_HOUR"
@@ -125,6 +127,8 @@ type Config struct {
 	// DelegatedFirstTouchEnabled allows only CFG-FIRST-TOUCH-ROUTING-v1
 	// manifests to bind a founder-authorized campaign policy to one message.
 	DelegatedFirstTouchEnabled bool
+	// DelegatedFirstTouchAutorunEnabled continuously evaluates that narrow path.
+	DelegatedFirstTouchAutorunEnabled bool
 	// RateMode: "fixed" | "adaptive". Adaptive starts at RateStartPerHour and may climb to RateMaxPerHour.
 	RateMode         string
 	RateStartPerHour int
@@ -190,42 +194,43 @@ func parseHHMM(s string) (h, m int, ok bool) {
 // LoadConfig reads CONFENGE_* env vars. Safe defaults keep the feature off.
 func LoadConfig() Config {
 	cfg := Config{
-		Enabled:                      envBool(EnvEnabled, false),
-		AutoSendEnabled:              envBool(EnvAutoSend, false),
-		FeedURL:                      strings.TrimSpace(os.Getenv(EnvFeedURL)),
-		FeedToken:                    strings.TrimSpace(os.Getenv(EnvFeedToken)),
-		AllowedHosts:                 splitHosts(os.Getenv(EnvAllowedHosts)),
-		OutcomeWebhookURL:            strings.TrimSpace(os.Getenv(EnvOutcomeWebhookURL)),
-		OutcomeWebhookSecret:         strings.TrimSpace(os.Getenv(EnvOutcomeWebhookSec)),
-		DefaultDailyLimit:            envInt(EnvDefaultDailyLimit, DefaultCampaignDailyLimit),
-		MaxInitialEmailWords:         envInt(EnvMaxInitialWords, DefaultMaxInitialWords),
-		RequireHumanApproval:         envBool(EnvRequireHuman, true),
-		MaxFeedPayloadBytes:          int64(envInt(EnvMaxPayloadBytes, DefaultMaxPayloadBytes)),
-		WhatsAppEnabled:              envBool(EnvWhatsAppEnabled, false),
-		CrossChannelHours:            envInt(EnvCrossChannelHours, DefaultCrossChannelHours),
-		MaxWhatsAppWords:             envInt(EnvWhatsAppMaxWords, DefaultMaxWhatsAppWords),
-		SendingPaused:                envBool(EnvSendingPaused, false),
-		DynamicPriorityEnabled:       envBool(EnvDynamicPriority, false),
-		FeedSyncEnabled:              envBool(EnvFeedSyncEnabled, false),
-		FeedSyncInterval:             envDuration(EnvFeedSyncInterval, 15*time.Minute),
-		FeedMaxAge:                   envDuration(EnvFeedMaxAge, 24*time.Hour),
-		ManifestURL:                  strings.TrimSpace(os.Getenv(EnvManifestURL)),
-		DraftReviewBacklogTarget:     envInt(EnvDraftReviewBacklogTarget, DefaultDraftReviewBacklogTarget),
-		GreenAutorunEnabled:          envBool(EnvGreenAutorun, false),
-		DelegatedFirstTouchEnabled:   envBool(EnvDelegatedFirstTouch, false),
-		RateMode:                     strings.ToLower(strings.TrimSpace(os.Getenv(EnvRateMode))),
-		RateStartPerHour:             envInt(EnvRateStartPerHour, 10),
-		RateMaxPerHour:               envInt(EnvRateMaxPerHour, 20),
-		AllowEnrollMint:              envBool(EnvAllowEnrollMint, false),
-		AppEnv:                       strings.TrimSpace(os.Getenv("APP_ENV")),
-		OperatorMode:                 envBool(EnvOperatorMode, false),
-		OperatorUserID:               parseUUIDEnv(EnvOperatorUserID),
-		OperatorOrgID:                parseUUIDEnv(EnvOperatorOrgID),
-		InboundWebhookSecret:         strings.TrimSpace(os.Getenv(EnvInboundWebhookSec)),
-		InboundOrgID:                 parseUUIDEnv(EnvInboundOrgID),
-		OperatorAlertEmail:           strings.TrimSpace(os.Getenv(EnvOperatorAlertEmail)),
-		OperatorAlertEmailEnabled:    envBool(EnvOperatorAlertEmailEnabled, false),
-		OperatorAlertEmailKillSwitch: envBool(EnvOperatorAlertEmailKillSwitch, true),
+		Enabled:                           envBool(EnvEnabled, false),
+		AutoSendEnabled:                   envBool(EnvAutoSend, false),
+		FeedURL:                           strings.TrimSpace(os.Getenv(EnvFeedURL)),
+		FeedToken:                         strings.TrimSpace(os.Getenv(EnvFeedToken)),
+		AllowedHosts:                      splitHosts(os.Getenv(EnvAllowedHosts)),
+		OutcomeWebhookURL:                 strings.TrimSpace(os.Getenv(EnvOutcomeWebhookURL)),
+		OutcomeWebhookSecret:              strings.TrimSpace(os.Getenv(EnvOutcomeWebhookSec)),
+		DefaultDailyLimit:                 envInt(EnvDefaultDailyLimit, DefaultCampaignDailyLimit),
+		MaxInitialEmailWords:              envInt(EnvMaxInitialWords, DefaultMaxInitialWords),
+		RequireHumanApproval:              envBool(EnvRequireHuman, true),
+		MaxFeedPayloadBytes:               int64(envInt(EnvMaxPayloadBytes, DefaultMaxPayloadBytes)),
+		WhatsAppEnabled:                   envBool(EnvWhatsAppEnabled, false),
+		CrossChannelHours:                 envInt(EnvCrossChannelHours, DefaultCrossChannelHours),
+		MaxWhatsAppWords:                  envInt(EnvWhatsAppMaxWords, DefaultMaxWhatsAppWords),
+		SendingPaused:                     envBool(EnvSendingPaused, false),
+		DynamicPriorityEnabled:            envBool(EnvDynamicPriority, false),
+		FeedSyncEnabled:                   envBool(EnvFeedSyncEnabled, false),
+		FeedSyncInterval:                  envDuration(EnvFeedSyncInterval, 15*time.Minute),
+		FeedMaxAge:                        envDuration(EnvFeedMaxAge, 24*time.Hour),
+		ManifestURL:                       strings.TrimSpace(os.Getenv(EnvManifestURL)),
+		DraftReviewBacklogTarget:          envInt(EnvDraftReviewBacklogTarget, DefaultDraftReviewBacklogTarget),
+		GreenAutorunEnabled:               envBool(EnvGreenAutorun, false),
+		DelegatedFirstTouchEnabled:        envBool(EnvDelegatedFirstTouch, false),
+		DelegatedFirstTouchAutorunEnabled: envBool(EnvDelegatedFirstTouchAutorun, false),
+		RateMode:                          strings.ToLower(strings.TrimSpace(os.Getenv(EnvRateMode))),
+		RateStartPerHour:                  envInt(EnvRateStartPerHour, 10),
+		RateMaxPerHour:                    envInt(EnvRateMaxPerHour, 20),
+		AllowEnrollMint:                   envBool(EnvAllowEnrollMint, false),
+		AppEnv:                            strings.TrimSpace(os.Getenv("APP_ENV")),
+		OperatorMode:                      envBool(EnvOperatorMode, false),
+		OperatorUserID:                    parseUUIDEnv(EnvOperatorUserID),
+		OperatorOrgID:                     parseUUIDEnv(EnvOperatorOrgID),
+		InboundWebhookSecret:              strings.TrimSpace(os.Getenv(EnvInboundWebhookSec)),
+		InboundOrgID:                      parseUUIDEnv(EnvInboundOrgID),
+		OperatorAlertEmail:                strings.TrimSpace(os.Getenv(EnvOperatorAlertEmail)),
+		OperatorAlertEmailEnabled:         envBool(EnvOperatorAlertEmailEnabled, false),
+		OperatorAlertEmailKillSwitch:      envBool(EnvOperatorAlertEmailKillSwitch, true),
 		RepositorySHA: firstNonEmpty(
 			strings.TrimSpace(os.Getenv(EnvRepositorySHA)),
 			strings.TrimSpace(os.Getenv("GIT_SHA")),
@@ -304,6 +309,12 @@ func (c Config) ValidateStartup(appEnv string) error {
 	}
 	if err := c.ForbiddenAutomation(); err != nil {
 		return err
+	}
+	if c.DelegatedFirstTouchAutorunEnabled && !c.DelegatedFirstTouchEnabled {
+		return fmt.Errorf("%s requires %s=true", EnvDelegatedFirstTouchAutorun, EnvDelegatedFirstTouch)
+	}
+	if c.DelegatedFirstTouchAutorunEnabled && (c.OperatorUserID == uuid.Nil || c.OperatorOrgID == uuid.Nil) {
+		return fmt.Errorf("%s requires valid operator user and organization IDs", EnvDelegatedFirstTouchAutorun)
 	}
 	if c.OperatorMode {
 		if c.OperatorUserID == uuid.Nil {
