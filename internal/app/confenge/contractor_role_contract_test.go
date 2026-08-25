@@ -1,11 +1,13 @@
 package confenge
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/warmbly/warmbly/internal/models"
 )
 
 func validFeedContractorRole(now time.Time) FeedContractorRole {
@@ -19,6 +21,50 @@ func validFeedContractorRole(now time.Time) FeedContractorRole {
 		BuyerCNPJ14: "99888777000166", BuyerIdentityRef: "cnpj:99888777000166",
 		RoleMatchMethod: "SUPPLIER_EXACT_CNPJ14", Confidence: "HIGH",
 	}
+}
+
+func TestContractorRoleAttestationMaterializesAsCurrentConfirmedEvidence(t *testing.T) {
+	repo := newMemRepo()
+	svc := testSvc(repo)
+	org := uuid.New()
+	raw := mustReadFixture(t, "native_feed_v1.json")
+	feed, err := ParseFeed(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	role := validFeedContractorRole(time.Now().UTC().Truncate(time.Second))
+	role.SourceRunID = feed.Source.RunID
+	role.SupplierCNPJ14 = feed.Leads[0].Company.CNPJ14
+	role.SupplierIdentityRef = "cnpj:" + role.SupplierCNPJ14
+	feed.Leads[0].ContractorRole = role
+	raw, err = jsonMarshal(feed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, xerr := svc.ImportFromBytes(context.Background(), org, nil, raw, ImportOptions{})
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	acc, err := repo.GetAccountByCNPJ(context.Background(), org, role.SupplierCNPJ14)
+	if err != nil || acc == nil {
+		t.Fatalf("typed supplier account missing: %v", err)
+	}
+	evidence, err := repo.ListEvidence(context.Background(), org, acc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range evidence {
+		if evidence[i].SourceEvidenceID != "contract-1" {
+			continue
+		}
+		if evidence[i].EpistemicClass != models.OutreachEpistemicConfirmedFact ||
+			evidence[i].LastImportRunID == nil || *evidence[i].LastImportRunID != run.ID ||
+			evidence[i].ConsultedAt == nil {
+			t.Fatalf("contractor-role evidence lost current typed binding: %+v", evidence[i])
+		}
+		return
+	}
+	t.Fatal("typed contractor-role evidence was not materialized")
 }
 
 func TestContractorRoleProjectionPersistsWithoutRawPNCPReinterpretation(t *testing.T) {

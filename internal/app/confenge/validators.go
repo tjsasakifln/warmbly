@@ -465,7 +465,9 @@ func ClassifyRisk(acc *models.OutreachAccount, cand *models.OutreachContactCandi
 			models.OutreachVerifyHumanConfirmed:
 			// Enrollable verified contacts stay GREEN-eligible.
 		case models.OutreachVerifyInstitutionalGeneric:
-			raise("YELLOW", "institutional_generic_recipient")
+			if !CandidateControlledEligible(cand) || !ControlledRouteAllowed(cand, nil) {
+				raise("YELLOW", "institutional_generic_recipient")
+			}
 		case models.OutreachVerifyPublicPossiblyStale:
 			raise("YELLOW", "possibly_stale_contact")
 		default:
