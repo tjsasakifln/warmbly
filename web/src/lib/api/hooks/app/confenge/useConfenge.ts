@@ -15,6 +15,7 @@ import {
     getConfengeAttention,
     getConfengeDispatchStatus,
     getConfengeStatus,
+	getConfengeDelegatedFirstTouchStatus,
     getConfengeSummary,
     applyConfengeManualAction,
     getConfengeCockpit,
@@ -62,6 +63,15 @@ export function useConfengeStatus() {
         queryKey: [...KEY, "status"],
         queryFn: getConfengeStatus,
         staleTime: 60_000,
+    });
+}
+
+export function useConfengeDelegatedFirstTouchStatus(enabled = true) {
+    return useQuery({
+        queryKey: [...KEY, "first-touch", "status"],
+        queryFn: getConfengeDelegatedFirstTouchStatus,
+        enabled,
+        staleTime: 5_000,
     });
 }
 

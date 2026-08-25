@@ -11,8 +11,8 @@ There is **no research** in this path: the model receives structured JSON and re
 | `confenge.draft.v2` | Channel-aware modes, `claims[]`, internal `rationale`, anti-template linter, near-dup single regen |
 | `confenge.draft.v3` | Strategy-first composition (`OutreachStrategy`), doctrine `confenge-outreach-v1`, micro-offers, doctrine QA |
 | `confenge.draft.v4` | Messageability gate + outbound-safe plan (`confenge.composer.v2`, doctrine `confenge-outreach-v2`). Internal strategy fields are never interpolated. Unsent prior-version drafts must be regenerated. |
-| `confenge.draft.v5` | Authorizable NEEDS_REVIEW. Renderer reads only `RecipientFacingCopy`. `validation_ok` means only human authorization remains. P0 hard QA: leak phrases, crédito frame, near-dup, stale composer, dumps, empty copy, missing CTA `?`. |
-| `confenge.draft.v6` | Semantic brief first, written event subjects, safe company-context fallback when a specific fact is absent, deterministic editorial QA, and bounded AI rewrite recovery. Suboptimal copy remains recoverable and always returns to human review. |
+| `confenge.draft.v5` | Authorizable NEEDS_REVIEW. Renderer reads only `RecipientFacingCopy`. `validation_ok` still requires a separate authorization decision. P0 hard QA: leak phrases, crédito frame, near-dup, stale composer, dumps, empty copy, missing CTA `?`. |
+| `confenge.draft.v6` | Semantic brief first, written event subjects, safe company-context fallback when a specific fact is absent, deterministic editorial QA, and bounded AI rewrite recovery. Suboptimal copy remains recoverable and returns to NEEDS_REVIEW before any fresh human or delegated-policy decision. |
 
 Constant: `internal/app/confenge/validators.go` → `PromptVersion`. Current: `confenge.draft.v6`.
 Doctrine: `OutreachDoctrineVersion` + `internal/app/confenge/outreach_playbook/`. Current: `confenge-outreach-v2`.
@@ -134,7 +134,8 @@ Near-duplicate (character n-gram Jaccard, threshold `0.72`):
 - never loops
 
 `validation_ok=true` means the message is already technically and commercially
-sendable. Only human authorization remains. It is not "text a human must rewrite".
+sendable. Exact authorization still remains. For ordinary flows this is human;
+the separate first-touch CLI uses its own versioned adversarial QA and policy.
 
 ## Provider abstraction
 
@@ -146,15 +147,17 @@ sendable. Only human authorization remains. It is not "text a human must rewrite
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `CONFENGE_OUTREACH_ENABLED` | false | Master switch |
-| `CONFENGE_REQUIRE_HUMAN_APPROVAL` | true | AI never approves/sends |
+| `CONFENGE_REQUIRE_HUMAN_APPROVAL` | true | Keeps global automatic approval disabled |
 | `CONFENGE_AUTO_SEND_ENABLED` | false | Fail-closed |
+| `CONFENGE_DELEGATED_FIRST_TOUCH_ENABLED` | false | Enables only `CFG-FIRST-TOUCH-ROUTING-v1` |
 | `CONFENGE_MAX_INITIAL_EMAIL_WORDS` | 120 | Hard word cap |
 | `CONFENGE_WHATSAPP_ENABLED` | false | WA generate/send |
 | `CONFENGE_MAX_WHATSAPP_WORDS` | 70 | WA word cap |
 
 ## Non-claims
 
-- AI may draft; **humans** approve and send.
+- Runtime AI may draft. Humans authorize ordinary flows. The CLI agent may
+  authorize only the founder-approved first-touch routing policy.
 - DNC, opt-out, bounce, and reply remain dominant cadence stops.
 - Multi-tenant isolation is enforced by org-scoped repositories.
 - Every sent message must remain traceable to lead, contact, channel, text version, approval, and evidence ids.

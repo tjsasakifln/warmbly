@@ -25,6 +25,7 @@ import {
   useConfengeDispatchStatus,
   useConfengeReviewTouchpoints,
   useConfengeStatus,
+	useConfengeDelegatedFirstTouchStatus,
   useConfengeSummary,
   useApplyConfengeManualAction,
   useConfengeCockpit,
@@ -65,6 +66,7 @@ import type {
   ConfengeAttentionFilter,
   ConfengeTouchpoint,
   ConfengeWorkingQueueItem,
+	ConfengeDelegatedFirstTouchStatus,
 } from "@/lib/api/models/app/confenge/Confenge";
 import type { AppError } from "@/lib/api/client/normalizeError";
 import { channelLabel, formatFeedAge, formatPtBrDate, intentLabel, purposeLabel, reasonLabel, stateLabel } from "./labels";
@@ -82,6 +84,7 @@ export default function ConfengePage() {
   const status = useConfengeStatus();
   const enabled = !!status.data?.enabled;
   const summary = useConfengeSummary(enabled);
+	const firstTouchPolicy = useConfengeDelegatedFirstTouchStatus(enabled);
   const workingOverview = useConfengeWorkingOverview(enabled);
   const cockpit = useConfengeCockpit(enabled);
   const executive = useConfengeExecutiveIntel(enabled);
@@ -204,7 +207,7 @@ export default function ConfengePage() {
     // activation metrics sit alongside when dynamic priority is on.
     const core = [
       { id: "ready", label: "Prontas", value: s?.ready_to_generate ?? 0 },
-      { id: "review", label: "Para revisar", value: s?.needs_review ?? w?.needs_review ?? 0 },
+      { id: "review", label: "Exceções para revisar", value: s?.needs_review ?? w?.needs_review ?? 0 },
       { id: "sent", label: "Enviadas", value: s?.sent ?? 0 },
       { id: "human-reply", label: "Respostas", value: s?.replied ?? 0 },
       { id: "meeting", label: "Reuniões", value: s?.meeting ?? 0 },
@@ -216,7 +219,7 @@ export default function ConfengePage() {
       return [
         { id: "reservoir", label: "Monitoradas", value: w.reservoir_monitored },
         { id: "now", label: "Para agir agora", value: w.actionable_now },
-        { id: "review", label: "Para revisar", value: w.needs_review },
+        { id: "review", label: "Exceções para revisar", value: w.needs_review },
         { id: "sent", label: "Enviadas", value: s?.sent ?? 0 },
         { id: "replied", label: "Respondidas", value: s?.replied ?? 0 },
         { id: "rate", label: "Envios na hora", value: dispatchStatus.data ? `${dispatchStatus.data.sent_last_hour}/${dispatchStatus.data.cap}` : "—" },
@@ -326,7 +329,7 @@ export default function ConfengePage() {
     <Page>
       <PageTopbar
         eyebrow="CONFENGE"
-        subtitle="Priorize contas, gere mensagens, aprove cada envio e acompanhe respostas."
+        subtitle="Acompanhe a policy de first touch, suas exceções, agendamentos e respostas."
       >
         {dispatchStatus.data && (
           <div
@@ -382,25 +385,38 @@ export default function ConfengePage() {
         )}
       </PageTopbar>
       <div className="flex flex-col gap-4 p-4 md:p-6 max-w-6xl mx-auto w-full">
-        <PilotCriticalPanel gate={pilotGate} />
+        <DelegatedFirstTouchPanel status={firstTouchPolicy.data} loading={firstTouchPolicy.isLoading} />
+
+        {firstTouchPolicy.data?.policy_active ? (
+          <details className="rounded-md border border-slate-200 bg-white">
+            <summary className="cursor-pointer px-3 py-2.5 text-[12px] font-medium text-slate-700">
+              Controles do piloto com transporte real — não são fila de revisão dos first touches elegíveis
+            </summary>
+            <div className="border-t border-slate-100 p-3">
+              <PilotCriticalPanel gate={pilotGate} />
+            </div>
+          </details>
+        ) : (
+          <PilotCriticalPanel gate={pilotGate} />
+        )}
 
         <section id="visao-geral" tabIndex={-1} className="scroll-mt-16 rounded-md border border-sky-200 bg-sky-50 px-3 py-3 focus:outline-none">
           <div className="text-[10px] uppercase tracking-[0.14em] text-sky-700 font-medium">Próxima ação</div>
           <p className="mt-1 text-[12.5px] text-slate-800">
-            {pilotGate.blockers[0]
-              ? `${pilotGate.blockers[0].title}. ${pilotGate.blockers[0].detail}`
-              : dispatchStatus.data?.paused
-                ? "Todos os gates anteriores estão concluídos. Faça a liberação humana final dos envios."
+            {firstTouchPolicy.data?.policy_active && dispatchStatus.data?.paused
+              ? "First touches elegíveis podem chegar a QUEUED pela policy; o transporte real continua pausado até um GO contemporâneo."
+              : pilotGate.blockers[0]
+                ? `${pilotGate.blockers[0].title}. ${pilotGate.blockers[0].detail}`
               : queue.length
-                ? `Revise ${queue.length} ${queue.length === 1 ? "mensagem" : "mensagens"} antes de liberar os próximos envios.`
+                ? `Trate ${queue.length} ${queue.length === 1 ? "exceção" : "exceções"} fora da policy.`
                 : (agoraQueue.data?.length ?? 0) > 0
                   ? "Planeje as contas prontas para ação e gere as mensagens que vencem agora."
                   : "A operação está em dia. Acompanhe novas contas, respostas e atualizações do feed."}
           </p>
           <div className="mt-2 grid gap-2 sm:grid-cols-3 text-[11.5px] text-slate-600">
-            <span><strong className="text-slate-800">1. Selecione</strong> a conta prioritária.</span>
-            <span><strong className="text-slate-800">2. Revise</strong> destinatário, contexto e mensagem.</span>
-            <span><strong className="text-slate-800">3. Aprove</strong> o conteúdo exato e mantenha o dispatch pausado até o GO/NO-GO.</span>
+            <span><strong className="text-slate-800">1. Policy</strong> aprova somente first touch que passa todos os hard gates.</span>
+            <span><strong className="text-slate-800">2. Exceções</strong> continuam em HOLD ou revisão humana.</span>
+            <span><strong className="text-slate-800">3. Transporte</strong> permanece separado e pausável até o GO/NO-GO.</span>
           </div>
         </section>
 
@@ -483,7 +499,7 @@ export default function ConfengePage() {
                 ["TIER C", cockpit.data.funnel.tier_c],
                 ["TIER D", cockpit.data.funnel.tier_d],
                 ["Bloqueadas", cockpit.data.funnel.blocked_exhausted],
-                ["Prontas para revisar", cockpit.data.funnel.needs_review],
+				["Exceções para revisar", cockpit.data.funnel.needs_review],
                 ["Fila manual", cockpit.data.funnel.manual_outreach_ready],
                 ["Aprovadas", cockpit.data.funnel.approved],
                 ["Acionaveis", cockpit.data.funnel.actionable ?? 0],
@@ -764,7 +780,7 @@ export default function ConfengePage() {
               </div>
             )}
           </div>
-          <p className="px-3 pt-2 text-[11.5px] text-slate-500">Selecione as empresas elegíveis que farão parte do piloto. Cada primeira mensagem será gerada e continuará exigindo revisão e aprovação individual.</p>
+          <p className="px-3 pt-2 text-[11.5px] text-slate-500">Selecione as empresas do piloto de transporte real. A policy delegada cobre first touches elegíveis; esta coorte permanece disponível para exceções e autorização humana.</p>
           <div className="mx-3 mt-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2" data-testid="confenge-cohort-operation-summary">
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-[12px] tabular-nums text-slate-700">
               <span><strong>{cohortResult?.selected ?? selectedCandidates.length}</strong> selecionadas</span>
@@ -1179,6 +1195,69 @@ export default function ConfengePage() {
         </section>
       </div>
     </Page>
+  );
+}
+
+function DelegatedFirstTouchPanel({
+  status,
+  loading,
+}: {
+  status?: ConfengeDelegatedFirstTouchStatus;
+  loading: boolean;
+}) {
+  const counts = status?.counts ?? {};
+  const holds = (counts.HOLD ?? 0) + (counts.CANCELLED ?? 0);
+  const delegated = (counts.APPROVED ?? 0) + (counts.APPROVED_NOT_SCHEDULED ?? 0) + (counts.QUEUED ?? 0) + (counts.SENT ?? 0);
+  return (
+    <section data-testid="confenge-delegated-first-touch" className="rounded-md border border-emerald-200 bg-white">
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-3 py-2.5">
+        <div>
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-emerald-700">First touch por policy</div>
+          <div className="text-[12.5px] font-medium text-slate-900">{status?.policy_version ?? "CFG-FIRST-TOUCH-ROUTING-v1"}</div>
+        </div>
+        <span className={`ml-auto rounded-full px-2 py-1 text-[10.5px] font-medium ${status?.policy_active ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"}`}>
+          {loading ? "Carregando" : status?.policy_active ? "Policy ativa" : "Policy inativa"}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-2 px-3 py-3 text-[11.5px] sm:grid-cols-5">
+        <ReadinessItem label="Delegated-approved" value={String(delegated)} />
+        <ReadinessItem label="Queued + readback" value={String(status?.queued_readback ?? 0)} />
+        <ReadinessItem label="Human-approved" value={String(status?.human_approved ?? 0)} />
+        <ReadinessItem label="HOLD / exceções" value={String(holds)} />
+        <ReadinessItem label="Duplicidades live" value={String((status?.duplicate_live_account ?? 0) + (status?.duplicate_live_root ?? 0))} />
+      </div>
+      <p className="px-3 pb-2 text-[11.5px] text-slate-500">
+        Itens elegíveis são aprovados por <code>DELEGATED_POLICY_APPROVE</code>. Revisão humana é reservada a HOLD, conflito, UNKNOWN, drift ou reprovação de gate.
+      </p>
+      {!!status?.items?.length && (
+        <div className="max-h-64 overflow-auto border-t border-slate-100">
+          {status.items.map((item) => (
+            <details key={`${item.batch_id}-${item.cnpj14}-${item.decided_at}`} className="border-b border-slate-100 px-3 py-2 text-[11.5px] last:border-b-0">
+              <summary className="cursor-pointer text-slate-800">
+                <strong>{item.state}</strong> · {item.approval_source} · {item.cnpj14} · {item.route_class}
+                {item.due_at ? ` · ${formatPtBrDate(item.due_at)}` : ""}
+              </summary>
+              <div className="mt-2 grid gap-1 text-slate-500 sm:grid-cols-2">
+                <span>Recipient: {item.recipient || "não selado"}</span>
+                <span>Supplier: {item.supplier_cnpj14}</span>
+                <span>Run: {item.source_run_id}</span>
+                <span>Content hash: {item.content_hash || "—"}</span>
+                <span>Readback: {item.readback_at ? "confirmado" : "pendente"}</span>
+                <span>Runtime: {item.runtime_release_sha || "—"}</span>
+              </div>
+              {(item.reason_codes?.length || item.blocker_codes?.length) ? (
+                <div className="mt-1 text-amber-800">Reason codes: {[...(item.reason_codes ?? []), ...(item.blocker_codes ?? [])].join(", ")}</div>
+              ) : null}
+              {item.evidence_reference && (
+                /^https?:\/\//i.test(item.evidence_reference)
+                  ? <a className="mt-1 inline-block text-sky-700 underline" href={item.evidence_reference} target="_blank" rel="noreferrer">Abrir evidência</a>
+                  : <div className="mt-1 break-all text-slate-400">Evidence: {item.evidence_reference}</div>
+              )}
+            </details>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
