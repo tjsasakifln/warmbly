@@ -255,6 +255,85 @@ func TestDelegatedFirstTouchApprovesQueuesAuditsAndReplaysOncePostgres(t *testin
 	}
 }
 
+func TestDelegatedFirstTouchWorkerSkipsMismatchedDecisionBoundByCurrentIdempotencyKey(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	entry := f.manifest.Entries[0]
+	firstAccount, err := f.repo.GetAccount(f.ctx, f.orgID, entry.AccountID)
+	if err != nil || firstAccount == nil {
+		t.Fatalf("first account unavailable: account=%+v err=%v", firstAccount, err)
+	}
+	firstCandidate, err := f.repo.GetCandidate(f.ctx, f.orgID, entry.ContactCandidateID)
+	if err != nil || firstCandidate == nil {
+		t.Fatalf("first candidate unavailable: candidate=%+v err=%v", firstCandidate, err)
+	}
+	firstTouchpoint, _, err := f.svc.prepareDelegatedTouchpoint(f.ctx, f.orgID, firstAccount, firstCandidate, f.manifest, entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstTouchpoint.DueAt = time.Now().UTC().Add(-2 * time.Hour)
+	if err := f.repo.UpdateTouchpoint(f.ctx, firstTouchpoint); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reproduce the production drift: the durable key names the current run,
+	// while a historical bad row carries an older evidence_source_run_id.
+	staleManifest := f.manifest
+	staleManifest.BatchID = "stale-key-" + uuid.NewString()
+	staleManifest.SourceRunID = "run-stale-evidence"
+	staleManifest.SourceSnapshotHash = strings.Repeat("e", 64)
+	staleEntry := entry
+	staleEntry.IdempotencyKey = delegatedFirstTouchIdempotencyPrefix + f.manifest.SourceRunID + ":" + firstAccount.ID.String()
+	if err := f.svc.reserveDelegatedBatch(f.ctx, f.orgID, staleManifest, manifestHash(staleManifest)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.persistDelegatedHold(f.ctx, f.orgID, staleManifest, staleEntry, []string{"historical_source_binding_drift"}); err != nil {
+		t.Fatal(err)
+	}
+
+	secondAccount := *firstAccount
+	secondAccount.ID = uuid.New()
+	secondAccount.SourceLeadID = "lead-delegated-next"
+	secondAccount.CNPJ14 = "22333444000155"
+	secondAccount.CNPJRoot = "22333444"
+	secondAccount.SupplierCNPJ14 = secondAccount.CNPJ14
+	secondAccount.SupplierIdentityRef = "cnpj:" + secondAccount.CNPJ14
+	if _, err := f.repo.UpsertAccount(f.ctx, &secondAccount); err != nil {
+		t.Fatal(err)
+	}
+	secondCandidate := *firstCandidate
+	secondCandidate.ID = uuid.New()
+	secondCandidate.AccountID = secondAccount.ID
+	secondCandidate.SourceContactID = "route-delegated-next"
+	secondCandidate.Email = "next@empresa.example"
+	if _, err := f.repo.UpsertCandidate(f.ctx, &secondCandidate); err != nil {
+		t.Fatal(err)
+	}
+	secondEntry := entry
+	secondEntry.IdempotencyKey = delegatedFirstTouchIdempotencyPrefix + f.manifest.SourceRunID + ":" + secondAccount.ID.String()
+	secondEntry.AccountID = secondAccount.ID
+	secondEntry.ContactCandidateID = secondCandidate.ID
+	secondEntry.CNPJ14 = secondAccount.CNPJ14
+	secondEntry.SupplierCNPJ14 = secondAccount.SupplierCNPJ14
+	secondEntry.SupplierIdentityRef = secondAccount.SupplierIdentityRef
+	secondEntry.Recipient = secondCandidate.Email
+	secondTouchpoint, _, err := f.svc.prepareDelegatedTouchpoint(f.ctx, f.orgID, &secondAccount, &secondCandidate, f.manifest, secondEntry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondTouchpoint.DueAt = time.Now().UTC().Add(-time.Hour)
+	if err := f.repo.UpdateTouchpoint(f.ctx, secondTouchpoint); err != nil {
+		t.Fatal(err)
+	}
+
+	touchpointID, accountID, candidateID, err := f.svc.nextDelegatedFirstTouchCandidate(f.ctx, f.orgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if touchpointID != secondTouchpoint.ID || accountID != secondAccount.ID || candidateID != secondCandidate.ID {
+		t.Fatalf("historical key mismatch blocked rolling selection: touchpoint=%s account=%s candidate=%s", touchpointID, accountID, candidateID)
+	}
+}
+
 func TestDelegatedFirstTouchPartialBatchFailureDoesNotBlockEligibleItemPostgres(t *testing.T) {
 	f := newDelegatedPGFixture(t)
 	invalid := f.manifest.Entries[0]
