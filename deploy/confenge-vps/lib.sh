@@ -57,6 +57,8 @@ bind_release_identity() {
 compose_cmd() {
   local root
   root="$(confenge_repo_root)"
+  # Compose maintenance must carry the same immutable decision-audit identity as a full deploy.
+  bind_release_identity "${WARMBLY_RELEASE_SHA:-}"
   local envf="${CONFENGE_VPS_ENV:-$root/deploy/confenge-vps/.env}"
   local -a args
   args=(docker compose)

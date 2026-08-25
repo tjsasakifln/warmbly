@@ -182,6 +182,17 @@ class TestConfengeVpsPack(unittest.TestCase):
         self.assertEqual(proc.returncode, 3)
         self.assertIn("REFUSE: immutable release SHA", proc.stderr)
 
+    def test_compose_maintenance_rebinds_decision_audit_sha(self) -> None:
+        text = (PACK / "lib.sh").read_text(encoding="utf-8")
+        compose_body = text.split("compose_cmd() {", maxsplit=1)[1].split(
+            "\n}", maxsplit=1
+        )[0]
+        identity_bind = compose_body.index(
+            'bind_release_identity "${WARMBLY_RELEASE_SHA:-}"'
+        )
+        docker_compose = compose_body.index("args=(docker compose)")
+        self.assertLess(identity_bind, docker_compose)
+
     def test_release_verifier_requires_decision_audit_sha(self) -> None:
         text = (ROOT / "deploy/verify-release.sh").read_text(encoding="utf-8")
         self.assertIn("CONFENGE_REPOSITORY_SHA", text)
