@@ -32,7 +32,7 @@ type AdvancedOutreachRepository interface {
 	IsRecipientSuppressed(ctx context.Context, organizationID uuid.UUID, email string) (*models.SuppressedRecipient, error)
 	UpsertSuppressedRecipient(ctx context.Context, entry *models.SuppressedRecipient) error
 
-	CreateDeliverabilityEvent(ctx context.Context, event *models.DeliverabilityEvent) error
+	CreateDeliverabilityEvent(ctx context.Context, event *models.DeliverabilityEvent) (bool, error)
 	GetDeliverabilityDashboard(ctx context.Context, organizationID uuid.UUID, from, to time.Time) (*models.DeliverabilityDashboard, error)
 
 	StartTaskExecution(ctx context.Context, taskID uuid.UUID, executionKey string, metadata map[string]interface{}) (bool, error)
@@ -418,10 +418,10 @@ func (r *advancedOutreachRepository) UpsertSuppressedRecipient(ctx context.Conte
 	return err
 }
 
-func (r *advancedOutreachRepository) CreateDeliverabilityEvent(ctx context.Context, event *models.DeliverabilityEvent) error {
+func (r *advancedOutreachRepository) CreateDeliverabilityEvent(ctx context.Context, event *models.DeliverabilityEvent) (bool, error) {
 	metadata, err := marshalJSON(event.Metadata)
 	if err != nil {
-		return err
+		return false, err
 	}
 	query := `
 		INSERT INTO deliverability_events (
@@ -431,7 +431,7 @@ func (r *advancedOutreachRepository) CreateDeliverabilityEvent(ctx context.Conte
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
 		ON CONFLICT (idempotency_key) DO NOTHING
 	`
-	_, err = r.db.Exec(ctx, query,
+	tag, err := r.db.Exec(ctx, query,
 		event.OrganizationID,
 		event.CampaignID,
 		event.TaskID,
@@ -443,7 +443,7 @@ func (r *advancedOutreachRepository) CreateDeliverabilityEvent(ctx context.Conte
 		event.IdempotencyKey,
 		metadata,
 	)
-	return err
+	return tag.RowsAffected() > 0, err
 }
 
 func (r *advancedOutreachRepository) GetDeliverabilityDashboard(ctx context.Context, organizationID uuid.UUID, from, to time.Time) (*models.DeliverabilityDashboard, error) {

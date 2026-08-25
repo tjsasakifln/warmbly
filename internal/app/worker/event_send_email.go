@@ -247,48 +247,41 @@ func (w *WorkerService) sendEmailSuccess(taskID uuid.UUID, messageID, providerMs
 
 // sendEmailError sends a structured error result back to the jobs service
 func (w *WorkerService) sendEmailError(taskID uuid.UUID, emailID uuid.UUID, mail *wmail.WMail, mailErr *errx.MailError) {
-	// Determine the appropriate event type based on error
 	eventType := wmail.DetermineErrorEventType(mailErr)
-
-	// Convert to transport format
 	sendError := wmail.MailErrorToSendError(mailErr)
 
-	result := models.SendEmailResult{
-		TaskID:         taskID,
-		Success:        false,
-		Error:          sendError,
-		LegacyErrorMsg: mailErr.Message,
-		SentAt:         time.Now(),
+	if eventType == models.JobEventTypeEmailFailed {
+		result := models.SendEmailResult{
+			TaskID:         taskID,
+			Success:        false,
+			Error:          sendError,
+			LegacyErrorMsg: mailErr.Message,
+			SentAt:         time.Now(),
+		}
+		if err := w.Produce(eventType, taskID.String(), result); err != nil {
+			log.Error().Err(err).Str("task_id", taskID.String()).Msg("Failed to produce email error event")
+		}
+		return
 	}
 
-	if err := w.Produce(eventType, taskID.String(), result); err != nil {
-		log.Error().Err(err).Str("task_id", taskID.String()).Msg("Failed to produce email error event")
+	userInfo := mailErr.GetUserErrorInfo()
+	errorEvent := models.EmailErrorEvent{
+		TaskID:         taskID.String(),
+		EmailAccountID: emailID.String(),
+		UserID:         mail.UserID.String(),
+		ErrorCode:      string(mailErr.Code),
+		ErrorType:      string(mailErr.Type),
+		ResolveMethod:  string(mailErr.ResolveMethod),
+		Message:        mailErr.Message,
+		UserVisible:    mailErr.IsUserVisible(),
+		UserTitle:      userInfo.Title,
+		UserMessage:    userInfo.Message,
+		ActionRequired: userInfo.ActionRequired,
+		Timestamp:      time.Now().Unix(),
 	}
 
-	// For critical auth/disabled errors, also send a separate error event with full context
-	if eventType == models.JobEventTypeEmailAuthError ||
-		eventType == models.JobEventTypeEmailDisabled ||
-		eventType == models.JobEventTypeEmailRateLimited {
-
-		userInfo := mailErr.GetUserErrorInfo()
-		errorEvent := models.EmailErrorEvent{
-			TaskID:         taskID.String(),
-			EmailAccountID: emailID.String(),
-			UserID:         mail.UserID.String(),
-			ErrorCode:      string(mailErr.Code),
-			ErrorType:      string(mailErr.Type),
-			ResolveMethod:  string(mailErr.ResolveMethod),
-			Message:        mailErr.Message,
-			UserVisible:    mailErr.IsUserVisible(),
-			UserTitle:      userInfo.Title,
-			UserMessage:    userInfo.Message,
-			ActionRequired: userInfo.ActionRequired,
-			Timestamp:      time.Now().Unix(),
-		}
-
-		if err := w.Produce(eventType, emailID.String(), errorEvent); err != nil {
-			log.Error().Err(err).Str("email_id", emailID.String()).Msg("Failed to produce email error event")
-		}
+	if err := w.Produce(eventType, emailID.String(), errorEvent); err != nil {
+		log.Error().Err(err).Str("email_id", emailID.String()).Msg("Failed to produce email error event")
 	}
 }
 

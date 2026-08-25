@@ -43,6 +43,7 @@ type Service interface {
 	// deliverability event. Best-effort: unresolvable bounces are a no-op.
 	RecordInboundBounce(ctx context.Context, emailAccountID uuid.UUID, originalMessageID, failedRecipient, reason string) *errx.Error
 	RecordInboundComplaint(ctx context.Context, emailAccountID uuid.UUID, originalMessageID, recipient, feedbackType string) *errx.Error
+	RecordOutboundBounce(ctx context.Context, taskID uuid.UUID, reason string) *errx.Error
 
 	ShouldSuppressRecipient(ctx context.Context, organizationID uuid.UUID, recipient string) (bool, string, *errx.Error)
 	SuppressRecipient(ctx context.Context, organizationID uuid.UUID, email, reason string, source models.DeliverabilityEventType) *errx.Error
@@ -1124,7 +1125,7 @@ func (s *service) IngestDeliverabilityEvent(ctx context.Context, organizationID 
 		provider = "manual"
 	}
 
-	if err := s.repo.CreateDeliverabilityEvent(ctx, &models.DeliverabilityEvent{
+	created, err := s.repo.CreateDeliverabilityEvent(ctx, &models.DeliverabilityEvent{
 		OrganizationID: organizationID,
 		CampaignID:     req.CampaignID,
 		TaskID:         req.TaskID,
@@ -1135,8 +1136,12 @@ func (s *service) IngestDeliverabilityEvent(ctx context.Context, organizationID 
 		Reason:         req.Reason,
 		IdempotencyKey: idempotencyKey,
 		Metadata:       req.Metadata,
-	}); err != nil {
+	})
+	if err != nil {
 		return toErrx(err)
+	}
+	if !created {
+		return nil
 	}
 
 	settings, err := s.repo.GetOutreachSettings(ctx, organizationID)

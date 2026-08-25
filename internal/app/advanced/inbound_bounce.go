@@ -22,6 +22,55 @@ func (s *service) RecordInboundComplaint(ctx context.Context, emailAccountID uui
 	return s.recordInboundDeliverability(ctx, emailAccountID, originalMessageID, recipient, feedbackType, models.DeliverabilityEventComplaint, "inbound_fbl", "fbl:")
 }
 
+func (s *service) RecordOutboundBounce(ctx context.Context, taskID uuid.UUID, reason string) *errx.Error {
+	if taskID == uuid.Nil {
+		return errx.New(errx.BadRequest, "task_id is required")
+	}
+
+	task, err := s.taskRepo.GetTask(ctx, taskID)
+	if err != nil {
+		return toErrx(err)
+	}
+	if task == nil {
+		return nil
+	}
+
+	account, xerr := s.emailRepo.GetByID(ctx, task.EmailAccountID)
+	if xerr != nil {
+		return xerr
+	}
+	if account == nil || account.OrganizationID == nil {
+		return nil
+	}
+
+	campaignTask, err := s.taskRepo.GetCampaignTask(ctx, taskID)
+	if err != nil {
+		return toErrx(err)
+	}
+	if campaignTask == nil || campaignTask.ContactID == nil {
+		return nil
+	}
+
+	contact, xerr := s.contactRepo.GetByID(ctx, *campaignTask.ContactID)
+	if xerr != nil {
+		return xerr
+	}
+	if contact == nil || strings.TrimSpace(contact.Email) == "" {
+		return nil
+	}
+
+	return s.IngestDeliverabilityEvent(ctx, *account.OrganizationID, &models.IngestDeliverabilityEventRequest{
+		CampaignID:     campaignTask.CampaignID,
+		TaskID:         &task.ID,
+		ContactID:      campaignTask.ContactID,
+		EventType:      models.DeliverabilityEventBounce,
+		Provider:       "worker_smtp",
+		RecipientEmail: contact.Email,
+		Reason:         reason,
+		IdempotencyKey: "smtp_reject:" + taskID.String(),
+	})
+}
+
 func (s *service) recordInboundDeliverability(ctx context.Context, emailAccountID uuid.UUID, originalMessageID, recipient, reason string, eventType models.DeliverabilityEventType, provider, idempotencyPrefix string) *errx.Error {
 	originalMessageID = strings.Trim(strings.TrimSpace(originalMessageID), "<>")
 	if originalMessageID == "" {

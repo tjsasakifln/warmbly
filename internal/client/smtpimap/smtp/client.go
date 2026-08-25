@@ -309,26 +309,37 @@ func (c *Client) sendRaw(ctx context.Context, from string, to []string, data []b
 	}
 
 	if err := client.Mail(from); err != nil {
-		return errx.ErrMailServerUnreachable
+		return classifySMTPFailure(err, false)
 	}
 	for _, r := range to {
 		if err := client.Rcpt(r); err != nil {
-			// A refused RCPT is a recipient problem (bad address, policy
-			// rejection), not a dead server; classifying it as unreachable
-			// hid rejections from bounce accounting.
-			return errx.ErrMailRecipientRejected
+			return classifySMTPFailure(err, true)
 		}
 	}
 	w, err := client.Data()
 	if err != nil {
-		return errx.ErrMailServerUnreachable
+		return classifySMTPFailure(err, false)
 	}
 	if _, err := w.Write(data); err != nil {
-		return errx.ErrMailServerUnreachable
+		return classifySMTPFailure(err, false)
 	}
 	if err := w.Close(); err != nil {
-		return errx.ErrMailServerUnreachable
+		return classifySMTPFailure(err, false)
 	}
 
 	return nil
+}
+
+func classifySMTPFailure(err error, recipientStage bool) *errx.MailError {
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "5.7.515") || strings.Contains(message, "authentication unsuccessful") {
+		return errx.ErrMailAuthenticationFailed
+	}
+	if recipientStage {
+		var smtpErr *textproto.Error
+		if errors.As(err, &smtpErr) && smtpErr.Code >= 500 && smtpErr.Code < 600 {
+			return errx.ErrMailRecipientRejected
+		}
+	}
+	return errx.ErrMailServerUnreachable
 }
