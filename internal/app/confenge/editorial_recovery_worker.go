@@ -110,3 +110,53 @@ func (s *service) deferEditorialRecovery(ctx context.Context, touchpointID uuid.
 			stop_reason=LEFT($3,500), updated_at=now()
 		WHERE id=$1`, touchpointID, time.Now().UTC().Add(delay), reason)
 }
+
+// wakeEligibleEnrichmentRecovery advances stale retry timers only after target and recipient blockers disappear.
+func (s *service) wakeEligibleEnrichmentRecovery(ctx context.Context, orgID uuid.UUID) (int, error) {
+	if s == nil || s.humanGateDB == nil {
+		return 0, nil
+	}
+	result, err := s.humanGateDB.Exec(ctx, `
+		UPDATE outreach_touchpoints t
+		SET editorial_retry_at=now(),
+			editorial_reserved_until=NULL,
+			stop_reason='eligibility restored by feed sync; editorial recovery due now',
+			updated_at=now()
+		FROM outreach_accounts a
+		WHERE t.organization_id=$1
+		  AND t.state='ENRICHMENT_PENDING'
+		  AND (t.editorial_retry_at > now() OR t.editorial_reserved_until IS NOT NULL)
+		  AND a.organization_id=t.organization_id
+		  AND a.id=t.account_id
+		  AND a.target_fit_fresh=true
+		  AND a.target_fit_eligible=true
+		  AND a.blocked=false
+		  AND a.do_not_contact=false
+		  AND EXISTS (
+			SELECT 1
+			FROM outreach_contact_candidates c
+			WHERE c.organization_id=t.organization_id
+			  AND c.account_id=t.account_id
+			  AND c.email <> ''
+			  AND c.blocked=false
+			  AND c.do_not_contact=false
+			  AND c.bounced=false
+			  AND (
+				(c.email_send_ready=true
+				  AND c.mailbox_purpose_send_blocked=false
+				  AND c.verification_status NOT IN (
+					'CANDIDATE_UNVERIFIED','NOT_FOUND','INVALID','BOUNCED','DO_NOT_CONTACT'
+				  ))
+				OR (
+				  c.discovery_json @> '{"controlled_email_eligible":true}'::jsonb
+				  AND upper(COALESCE(c.discovery_json->>'route_class','')) IN (
+					'DIRECT_PERSON','ROLE_OR_DEPARTMENT','GENERIC_COMPANY','PUBLIC_COMPANY_FREEMAIL'
+				  )
+				)
+			  )
+		  )`, orgID)
+	if err != nil {
+		return 0, err
+	}
+	return int(result.RowsAffected()), nil
+}

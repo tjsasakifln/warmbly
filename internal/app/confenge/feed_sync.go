@@ -261,6 +261,14 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 			return result, errx.New(errx.ServiceUnavailable, "feed deactivations failed; snapshot not committed")
 		}
 		result.Deactivations = n
+		woken, wakeErr := s.wakeEligibleEnrichmentRecovery(ctx, orgID)
+		if wakeErr != nil {
+			result.Status = "partial"
+			result.Errors = append(result.Errors, "enrichment recovery wakeup: "+wakeErr.Error())
+			s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "partial", result, false, nil)
+			return result, errx.New(errx.ServiceUnavailable, "feed enrichment recovery wakeup failed; snapshot not committed")
+		}
+		result.Counts["enrichment_recovery_woken"] = woken
 		result.Status = "completed"
 		s.persistFeedSync(ctx, orgID, man.Source.SnapshotHash, man.Source.RunID, uri, "completed", result, true, &generatedAt)
 		return result, nil
