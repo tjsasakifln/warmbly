@@ -1,0 +1,146 @@
+[
+  {
+    "event_id": "evt_extra_sbx_terms_001",
+    "idempotency_key": "idem_extra_sbx_terms_001",
+    "version": "1",
+    "schema": "confenge.commercial_event.v1",
+    "type": "terms_accepted",
+    "occurred_at": "2026-08-17T12:00:00Z",
+    "ingested_at": "2026-08-17T12:00:01Z",
+    "timezone": "America/Sao_Paulo",
+    "organization_id": "org_extra_sandbox",
+    "correlation_id": "corr_extra_sbx_week_2026_34",
+    "lead_id": "lead_extra_sbx_001",
+    "account_public_id": "acc_extra_sbx_001",
+    "opportunity_id": "opp_extra_sbx_001",
+    "proposal_id": "prop_extra_sbx_001",
+    "offer_id": "CFG-DIAG-EXP-v1",
+    "deliverable_id": "deliverable_weekly_sbx_001",
+    "evidence_ref": "evidence_sandbox_fixture_001",
+    "commercial_decision": "WAIT",
+    "responsible": "role_commercial_owner",
+    "deadline": "2026-08-24T20:59:59Z",
+    "next_action": "human_review_commercial_terms",
+    "synthetic": true,
+    "offer": {
+      "offer_id": "CFG-DIAG-EXP-v1"
+    },
+    "capacity": {
+      "state": "approved",
+      "eligibility": "eligible",
+      "units": 1
+    }
+  },
+  {
+    "event_id": "evt_extra_sbx_proposal_001",
+    "idempotency_key": "idem_extra_sbx_proposal_001",
+    "version": "1",
+    "schema": "confenge.commercial_event.v1",
+    "type": "proposal",
+    "occurred_at": "2026-08-17T13:00:00Z",
+    "ingested_at": "2026-08-17T13:00:01Z",
+    "timezone": "America/Sao_Paulo",
+    "organization_id": "org_extra_sandbox",
+    "correlation_id": "corr_extra_sbx_week_2026_34",
+    "lead_id": "lead_extra_sbx_001",
+    "account_public_id": "acc_extra_sbx_001",
+    "opportunity_id": "opp_extra_sbx_001",
+    "proposal_id": "prop_extra_sbx_001",
+    "offer_id": "CFG-DIAG-EXP-v1",
+    "synthetic": true,
+    "offer": {
+      "offer_id": "CFG-DIAG-EXP-v1"
+    }
+  },
+  {
+    "event_id": "evt_extra_sbx_charge_001",
+    "idempotency_key": "idem_extra_sbx_charge_001",
+    "provider_event_id": "asaas_evt_extra_sbx_created_001",
+    "version": "1",
+    "schema": "confenge.commercial_event.v1",
+    "type": "payment_created",
+    "occurred_at": "2026-08-18T14:00:00Z",
+    "ingested_at": "2026-08-18T14:00:01Z",
+    "timezone": "America/Sao_Paulo",
+    "organization_id": "org_extra_sandbox",
+    "correlation_id": "corr_extra_sbx_week_2026_34",
+    "external_reference": "corr_extra_sbx_week_2026_34",
+    "account_public_id": "acc_extra_sbx_001",
+    "opportunity_id": "opp_extra_sbx_001",
+    "proposal_id": "prop_extra_sbx_001",
+    "charge_id": "charge_asaas_sbx_001",
+    "offer_id": "CFG-DIAG-EXP-v1",
+    "synthetic": true,
+    "offer": {
+      "offer_id": "CFG-DIAG-EXP-v1"
+    },
+    "provider": {
+      "provider_payment_id": "charge_asaas_sbx_001",
+      "charge_id": "charge_asaas_sbx_001",
+      "external_reference": "corr_extra_sbx_week_2026_34",
+      "provider_event_id": "asaas_evt_extra_sbx_created_001"
+    },
+    "payment": {
+      "principal_cents": 800000
+    }
+  },
+  {
+    "event_id": "evt_extra_sbx_confirmed_001",
+    "idempotency_key": "idem_extra_sbx_confirmed_001",
+    "provider_event_id": "asaas_evt_extra_sbx_confirmed_001",
+    "version": "1",
+    "schema": "confenge.commercial_event.v1",
+    "type": "payment_confirmed",
+    "occurred_at": "2026-08-19T15:00:00Z",
+    "ingested_at": "2026-08-19T15:00:01Z",
+    "timezone": "America/Sao_Paulo",
+    "organization_id": "org_extra_sandbox",
+    "correlation_id": "corr_extra_sbx_week_2026_34",
+    "external_reference": "corr_extra_sbx_week_2026_34",
+    "account_public_id": "acc_extra_sbx_001",
+    "opportunity_id": "opp_extra_sbx_001",
+    "proposal_id": "prop_extra_sbx_001",
+    "charge_id": "charge_asaas_sbx_001",
+    "offer_id": "CFG-DIAG-EXP-v1",
+    "synthetic": true,
+    "provider": {
+      "provider_payment_id": "charge_asaas_sbx_001",
+      "charge_id": "charge_asaas_sbx_001",
+      "external_reference": "corr_extra_sbx_week_2026_34",
+      "provider_event_id": "asaas_evt_extra_sbx_confirmed_001"
+    },
+    "payment": {
+      "principal_cents": 800000
+    }
+  },
+  {
+    "event_id": "evt_extra_sbx_received_001",
+    "idempotency_key": "idem_extra_sbx_received_001",
+    "provider_event_id": "asaas_evt_extra_sbx_received_001",
+    "version": "1",
+    "schema": "confenge.commercial_event.v1",
+    "type": "payment_received",
+    "occurred_at": "2026-08-20T16:00:00Z",
+    "ingested_at": "2026-08-20T16:00:01Z",
+    "timezone": "America/Sao_Paulo",
+    "organization_id": "org_extra_sandbox",
+    "correlation_id": "corr_extra_sbx_week_2026_34",
+    "external_reference": "corr_extra_sbx_week_2026_34",
+    "account_public_id": "acc_extra_sbx_001",
+    "opportunity_id": "opp_extra_sbx_001",
+    "proposal_id": "prop_extra_sbx_001",
+    "charge_id": "charge_asaas_sbx_001",
+    "payment_id": "payment_asaas_sbx_001",
+    "offer_id": "CFG-DIAG-EXP-v1",
+    "synthetic": true,
+    "provider": {
+      "provider_payment_id": "charge_asaas_sbx_001",
+      "charge_id": "charge_asaas_sbx_001",
+      "external_reference": "corr_extra_sbx_week_2026_34",
+      "provider_event_id": "asaas_evt_extra_sbx_received_001"
+    },
+    "payment": {
+      "principal_cents": 800000
+    }
+  }
+]

@@ -177,6 +177,29 @@ type ProviderRefs struct {
 	ExternalRef     string `json:"external_reference,omitempty"`
 	ProviderEventID string `json:"provider_event_id,omitempty"`
 	PaymentMethod   string `json:"payment_method,omitempty"`
+	ChargeID        string `json:"charge_id,omitempty"`
+}
+
+// CanonicalCommercialIdentity binds opaque IDs only. Display names are never keys.
+type CanonicalCommercialIdentity struct {
+	CorrelationID string `json:"correlation_id"`
+	AccountID     string `json:"account_id"`
+	OpportunityID string `json:"opportunity_id"`
+	OfferID       string `json:"offer_id"`
+	ProposalID    string `json:"proposal_id"`
+	ChargeID      string `json:"charge_id"`
+	PaymentID     string `json:"payment_id"`
+}
+
+// CommercialControlState is explicit human/operational control evidence.
+type CommercialControlState struct {
+	LatestDeliverableID string     `json:"latest_deliverable_id,omitempty"`
+	LatestEvidenceRef   string     `json:"latest_evidence_ref,omitempty"`
+	LatestObservedAt    *time.Time `json:"latest_observed_at,omitempty"`
+	Decision            string     `json:"decision,omitempty"`
+	Responsible         string     `json:"responsible,omitempty"`
+	Deadline            *time.Time `json:"deadline,omitempty"`
+	NextAction          string     `json:"next_action,omitempty"`
 }
 
 // PaymentState keeps created objects distinct from received revenue.
@@ -247,6 +270,8 @@ type GateStates struct {
 type CommercialReceipt struct {
 	EventID         string    `json:"event_id"`
 	Type            string    `json:"type"`
+	ChargeID        string    `json:"charge_id,omitempty"`
+	PaymentID       string    `json:"payment_id,omitempty"`
 	RawType         string    `json:"raw_type,omitempty"`
 	ProviderEventID string    `json:"provider_event_id,omitempty"`
 	ExternalRef     string    `json:"external_reference,omitempty"`
@@ -272,20 +297,21 @@ type CommercialReceipt struct {
 
 // CommercialState is derived canonical commercial state on the existing chain.
 type CommercialState struct {
-	Offer          OfferSnapshot       `json:"offer,omitempty"`
-	Capacity       CapacitySnapshot    `json:"capacity,omitempty"`
-	Provider       ProviderRefs        `json:"provider,omitempty"`
-	Payment        PaymentState        `json:"payment,omitempty"`
-	Subscription   SubscriptionState   `json:"subscription,omitempty"`
-	Delivery       DeliveryState       `json:"delivery,omitempty"`
-	Gates          GateStates          `json:"gates,omitempty"`
-	Timeline       []CommercialReceipt `json:"timeline,omitempty"`
-	CompanyRef     string              `json:"company_ref,omitempty"`
-	CNPJHash       string              `json:"cnpj_hash,omitempty"`
-	QueryClass     string              `json:"query_class,omitempty"`
-	ReferrerClass  string              `json:"referrer_class,omitempty"`
-	ManualTouches  int                 `json:"manual_touches,omitempty"`
-	HumanCorrected bool                `json:"human_corrected,omitempty"`
+	Offer          OfferSnapshot          `json:"offer,omitempty"`
+	Capacity       CapacitySnapshot       `json:"capacity,omitempty"`
+	Provider       ProviderRefs           `json:"provider,omitempty"`
+	Payment        PaymentState           `json:"payment,omitempty"`
+	Subscription   SubscriptionState      `json:"subscription,omitempty"`
+	Delivery       DeliveryState          `json:"delivery,omitempty"`
+	Control        CommercialControlState `json:"control,omitempty"`
+	Gates          GateStates             `json:"gates,omitempty"`
+	Timeline       []CommercialReceipt    `json:"timeline,omitempty"`
+	CompanyRef     string                 `json:"company_ref,omitempty"`
+	CNPJHash       string                 `json:"cnpj_hash,omitempty"`
+	QueryClass     string                 `json:"query_class,omitempty"`
+	ReferrerClass  string                 `json:"referrer_class,omitempty"`
+	ManualTouches  int                    `json:"manual_touches,omitempty"`
+	HumanCorrected bool                   `json:"human_corrected,omitempty"`
 }
 
 // TransitionResult is the shipped commercial transition outcome.
@@ -401,34 +427,44 @@ type EarlyExitResult struct {
 
 // OperatorRequest is the authenticated manual-first write.
 type OperatorRequest struct {
-	Action           string           `json:"action"`
-	LeadID           string           `json:"lead_id,omitempty"`
-	ReceiptID        string           `json:"receipt_id,omitempty"`
-	CorrelationID    string           `json:"correlation_id,omitempty"`
-	IdempotencyKey   string           `json:"idempotency_key,omitempty"`
-	EventID          string           `json:"event_id,omitempty"`
-	ActorRef         string           `json:"actor_ref,omitempty"`
-	EvidenceRef      string           `json:"evidence_ref,omitempty"`
-	EvidenceHash     string           `json:"evidence_hash,omitempty"`
-	Offer            OfferSnapshot    `json:"offer,omitempty"`
-	Capacity         CapacitySnapshot `json:"capacity,omitempty"`
-	Provider         ProviderRefs     `json:"provider,omitempty"`
-	Payment          PaymentState     `json:"payment,omitempty"`
-	Gates            GateStates       `json:"gates,omitempty"`
-	CompanyRef       string           `json:"company_ref,omitempty"`
-	CNPJ             string           `json:"cnpj,omitempty"`
-	Source           string           `json:"source,omitempty"`
-	AssetID          string           `json:"asset_id,omitempty"`
-	CTAID            string           `json:"cta_id,omitempty"`
-	Query            string           `json:"query,omitempty"`
-	Referrer         string           `json:"referrer,omitempty"`
-	RouteFamily      string           `json:"route_family,omitempty"`
-	OccurredAt       time.Time        `json:"occurred_at,omitempty"`
-	HumanConfirmed   bool             `json:"human_confirmed,omitempty"`
-	Correction       bool             `json:"correction,omitempty"`
-	CorrectionNote   string           `json:"correction_note,omitempty"`
-	Synthetic        bool             `json:"synthetic,omitempty"`
-	ClockPauseReason string           `json:"clock_pause_reason,omitempty"`
+	Action             string           `json:"action"`
+	LeadID             string           `json:"lead_id,omitempty"`
+	ReceiptID          string           `json:"receipt_id,omitempty"`
+	CorrelationID      string           `json:"correlation_id,omitempty"`
+	AccountPublicID    string           `json:"account_public_id,omitempty"`
+	OpportunityID      string           `json:"opportunity_id,omitempty"`
+	ProposalID         string           `json:"proposal_id,omitempty"`
+	ChargeID           string           `json:"charge_id,omitempty"`
+	PaymentID          string           `json:"payment_id,omitempty"`
+	IdempotencyKey     string           `json:"idempotency_key,omitempty"`
+	EventID            string           `json:"event_id,omitempty"`
+	ActorRef           string           `json:"actor_ref,omitempty"`
+	EvidenceRef        string           `json:"evidence_ref,omitempty"`
+	EvidenceHash       string           `json:"evidence_hash,omitempty"`
+	DeliverableID      string           `json:"deliverable_id,omitempty"`
+	CommercialDecision string           `json:"commercial_decision,omitempty"`
+	Responsible        string           `json:"responsible,omitempty"`
+	Deadline           *time.Time       `json:"deadline,omitempty"`
+	NextAction         string           `json:"next_action,omitempty"`
+	Offer              OfferSnapshot    `json:"offer,omitempty"`
+	Capacity           CapacitySnapshot `json:"capacity,omitempty"`
+	Provider           ProviderRefs     `json:"provider,omitempty"`
+	Payment            PaymentState     `json:"payment,omitempty"`
+	Gates              GateStates       `json:"gates,omitempty"`
+	CompanyRef         string           `json:"company_ref,omitempty"`
+	CNPJ               string           `json:"cnpj,omitempty"`
+	Source             string           `json:"source,omitempty"`
+	AssetID            string           `json:"asset_id,omitempty"`
+	CTAID              string           `json:"cta_id,omitempty"`
+	Query              string           `json:"query,omitempty"`
+	Referrer           string           `json:"referrer,omitempty"`
+	RouteFamily        string           `json:"route_family,omitempty"`
+	OccurredAt         time.Time        `json:"occurred_at,omitempty"`
+	HumanConfirmed     bool             `json:"human_confirmed,omitempty"`
+	Correction         bool             `json:"correction,omitempty"`
+	CorrectionNote     string           `json:"correction_note,omitempty"`
+	Synthetic          bool             `json:"synthetic,omitempty"`
+	ClockPauseReason   string           `json:"clock_pause_reason,omitempty"`
 }
 
 // OperatorResult is the manual-first outcome.

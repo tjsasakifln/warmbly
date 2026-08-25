@@ -9,9 +9,16 @@ import (
 )
 
 // ChainIdentity is the durable idempotency key for one observed path.
-// lead_id wins when present so a replay of the same inbound receipt
-// cannot open a second chain.
+// Inbound uses lead_id; commercial events opt into correlation-first identity.
 func ChainIdentity(k JoinKeys) string {
+	if k.PreferCorrelation {
+		if id := strings.TrimSpace(k.CorrelationID); id != "" {
+			return "corr:" + id
+		}
+		if id := strings.TrimSpace(k.ExternalReference); id != "" {
+			return "ext:" + id
+		}
+	}
 	if id := strings.TrimSpace(k.LeadID); id != "" {
 		return "lead:" + id
 	}
@@ -21,14 +28,31 @@ func ChainIdentity(k JoinKeys) string {
 	if id := strings.TrimSpace(k.ActionID); id != "" {
 		return "action:" + id
 	}
+	if !k.PreferCorrelation {
+		if id := strings.TrimSpace(k.IdempotencyKey); id != "" {
+			return "idem:" + id
+		}
+		if id := strings.TrimSpace(k.ExternalReference); id != "" {
+			return "ext:" + id
+		}
+		if id := strings.TrimSpace(k.CorrelationID); id != "" {
+			return "corr:" + id
+		}
+	}
+	if id := strings.TrimSpace(k.OpportunityID); id != "" {
+		return "opportunity:" + id
+	}
+	if id := strings.TrimSpace(k.ProposalID); id != "" {
+		return "proposal:" + id
+	}
+	if id := strings.TrimSpace(k.ChargeID); id != "" {
+		return "charge:" + id
+	}
+	if id := strings.TrimSpace(k.PaymentID); id != "" {
+		return "payment:" + id
+	}
 	if id := strings.TrimSpace(k.IdempotencyKey); id != "" {
 		return "idem:" + id
-	}
-	if id := strings.TrimSpace(k.ExternalReference); id != "" {
-		return "ext:" + id
-	}
-	if id := strings.TrimSpace(k.CorrelationID); id != "" {
-		return "corr:" + id
 	}
 	if id := strings.TrimSpace(k.EventID); id != "" {
 		return "event:" + id
@@ -51,6 +75,10 @@ func MetricKey(k JoinKeys) string {
 		strings.TrimSpace(k.LeadID),
 		strings.TrimSpace(k.ReceiptID),
 		strings.TrimSpace(k.AccountID),
+		strings.TrimSpace(k.OpportunityID),
+		strings.TrimSpace(k.ProposalID),
+		strings.TrimSpace(k.ChargeID),
+		strings.TrimSpace(k.PaymentID),
 		strings.TrimSpace(k.SourceLeadID),
 		strings.TrimSpace(k.PersonID),
 		strings.Join(events, ","),
@@ -100,13 +128,17 @@ func Reconcile(store Store, in ObservedFacts) JoinResult {
 	now := time.Now().UTC()
 	if store == nil {
 		ex := Exception{
-			Code:       ExceptionUnavailable,
-			Reason:     "commercial intelligence store unavailable",
-			NextAction: "retry with the same IDs; do not invent a chain",
-			Owner:      ExceptionOwner(ExceptionUnavailable),
-			At:         now,
-			OpenedAt:   now,
-			Held:       true,
+			OrganizationID: in.Keys.OrganizationID,
+			Code:           ExceptionUnavailable,
+			CodeVersion:    ExceptionCodeVersion,
+			Reason:         "commercial intelligence store unavailable",
+			NextAction:     "retry with the same IDs; do not invent a chain",
+			Owner:          ExceptionOwner(ExceptionUnavailable),
+			At:             now,
+			OpenedAt:       now,
+			Held:           true,
+			Synthetic:      in.Synthetic,
+			RetryState:     "pending",
 		}
 		return JoinResult{Exceptions: []Exception{ex}, Held: true}
 	}
@@ -114,7 +146,26 @@ func Reconcile(store Store, in ObservedFacts) JoinResult {
 	in.Keys.RouteFamily = normalizeFamily(in.Keys.RouteFamily)
 	identity := ChainIdentity(in.Keys)
 	metric := MetricKey(in.Keys)
-	existing, _ := store.GetChain(in.Keys.OrganizationID, identity)
+	existing, err := store.GetChain(in.Keys.OrganizationID, identity)
+	if err != nil {
+		ex := Exception{
+			OrganizationID: in.Keys.OrganizationID,
+			Code:           ExceptionUnavailable,
+			CodeVersion:    ExceptionCodeVersion,
+			Reason:         "get chain failed: " + err.Error(),
+			NextAction:     "retry with the same IDs",
+			Identity:       identity,
+			MetricKey:      metric,
+			Owner:          ExceptionOwner(ExceptionUnavailable),
+			At:             now,
+			OpenedAt:       now,
+			Held:           true,
+			Synthetic:      in.Synthetic,
+			RetryState:     "pending",
+		}
+		_ = store.PutException(ex)
+		return JoinResult{Exceptions: []Exception{ex}, Held: true}
+	}
 	exceptions := ClassifyExceptions(in, existing)
 
 	closeBlocked := false
@@ -147,16 +198,43 @@ func Reconcile(store Store, in ObservedFacts) JoinResult {
 		}
 		if err := store.UpdateChain(merged); err != nil {
 			ex := Exception{
-				Code:       ExceptionUnavailable,
-				Reason:     "update chain failed: " + err.Error(),
-				NextAction: "retry with the same IDs",
-				Identity:   identity,
-				MetricKey:  metric,
-				At:         now,
+				OrganizationID: in.Keys.OrganizationID,
+				Code:           ExceptionUnavailable,
+				CodeVersion:    ExceptionCodeVersion,
+				Reason:         "update chain failed: " + err.Error(),
+				NextAction:     "retry with the same IDs",
+				Identity:       identity,
+				MetricKey:      metric,
+				Owner:          ExceptionOwner(ExceptionUnavailable),
+				At:             now,
+				OpenedAt:       now,
+				Held:           true,
+				Synthetic:      in.Synthetic,
+				RetryState:     "pending",
 			}
+			_ = store.PutException(ex)
 			return JoinResult{Chain: *existing, Exceptions: []Exception{ex}, Held: true}
 		}
-		saved, _ := store.GetChain(in.Keys.OrganizationID, identity)
+		saved, err := store.GetChain(in.Keys.OrganizationID, identity)
+		if err != nil {
+			ex := Exception{
+				OrganizationID: in.Keys.OrganizationID,
+				Code:           ExceptionUnavailable,
+				CodeVersion:    ExceptionCodeVersion,
+				Reason:         "get updated chain failed: " + err.Error(),
+				NextAction:     "retry with the same IDs",
+				Identity:       identity,
+				MetricKey:      metric,
+				Owner:          ExceptionOwner(ExceptionUnavailable),
+				At:             now,
+				OpenedAt:       now,
+				Held:           true,
+				Synthetic:      in.Synthetic,
+				RetryState:     "pending",
+			}
+			_ = store.PutException(ex)
+			return JoinResult{Chain: merged, Exceptions: append(exceptions, ex), Held: true}
+		}
 		if saved == nil {
 			saved = &merged
 		}
@@ -173,13 +251,21 @@ func Reconcile(store Store, in ObservedFacts) JoinResult {
 	saved, created, err := store.PutChain(chain)
 	if err != nil {
 		ex := Exception{
-			Code:       ExceptionUnavailable,
-			Reason:     "put chain failed: " + err.Error(),
-			NextAction: "retry with the same IDs",
-			Identity:   identity,
-			MetricKey:  metric,
-			At:         now,
+			OrganizationID: in.Keys.OrganizationID,
+			Code:           ExceptionUnavailable,
+			CodeVersion:    ExceptionCodeVersion,
+			Reason:         "put chain failed: " + err.Error(),
+			NextAction:     "retry with the same IDs",
+			Identity:       identity,
+			MetricKey:      metric,
+			Owner:          ExceptionOwner(ExceptionUnavailable),
+			At:             now,
+			OpenedAt:       now,
+			Held:           true,
+			Synthetic:      in.Synthetic,
+			RetryState:     "pending",
 		}
+		_ = store.PutException(ex)
 		return JoinResult{Exceptions: []Exception{ex}, Held: true}
 	}
 	persistExceptions(store, exceptions)
@@ -235,6 +321,10 @@ func buildChain(in ObservedFacts, identity, metric string, now time.Time, closeB
 		ReceiptID:         idOrUnknown(k.ReceiptID),
 		CorrelationID:     idOrUnknown(k.CorrelationID),
 		AccountID:         idOrUnknown(k.AccountID),
+		OpportunityID:     idOrUnknown(k.OpportunityID),
+		ProposalID:        idOrUnknown(k.ProposalID),
+		ChargeID:          idOrUnknown(k.ChargeID),
+		PaymentID:         idOrUnknown(k.PaymentID),
 		PersonID:          idOrUnknown(k.PersonID),
 		ActionID:          idOrUnknown(k.ActionID),
 		OutcomeID:         idOrUnknown(k.OutcomeID),
@@ -328,6 +418,14 @@ func mergeIntoChain(existing Chain, in ObservedFacts, closeBlocked, held bool) (
 	fill(&merged.ReceiptID, in.Keys.ReceiptID)
 	fill(&merged.Keys.CorrelationID, in.Keys.CorrelationID)
 	fill(&merged.CorrelationID, in.Keys.CorrelationID)
+	fill(&merged.Keys.OpportunityID, in.Keys.OpportunityID)
+	fill(&merged.OpportunityID, in.Keys.OpportunityID)
+	fill(&merged.Keys.ProposalID, in.Keys.ProposalID)
+	fill(&merged.ProposalID, in.Keys.ProposalID)
+	fill(&merged.Keys.ChargeID, in.Keys.ChargeID)
+	fill(&merged.ChargeID, in.Keys.ChargeID)
+	fill(&merged.Keys.PaymentID, in.Keys.PaymentID)
+	fill(&merged.PaymentID, in.Keys.PaymentID)
 	fill(&merged.Keys.PersonID, in.Keys.PersonID)
 	fill(&merged.PersonID, in.Keys.PersonID)
 	fill(&merged.Keys.AssetID, in.Keys.AssetID)

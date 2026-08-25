@@ -106,6 +106,9 @@ func NormalizeProducerCommercialEvent(ev CommercialEvent) CommercialEvent {
 	if ev.Offer.AmountCents == 0 && ev.ProducerAmountCents != 0 {
 		ev.Offer.AmountCents = ev.ProducerAmountCents
 	}
+	if ev.Payment.PrincipalCents == 0 && ev.ProducerAmountCents > 0 && hasFinancialType(ev.Type) {
+		ev.Payment.PrincipalCents = ev.ProducerAmountCents
+	}
 	if strings.TrimSpace(ev.Offer.Currency) == "" {
 		ev.Offer.Currency = firstNonEmpty(ev.ProducerCurrency, CurrencyBRL)
 	}
@@ -120,6 +123,16 @@ func NormalizeProducerCommercialEvent(ev CommercialEvent) CommercialEvent {
 	}
 	if strings.TrimSpace(ev.Provider.ProviderEventID) == "" {
 		ev.Provider.ProviderEventID = ev.ProviderEventID
+	}
+	if strings.TrimSpace(ev.CorrelationID) == "" && isCommercialEvent(ev.Type) {
+		ev.CorrelationID = firstNonEmpty(ev.ExternalReference, ev.Provider.ExternalRef,
+			ev.ChargeID, ev.Provider.ChargeID, ev.Provider.PaymentID)
+	}
+	if strings.TrimSpace(ev.ChargeID) == "" {
+		ev.ChargeID = firstNonEmpty(ev.Provider.ChargeID, ev.Provider.PaymentID)
+	}
+	if ev.Type == EventPaymentReceived && strings.TrimSpace(ev.PaymentID) == "" {
+		ev.PaymentID = ev.Provider.PaymentID
 	}
 	if strings.TrimSpace(ev.RawProviderStatus) == "" {
 		ev.RawProviderStatus = ev.ProducerCanonicalStatus

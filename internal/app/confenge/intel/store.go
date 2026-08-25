@@ -1,6 +1,7 @@
 package intel
 
 import (
+	"errors"
 	"sort"
 	"strings"
 	"sync"
@@ -270,6 +271,14 @@ func (m *MemoryStore) PutEventReceipt(r EventReceipt) (EventReceipt, bool, error
 	}
 	key := receiptKey(r.OrganizationID, firstNonEmpty(r.ProviderEventID, r.EventID))
 	if existing, ok := m.receipts[key]; ok {
+		if strings.TrimSpace(r.Identity) != "" {
+			if existing.Identity != "" && existing.Identity != r.Identity {
+				return r, false, errors.New("provider receipt already bound to another chain")
+			}
+			existing.Identity = r.Identity
+			existing.EventID = firstNonEmpty(existing.EventID, r.EventID)
+			m.receipts[key] = existing
+		}
 		return existing, false, nil
 	}
 	if strings.TrimSpace(r.ID) == "" {
@@ -297,19 +306,20 @@ func (m *MemoryStore) GetEventReceipt(orgID, providerEventID string) (*EventRece
 	return &cp, nil
 }
 
-func (m *MemoryStore) MarkReceiptProcessed(orgID, providerEventID string) {
+func (m *MemoryStore) MarkReceiptProcessed(orgID, providerEventID string) error {
 	if m == nil {
-		return
+		return errUnavailable("mark receipt")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := receiptKey(orgID, providerEventID)
 	r, ok := m.receipts[key]
 	if !ok {
-		return
+		return errors.New("provider receipt not found")
 	}
 	r.Processed = true
 	m.receipts[key] = r
+	return nil
 }
 
 type unavailableError struct{ op string }

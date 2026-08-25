@@ -81,6 +81,14 @@ func ApplyCommercialTransition(existing *Chain, ev CommercialEvent) TransitionRe
 		}
 		ev.CNPJ = ""
 	}
+	if kind, have, incoming := conflictingCanonicalIdentity(existing, ev); kind != "" {
+		add(ExceptionConflictingExternal,
+			"incoming "+kind+" disagrees with the first canonical identity",
+			"hold; keep "+have+" and review "+incoming, true)
+		res.Rejected = true
+		res.Reason = "conflicting_canonical_identity"
+		return res
+	}
 
 	st := CommercialState{}
 	if existing != nil {
@@ -176,6 +184,14 @@ func ApplyCommercialTransition(existing *Chain, ev CommercialEvent) TransitionRe
 			RetryState:     "pending",
 		})
 	case EventPaymentReceived:
+		if firstNonEmpty(ev.ProviderEventID, ev.Provider.ProviderEventID) != "" &&
+			ev.Payment.ReceivedCents <= 0 && ev.Payment.PrincipalCents <= 0 {
+			add(ExceptionImpossibleCommercial, "provider payment_received has no positive observed amount", "hold; reconcile the provider payload before applying revenue", true)
+			res.Held = true
+			res.Rejected = true
+			res.Reason = "missing_provider_amount"
+			return res
+		}
 		if blocked, why := paymentFinancialGate(existing, ev, st); blocked {
 			add(ExceptionOutOfOrder, why, "hold; do not apply received revenue", true)
 			res.Held = true
@@ -189,6 +205,9 @@ func ApplyCommercialTransition(existing *Chain, ev CommercialEvent) TransitionRe
 		st.Payment.ReceivedAt = &t
 		st.Payment.LastPaymentAt = &t
 		inc := ev.Payment.ReceivedCents
+		if inc <= 0 {
+			inc = ev.Payment.PrincipalCents
+		}
 		if inc <= 0 {
 			inc = ev.Offer.AmountCents
 		}
@@ -308,8 +327,10 @@ func ApplyCommercialTransition(existing *Chain, ev CommercialEvent) TransitionRe
 			t := ev.OccurredAt
 			st.Delivery.OneOffAcceptedAt = &t
 		}
-		if existing != nil && offerDrift(existing.Commercial.Offer, st.Offer) {
+		if existing != nil && offerInputDrift(existing.Commercial.Offer, ev.Offer) {
 			add(ExceptionTermsDrift, "incoming terms/price/version disagrees with the first snapshot", "keep the first snapshot; do not overwrite", true)
+			st.Offer = existing.Commercial.Offer
+			st.Payment.ContractedCents = existing.Commercial.Payment.ContractedCents
 			res.Held = true
 		}
 	case EventOfferSelected, EventOfferViewed, EventEligibilitySubmitted, EventCapacityApproved, EventCapacityReleased:
@@ -428,6 +449,7 @@ func mergeCommercial(dst, src CommercialState, ev CommercialEvent) CommercialSta
 	dst.Capacity = mergeCapacity(dst.Capacity, src.Capacity)
 	dst.Provider = mergeProvider(dst.Provider, src.Provider)
 	dst.Payment = mergePayment(dst.Payment, src.Payment)
+	dst.Control = mergeControl(dst.Control, ev)
 	dst.Gates = mergeGates(dst.Gates, src.Gates)
 	if dst.CompanyRef == "" {
 		dst.CompanyRef = src.CompanyRef
@@ -472,6 +494,67 @@ func mergeCommercial(dst, src CommercialState, ev CommercialEvent) CommercialSta
 		}
 	}
 	return dst
+}
+
+func mergeControl(dst CommercialControlState, ev CommercialEvent) CommercialControlState {
+	if dst.LatestObservedAt != nil && ev.OccurredAt.Before(*dst.LatestObservedAt) {
+		return dst
+	}
+	changed := false
+	if value := strings.TrimSpace(ev.DeliverableID); value != "" {
+		dst.LatestDeliverableID = value
+		changed = true
+	}
+	if value := strings.TrimSpace(ev.EvidenceRef); value != "" {
+		dst.LatestEvidenceRef = value
+		changed = true
+	}
+	if value := normalizeDecision(ev.CommercialDecision); value != Unknown {
+		dst.Decision = value
+		changed = true
+	}
+	if value := strings.TrimSpace(ev.Responsible); value != "" {
+		dst.Responsible = value
+		changed = true
+	}
+	if ev.Deadline != nil && !ev.Deadline.IsZero() {
+		t := ev.Deadline.UTC()
+		dst.Deadline = &t
+		changed = true
+	}
+	if value := strings.TrimSpace(ev.NextAction); value != "" {
+		dst.NextAction = value
+		changed = true
+	}
+	if changed {
+		t := ev.OccurredAt.UTC()
+		dst.LatestObservedAt = &t
+	}
+	return dst
+}
+
+func conflictingCanonicalIdentity(existing *Chain, ev CommercialEvent) (string, string, string) {
+	if existing == nil {
+		return "", "", ""
+	}
+	have := CanonicalIdentityOf(*existing)
+	pairs := []struct {
+		kind     string
+		current  string
+		incoming string
+	}{
+		{kind: "correlation_id", current: have.CorrelationID, incoming: firstCanonicalID(ev.CorrelationID, ev.ExternalReference, ev.Provider.ExternalRef)},
+		{kind: "account_id", current: have.AccountID, incoming: firstCanonicalID(ev.AccountPublicID)},
+		{kind: "opportunity_id", current: have.OpportunityID, incoming: firstCanonicalID(ev.OpportunityID)},
+		{kind: "offer_id", current: have.OfferID, incoming: firstCanonicalID(ev.OfferID, ev.Offer.OfferID)},
+		{kind: "proposal_id", current: have.ProposalID, incoming: firstCanonicalID(ev.ProposalID)},
+	}
+	for _, pair := range pairs {
+		if pair.current != Unknown && pair.incoming != Unknown && pair.current != pair.incoming {
+			return pair.kind, pair.current, pair.incoming
+		}
+	}
+	return "", "", ""
 }
 
 func mergeOffer(dst, src OfferSnapshot) OfferSnapshot {
@@ -624,6 +707,9 @@ func mergeProvider(dst, src ProviderRefs) ProviderRefs {
 	if dst.PaymentMethod == "" {
 		dst.PaymentMethod = src.PaymentMethod
 	}
+	if dst.ChargeID == "" {
+		dst.ChargeID = firstNonEmpty(src.ChargeID, src.PaymentID)
+	}
 	return dst
 }
 
@@ -699,6 +785,9 @@ func copyCommercialKeys(in *ObservedFacts, st CommercialState) {
 	if in.Keys.ProviderEventID == "" {
 		in.Keys.ProviderEventID = st.Provider.ProviderEventID
 	}
+	if in.Keys.ChargeID == "" {
+		in.Keys.ChargeID = firstNonEmpty(st.Provider.ChargeID, st.Provider.PaymentID)
+	}
 	if in.Keys.CompanyRef == "" {
 		in.Keys.CompanyRef = st.CompanyRef
 	}
@@ -746,7 +835,12 @@ func paymentFinancialGate(existing *Chain, ev CommercialEvent, st CommercialStat
 		return true, "payment without prior offer/capacity/checkout snapshot"
 	}
 	if !hasCheckoutOn(existing, ev, st) {
-		return true, "payment before checkout"
+		providerCharge := firstNonEmpty(ev.ChargeID, ev.Provider.ChargeID, ev.Provider.PaymentID,
+			st.Provider.ChargeID, st.Provider.PaymentID)
+		providerCorrelation := firstNonEmpty(ev.CorrelationID, ev.ExternalReference, ev.Provider.ExternalRef)
+		if providerCharge == "" || providerCorrelation == "" {
+			return true, "payment before checkout and without a stable provider charge correlation"
+		}
 	}
 	return false, ""
 }
@@ -782,23 +876,29 @@ func applySLA(st *CommercialState) {
 	}
 }
 
-func offerDrift(a, b OfferSnapshot) bool {
-	if a.OfferID == "" || b.OfferID == "" {
-		return false
-	}
-	if a.OfferID != b.OfferID {
+func offerInputDrift(frozen, incoming OfferSnapshot) bool {
+	if incoming.OfferID != "" && frozen.OfferID != incoming.OfferID {
 		return true
 	}
-	if a.OfferVersion != "" && b.OfferVersion != "" && a.OfferVersion != b.OfferVersion {
+	if incoming.OfferVersion != "" && frozen.OfferVersion != incoming.OfferVersion {
 		return true
 	}
-	if a.TermsVersion != "" && b.TermsVersion != "" && a.TermsVersion != b.TermsVersion {
+	if incoming.TermsVersion != "" && frozen.TermsVersion != incoming.TermsVersion {
 		return true
 	}
-	if a.AmountCents > 0 && b.AmountCents > 0 && a.AmountCents != b.AmountCents {
+	if incoming.TermsHash != "" && frozen.TermsHash != incoming.TermsHash {
 		return true
 	}
-	if a.SnapshotHash != "" && b.SnapshotHash != "" && a.SnapshotHash != b.SnapshotHash {
+	if incoming.AmountCents != 0 && frozen.AmountCents != incoming.AmountCents {
+		return true
+	}
+	if incoming.Currency != "" && frozen.Currency != incoming.Currency {
+		return true
+	}
+	if incoming.BillingMode != "" && frozen.BillingMode != incoming.BillingMode {
+		return true
+	}
+	if incoming.TotalCommitmentCents != 0 && frozen.TotalCommitmentCents != incoming.TotalCommitmentCents {
 		return true
 	}
 	return false
@@ -843,11 +943,12 @@ func checkoutTime(existing *Chain) time.Time {
 
 func appendReceipt(tl []CommercialReceipt, ev CommercialEvent, typ string) []CommercialReceipt {
 	id := strings.TrimSpace(ev.EventID)
+	providerEventID := firstNonEmpty(ev.ProviderEventID, ev.Provider.ProviderEventID)
 	for _, r := range tl {
-		if r.EventID == id && id != "" {
+		if providerEventID == "" && r.EventID == id && id != "" {
 			return tl
 		}
-		if ev.ProviderEventID != "" && r.ProviderEventID == ev.ProviderEventID {
+		if providerEventID != "" && r.ProviderEventID == providerEventID {
 			return tl
 		}
 	}
@@ -858,8 +959,10 @@ func appendReceipt(tl []CommercialReceipt, ev CommercialEvent, typ string) []Com
 	return append(tl, CommercialReceipt{
 		EventID:         id,
 		Type:            typ,
+		ChargeID:        knownID(firstCanonicalID(ev.ChargeID, ev.Provider.ChargeID, ev.Provider.PaymentID)),
+		PaymentID:       knownID(firstCanonicalID(ev.PaymentID)),
 		RawType:         ev.RawEventType,
-		ProviderEventID: firstNonEmpty(ev.ProviderEventID, ev.Provider.ProviderEventID),
+		ProviderEventID: providerEventID,
 		ExternalRef:     firstNonEmpty(ev.ExternalReference, ev.Provider.ExternalRef),
 		OccurredAt:      ev.OccurredAt,
 		IngestedAt:      ing,

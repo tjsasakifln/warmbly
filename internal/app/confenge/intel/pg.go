@@ -51,11 +51,6 @@ func (s *PGStore) PutChain(c Chain) (Chain, bool, error) {
 		return c, false, errors.New("intel pg store unavailable")
 	}
 	org := firstNonEmpty(c.Keys.OrganizationID, s.orgID)
-	if existing, err := s.GetChain(org, c.Identity); err != nil {
-		return c, false, err
-	} else if existing != nil {
-		return *existing, false, nil
-	}
 	if c.CreatedAt.IsZero() {
 		c.CreatedAt = time.Now().UTC()
 	}
@@ -63,7 +58,13 @@ func (s *PGStore) PutChain(c Chain) (Chain, bool, error) {
 	if err != nil {
 		return c, false, err
 	}
-	_, err = s.db.Exec(context.Background(), `
+	ctx := context.Background()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return c, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO outreach_intel_chains (
 			id, organization_id, identity, metric_key, route_family, label, synthetic, payload, created_at
 		) VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8::jsonb, $9)
@@ -73,8 +74,30 @@ func (s *PGStore) PutChain(c Chain) (Chain, bool, error) {
 	if err != nil {
 		return c, false, err
 	}
-	if existing, gerr := s.GetChain(org, c.Identity); gerr == nil && existing != nil {
-		return *existing, existing.MetricKey == c.MetricKey && existing.CreatedAt.Equal(c.CreatedAt), nil
+	if tag.RowsAffected() == 0 {
+		var existingRaw []byte
+		if err := tx.QueryRow(ctx, `
+			SELECT payload FROM outreach_intel_chains
+			WHERE organization_id = $1::uuid AND identity = $2`, org, c.Identity).Scan(&existingRaw); err != nil {
+			return c, false, err
+		}
+		var existing Chain
+		if err := json.Unmarshal(existingRaw, &existing); err != nil {
+			return c, false, err
+		}
+		if err := syncIdentityLinksTx(ctx, tx, org, existing); err != nil {
+			return c, false, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return c, false, err
+		}
+		return existing, false, nil
+	}
+	if err := syncIdentityLinksTx(ctx, tx, org, c); err != nil {
+		return c, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return c, false, err
 	}
 	return c, true, nil
 }
@@ -88,13 +111,114 @@ func (s *PGStore) UpdateChain(c Chain) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(context.Background(), `
+	ctx := context.Background()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `
 		UPDATE outreach_intel_chains
 		SET metric_key = $3, route_family = $4, payload = $5::jsonb
 		WHERE organization_id = $1::uuid AND identity = $2`,
 		org, c.Identity, c.MetricKey, c.RouteFamily, raw,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errors.New("canonical chain not found")
+	}
+	if err := syncIdentityLinksTx(ctx, tx, org, c); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func syncIdentityLinksTx(ctx context.Context, tx pgx.Tx, org string, c Chain) error {
+	identity := CanonicalIdentityOf(c)
+	if identity.CorrelationID == Unknown {
+		return nil
+	}
+	type identityLink struct {
+		kind string
+		id   string
+	}
+	links := []identityLink{
+		{kind: "account", id: identity.AccountID},
+		{kind: "opportunity", id: identity.OpportunityID},
+		{kind: "offer", id: identity.OfferID},
+		{kind: "proposal", id: identity.ProposalID},
+		{kind: "charge", id: identity.ChargeID},
+		{kind: "payment", id: identity.PaymentID},
+	}
+	for _, receipt := range c.Commercial.Timeline {
+		links = append(links,
+			identityLink{kind: "charge", id: canonicalID(receipt.ChargeID)},
+			identityLink{kind: "payment", id: canonicalID(receipt.PaymentID)},
+		)
+	}
+	for _, link := range links {
+		if link.id == Unknown {
+			continue
+		}
+		if globallyUniqueIdentityKind(link.kind) {
+			var bound string
+			err := tx.QueryRow(ctx, `
+				SELECT correlation_id
+				FROM outreach_intel_identity_links
+				WHERE organization_id = $1::uuid AND entity_kind = $2 AND entity_id = $3`,
+				org, link.kind, link.id).Scan(&bound)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+			if err == nil && bound != identity.CorrelationID {
+				return fmt.Errorf("canonical %s id is already bound to another correlation", link.kind)
+			}
+		}
+		if singletonIdentityKind(link.kind) {
+			var boundID string
+			err := tx.QueryRow(ctx, `
+				SELECT entity_id
+				FROM outreach_intel_identity_links
+				WHERE organization_id = $1::uuid AND correlation_id = $2 AND entity_kind = $3`,
+				org, identity.CorrelationID, link.kind).Scan(&boundID)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+			if err == nil && boundID != link.id {
+				return fmt.Errorf("canonical correlation already has another %s id", link.kind)
+			}
+		}
+		_, err := tx.Exec(ctx, `
+			INSERT INTO outreach_intel_identity_links (
+				organization_id, correlation_id, entity_kind, entity_id
+			) VALUES ($1::uuid, $2, $3, $4)
+			ON CONFLICT (organization_id, correlation_id, entity_kind, entity_id) DO NOTHING`,
+			org, identity.CorrelationID, link.kind, link.id)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func globallyUniqueIdentityKind(kind string) bool {
+	switch kind {
+	case "opportunity", "proposal", "charge", "payment":
+		return true
+	default:
+		return false
+	}
+}
+
+func singletonIdentityKind(kind string) bool {
+	switch kind {
+	case "account", "opportunity", "offer", "proposal":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *PGStore) ListChains(orgID string) ([]Chain, error) {
@@ -274,6 +398,31 @@ func (s *PGStore) PutEventReceipt(r EventReceipt) (EventReceipt, bool, error) {
 	if existing, err := s.GetEventReceipt(r.OrganizationID, r.ProviderEventID); err != nil {
 		return r, false, err
 	} else if existing != nil {
+		if strings.TrimSpace(r.Identity) != "" {
+			if existing.Identity != "" && existing.Identity != r.Identity {
+				return r, false, errors.New("provider receipt already bound to another chain")
+			}
+			existing.Identity = r.Identity
+			existing.EventID = firstNonEmpty(existing.EventID, r.EventID)
+			org := firstNonEmpty(r.OrganizationID, s.orgID)
+			tag, err := s.db.Exec(context.Background(), `
+				UPDATE outreach_intel_event_receipts
+				SET identity = $3,
+					event_id = $4,
+					payload = jsonb_set(
+						jsonb_set(payload, '{identity}', to_jsonb($3::text), true),
+						'{event_id}', to_jsonb($4::text), true
+					)
+				WHERE organization_id = $1::uuid AND provider_event_id = $2
+					AND (identity = '' OR identity = $3)`,
+				org, r.ProviderEventID, existing.Identity, existing.EventID)
+			if err != nil {
+				return r, false, err
+			}
+			if tag.RowsAffected() == 0 {
+				return r, false, errors.New("provider receipt already bound to another chain")
+			}
+		}
 		return *existing, false, nil
 	}
 	if strings.TrimSpace(r.ID) == "" {
@@ -288,7 +437,7 @@ func (s *PGStore) PutEventReceipt(r EventReceipt) (EventReceipt, bool, error) {
 		return r, false, err
 	}
 	org := firstNonEmpty(r.OrganizationID, s.orgID)
-	_, err = s.db.Exec(context.Background(), `
+	tag, err := s.db.Exec(context.Background(), `
 		INSERT INTO outreach_intel_event_receipts (
 			id, organization_id, provider_event_id, external_reference, event_id, identity,
 			type, raw_type, raw_status, acked, processed, synthetic, payload, created_at
@@ -300,8 +449,8 @@ func (s *PGStore) PutEventReceipt(r EventReceipt) (EventReceipt, bool, error) {
 	if err != nil {
 		return r, false, err
 	}
-	if existing, gerr := s.GetEventReceipt(org, r.ProviderEventID); gerr == nil && existing != nil {
-		return *existing, existing.ID == r.ID, nil
+	if tag.RowsAffected() == 0 {
+		return s.PutEventReceipt(r)
 	}
 	return r, true, nil
 }
@@ -312,9 +461,10 @@ func (s *PGStore) GetEventReceipt(orgID, providerEventID string) (*EventReceipt,
 	}
 	org := firstNonEmpty(orgID, s.orgID)
 	var raw []byte
+	var acked, processed bool
 	err := s.db.QueryRow(context.Background(), `
-		SELECT payload FROM outreach_intel_event_receipts
-		WHERE organization_id = $1::uuid AND provider_event_id = $2`, org, providerEventID).Scan(&raw)
+		SELECT payload, acked, processed FROM outreach_intel_event_receipts
+		WHERE organization_id = $1::uuid AND provider_event_id = $2`, org, providerEventID).Scan(&raw, &acked, &processed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -325,17 +475,28 @@ func (s *PGStore) GetEventReceipt(orgID, providerEventID string) (*EventReceipt,
 	if err := json.Unmarshal(raw, &r); err != nil {
 		return nil, err
 	}
+	r.Acked = acked
+	r.Processed = processed
 	return &r, nil
 }
 
-func (s *PGStore) MarkReceiptProcessed(orgID, providerEventID string) {
+func (s *PGStore) MarkReceiptProcessed(orgID, providerEventID string) error {
 	if s == nil || s.db == nil {
-		return
+		return errors.New("intel pg store unavailable")
 	}
 	org := firstNonEmpty(orgID, s.orgID)
-	_, _ = s.db.Exec(context.Background(), `
-		UPDATE outreach_intel_event_receipts SET processed = true
+	tag, err := s.db.Exec(context.Background(), `
+		UPDATE outreach_intel_event_receipts
+		SET processed = true,
+			payload = jsonb_set(payload, '{processed}', 'true'::jsonb, true)
 		WHERE organization_id = $1::uuid AND provider_event_id = $2`, org, providerEventID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errors.New("provider receipt not found")
+	}
+	return nil
 }
 
 func (s *PGStore) HoldCapacity(orgID, leadID string, units int, now time.Time) (CapacityHold, error) {
