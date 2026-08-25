@@ -314,18 +314,25 @@ func (s *service) ImportFromBytes(ctx context.Context, orgID uuid.UUID, userID *
 	}
 
 	payloadHash := CanonicalPayloadHash(raw)
+	var resumableRun *models.OutreachImportRun
 	if opts.IdempotencyKey != "" {
 		existing, err := s.repo.GetImportRunByIdempotency(ctx, orgID, opts.IdempotencyKey)
 		if err != nil {
 			return nil, errx.New(errx.Internal, "failed to check idempotency key")
 		}
 		if existing != nil {
-			// Same key + same hash: return prior result (idempotent).
-			if existing.PayloadHash == payloadHash {
+			if existing.PayloadHash != payloadHash {
+				return nil, errx.New(errx.Conflict, "idempotency key already used with a different payload")
+			}
+			lastProgress := existing.UpdatedAt
+			if lastProgress.IsZero() {
+				lastProgress = existing.StartedAt
+			}
+			if existing.Status != models.OutreachImportRunning || time.Since(lastProgress) < 15*time.Minute {
 				return existing, nil
 			}
-			// Same key, different body: conflict.
-			return nil, errx.New(errx.Conflict, "idempotency key already used with a different payload")
+			// Reuse abandoned run identity so retries cannot duplicate the import.
+			resumableRun = existing
 		}
 	}
 
@@ -341,24 +348,36 @@ func (s *service) ImportFromBytes(ctx context.Context, orgID uuid.UUID, userID *
 		sourceGeneratedAt = &parsed
 	}
 
-	run := &models.OutreachImportRun{
-		OrganizationID:    orgID,
-		SourceSystem:      feed.Source.System,
-		SourceRunID:       feed.Source.RunID,
-		SchemaVersion:     feed.SchemaVersion,
-		SnapshotHash:      feed.Source.SnapshotHash,
-		RepoSHA:           feed.Source.RepoSHA,
-		PayloadHash:       payloadHash,
-		ProfileID:         feed.Source.ProfileID,
-		ProfileVersion:    feed.Source.ProfileVersion,
-		Status:            models.OutreachImportRunning,
-		DryRun:            opts.DryRun,
-		CreatedByUserID:   userID,
-		IdempotencyKey:    opts.IdempotencyKey,
-		SourceURI:         opts.SourceURI,
-		SourceGeneratedAt: sourceGeneratedAt,
-		Warnings:          nil,
-		Errors:            nil,
+	run := resumableRun
+	if run == nil {
+		run = &models.OutreachImportRun{
+			OrganizationID:    orgID,
+			SourceSystem:      feed.Source.System,
+			SourceRunID:       feed.Source.RunID,
+			SchemaVersion:     feed.SchemaVersion,
+			SnapshotHash:      feed.Source.SnapshotHash,
+			RepoSHA:           feed.Source.RepoSHA,
+			PayloadHash:       payloadHash,
+			ProfileID:         feed.Source.ProfileID,
+			ProfileVersion:    feed.Source.ProfileVersion,
+			Status:            models.OutreachImportRunning,
+			DryRun:            opts.DryRun,
+			CreatedByUserID:   userID,
+			IdempotencyKey:    opts.IdempotencyKey,
+			SourceURI:         opts.SourceURI,
+			SourceGeneratedAt: sourceGeneratedAt,
+			Warnings:          nil,
+			Errors:            nil,
+		}
+	} else {
+		run.Status = models.OutreachImportRunning
+		run.FinishedAt = nil
+		run.Counts = models.OutreachImportCounts{}
+		run.Errors = nil
+		run.Warnings = nil
+		run.CreatedByUserID = userID
+		run.SourceURI = opts.SourceURI
+		run.SourceGeneratedAt = sourceGeneratedAt
 	}
 	if feed.Pagination.Cursor != nil {
 		run.CursorIn = *feed.Pagination.Cursor
@@ -367,11 +386,15 @@ func (s *service) ImportFromBytes(ctx context.Context, orgID uuid.UUID, userID *
 		run.CursorOut = *feed.Pagination.NextCursor
 	}
 
-	if err := s.repo.CreateImportRun(ctx, run); err != nil {
-		return nil, errx.New(errx.Internal, "failed to create import run: "+err.Error())
+	if resumableRun == nil {
+		if err := s.repo.CreateImportRun(ctx, run); err != nil {
+			return nil, errx.New(errx.Internal, "failed to create import run: "+err.Error())
+		}
+	} else if err := s.repo.UpdateImportRun(ctx, run); err != nil {
+		return nil, errx.New(errx.Internal, "failed to resume import run: "+err.Error())
 	}
 
-	counts, leadErrs, warns := s.applyFeed(ctx, orgID, run, feed, opts.DryRun)
+	counts, leadErrs, warns := s.applyFeed(ctx, orgID, run, feed, run.DryRun)
 	run.Counts = counts
 	applyOperatorSummary(&run.Counts, SummarizeOperatorProjection(feed))
 	run.Errors = leadErrs
