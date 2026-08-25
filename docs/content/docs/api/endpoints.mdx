@@ -81,6 +81,7 @@ All paths below are relative to the versioned base URL `https://api.warmbly.com/
 | POST | `/confenge/pilot/cohort/prepare` | `WRITE_CONTACTS` |
 | POST | `/confenge/drafts/invalidate-prior-composer` | `WRITE_CONTACTS` |
 | GET | `/confenge/cohorts` | `READ_CONTACTS` |
+| POST | `/confenge/cohorts` | `WRITE_CONTACTS` |
 | GET | `/confenge/cohorts/:id` | `READ_CONTACTS` |
 | GET | `/confenge/cohorts/:id/candidates/:candidateId` | `READ_CONTACTS` |
 | POST | `/confenge/cohorts/:id/candidates/:candidateId/review` | `WRITE_CONTACTS` |
@@ -136,6 +137,8 @@ Public `GET /api/v1/webhooks/confenge/inbound/health` advertises `accepted_event
 `GET /confenge/intel/exceptions` is the operator queue. Filter with `type`, `lane`, `source`, `severity`, `status`, `age_min_seconds`, and `age_max_seconds`. Each row includes evidence, history, `next_action` or an explicit open status, and only the legal actions `link`, `defer`, `reject`, and `mark_external_evidence_required`. `GET /confenge/intel/exceptions/:id` is the detail. `POST /confenge/intel/exceptions/:id/resolve` records before/after, actor, and reason. Send `Idempotency-Key`. The same command replays the first result. Illegal lifecycle moves and any attempt to invent WON, LOST, revenue, or identity are refused and the exception stays open.
 
 `GET /confenge/cohorts/:id` returns one immutable cohort version with its manifest, candidates, review and scheduling state, plus the editorial verdict on the frozen copy: `editorial_state` (`CURRENT` or `LEGACY_SUPERSEDED`), `actionable`, `editorial_reason_codes`, `editorial_notice`, and the pointers `is_current_version`, `current_version` and `current_version_id`. Historical GO/NO-GO data may still appear as read-only audit. Each candidate repeats `editorial_state`, `actionable` and `editorial_reason_codes`, and a superseded candidate carries the same codes in `blocked_by`. A version is current only when the version stamp and every member stamp are current.
+
+`POST /confenge/cohorts` accepts at most ten members. `selection_mode=NEXT_UNCLAIMED` reserves the next disjoint suppliers in a server-managed transaction; `selection_mode=RECOVER_PRIOR` accepts `recover_version_ids` and re-evaluates those suppliers against the current canonical source. The API exposes no offset. It reports aggregate selection progress and never inherits validation, review, approval or scheduling into a recovered cohort.
 
 Superseded copy is readable and never operational. `POST /confenge/cohorts/:id/candidates/:candidateId/review` refuses `decision=APPROVE` with `409` and code `composer_superseded` (`HOLD` and `REJECT` still work). `POST /confenge/cohorts/:id/recompose` is the way forward: it forks version N+1 with the current composer, requires `Idempotency-Key`, `reason`, `confirmation` and `expected_frozen_hash`, preserves every recipient and provenance fact byte-identical (drift is refused, not stored), and is born with no validation, no review, no approval and no scheduling.
 

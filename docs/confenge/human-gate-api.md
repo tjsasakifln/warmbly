@@ -10,7 +10,10 @@ send operation.
 - `GET /v1/confenge/cohorts?limit=&cursor=` lists versions with cursor
   pagination.
 - `POST /v1/confenge/cohorts` creates a 1–10 member version from a completed
-  canonical import run.
+  canonical import run. `selection_mode=NEXT_UNCLAIMED` atomically reserves the
+  next suppliers that have not appeared in prior outreach;
+  `selection_mode=RECOVER_PRIOR` re-reads members of `recover_version_ids` from
+  the current source and creates fresh copy without inheriting decisions.
 - `POST /v1/confenge/cohorts/{version_id}/reproduce` copies the exact immutable
   snapshot into the next version.
 - `POST /v1/confenge/cohorts/{version_id}/candidates/{candidate_id}/adjust`
@@ -40,6 +43,37 @@ correlation id and receipt. List responses use `data` plus `pagination`.
 The acknowledgement is included in the idempotent intent hash, so an ambiguous
 retry cannot silently change the human confirmation. Reconciliation has no
 payload and is safe to run repeatedly.
+
+## Disjoint supplier selection
+
+The legacy request body (`limit` plus optional `source_run_id`) remains valid and
+keeps its historical idempotency hash. New Control Center flows send one of the
+server-managed modes below. There is deliberately no caller-controlled offset.
+
+```json
+{"limit":10,"selection_mode":"NEXT_UNCLAIMED"}
+```
+
+```json
+{
+  "limit":10,
+  "selection_mode":"RECOVER_PRIOR",
+  "recover_version_ids":["00000000-0000-4000-8000-000000000000"]
+}
+```
+
+Every non-legacy member is claimed in the same transaction as its immutable
+cohort version. Claims are unique by canonical supplier CNPJ root and recipient
+hash within the source run. Accounts with any prior touchpoint or cohort history
+are excluded from `NEXT_UNCLAIMED`; recovery is allowed to revisit prior cohort
+members but still refuses prior touchpoints, stale target fit, suppression,
+bounce, expired activation and source-run drift.
+
+The response's `selection` object reports `claimed_count`,
+`unique_claimed_total`, `eligible_remaining`, `exhausted`, and aggregated
+exclusion reasons. `RECOVER_PRIOR` also reports the distinct prior members
+requested and how many remain eligible. These fields are aggregates and contain
+no mailbox or company identity.
 
 Reads require read-contacts. Cohort/validation/review/adjust/reconcile writes
 require manage-contacts upstream. The Control Center edge exposes review to

@@ -323,13 +323,17 @@ func (s *service) humanGateCommitRecompose(ctx context.Context, orgID, actorID, 
 	if err != nil {
 		return uuid.Nil, 0, nil, humanGateError(errx.Internal, "cohort_store_failed", "recomposed manifest could not be encoded")
 	}
+	selectionReport, err := json.Marshal(parent.Selection)
+	if err != nil {
+		return uuid.Nil, 0, nil, humanGateError(errx.Internal, "cohort_store_failed", "selection report could not be encoded")
+	}
 	newVersionID := uuid.New()
 	_, err = tx.Exec(ctx, `INSERT INTO confenge_cohort_versions
-		(id,organization_id,cohort_id,version,source_run_id,source_system,source_as_of,freshness_expires_at,policy_version,frozen_hash,frozen_manifest,derivation,parent_version,created_by,correlation_id,idempotency_key,request_hash)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+		(id,organization_id,cohort_id,version,source_run_id,source_system,source_as_of,freshness_expires_at,policy_version,frozen_hash,frozen_manifest,derivation,parent_version,selection_mode,selection_report,created_by,correlation_id,idempotency_key,request_hash)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
 		newVersionID, orgID, parent.CohortID, toVersion, parent.SourceRunID, parent.Source, parent.AsOf, parent.FreshUntil,
-		parent.PolicyVersion, next.CohortHash, manifest, DerivationRecompose, lockedVersion, actorID,
-		correlationID, key, reqHash)
+		parent.PolicyVersion, next.CohortHash, manifest, DerivationRecompose, lockedVersion, parent.Selection.Mode, selectionReport,
+		actorID, correlationID, key, reqHash)
 	if err != nil {
 		return uuid.Nil, 0, nil, humanGateAdjustWriteError(err, "cohort_store_failed", "recomposed cohort version could not be stored")
 	}

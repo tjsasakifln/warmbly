@@ -21,6 +21,7 @@ func applyHumanGateSchema(t *testing.T, pool *pgxpool.Pool) {
 	for _, name := range []string{
 		"000116_confenge_human_gate.up.sql",
 		"000117_confenge_cohort_derivation.up.sql",
+		"000122_confenge_cohort_selection.up.sql",
 	} {
 		raw, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
@@ -34,7 +35,7 @@ func applyHumanGateSchema(t *testing.T, pool *pgxpool.Pool) {
 
 func dropHumanGateSchema(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	_, _ = pool.Exec(context.Background(), "DROP TABLE IF EXISTS confenge_cohort_adjustments,confenge_cohort_go_decisions,confenge_cohort_candidate_reviews,confenge_cohort_validations,confenge_cohort_versions")
+	_, _ = pool.Exec(context.Background(), "DROP TABLE IF EXISTS confenge_cohort_selection_claims,confenge_cohort_adjustments,confenge_cohort_go_decisions,confenge_cohort_candidate_reviews,confenge_cohort_validations,confenge_cohort_versions")
 }
 
 func TestHumanGatePostgresIdempotencySurvivesConcurrencyAndRestart(t *testing.T) {
