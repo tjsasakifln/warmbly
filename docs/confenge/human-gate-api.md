@@ -91,6 +91,14 @@ invalidates approval and cancels unsent queue work. RISKY, INVALID, UNKNOWN and
 STALE cannot be approved. A later `HOLD` or `REJECT` also cancels the unsent
 message immediately.
 
+The live lookup starts with the frozen source run and falls back to the same
+canonical account/candidate IDs when a later import has advanced
+`source_run_id`. Refreshing a canonical row is therefore not mistaken for
+`live_candidate_state_unknown`; the current suppression, opt-out, bounce,
+eligibility and mailbox fields are still checked. A missing canonical row or a
+read failure remains fail-closed. This makes reconciliation of approvals from
+the former no-scheduling contract possible without bypassing last-mile safety.
+
 The scheduling row has `auto_send=true` per approved message. This means the
 Warmbly worker may collect it; it does **not** enable the prohibited global
 `CONFENGE_AUTO_SEND_ENABLED` or GREEN autorun flags. The worker still enforces
