@@ -60,6 +60,23 @@ class TestConfengeVpsPack(unittest.TestCase):
         for m in re.finditer(r"CONFENGE_RATE_MAX_PER_HOUR=(\d+)", text):
             self.assertLessEqual(int(m.group(1)), 20)
 
+    def test_status_helper_renders_enabled_without_false_failure(self) -> None:
+        proc = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'source "$1"; pass_fail "DELEGATED FIRST TOUCH" ENABLED',
+                "status-test",
+                str(PACK / "lib.sh"),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("DELEGATED FIRST TOUCH ENABLED", proc.stdout)
+        self.assertNotIn("FAIL", proc.stdout)
+
     def test_provider_vs_operational_documented(self) -> None:
         plane = (ROOT / "docs/confenge/vps-execution-plane.md").read_text(
             encoding="utf-8"
