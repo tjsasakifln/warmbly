@@ -3,11 +3,11 @@
 
 Drives real files under deploy/confenge-vps/ (shipped artifacts), not reimplemented policy.
 """
+
 from __future__ import annotations
 
 import re
 import subprocess
-import sys
 import unittest
 from pathlib import Path
 
@@ -38,6 +38,8 @@ class TestConfengeVpsPack(unittest.TestCase):
             "docker-compose.override.yml",
             "inbound-edge-install.sh",
             "inbound-edge-monitor.sh",
+            "asaas-adapter-install.sh",
+            "asaas-adapter.env.example",
         ]
         for name in required:
             path = PACK / name
@@ -58,7 +60,9 @@ class TestConfengeVpsPack(unittest.TestCase):
             self.assertLessEqual(int(m.group(1)), 20)
 
     def test_provider_vs_operational_documented(self) -> None:
-        plane = (ROOT / "docs/confenge/vps-execution-plane.md").read_text(encoding="utf-8")
+        plane = (ROOT / "docs/confenge/vps-execution-plane.md").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("provider ceiling ≠ operational target", plane)
         self.assertIn("HOSTINGER_PLAN_CLASS", plane)
         self.assertIn("Business Email Starter", plane)
@@ -100,9 +104,12 @@ class TestConfengeVpsPack(unittest.TestCase):
             capture_output=True,
             text=True,
             timeout=120,
+            check=False,
         )
         if proc.returncode != 0:
-            self.fail(f"validate.sh exit {proc.returncode}\n{proc.stdout}\n{proc.stderr}")
+            self.fail(
+                f"validate.sh exit {proc.returncode}\n{proc.stdout}\n{proc.stderr}"
+            )
         self.assertIn("VALIDATE=PASS", proc.stdout)
 
     def test_up_rebuilds_release_images(self) -> None:
@@ -123,6 +130,9 @@ class TestConfengeVpsPack(unittest.TestCase):
         self.assertIn("server_name api.confenge.com.br;", https)
         self.assertIn("location = /api/v1/webhooks/confenge/inbound/health", https)
         self.assertIn("location = /api/v1/webhooks/confenge/inbound {", https)
+        self.assertIn("location = /api/v1/webhooks/asaas {", https)
+        self.assertIn("location = /api/v1/webhooks/asaas/health {", https)
+        self.assertIn("server 127.0.0.1:8791;", params)
         self.assertIn("proxy_pass http://warmbly_loopback;", https)
         self.assertIn("server 127.0.0.1:8080;", params)
         self.assertIn("limit_req zone=confenge_inbound", https)
@@ -134,13 +144,17 @@ class TestConfengeVpsPack(unittest.TestCase):
         self.assertIn("return 404;", https)
         self.assertIn("return 444;", https)
         self.assertIn("Strict-Transport-Security", https)
-        self.assertNotIn('includeSubDomains', https.split("add_header", 1)[-1])
+        self.assertNotIn("includeSubDomains", https.split("add_header", 1)[-1])
         self.assertIn("return 301 https://api.confenge.com.br", http)
         self.assertIn("location ^~ /.well-known/acme-challenge/", http)
         self.assertNotRegex(http, r"proxy_pass")
-        self.assertNotRegex(params, r"\$request_body|\$http_x_warmbly_signature|\$args|\$query_string")
+        self.assertNotRegex(
+            params, r"\$request_body|\$http_x_warmbly_signature|\$args|\$query_string"
+        )
         for blob in (https, http, proxy):
-            self.assertNotRegex(blob, r"\$request_body|\$http_x_warmbly_signature|\$query_string")
+            self.assertNotRegex(
+                blob, r"\$request_body|\$http_x_warmbly_signature|\$query_string"
+            )
             self.assertNotIn("location /confenge", blob)
             self.assertNotIn("location /admin", blob)
             self.assertNotRegex(blob, r"listen\s+8080")
@@ -150,11 +164,32 @@ class TestConfengeVpsPack(unittest.TestCase):
         self.assertNotIn("ufw allow 8080", install)
         self.assertNotIn("ufw allow 15432", install)
         self.assertNotIn("CONFENGE_AUTO_SEND_ENABLED=true", install)
-        self.assertIn("/opt/warmbly-confenge/deploy/confenge-vps/inbound-edge-install.sh", wait_dns)
+        self.assertIn(
+            "/opt/warmbly-confenge/deploy/confenge-vps/inbound-edge-install.sh",
+            wait_dns,
+        )
         self.assertIn("confenge_inbound_hmac_fail_total", monitor)
         self.assertIn("confenge_inbound_replay_total", monitor)
         self.assertIn("public_health_not_ready", monitor)
         self.assertNotIn("CONFENGE_INBOUND_WEBHOOK_SECRET", monitor)
+
+        unit = (PACK / "systemd/confenge-asaas-adapter.service").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("DynamicUser=yes", unit)
+        self.assertIn("StateDirectoryMode=0700", unit)
+        self.assertIn("UMask=0077", unit)
+        self.assertIn("NoNewPrivileges=yes", unit)
+
+    def test_asaas_adapter_is_persist_first_and_backup_aware(self) -> None:
+        source = (PACK / "asaas-adapter/adapter.py").read_text(encoding="utf-8")
+        backup = (PACK / "backup.sh").read_text(encoding="utf-8")
+        restore = (PACK / "restore.sh").read_text(encoding="utf-8")
+        self.assertIn("asaas-access-token", source)
+        self.assertIn("INSERT OR IGNORE INTO events", source)
+        self.assertIn("warmbly_semantic_hold", source)
+        self.assertIn("asaas-events.sqlite3", backup)
+        self.assertIn("asaas-events.sqlite3", restore)
 
         override = (PACK / "docker-compose.override.yml").read_text(encoding="utf-8")
         self.assertIn("TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.1}", override)

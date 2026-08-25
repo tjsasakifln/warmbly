@@ -17,6 +17,15 @@ mkdir -p "$STAGE"
 echo "Backing up postgres (warmbly_dev)..."
 compose_cmd exec -T postgres pg_dump -U warmbly warmbly_dev >"$STAGE/warmbly_dev.sql"
 
+# Online SQLite backup uses sqlite3.Connection.backup, so WAL writes can
+# continue without copying a torn db/WAL pair. No payload is printed.
+ASAAS_DB="${ASAAS_ADAPTER_DB:-/var/lib/confenge-asaas-adapter/events.sqlite3}"
+if [[ -f "$ASAAS_DB" ]]; then
+  ASAAS_ADAPTER_DB="$ASAAS_DB" python3 \
+    "$ROOT/deploy/confenge-vps/asaas-adapter/adapter.py" backup \
+    "$STAGE/asaas-events.sqlite3" >"$STAGE/asaas-backup-proof.json"
+fi
+
 # Encryption keys: copy env keys into a separate 0600 secrets bundle (not next to public dumps by default)
 SECRETS_DIR="${CONFENGE_SECRETS_BACKUP_DIR:-$OUT_DIR/secrets}"
 mkdir -p "$SECRETS_DIR"
@@ -70,6 +79,11 @@ PY
   echo "git_sha=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "host=$(hostname 2>/dev/null || echo unknown)"
   echo "sql=warmbly_dev.sql"
+  if [[ -f "$STAGE/asaas-events.sqlite3" ]]; then
+    echo "asaas_queue=asaas-events.sqlite3"
+  else
+    echo "asaas_queue=absent"
+  fi
   echo "secrets_bundle=$(basename "$SEC_BUNDLE")"
   echo "note=Keep SQL and secrets_bundle offline and separate; both needed for full restore."
 } >"$STAGE/MANIFEST.txt"
