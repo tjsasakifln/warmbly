@@ -14,7 +14,10 @@ import (
 	"github.com/warmbly/warmbly/internal/models"
 )
 
-const delegatedFirstTouchMaxBurst = 100
+const (
+	delegatedFirstTouchMaxBurst          = 100
+	delegatedFirstTouchIdempotencyPrefix = "delegated-first-touch:"
+)
 
 type delegatedFirstTouchProcessor interface {
 	ProcessDelegatedFirstTouchOnce(context.Context) (bool, error)
@@ -88,23 +91,7 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (bool, err
 		return false, err
 	}
 
-	var touchpointID, accountID, candidateID uuid.UUID
-	err = s.delegatedDB.QueryRow(ctx, `
-		SELECT t.id,t.account_id,t.contact_candidate_id
-		FROM outreach_touchpoints t
-		JOIN outreach_accounts a ON a.organization_id=t.organization_id AND a.id=t.account_id
-		JOIN outreach_feed_sync_state feed ON feed.organization_id=t.organization_id
-		WHERE t.organization_id=$1
-		  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
-		  AND t.state='NEEDS_REVIEW' AND t.contact_candidate_id IS NOT NULL
-		  AND feed.last_status='completed' AND a.source_run_id=feed.last_run_id
-		  AND NOT EXISTS (
-		    SELECT 1 FROM confenge_delegated_first_touch_decisions d
-		    WHERE d.organization_id=t.organization_id AND d.account_id=t.account_id
-		      AND d.evidence_source_run_id=a.source_run_id
-		  )
-		ORDER BY t.due_at,t.created_at,t.id
-		LIMIT 1`, orgID).Scan(&touchpointID, &accountID, &candidateID)
+	touchpointID, accountID, candidateID, err := s.nextDelegatedFirstTouchCandidate(ctx, orgID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
@@ -163,6 +150,28 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (bool, err
 	return report != nil && len(report.Items) == 1, nil
 }
 
+func (s *service) nextDelegatedFirstTouchCandidate(ctx context.Context, orgID uuid.UUID) (uuid.UUID, uuid.UUID, uuid.UUID, error) {
+	var touchpointID, accountID, candidateID uuid.UUID
+	err := s.delegatedDB.QueryRow(ctx, `
+		SELECT t.id,t.account_id,t.contact_candidate_id
+		FROM outreach_touchpoints t
+		JOIN outreach_accounts a ON a.organization_id=t.organization_id AND a.id=t.account_id
+		JOIN outreach_feed_sync_state feed ON feed.organization_id=t.organization_id
+		WHERE t.organization_id=$1
+		  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
+		  AND t.state='NEEDS_REVIEW' AND t.contact_candidate_id IS NOT NULL
+		  AND feed.last_status='completed' AND a.source_run_id=feed.last_run_id
+		  AND NOT EXISTS (
+		    SELECT 1 FROM confenge_delegated_first_touch_decisions d
+		    WHERE d.organization_id=t.organization_id AND d.account_id=t.account_id
+		      AND (d.evidence_source_run_id=a.source_run_id
+		        OR d.idempotency_key=$2 || a.source_run_id || ':' || a.id::text)
+		  )
+		ORDER BY t.due_at,t.created_at,t.id
+		LIMIT 1`, orgID, delegatedFirstTouchIdempotencyPrefix).Scan(&touchpointID, &accountID, &candidateID)
+	return touchpointID, accountID, candidateID, err
+}
+
 func delegatedEntryFromCurrentState(acc *models.OutreachAccount, cand *models.OutreachContactCandidate, touchpointID uuid.UUID, subject, body string) DelegatedFirstTouchEntry {
 	observedAt := time.Time{}
 	if acc.ContractorRoleObservedAt != nil {
@@ -176,7 +185,7 @@ func delegatedEntryFromCurrentState(acc *models.OutreachAccount, cand *models.Ou
 	if cand.SourceDate != nil {
 		webObservedAt = cand.SourceDate.UTC()
 	}
-	key := "delegated-first-touch:" + acc.SourceRunID + ":" + acc.ID.String()
+	key := delegatedFirstTouchIdempotencyPrefix + acc.SourceRunID + ":" + acc.ID.String()
 	return DelegatedFirstTouchEntry{
 		IdempotencyKey: key, CorrelationID: "touchpoint:" + touchpointID.String(),
 		AccountID: acc.ID, ContactCandidateID: cand.ID, CNPJ14: acc.CNPJ14,
