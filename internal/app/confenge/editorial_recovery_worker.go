@@ -11,31 +11,49 @@ import (
 	"github.com/warmbly/warmbly/internal/models"
 )
 
-const editorialRecoveryLease = 5 * time.Minute
+const (
+	editorialRecoveryLease    = 5 * time.Minute
+	editorialRecoveryMaxBurst = 100
+)
+
+type editorialRecoveryProcessor interface {
+	ProcessEditorialRecoveryOnce(context.Context) (bool, error)
+}
 
 // EditorialRecoveryWorker gives recoverable drafts an asynchronous AI rewrite
 // opportunity. It never approves, queues or sends: a successful rewrite goes
 // back to NEEDS_REVIEW for an explicit human decision.
 type EditorialRecoveryWorker struct {
-	service  Service
-	interval time.Duration
+	processor editorialRecoveryProcessor
+	interval  time.Duration
 }
 
-func NewEditorialRecoveryWorker(service Service, interval time.Duration) *EditorialRecoveryWorker {
+func NewEditorialRecoveryWorker(processor editorialRecoveryProcessor, interval time.Duration) *EditorialRecoveryWorker {
 	if interval <= 0 {
 		interval = time.Minute
 	}
-	return &EditorialRecoveryWorker{service: service, interval: interval}
+	return &EditorialRecoveryWorker{processor: processor, interval: interval}
 }
 
 func (w *EditorialRecoveryWorker) Run(ctx context.Context) {
-	if w == nil || w.service == nil {
+	if w == nil || w.processor == nil {
 		return
 	}
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
 	for {
-		_, _ = w.service.ProcessEditorialRecoveryOnce(ctx)
+		for i := 0; i < editorialRecoveryMaxBurst; i++ {
+			processed, err := w.processor.ProcessEditorialRecoveryOnce(ctx)
+			if !processed {
+				_ = err
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+		}
 		select {
 		case <-ctx.Done():
 			return
