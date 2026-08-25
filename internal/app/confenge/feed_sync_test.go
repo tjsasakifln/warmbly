@@ -90,6 +90,13 @@ func TestSyncFeedManifestIdempotentAndHashFailClosed(t *testing.T) {
 	if state.LastSuccessAt == nil || state.LastSuccessAt.Equal(wantSourceTime) {
 		t.Fatalf("sync completion and source age must remain distinct: %+v", state)
 	}
+	var persistedCounts map[string]any
+	if err := json.Unmarshal(state.CountsJSON, &persistedCounts); err != nil {
+		t.Fatalf("decode persisted sync counts: %v", err)
+	}
+	if got, ok := persistedCounts["enrichment_recovery_woken"]; !ok || got != float64(0) {
+		t.Fatalf("additional sync count was discarded: %s", state.CountsJSON)
+	}
 
 	// Same snapshot → noop
 	res2, xerr := svc.SyncFeedManifest(ctx, org, &user, uri)

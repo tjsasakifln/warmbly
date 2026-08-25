@@ -394,12 +394,16 @@ func (s *service) persistFeedSync(ctx context.Context, orgID uuid.UUID, snap, ru
 		st.SourceGeneratedAt = sourceGeneratedAt
 	}
 	if res != nil {
-		b, _ := json.Marshal(map[string]any{
+		counts := map[string]any{
 			"chunks_total":    res.ChunksTotal,
 			"chunks_imported": res.ChunksImported,
 			"deactivations":   res.Deactivations,
 			"skipped_same":    res.SkippedSame,
-		})
+		}
+		for key, value := range res.Counts {
+			counts[key] = value
+		}
+		b, _ := json.Marshal(counts)
 		st.CountsJSON = b
 	}
 	_ = s.repo.UpsertFeedSyncState(ctx, st)
