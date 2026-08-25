@@ -552,8 +552,13 @@ func Run(
 				confengeGroup.GET("/drafts", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeDrafts)
 				confengeGroup.GET("/drafts/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeDraft)
 				confengeGroup.GET("/touchpoints/review", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeReviewTouchpoints)
+				confengeGroup.GET("/review/drafts", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeReviewTouchpoints)
+				confengeGroup.GET("/review/drafts/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeTouchpoint)
 				confengeGroup.GET("/touchpoints/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeTouchpoint)
 				confengeGroup.GET("/accounts/:id/touchpoints", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeAccountTouchpoints)
+				confengeGroup.GET("/cohorts", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeHumanGateCohorts)
+				confengeGroup.GET("/cohorts/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeHumanGateCohort)
+				confengeGroup.GET("/cohorts/:id/candidates/:candidateId", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeHumanGateCandidate)
 
 				confengeWrite := confengeGroup.Group("")
 				confengeWrite.Use(m.RateLimitMiddleware(models.RateLimitWrite))
@@ -564,6 +569,19 @@ func Run(
 					confengeWrite.POST("/accounts/:id/dnc", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.DNCConfengeAccount)
 					confengeWrite.POST("/accounts/:id/plan", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.PlanConfengeCadence)
 					confengeWrite.POST("/pilot/cohort/prepare", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.PrepareConfengePilotCohort)
+					confengeWrite.POST("/cohorts", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.CreateConfengeHumanGateCohort)
+					confengeWrite.POST("/cohorts/:id/reproduce", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ReproduceConfengeHumanGateCohort)
+					confengeWrite.POST("/cohorts/:id/candidates/:candidateId/validation", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ValidateConfengeHumanGateCandidate)
+					confengeWrite.POST("/cohorts/:id/candidates/:candidateId/review", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ReviewConfengeHumanGateCandidate)
+					confengeWrite.POST("/cohorts/reconcile-approved", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ReconcileConfengeHumanGateApprovals)
+					// Adjust is an operator action, deliberately the same
+					// permission as review. It forks the immutable version into
+					// N+1 with human-edited copy; it never queues or sends.
+					confengeWrite.POST("/cohorts/:id/candidates/:candidateId/adjust", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.AdjustConfengeHumanGateCandidate)
+					// Recompose is the machine counterpart of adjust: same
+					// operator permission, same fork-into-N+1 shape, copy
+					// rewritten by the composer instead of by a human.
+					confengeWrite.POST("/cohorts/:id/recompose", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.RecomposeConfengeHumanGateCohort)
 					confengeWrite.POST("/accounts/:id/cancel-touchpoints", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.CancelConfengeAccountTouchpoints)
 					confengeWrite.POST("/accounts/:id/generate", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.GenerateConfengeDraft)
 					confengeWrite.POST("/accounts/:id/generate-reply", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.GenerateConfengeReplyDraft)
@@ -579,7 +597,8 @@ func Run(
 					confengeWrite.POST("/touchpoints/:id/approve", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ApproveConfengeTouchpoint)
 					confengeWrite.POST("/touchpoints/:id/decision", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.RejectSkipConfengeTouchpoint)
 					confengeWrite.POST("/touchpoints/:id/queue", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.QueueConfengeTouchpoint)
-					confengeWrite.POST("/cohorts/:id/dispatch", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.DispatchConfengeCohort)
+					confengeWrite.POST("/review/drafts/:id/decision", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.DecideConfengeReviewDraft)
+					confengeWrite.POST("/review/batches", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ApproveConfengeReviewBatch)
 					confengeWrite.POST("/touchpoints/:id/green-autorun", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.GreenAutorunConfengeTouchpoint)
 					confengeWrite.POST("/campaign/policy/authorize", m.RequireAccess(models.PermManageCampaigns, models.APIPermWriteCampaigns), h.AuthorizeConfengeCampaignPolicy)
 					confengeWrite.POST("/campaign/green-autorun/batch", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.BatchGreenAutorunConfenge)

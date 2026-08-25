@@ -64,6 +64,17 @@ type FrozenCohortMember struct {
 	CTASource        string   `json:"cta_source"`
 	AdmissionReasons []string `json:"admission_reasons"`
 	RouteReasons     []string `json:"route_reasons"`
+	// SourceFact is the public record the copy was written from, kept verbatim
+	// so a later recomposition reads the record again instead of re-reading the
+	// sentence the last composer wrote. omitempty on purpose: manifests frozen
+	// before this field existed must keep hashing exactly as they did.
+	SourceFact string `json:"source_fact,omitempty"`
+	// ServiceCode and MomentCode are why the practice line says what it says.
+	// A recompose that could not read them would rewrite every message onto the
+	// generic practice sentence, which is the corpus defect itself. omitempty on
+	// purpose: manifests frozen before these fields existed keep hashing as they did.
+	ServiceCode string `json:"service_code,omitempty"`
+	MomentCode  string `json:"moment_code,omitempty"`
 }
 
 // CohortExclusion is one account left out of the frozen set.
@@ -307,9 +318,27 @@ func PrepareControlledCohort(accounts []CohortAccountInput, opts CohortPrepareOp
 			continue
 		}
 
-		comp := ComposeControlledInitialDetailed(&in.Account, cand, class)
+		// The composer decides the message and may refuse the lead outright:
+		// a company with no sayable public fact is enrichment work, not filler.
+		comp, briefReasons := ComposeEditorialInitial(&in.Account, cand, class)
+		if len(briefReasons) > 0 {
+			exclude(ref, primaryExclusionReason(briefReasons), mailbox, class)
+			continue
+		}
 		if qa := ValidateCopyForRouteClass(class, comp.Body, comp.Subject, cand); len(qa) > 0 {
 			exclude(ref, "copy_qa_failure", mailbox, class)
+			continue
+		}
+		// The editorial gate is what makes copy_qa=passed a computed claim
+		// rather than a label. It runs on every member, never on a sample.
+		if qa := EditorialQA(comp.Subject, comp.Body, EditorialQAContext{
+			RouteClass:      class,
+			RawFact:         firstNonEmpty(in.Account.FactToMention, in.Account.MomentSummary),
+			SenderFirstName: editorialSenderFirstName(),
+			PersonProven:    composerMaySeePersonName(cand),
+			PersonName:      strings.TrimSpace(cand.Name),
+		}); len(qa) > 0 {
+			exclude(ref, "insufficient_human_quality", mailbox, class)
 			continue
 		}
 		if len(members) >= opts.Limit {
@@ -340,6 +369,9 @@ func PrepareControlledCohort(accounts []CohortAccountInput, opts CohortPrepareOp
 			Company:          accountCompany(&in.Account),
 			MailboxPurpose:   strings.TrimSpace(cand.MailboxPurpose),
 			ObservedFact:     comp.ObservedFact,
+			SourceFact:       firstNonEmpty(in.Account.FactToMention, in.Account.MomentSummary),
+			ServiceCode:      strings.TrimSpace(in.Account.ServiceCode),
+			MomentCode:       strings.TrimSpace(in.Account.MomentCode),
 			FactSource:       comp.FactSource,
 			CTA:              comp.CTA,
 			CTASource:        comp.CTASource,
@@ -678,7 +710,7 @@ func FormatCohortPreviewWithOptions(snap *FrozenCohortSnapshot, opts CohortPrevi
 			fmt.Fprintf(&b, "  %s=%d\n", k, p.ByExclusionReason[k])
 		}
 	}
-	writeFounderSamples(&b, snap, opts)
+	writeFounderReview(&b, snap, opts)
 	for _, w := range snap.Warnings {
 		fmt.Fprintf(&b, "\nWARNING: %s\n", w)
 	}
@@ -723,8 +755,12 @@ func GrantFromFrozenSnapshot(snap *FrozenCohortSnapshot, orgID, actor uuid.UUID,
 	if ttl <= 0 {
 		ttl = DefaultCohortTTL
 	}
+	authorizationID := snap.AuthorizationID
+	if authorizationID == uuid.Nil {
+		authorizationID = uuid.New()
+	}
 	auth := &BoundedCohortAuthorization{
-		ID: uuid.New(), OrganizationID: orgID, ActorID: actor, AuthorizedAt: now,
+		ID: authorizationID, OrganizationID: orgID, ActorID: actor, AuthorizedAt: now,
 		RepositorySHA: snap.RepositorySHA, FeedSchemaVersion: snap.FeedSchemaVersion,
 		CohortID: snap.CohortID, CohortHash: snap.CohortHash,
 		PolicyVersion: snap.PolicyVersion, AllowedRouteClasses: append([]string{}, snap.AllowedRouteClasses...),

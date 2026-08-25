@@ -88,6 +88,9 @@ type OutreachRepository interface {
 	ListTouchpoints(ctx context.Context, orgID, accountID uuid.UUID, state string, limit, offset int) ([]models.OutreachTouchpoint, error)
 	ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, limit, offset int) ([]models.OutreachTouchpoint, error)
 	CASQueueTouchpoint(ctx context.Context, orgID, id uuid.UUID, expectedContentHash string) (*models.OutreachTouchpoint, error)
+	// CASScheduleTouchpoint atomically binds an approved hash to the durable
+	// dispatch queue. It schedules only, and never invokes transport.
+	CASScheduleTouchpoint(ctx context.Context, orgID, id uuid.UUID, expectedContentHash, messageKey string, dueAt time.Time) (*models.OutreachTouchpoint, error)
 	CancelOpenTouchpoints(ctx context.Context, orgID, accountID uuid.UUID, terminalState, stopReason string) (int, error)
 	// ListDuePlannedTouchpoints returns PLANNED rows with due_at <= now (caller filters prior release).
 	ListDuePlannedTouchpoints(ctx context.Context, orgID uuid.UUID, now time.Time, limit int) ([]models.OutreachTouchpoint, error)
@@ -728,11 +731,12 @@ func (r *outreachRepository) ListAccounts(ctx context.Context, orgID uuid.UUID, 
 		q += ` AND email_send_ready = true`
 		q += ` AND EXISTS (SELECT 1 FROM outreach_contact_candidates occ WHERE occ.organization_id=outreach_accounts.organization_id AND occ.account_id=outreach_accounts.id AND occ.email_send_ready=true AND occ.email<>'' AND occ.blocked=false AND occ.do_not_contact=false AND occ.bounced=false AND occ.mailbox_purpose_send_blocked=false AND occ.verification_status NOT IN ('CANDIDATE_UNVERIFIED','NOT_FOUND','INVALID','BOUNCED','DO_NOT_CONTACT'))`
 	}
-	// A run-scoped page must paginate deterministically; priority_rank ordering is not stable.
-	if filter.StableOrder || filter.SourceRunID != "" {
+	// Dynamic priority is deterministic through the CNPJ/id tie-breakers, so it
+	// remains safe for paginated run-scoped cohort selection.
+	if filter.DynamicPriority {
+		q += fmt.Sprintf(` ORDER BY next_best_action_at ASC NULLS LAST, activation_score DESC, priority_rank ASC NULLS LAST, moment_observed_at DESC NULLS LAST, cnpj14 ASC, id ASC LIMIT $%d OFFSET $%d`, n, n+1)
+	} else if filter.StableOrder || filter.SourceRunID != "" {
 		q += fmt.Sprintf(` ORDER BY cnpj14 ASC, id ASC LIMIT $%d OFFSET $%d`, n, n+1)
-	} else if filter.DynamicPriority {
-		q += fmt.Sprintf(` ORDER BY next_best_action_at ASC NULLS LAST, activation_score DESC, priority_rank ASC NULLS LAST, moment_observed_at DESC NULLS LAST, cnpj14 ASC LIMIT $%d OFFSET $%d`, n, n+1)
 	} else {
 		q += fmt.Sprintf(` ORDER BY priority_rank ASC NULLS LAST, updated_at DESC LIMIT $%d OFFSET $%d`, n, n+1)
 	}
@@ -1547,7 +1551,22 @@ func (r *outreachRepository) UpsertCandidate(ctx context.Context, c *models.Outr
 				recommended = EXCLUDED.recommended,
 				do_not_contact = outreach_contact_candidates.do_not_contact OR EXCLUDED.do_not_contact,
 				bounced = outreach_contact_candidates.bounced OR EXCLUDED.bounced,
-				blocked = outreach_contact_candidates.blocked OR EXCLUDED.blocked,
+				-- DNC and bounce are sticky in their own columns. Import-derived
+				-- strict-lane blocks may recover when a later authoritative feed
+				-- explicitly publishes a controlled route; manual/terminal blocks
+				-- remain sticky.
+				blocked = CASE
+					WHEN outreach_contact_candidates.blocked
+						AND outreach_contact_candidates.block_reason NOT IN ('published_exhausted','provenance_chain_invalid')
+						THEN true
+					ELSE EXCLUDED.blocked
+				END,
+				block_reason = CASE
+					WHEN outreach_contact_candidates.blocked
+						AND outreach_contact_candidates.block_reason NOT IN ('published_exhausted','provenance_chain_invalid')
+						THEN outreach_contact_candidates.block_reason
+					ELSE EXCLUDED.block_reason
+				END,
 				email_send_ready = EXCLUDED.email_send_ready,
 				mailbox_purpose = EXCLUDED.mailbox_purpose,
 				mailbox_purpose_send_blocked = EXCLUDED.mailbox_purpose_send_blocked,

@@ -1,0 +1,240 @@
+# CONFENGE human gate API
+
+Contract: `confenge.human-gate.v1`. This is an additive control-plane API over
+the existing immutable `confenge.frozen_cohort.v1` snapshot and
+`bounded-cohort-policy.v1`; it does not replace the CLI contract and exposes no
+send operation.
+
+## Resources
+
+- `GET /v1/confenge/cohorts?limit=&cursor=` lists versions with cursor
+  pagination.
+- `POST /v1/confenge/cohorts` creates a 1–10 member version from a completed
+  canonical import run. `selection_mode=NEXT_UNCLAIMED` atomically reserves the
+  next suppliers that have not appeared in prior outreach;
+  `selection_mode=RECOVER_PRIOR` re-reads members of `recover_version_ids` from
+  the current source and creates fresh copy without inheriting decisions.
+- `POST /v1/confenge/cohorts/{version_id}/reproduce` copies the exact immutable
+  snapshot into the next version.
+- `POST /v1/confenge/cohorts/{version_id}/candidates/{candidate_id}/adjust`
+  forks the version into N+1 carrying a human copy edit for exactly that one
+  candidate. See "Adjust" below.
+- `GET /v1/confenge/cohorts/{version_id}` returns the exact candidate/message
+  preview, validations, reviews, invalidations and scheduling state. Legacy
+  GO/NO-GO receipts, if any, remain read-only audit history.
+- `GET /v1/confenge/cohorts/{version_id}/candidates/{candidate_id}` returns one
+  progressive detail.
+- `POST .../validation` requests pre-send syntax/MX/SMTP verification.
+- `POST .../review` records `APPROVE`, `REJECT` or `HOLD` with a reason;
+  `APPROVE` also requires `"acknowledged": true` and atomically schedules the
+  exact reviewed message for the next eligible business window.
+- `POST /v1/confenge/cohorts/reconcile-approved` replays that same scheduling
+  path for every latest durable `APPROVE`. It is naturally idempotent: repeated
+  calls converge on one touchpoint and one live queue item per candidate.
+
+The former cohort `decision` and `dispatch` write endpoints are removed.
+Individual `APPROVE` is the complete scheduling authority; there is no GO and
+no separate delivery-to-queue step.
+
+Candidate/version POSTs require `Idempotency-Key`. Reusing a key with the same payload returns
+the original resource/receipt; reusing it with another payload returns 409.
+Responses include source, `as_of`, freshness, policy/contract version, reason,
+correlation id and receipt. List responses use `data` plus `pagination`.
+The acknowledgement is included in the idempotent intent hash, so an ambiguous
+retry cannot silently change the human confirmation. Reconciliation has no
+payload and is safe to run repeatedly.
+
+## Disjoint supplier selection
+
+The legacy request body (`limit` plus optional `source_run_id`) remains valid and
+keeps its historical idempotency hash. New Control Center flows send one of the
+server-managed modes below. There is deliberately no caller-controlled offset.
+
+```json
+{"limit":10,"selection_mode":"NEXT_UNCLAIMED"}
+```
+
+```json
+{
+  "limit":10,
+  "selection_mode":"RECOVER_PRIOR",
+  "recover_version_ids":["00000000-0000-4000-8000-000000000000"]
+}
+```
+
+Every non-legacy member is claimed in the same transaction as its immutable
+cohort version. Claims are unique by canonical supplier CNPJ root and recipient
+hash within the source run. Accounts with any prior touchpoint or cohort history
+are excluded from `NEXT_UNCLAIMED`; recovery is allowed to revisit prior cohort
+members but still refuses prior touchpoints, stale target fit, suppression,
+bounce, expired activation and source-run drift.
+
+The response's `selection` object reports `claimed_count`,
+`unique_claimed_total`, `eligible_remaining`, `exhausted`, and aggregated
+exclusion reasons. `RECOVER_PRIOR` also reports the distinct prior members
+requested and how many remain eligible. These fields are aggregates and contain
+no mailbox or company identity.
+
+Reads require read-contacts. Cohort/validation/review/adjust/reconcile writes
+require manage-contacts upstream. The Control Center edge exposes review to
+`operators` and reconcile only to `admins`. The
+authenticated API principal is audited by Warmbly; the edge separately audits
+the Authelia human identity and never accepts a browser actor header.
+
+## Invalidation and transport
+
+APPROVE is effective only while recipient, content, policy, evidence and the
+exact VALID result remain bound and unexpired. Live account/candidate state is
+read on detail and immediately before transport; late suppression, opt-out,
+bounce, removal, canonical-source drift, content drift or changed validation
+invalidates approval and cancels unsent queue work. RISKY, INVALID, UNKNOWN and
+STALE cannot be approved. A later `HOLD` or `REJECT` also cancels the unsent
+message immediately.
+
+The live lookup starts with the frozen source run and falls back to the same
+canonical account/candidate IDs when a later import has advanced
+`source_run_id`. Refreshing a canonical row is therefore not mistaken for
+`live_candidate_state_unknown`; the current suppression, opt-out, bounce,
+eligibility and mailbox fields are still checked. A missing canonical row or a
+read failure remains fail-closed. This makes reconciliation of approvals from
+the former no-scheduling contract possible without bypassing last-mile safety.
+
+The scheduling row has `auto_send=true` per approved message. This means the
+Warmbly worker may collect it; it does **not** enable the prohibited global
+`CONFENGE_AUTO_SEND_ENABLED` or GREEN autorun flags. The worker still enforces
+the 09:00–18:00 America/Sao_Paulo business window, the 10/hour cap, pause,
+suppression and the file kill switch. Approval is allowed while those transport
+controls block outbound, so a queued message can honestly remain unsent.
+
+## Derivation taxonomy
+
+Every version row records how it came to exist. "There is a version N+1" cannot,
+by itself, tell an auditor whether the bytes are identical, machine-recomposed
+or human-edited, so the distinction is durable in Postgres
+(`confenge_cohort_versions.derivation`, migration 000117) and is projected on
+every read as `derivation` plus `parent_version`.
+
+| derivation  | meaning                                                              |
+| ----------- | -------------------------------------------------------------------- |
+| `CREATE`    | first freeze of a cohort from a completed canonical source run.       |
+| `REPRODUCE` | `frozen_manifest` copied byte for byte from `parent_version`.         |
+| `RECOMPOSE` | **reserved.** Re-run the composer against the current source, policy and composer version. No endpoint implements it yet; the taxonomy is durable first so today's rows never have to be reinterpreted later. |
+| `ADJUST`    | a human edited `subject`/`body_text` for exactly one candidate.       |
+
+`parent_version` is `null` only for `CREATE`. Rows that predate 000117 are
+backfilled: `reproduced_from_version IS NOT NULL` becomes `REPRODUCE`, all
+others become `CREATE`.
+
+## Adjust
+
+`POST /v1/confenge/cohorts/{version_id}/candidates/{candidate_id}/adjust`
+
+Adjust is an **operator** action. It requires manage-contacts + write-contacts,
+exactly like review; it is deliberately *not* an admin action. Like every other version write it requires `Idempotency-Key` and
+carries the same correlation id header as the other human-gate writes.
+
+**Adjust neither queues, dispatches, sends nor resumes anything.** It creates an
+immutable draft version and nothing else. The new version is not approved and
+not queue-ready; reaching a real send requires validation and per-candidate
+APPROVE on the new version. The worker revalidates everything at the last mile.
+
+Request body — subject and body_text are the only mutable facts:
+
+```json
+{
+  "subject": "…",
+  "body_text": "…",
+  "reason": "…",
+  "confirmation": "v1",
+  "expected_frozen_hash": "…"
+}
+```
+
+`reason` must be at least 8 characters after trimming. `confirmation` must be
+exactly `"v"` + the current version number. `expected_frozen_hash` must equal
+the current version's `frozen_hash`; together they make an adjustment
+impossible to apply to a version the operator was not actually looking at.
+
+Success is `201` with:
+
+```json
+{
+  "contract_version": "confenge.human-gate.v1",
+  "cohort": { "…": "the full cohort payload of the NEW version" },
+  "adjustment": {
+    "id": "…", "cohort_id": "…", "from_version": 1, "to_version": 2,
+    "candidate_id": "…",
+    "before_content_hash": "…", "after_content_hash": "…",
+    "before_frozen_hash": "…", "after_frozen_hash": "…",
+    "diff": [{"field": "subject", "before": "…", "after": "…"},
+             {"field": "body_text", "before": "…", "after": "…"}],
+    "revoked_authorization_id": null,
+    "actor_id": "…", "correlation_id": "…", "receipt": "…", "created_at": "…"
+  }
+}
+```
+
+### What adjust guarantees
+
+- The prior version is **never** updated. Its `frozen_manifest` stays byte
+  identical and readable forever; adjust only ever inserts.
+- Version N+1 lives under the same `cohort_id`, carries the adjusted copy for
+  exactly the addressed candidate, and copies every other member unchanged.
+- The member `content_hash`, the manifest `cohort_hash`/`frozen_hash`, the
+  recipient-set hash and the preview samples are recomputed with the same
+  helpers the freeze path uses. There is no second hashing implementation.
+- The adjusted copy is re-run through the freeze-time copy QA
+  (`ValidateCopyForRouteClass`) and is refused if it fails.
+- The new version is born with **no validation, no review and no scheduling**. Nothing
+  is inherited: nothing that was approved about the old copy is evidence about
+  the new copy.
+- Replaying the same `Idempotency-Key` returns the same adjustment and does not
+  create another version. A different key against a now-superseded version fails
+  `version_superseded` rather than silently forking the cohort.
+- Two simultaneous adjusts of the same version cannot both create N+1. The
+  parent row is locked `FOR UPDATE` and `UNIQUE (organization_id, cohort_id,
+  version)` is the backstop.
+- If the prior version carries a live bounded authority, it is revoked inside
+  the same transaction that creates N+1, and `revoked_authorization_id` names
+  it. If that revocation cannot be proven inside the transaction, the whole
+  adjustment is refused with `authority_active`. There is never a moment with
+  two valid authorities.
+
+### Immutable fields
+
+`mailbox`, `recipient*`, `evidence*`, `source*`, `policy_version`,
+`route_class` and `composer_version` are canonical-source evidence or
+machine-derived bindings. Sending any of them in the body is a hard `422`
+`immutable_field` naming the offending key, checked against the raw request body
+so a protected key can never be silently dropped by a typed struct. These are
+correctable only at the canonical source, followed by a fresh composition — not
+by typing over them here.
+
+### Error codes
+
+| status | code                          | when                                                        |
+| ------ | ----------------------------- | ----------------------------------------------------------- |
+| 400    | `idempotency_key_required`    | no `Idempotency-Key`.                                        |
+| 400    | `adjust_copy_required`        | empty `subject` or `body_text`.                              |
+| 400    | `adjust_reason_required`      | `reason` shorter than 8 characters after trimming.           |
+| 400    | `adjust_confirmation_required`| `confirmation` missing.                                      |
+| 400    | `adjust_expected_frozen_hash_required` | `expected_frozen_hash` missing.                     |
+| 404    | `candidate_not_found`         | the candidate is not in this immutable version.              |
+| 404    | `cohort_version_not_found`    | the version does not exist for this organization.            |
+| 409    | `frozen_hash_mismatch`        | `expected_frozen_hash` != the current `frozen_hash`.         |
+| 409    | `confirmation_mismatch`       | `confirmation` != `"v"` + current version.                   |
+| 409    | `version_superseded`          | the addressed version is not the latest for its cohort, including when a concurrent adjust won the race. |
+| 409    | `authority_active`            | the prior version carries a GO authority that could not be atomically revoked. |
+| 409    | `source_stale`                | the version's canonical source evidence expired. Adjust cannot refresh evidence. |
+| 409    | `composer_drift`              | the version was composed by another composer version; recomposing a content hash onto a composer that did not produce the manifest would invent a second source of truth. |
+| 409    | `idempotency_payload_conflict`| the key was already used with another payload.               |
+| 422    | `immutable_field`             | the body tried to set a protected field. The message names it. |
+| 422    | `copy_qa_failed`              | the adjusted copy fails copy QA. The message lists the reason codes. |
+| 422    | `cohort_bounds_violation`     | the cohort size or daily cap is outside the bounded-cohort limits. |
+
+Live recipient state (late suppression, opt-out, hard bounce, removal) is not an
+adjust gate: it is read on every detail view and re-enforced before scheduling
+and transport. Adjust edits a draft; it cannot make anything sendable. The live
+candidate is read only to give copy QA the same recipient context the freeze
+path had, and an unreadable live source degrades that context rather than
+blocking the edit.

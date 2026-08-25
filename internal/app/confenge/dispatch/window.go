@@ -196,3 +196,21 @@ func NextWindowOpenBusiness(now time.Time, tzName, startHHMM, endHHMM string, bu
 	}
 	return NextWindowOpen(now, tzName, startHHMM, endHHMM)
 }
+
+// NextEligibleSlot normalizes any candidate instant to a time the send window
+// would actually admit. Callers derive candidates from a pause gap, a min-gap
+// or a rolling-cap expiry, and none of those arithmetic results know about
+// business days: 09:00 Monday plus a cap window is 10:00 Monday, but Sunday
+// plus a min-gap is still Sunday. Offering such an instant as "next slot"
+// contradicts an in_send_window=false computed by the business-day rule.
+//
+// The returned instant is always either inside the window or the next window
+// open, in the configured location, so daylight-saving shifts are resolved by
+// the tzdata rules for that zone rather than a hardcoded offset.
+func NextEligibleSlot(candidate time.Time, tzName, startHHMM, endHHMM string, businessDaysOnly bool) time.Time {
+	in, err := InSendWindowBusiness(candidate, tzName, startHHMM, endHHMM, businessDaysOnly)
+	if err == nil && in {
+		return candidate.UTC()
+	}
+	return NextWindowOpenBusiness(candidate, tzName, startHHMM, endHHMM, businessDaysOnly)
+}

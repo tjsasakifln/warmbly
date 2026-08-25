@@ -333,6 +333,9 @@ func (s *service) DispatchBoundedCohort(ctx context.Context, orgID, actor, authI
 	if auth == nil || auth.OrganizationID != orgID {
 		return nil, errx.New(errx.NotFound, "bounded cohort grant missing")
 	}
+	if auth.GOReviewVerdict == HumanGateReadyVerdict {
+		return nil, errx.New(errx.Conflict, "legacy human-gate GO authority is audit-only; approve candidates individually")
+	}
 	send := CohortSendFunc(func(m FrozenCohortMember, tp *models.OutreachTouchpoint) (string, error) {
 		if err := s.ensureCohortDraft(ctx, orgID, actor, tp, m); err != nil {
 			return "", err

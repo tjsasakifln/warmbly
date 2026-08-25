@@ -232,7 +232,10 @@ func (r *outreachRepository) ListReviewTouchpoints(ctx context.Context, orgID uu
 			COALESCE(a.fact_to_mention,''), a.blocked, a.do_not_contact
 		FROM outreach_touchpoints t
 		LEFT JOIN outreach_accounts a ON a.id = t.account_id AND a.organization_id = t.organization_id
-		WHERE t.organization_id=$1 AND t.state IN ('DUE','DRAFTED','NEEDS_REVIEW','APPROVED')
+		WHERE t.organization_id=$1 AND t.state IN (
+			'DUE','DRAFTED','AI_REWRITE_PENDING','ENRICHMENT_PENDING',
+			'REJECTED_REWRITE_PENDING','NEEDS_REVIEW','APPROVED'
+		)
 		ORDER BY t.due_at ASC, t.ordinal ASC
 		LIMIT $2 OFFSET $3`
 	rows, err := r.db.Query(ctx, q, orgID, limit, offset)
@@ -311,13 +314,66 @@ func (r *outreachRepository) CASQueueTouchpoint(ctx context.Context, orgID, id u
 	return t, err
 }
 
+func (r *outreachRepository) CASScheduleTouchpoint(ctx context.Context, orgID, id uuid.UUID, expectedContentHash, messageKey string, dueAt time.Time) (*models.OutreachTouchpoint, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	if dueAt.IsZero() {
+		dueAt = time.Now().UTC()
+	}
+	now := time.Now().UTC()
+	const ret = `id, organization_id, account_id, contact_candidate_id, ordinal, COALESCE(cadence_step,''), COALESCE(channel,'EMAIL'), COALESCE(purpose,''), due_at, state, draft_id, COALESCE(recipient,''), COALESCE(subject,''), COALESCE(body_text,''), COALESCE(content_hash,''), COALESCE(approved_content_hash,''), approved_by, approved_at, COALESCE(authorization_mode,''), campaign_policy_authorization_id, COALESCE(authorization_policy_hash,''), authorization_at, COALESCE(signature_version,''), queued_at, sent_at, COALESCE(provider_message_id,''), COALESCE(stop_reason,''), previous_touchpoint_id, COALESCE(idempotency_key,''), COALESCE(policy_version,''), COALESCE(service_code,''), COALESCE(fact_used,''), evidence_ids, COALESCE(generated_context_hash,''), created_at, updated_at`
+	row := tx.QueryRow(ctx, `
+		UPDATE outreach_touchpoints
+		SET state='QUEUED', queued_at=$4, due_at=$5, updated_at=$4
+		WHERE organization_id=$1 AND id=$2 AND state='APPROVED'
+		  AND content_hash=$3 AND approved_content_hash=content_hash
+		  AND (approved_by IS NOT NULL OR authorization_mode='CAMPAIGN_POLICY')
+		RETURNING `+ret, orgID, id, expectedContentHash, now, dueAt.UTC())
+	tp, err := scanTouchpoint(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if tp.DraftID == nil {
+		return nil, errors.New("approved touchpoint has no draft")
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO confenge_dispatch_queue (
+			organization_id, channel, draft_id, message_key, recipient_ref,
+			due_at, priority, status, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,0,'queued',$7,$7)
+		ON CONFLICT (message_key) DO UPDATE SET
+			due_at=EXCLUDED.due_at, recipient_ref=EXCLUDED.recipient_ref,
+			status=CASE WHEN confenge_dispatch_queue.status IN ('sent','cancelled')
+				THEN confenge_dispatch_queue.status ELSE 'queued' END,
+			cancel_reason='', last_error='', reserved_until=NULL, updated_at=EXCLUDED.updated_at`,
+		orgID, tp.Channel, *tp.DraftID, messageKey, strings.ToLower(strings.TrimSpace(tp.Recipient)), dueAt.UTC(), now)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return tp, nil
+}
+
 func (r *outreachRepository) CancelOpenTouchpoints(ctx context.Context, orgID, accountID uuid.UUID, terminalState, stopReason string) (int, error) {
 	if terminalState == "" {
 		terminalState = models.TouchpointCancelled
 	}
 	now := time.Now().UTC()
 	ct, err := r.db.Exec(ctx, `UPDATE outreach_touchpoints SET state=$4, stop_reason=$5, approved_by=NULL, approved_at=NULL, approved_content_hash='', authorization_mode='', campaign_policy_authorization_id=NULL, authorization_policy_hash='', authorization_at=NULL, updated_at=$6 WHERE organization_id=$1 AND account_id=$2 AND state=ANY($3::text[])`,
-		orgID, accountID, []string{models.TouchpointPlanned, models.TouchpointDue, models.TouchpointDrafted, models.TouchpointNeedsReview, models.TouchpointApproved, models.TouchpointQueued}, terminalState, stopReason, now)
+		orgID, accountID, []string{
+			models.TouchpointPlanned, models.TouchpointDue, models.TouchpointDrafted,
+			models.TouchpointAIRewritePending, models.TouchpointEnrichmentPending,
+			models.TouchpointRejectedRewritePending, models.TouchpointNeedsReview,
+			models.TouchpointApproved, models.TouchpointQueued,
+		}, terminalState, stopReason, now)
 	if err != nil {
 		return 0, err
 	}

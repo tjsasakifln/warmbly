@@ -52,6 +52,8 @@ func main() {
 		os.Exit(cmdCohort(os.Args[2:]))
 	case "cohort-auth":
 		os.Exit(cmdCohortAuth(os.Args[2:]))
+	case "editorial":
+		os.Exit(cmdEditorial(os.Args[2:]))
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -81,6 +83,8 @@ Usage:
   confenge cohort dispatch --id UUID --actor UUID [--limit 10] [--confirm]
   confenge cohort report --events PATH
   confenge cohort-auth create|show|revoke [flags]
+  confenge editorial issues list|sync [flags]
+  confenge editorial guidelines list|propose|activate [flags]
 
 Env: PRIMARY_DB, CONFENGE_*, REDIS, NATS_URL (see .env.confenge.example).
   CONFENGE_REPOSITORY_SHA, CONFENGE_FEED_SCHEMA_VERSION, CONFENGE_EVIDENCE_VERSION

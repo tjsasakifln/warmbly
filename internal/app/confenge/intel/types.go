@@ -858,7 +858,7 @@ type ObservabilityReport struct {
 	RealEmpty                bool                          `json:"real_empty"`
 	AutoSend                 bool                          `json:"auto_send"`
 	EmailSideEffects         bool                          `json:"email_side_effects"`
-	ControlledEmail          []ControlledEmailOutcomeSlice `json:"controlled_email,omitempty"`
+	ControlledEmail          []ControlledEmailOutcomeSlice `json:"controlled_email"`
 }
 
 // LearningSummary is the PII-free learning row on the report.

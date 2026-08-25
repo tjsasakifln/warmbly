@@ -27,10 +27,6 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 	if acc.DoNotContact || acc.Blocked {
 		return nil, errx.New(errx.BadRequest, "account is blocked or DO_NOT_CONTACT")
 	}
-	if err := RequireTargetFit(acc); err != nil {
-		return nil, errx.New(errx.BadRequest, err.Error())
-	}
-
 	var cand *models.OutreachContactCandidate
 	if contactID != nil {
 		cand, err = s.repo.GetCandidate(ctx, orgID, *contactID)
@@ -47,8 +43,9 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 	if cand == nil {
 		return nil, errx.New(errx.BadRequest, "no contact candidate; resolve NEEDS_CONTACT first")
 	}
-	if err := RequireEmailOutbound(acc, cand); err != nil {
-		return nil, errx.New(errx.BadRequest, err.Error())
+	targetFitRecoveryReason, gateErr := requireEmailCandidateForDraft(acc, cand)
+	if gateErr != nil {
+		return nil, errx.New(errx.BadRequest, gateErr.Error())
 	}
 
 	allCands, listErr := s.repo.ListCandidates(ctx, orgID, accountID)
@@ -85,7 +82,11 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 		draft.CreatedAt = existing.CreatedAt
 	}
 
-	recent := recentDraftBodies(ctx, s, orgID, accountID, models.OutreachChannelEmail)
+	excludeDraftID := uuid.Nil
+	if existing != nil {
+		excludeDraftID = existing.ID
+	}
+	recent := recentDraftBodiesExcept(ctx, s, orgID, accountID, models.OutreachChannelEmail, excludeDraftID)
 	in := BuildGenerateInput(ChannelEmailInitial, acc, cand, evidence, recent)
 	pb, _ := LoadPlaybook()
 	st, plan := BuildOutboundPlan(pb, acc, cand, evidence, 1)
@@ -167,6 +168,12 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 			val.Errors = appendUnique(val.Errors, rec.Reason)
 		}
 	}
+	if targetFitRecoveryReason != "" {
+		flags = appendUnique(flags, strings.ToLower(targetFitRecoveryReason))
+		risk = "RED"
+		val.OK = false
+		val.Errors = appendUnique(val.Errors, targetFitRecoveryReason)
+	}
 	val.Claims = out.Claims
 	val.Rationale = out.Rationale
 	val.Channel = out.Channel
@@ -195,22 +202,27 @@ func (s *service) GenerateDraft(ctx context.Context, orgID, userID, accountID uu
 	draft.RiskFlags = flags
 	// NEEDS_REVIEW is only for sendable copy awaiting human authorization.
 	switch {
-	case rec.State == RecipientBlocked || plan.Messageability == MessageabilityBlocked:
+	case rec.State == RecipientBlocked:
 		draft.Status = models.OutreachDraftBlocked
 		draft.Subject, draft.BodyText = "", ""
+	case targetFitRecoveryReason != "":
+		draft.Status = models.OutreachDraftEnrichmentPending
 	case !RecipientStateAuthorizable(rec.State) || plan.Messageability != MessageabilityReady:
-		draft.Status = models.OutreachDraftSkipped
+		draft.Status = models.OutreachDraftEnrichmentPending
 		draft.Subject, draft.BodyText = "", ""
 	default:
 		if !val.OK || strings.TrimSpace(out.BodyText) == "" {
-			draft.Status = models.OutreachDraftSkipped
-			draft.Subject, draft.BodyText = "", ""
+			draft.Status = models.OutreachDraftAIRewritePending
 		} else {
 			draft.Status = models.OutreachDraftNeedsReview
 		}
 	}
 	if err := s.repo.UpsertDraft(ctx, draft); err != nil {
 		return nil, errx.New(errx.Internal, "failed to save draft: "+err.Error())
+	}
+	if targetFitRecoveryReason != "" {
+		did := draft.ID
+		s.recordEditorialSignal(ctx, orgID, &did, nil, models.OutreachDraftEnrichmentPending, targetFitRecoveryReason, draft.Channel)
 	}
 
 	// Move account into review queue only when the message is sendable.
@@ -566,6 +578,14 @@ func (s *service) SetAI(p generation.Provider) {
 }
 
 func recentDraftBodies(ctx context.Context, s *service, orgID, accountID uuid.UUID, channel string) []string {
+	return recentDraftBodiesExcept(ctx, s, orgID, accountID, channel, uuid.Nil)
+}
+
+// recentDraftBodiesExcept excludes the draft currently being regenerated.
+// Comparing a replacement with its own previous version makes every material
+// context refresh look like a cross-account clone and permanently strands it
+// in AI_REWRITE_PENDING.
+func recentDraftBodiesExcept(ctx context.Context, s *service, orgID, accountID uuid.UUID, channel string, excludeDraftID uuid.UUID) []string {
 	if s == nil || s.repo == nil {
 		return nil
 	}
@@ -576,6 +596,9 @@ func recentDraftBodies(ctx context.Context, s *service, orgID, accountID uuid.UU
 	}
 	var others, same []string
 	for _, d := range list {
+		if excludeDraftID != uuid.Nil && d.ID == excludeDraftID {
+			continue
+		}
 		if channel != "" && d.Channel != "" && d.Channel != channel {
 			continue
 		}

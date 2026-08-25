@@ -39,6 +39,43 @@ type controlledDiscovery struct {
 	SchemaVersion             string `json:"schema_version,omitempty"`
 }
 
+// FeedControlledReviewAuthority recognizes the strong, explicit upstream
+// contract for an institutional route that may be prepared for human review.
+// This is deliberately narrower than CandidateControlledEligible: it is used
+// only to recover a strict/named-person provenance failure and never grants
+// approval, queueing or transport authority.
+func FeedControlledReviewAuthority(fc FeedContact) bool {
+	if fc.ControlledEmailEligible == nil || !*fc.ControlledEmailEligible {
+		return false
+	}
+	if fc.DerivedFromFixture == nil || *fc.DerivedFromFixture {
+		return false
+	}
+	class := strings.ToUpper(strings.TrimSpace(fc.RouteClass))
+	if !defaultPilotRouteClasses[class] || class == RouteClassProbabilisticOrRisky {
+		return false
+	}
+	if strings.ToUpper(strings.TrimSpace(fc.MailboxCompanyEvidence)) != "OBSERVED" ||
+		strings.ToUpper(strings.TrimSpace(fc.ChannelEpistemic)) != "OBSERVED" ||
+		strings.ToUpper(strings.TrimSpace(fc.RouteFreshness)) != "FRESH" ||
+		strings.ToUpper(strings.TrimSpace(fc.RiskClass)) != "ALLOWED" ||
+		strings.ToUpper(strings.TrimSpace(fc.RouteSuppression)) != "NONE" ||
+		strings.ToUpper(strings.TrimSpace(fc.OwnershipStatus)) != "COMPANY_OWNED" ||
+		strings.ToUpper(strings.TrimSpace(fc.VerificationStatus)) != models.OutreachVerifyOfficialSource {
+		return false
+	}
+	if !validExactEmail(fc.Email) {
+		return false
+	}
+	// Re-run the immutable fixture/demo checks without the strict root-source
+	// label. UNKNOWN is accepted only because the stronger controlled contract
+	// above explicitly proves a fresh observed company association.
+	if tainted, _ := ContactProvenanceTainted(fc.Email, fc.SourceURL, "", fc.VerificationStatus, *fc.DerivedFromFixture); tainted {
+		return false
+	}
+	return true
+}
+
 func parseControlledDiscovery(c *models.OutreachContactCandidate) controlledDiscovery {
 	var d controlledDiscovery
 	if c == nil || len(c.DiscoveryJSON) == 0 {
@@ -83,11 +120,14 @@ func CandidateControlledEligible(c *models.OutreachContactCandidate) bool {
 		return false
 	}
 	d := parseControlledDiscovery(c)
-	if d.ControlledEmailEligible == nil || !*d.ControlledEmailEligible {
+	if d.ControlledEmailEligible == nil {
 		class := CandidateRouteClass(c)
 		if class == RouteClassDirectPerson {
 			return c.EmailSendReady && provenPersonName(c)
 		}
+		return legacyControlledPublicRoute(c, class)
+	}
+	if !*d.ControlledEmailEligible {
 		return false
 	}
 	class := CandidateRouteClass(c)
@@ -95,6 +135,43 @@ func CandidateControlledEligible(c *models.OutreachContactCandidate) bool {
 		return false
 	}
 	return defaultPilotRouteClasses[class]
+}
+
+// legacyControlledPublicRoute bridges pre-contract institutional candidates
+// whose imported fields already prove a public company-owned route.
+func legacyControlledPublicRoute(c *models.OutreachContactCandidate, class string) bool {
+	if c == nil || !c.EmailSendReady || c.MailboxPurposeSendBlocked || !c.EnrollableIgnoringVerification() {
+		return false
+	}
+	if !validExactEmail(c.Email) {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(c.OwnershipStatus), "COMPANY_OWNED") {
+		return false
+	}
+	if isFreemailAddress(c.Email) || (class != RouteClassRoleOrDepartment && class != RouteClassGenericCompany) {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(c.EmailDerivation), "INFERRED") {
+		return false
+	}
+	if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(c.RecipientCommercialSuitability)), "UNSUITABLE") {
+		return false
+	}
+	if suppression := strings.ToUpper(strings.TrimSpace(c.RouteSuppression)); suppression != "" && suppression != "NONE" {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(c.VerificationStatus)) {
+	case models.OutreachVerifyOfficialSource,
+		models.OutreachVerifyPublicDocumentRecent,
+		models.OutreachVerifyMultipleSources,
+		models.OutreachVerifyInstitutionalGeneric,
+		models.OutreachVerifyHumanConfirmed,
+		models.OutreachVerifyVerified:
+		return true
+	default:
+		return false
+	}
 }
 
 // CandidateEnrollable is the controlled-route enrollability rule: a classified
@@ -219,6 +296,13 @@ func ValidateCopyForRouteClass(class, body, subject string, cand *models.Outreac
 	}
 	if looksMidTokenTruncation(subject) || looksMidTokenTruncation(body) {
 		add("mid_token_truncation")
+	}
+	// Cohort v1 froze five members with admission_reasons saying
+	// "copy_qa=passed" while two messages carried ",." and one repeated a
+	// three-word run. The composer now prevents all three, and these gates make
+	// a regression refuse admission instead of freezing quietly.
+	for _, code := range copyProjectionDefects(subject, body) {
+		add(code)
 	}
 	switch class {
 	case RouteClassDirectPerson:

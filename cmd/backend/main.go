@@ -1097,6 +1097,7 @@ func main() {
 				log.Fatalf("confenge: postgres required for bounded cohort authority")
 			}
 			confengeServiceForHandler.WireCohortAuth(confenge.NewPostgresCohortStore(primaryDB.Pool))
+			confengeServiceForHandler.WireHumanGate(primaryDB.Pool)
 			// Dossier manifest references are card metadata, not a send path.
 			confengeServiceForHandler.WireDossierReferences(confenge.NewPostgresDossierStore(primaryDB.Pool))
 		}
@@ -1105,6 +1106,15 @@ func main() {
 		}
 		// Async outcome outbox → extra-cli HMAC webhook (idle when URL/secret unset).
 		go confenge.NewOutcomeDeliveryWorker(outreachRepo, confengeCfg, confenge.OutcomeDeliveryOptions{}).Run(ctx)
+		// Exact-hash human approvals are durable schedules. This worker is idle
+		// while paused or outside the configured business window.
+		go confenge.NewDispatchQueueWorker(confengeServiceForHandler, 30*time.Second).Run(ctx)
+		// Suboptimal and explicitly rejected copy is recoverable. AI rewrites run
+		// asynchronously and always return to human review.
+		go confenge.NewEditorialRecoveryWorker(confengeServiceForHandler, time.Minute).Run(ctx)
+		// Contact-ready accounts are planned and drafted asynchronously. This
+		// worker has no approval, queueing, scheduling or transport authority.
+		go confenge.NewDraftGenerationWorker(confengeServiceForHandler, 30*time.Second).Run(ctx)
 		// Continuous feed sync (fail-closed OFF by default). Single-flight inside SyncFeedManifest.
 		if confengeCfg.FeedSyncEnabled {
 			if orgRaw := strings.TrimSpace(os.Getenv("CONFENGE_FEED_SYNC_ORG_ID")); orgRaw != "" {
@@ -1482,10 +1492,22 @@ func main() {
 		// contacts each tick so hard-bouncing addresses are dropped before any
 		// worker sends. CONTROL-PLANE ONLY — the SMTP RCPT probe dials remote MX
 		// on :25 from this backend host (a non-sending IP), never a worker.
-		emailVerifier := emailverify.New(emailverify.Config{
-			HeloHost: os.Getenv("EMAIL_VERIFY_HELO_HOST"), // e.g. verify.warmbly.com
-			MailFrom: os.Getenv("EMAIL_VERIFY_MAIL_FROM"), // e.g. verify@warmbly.com
-		})
+		emailVerifyCfg := emailverify.Config{
+			HeloHost: os.Getenv(emailverify.EnvHeloHost), // e.g. verify.warmbly.com
+			MailFrom: os.Getenv(emailverify.EnvMailFrom), // e.g. verify@warmbly.com
+		}
+		// Fail closed on a production outreach plane with no usable prober
+		// identity. Verify() alone would degrade every probe to UNKNOWN, which
+		// is correct but silent — and the deploy that shipped without
+		// EMAIL_VERIFY_HELO_HOST announced "localhost", collected 5xx replies
+		// that named our own HELO, and stored them as if the RECIPIENT were
+		// bad. A refusal to boot is the only version of that nobody misses.
+		// Dev / self-host / outreach-off keep booting with the verifier idle.
+		if err := emailVerifyCfg.ValidateStartup(os.Getenv("APP_ENV"), confengeCfg.Enabled); err != nil {
+			sentry.CaptureException(err)
+			log.Fatalf("email verifier identity: %v", err)
+		}
+		emailVerifier := emailverify.New(emailVerifyCfg)
 		emailVerifyService = emailverifyapp.NewService(contactRepostory, emailVerifier)
 		emailVerificationJob := jobs.NewEmailVerificationJob(emailVerifyService, 100)
 		emailVerificationScheduler := jobs.NewEmailVerificationScheduler(emailVerificationJob, 15*time.Minute)

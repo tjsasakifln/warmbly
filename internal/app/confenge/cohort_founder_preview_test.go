@@ -60,16 +60,23 @@ func TestPreviewShowsCopyRouteAndAdmissionForSampledMember(t *testing.T) {
 	for _, want := range []string{
 		"Construtora Alfa",              // wrong company is the first thing to catch
 		m.Subject,                       // subject verbatim
-		"Olá, pessoal de licitações",    // greeting verbatim
-		"Contrato 12/2023 com reajuste", // the observed fact the copy is built on
+		"Olá",                           // greeting verbatim, without invented team identity
+		"contrato 12/2023 com reajuste", // the observed fact the copy is built on
 		"source=" + FactSourceFactToMention,
-		"Posso enviar o recorte?", // the CTA
+		// The ask follows the route: a department mailbox is asked whether the
+		// frontier is theirs, not asked to forward the mail to a stranger.
+		"ou devo procurar outra?",
+		// The practice line is read from the lead's own service context.
+		"Trabalho com reajuste contratual",
 		RouteClassRoleOrDepartment,
 		"mailbox_purpose=LICITACOES",
 		"why_admitted:",
 		"admitted_by=controlled_route_eligible",
 		"feed_target_fit_tier=B_EVIDENCE_SUPPORTED class=ICP_CORE eligible=true fresh=true",
 		"why_this_route:",
+		// The cta field repeats the closing sentence of the body; the note keeps
+		// the founder from reading it as a second CTA inside the email.
+		"nao e um segundo CTA dentro do email",
 		"chosen_route_class=" + RouteClassRoleOrDepartment,
 		"preferred_initial=true",
 		// The alternative mailbox on the same account, and why it lost.
@@ -82,9 +89,18 @@ func TestPreviewShowsCopyRouteAndAdmissionForSampledMember(t *testing.T) {
 	}
 
 	// A pasted database row or a raw enum in prose is usually only visible in
-	// the whole message, so at least one full body must be rendered.
-	if !strings.Contains(out, "full composed body") || !strings.Contains(out, "| Sou da CONFENGE.") {
-		t.Fatalf("preview must render whole bodies for a few samples\n---\n%s", out)
+	// the whole message, so every sampled member renders its whole body.
+	if !strings.Contains(out, "ASSUNTO: "+m.Subject) || !strings.Contains(out, "CORPO:") || !strings.Contains(out, "| Meu nome é Tiago, da CONFENGE.") {
+		t.Fatalf("preview must render the whole message for every sample\n---\n%s", out)
+	}
+
+	// Reading starts with what the recipient receives; internal fields and the
+	// cohort-level telemetry come after it.
+	body := strings.Index(out, "ASSUNTO: ")
+	meta := strings.Index(out, "metadata interna (nao faz parte do email):")
+	tech := strings.Index(out, "cohort_hash=")
+	if body < 0 || meta < body || tech < meta {
+		t.Fatalf("order must be email, then metadata, then telemetry (body=%d meta=%d tech=%d)\n---\n%s", body, meta, tech, out)
 	}
 }
 
@@ -92,21 +108,18 @@ func TestPreviewShowsCopyRouteAndAdmissionForSampledMember(t *testing.T) {
 // needed here", which is exactly the judgement the founder must not be nudged
 // into making by the renderer.
 func TestPreviewRendersMissingFieldsAsExplicitAbsence(t *testing.T) {
-	unk := true
-	snap, err := PrepareControlledCohort([]CohortAccountInput{{
-		// No company name, no fact, no moment, no target-fit, no CTA.
-		Account: models.OutreachAccount{SourceLeadID: "acc-bare", CNPJ14: "22222222000192"},
-		Candidates: []models.OutreachContactCandidate{{
-			Email: "contato@bare.com.br", OwnershipStatus: "COMPANY_OWNED",
-			DiscoveryJSON: eligibleDisc(t, RouteClassGenericCompany, false, controlledDiscovery{PersonUnknown: &unk}),
-		}},
-	}}, CohortPrepareOptions{Now: time.Now().UTC(), RepositorySHA: "sha-test"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(snap.Members) != 1 {
-		t.Fatalf("fixture must freeze one route, got %d", len(snap.Members))
-	}
+	// This is a rendering-only fixture. Preparation correctly keeps a lead with
+	// neither company nor fact out of a sendable frozen cohort and routes it to
+	// enrichment instead.
+	snap := &FrozenCohortSnapshot{Members: []FrozenCohortMember{{
+		AccountRef: "acc-bare", Mailbox: "contato@bare.com.br", RouteClass: RouteClassGenericCompany,
+		FactSource: FactSourceNone,
+		AdmissionReasons: []string{
+			"feed_target_fit=" + previewAbsent,
+			"feed_moment=" + previewAbsent,
+			"feed_priority=" + previewAbsent,
+		},
+	}}}
 	if snap.Members[0].ObservedFact != "" || snap.Members[0].FactSource != FactSourceNone {
 		t.Fatalf("fixture is supposed to carry no fact: %+v", snap.Members[0])
 	}
@@ -192,7 +205,9 @@ func TestPreviewSampleIsBoundedPerRouteClass(t *testing.T) {
 	if n := strings.Count(wide, "why_this_route:"); n != 4 {
 		t.Fatalf("--samples must widen the sample, got %d\n---\n%s", n, wide)
 	}
-	if n := strings.Count(wide, "--- end ["); n != 1 {
-		t.Fatalf("--bodies must bound whole-body rendering, got %d\n---\n%s", n, wide)
+	// --bodies no longer bounds anything: every sampled member is rendered whole,
+	// because a founder cannot judge copy from an excerpt.
+	if n := strings.Count(wide, "CORPO:"); n != 4 {
+		t.Fatalf("every sampled member must render its body, got %d\n---\n%s", n, wide)
 	}
 }

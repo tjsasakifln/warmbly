@@ -12,11 +12,46 @@ There is **no research** in this path: the model receives structured JSON and re
 | `confenge.draft.v3` | Strategy-first composition (`OutreachStrategy`), doctrine `confenge-outreach-v1`, micro-offers, doctrine QA |
 | `confenge.draft.v4` | Messageability gate + outbound-safe plan (`confenge.composer.v2`, doctrine `confenge-outreach-v2`). Internal strategy fields are never interpolated. Unsent prior-version drafts must be regenerated. |
 | `confenge.draft.v5` | Authorizable NEEDS_REVIEW. Renderer reads only `RecipientFacingCopy`. `validation_ok` means only human authorization remains. P0 hard QA: leak phrases, crédito frame, near-dup, stale composer, dumps, empty copy, missing CTA `?`. |
+| `confenge.draft.v6` | Semantic brief first, written event subjects, safe company-context fallback when a specific fact is absent, deterministic editorial QA, and bounded AI rewrite recovery. Suboptimal copy remains recoverable and always returns to human review. |
 
-Constant: `internal/app/confenge/validators.go` → `PromptVersion`.
-Doctrine: `OutreachDoctrineVersion` + `internal/app/confenge/outreach_playbook/`.
+Constant: `internal/app/confenge/validators.go` → `PromptVersion`. Current: `confenge.draft.v6`.
+Doctrine: `OutreachDoctrineVersion` + `internal/app/confenge/outreach_playbook/`. Current: `confenge-outreach-v2`.
 
 Bump the constant when the system prompt schema or hard safety rules change. Store the version on each `OutreachDraft.PromptVersion` for audit.
+
+## Composer version
+
+| Version | Notes |
+| --- | --- |
+| `confenge.composer.v2` | Messageability gate and outbound-safe plan. Internal strategy fields are never interpolated. |
+| `confenge.composer.v3` | Fail-closed last-mile authorizable outreach. |
+| `confenge.composer.v4` | De-shouts edital prose, collapses verbatim repeated n-grams, stops label stutter, terminates a fact without producing `,.`. |
+| `confenge.composer.v5` | Editorial composer: semantic brief, deterministic fact selection, editorial QA, corpus QA across the cohort, and bounded recompose recovery. **Current.** |
+
+Constant: `internal/app/confenge/messageability.go` → `ComposerVersion`. Current: `confenge.composer.v5`.
+
+The composer stamp is what identifies frozen copy. A cohort snapshot and each of its members stamp `ComposerVersion`; a draft or touchpoint is identified by its `PromptVersion`, which is the composer that wrote the text.
+
+## Editorial authority (frozen copy is operational only while its composer ships)
+
+Warmbly ships one composer at a time. `internal/app/confenge/editorial_authority.go` is the single place that decides whether frozen copy is still operational, and every approve, authorize, queue and transport path asks it instead of comparing version strings itself.
+
+| State | Meaning |
+| --- | --- |
+| `CURRENT` | The current composer (and, for cohorts, the current bounded-cohort policy) wrote this text. It can still be reviewed, approved, authorized, queued and sent. |
+| `LEGACY_SUPERSEDED` | An earlier composer or policy wrote it. It stays readable for audit and is refused by every operational path. |
+
+Reason codes: `composer_superseded`, `composer_unstamped` (fail-closed: no stamp is no proof), `policy_superseded`. Superseded artifacts also carry `EditorialLegacyNotice`, the PT-BR line a reader must see above the text.
+
+Rules:
+
+- `EvaluateCohortEditorialAuthority` checks composer plus `BoundedCohortPolicyV1`. `EvaluateDraftEditorialAuthority` checks `PromptVersion` only: the cadence policy stamped on a touchpoint is a schedule, not a composer.
+- `SnapshotEditorialAuthority` is current only when the snapshot stamp and every member stamp are current, so a member left behind by a partial recompose cannot ride under a current header.
+- `APPROVE` on a cohort candidate is refused with `composer_superseded`; `HOLD` and `REJECT` stay open so an old version can be closed out. `GO` is blocked by the same codes. Touchpoint approve, queue and transport are refused the same way.
+- The transport check is absolute, not relative: a grant and its copy can agree with each other and still both be the work of a composer this build no longer ships.
+- The way forward is `POST /confenge/cohorts/:id/recompose`, which forks version N+1 with the current composer and inherits no approval, no `GO` and no queue state.
+
+Customer-facing docs: `docs/content/docs/guides/confenge-editorial-lifecycle.mdx`.
 
 ## Generation channels
 
@@ -89,6 +124,8 @@ Hard fails include:
 - anti-template / AI clichés / generic subjects / artificial company-name spam
 - excessive paragraphs or bullets
 - WhatsApp too long or looking like a pasted email
+- `generic_cta`: the paragraph carrying the closing question neither states in the first person what the sender does (`trabalho`, `atuo`, `apoio`, ...) nor shares a content word with the observed fact, so the ask fits any company in the corpus
+- `personalization_without_fact`: observation language (`Vi que`, `Notei`, `Reparei`, ...) while no observed fact is carried, which asserts something the system cannot evidence
 
 Near-duplicate (character n-gram Jaccard, threshold `0.72`):
 

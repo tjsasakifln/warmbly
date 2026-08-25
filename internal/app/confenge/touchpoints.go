@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
 )
@@ -32,6 +33,9 @@ func (s *service) PlanAccountCadence(ctx context.Context, orgID, userID, account
 	if err != nil {
 		return nil, errx.New(errx.Internal, "list touchpoints failed")
 	}
+	recoveryRevision := ""
+	latestRecoverableCancellation := time.Time{}
+	recoverableCancelledCadence := len(existing) > 0
 	for _, t := range existing {
 		if t.State == models.TouchpointSent || t.State == models.TouchpointDNC {
 			return nil, errx.New(errx.BadRequest, "cannot replan cadence: account has SENT or DNC touchpoints")
@@ -39,6 +43,22 @@ func (s *service) PlanAccountCadence(ctx context.Context, orgID, userID, account
 		if IsOpen(t.State) {
 			return existing, nil
 		}
+		if !recoverableCadenceCancellation(t.State, t.StopReason) {
+			recoverableCancelledCadence = false
+		}
+		if t.UpdatedAt.After(latestRecoverableCancellation) {
+			latestRecoverableCancellation = t.UpdatedAt
+		}
+	}
+	if len(existing) > 0 && !recoverableCancelledCadence {
+		return existing, nil
+	}
+	if recoverableCancelledCadence {
+		revision := latestRecoverableCancellation.UTC().Format("20060102T150405.000000000Z")
+		if latestRecoverableCancellation.IsZero() {
+			revision = existing[len(existing)-1].ID.String()
+		}
+		recoveryRevision = ":recovery:" + PromptVersion + ":" + revision
 	}
 	var cand *models.OutreachContactCandidate
 	if contactID != nil {
@@ -51,7 +71,19 @@ func (s *service) PlanAccountCadence(ctx context.Context, orgID, userID, account
 		if err != nil {
 			return nil, errx.New(errx.Internal, "list candidates failed")
 		}
-		cand = pickRecommendedAny(list)
+		current := make([]models.OutreachContactCandidate, 0, len(list))
+		if acc.LastImportRunID != nil {
+			for i := range list {
+				if list[i].LastImportRunID != nil && *list[i].LastImportRunID == *acc.LastImportRunID {
+					current = append(current, list[i])
+				}
+			}
+		} else {
+			// Preserve the legacy/manual path for accounts that have never been
+			// bound to the versioned feed contract.
+			current = list
+		}
+		cand = pickRecommendedAny(current)
 	}
 	ch := strings.ToUpper(strings.TrimSpace(channel))
 	if ch == "" {
@@ -89,7 +121,7 @@ func (s *service) PlanAccountCadence(ctx context.Context, orgID, userID, account
 		if i == 0 {
 			state = models.TouchpointDue
 		}
-		idem := fmt.Sprintf("tp:%s:%s:%d:%s", orgID, accountID, step.Ordinal, step.CadenceStep)
+		idem := fmt.Sprintf("tp:%s:%s:%d:%s%s", orgID, accountID, step.Ordinal, step.CadenceStep, recoveryRevision)
 		tp := &models.OutreachTouchpoint{
 			OrganizationID: orgID, AccountID: accountID, Ordinal: step.Ordinal,
 			CadenceStep: step.CadenceStep, Channel: ch, Purpose: step.Purpose,
@@ -115,6 +147,16 @@ func (s *service) PlanAccountCadence(ctx context.Context, orgID, userID, account
 	}
 	_ = userID
 	return out, nil
+}
+
+func recoverableCadenceCancellation(state, reason string) bool {
+	if state != models.TouchpointCancelled {
+		return false
+	}
+	reason = strings.TrimSpace(reason)
+	return strings.EqualFold(reason, StopComposerStale) ||
+		strings.EqualFold(reason, TargetFitReasonStale) ||
+		strings.EqualFold(reason, staleReviewStopReason)
 }
 
 func (s *service) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, limit, offset int) ([]models.OutreachTouchpoint, *errx.Error) {
@@ -204,6 +246,7 @@ func (s *service) ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, li
 			}
 			pack := BuildConsultantSendabilityPack(acc, cand, rec, plan, synth, val)
 			list[i].ConsultantSendability = pack.AsMap()
+			projectTouchpointEditorial(&list[i], acc, cand, promptVer)
 			// Live QA wins over a leftover stored true so the API cannot lie.
 			if d := list[i].Draft; d != nil {
 				ok := val.OK && pack.SendWithoutEditing == "sim"
@@ -289,8 +332,12 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	if err != nil || tp == nil {
 		return nil, errx.New(errx.NotFound, "touchpoint not found")
 	}
+	recoveryState := tp.State
+	forceAIRewrite := recoveryState == models.TouchpointRejectedRewritePending
 	switch tp.State {
-	case models.TouchpointDue, models.TouchpointDrafted, models.TouchpointNeedsReview, models.TouchpointPlanned:
+	case models.TouchpointDue, models.TouchpointDrafted, models.TouchpointNeedsReview, models.TouchpointPlanned,
+		models.TouchpointAIRewritePending, models.TouchpointEnrichmentPending,
+		models.TouchpointRejectedRewritePending:
 	default:
 		return nil, errx.New(errx.BadRequest, "cannot generate for state "+tp.State)
 	}
@@ -304,16 +351,22 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	if acc.DoNotContact || acc.Blocked {
 		return nil, errx.New(errx.BadRequest, "account blocked or DNC")
 	}
-	if err := RequireTargetFit(acc); err != nil {
-		return nil, errx.New(errx.BadRequest, err.Error())
-	}
 	var cand *models.OutreachContactCandidate
 	if tp.ContactCandidateID != nil {
 		cand, _ = s.repo.GetCandidate(ctx, orgID, *tp.ContactCandidateID)
 	}
+	var targetFitRecoveryReason string
 	if tp.Channel != models.OutreachChannelWhatsApp {
-		if err := RequireEmailOutbound(acc, cand); err != nil {
-			return nil, errx.New(errx.BadRequest, err.Error())
+		var gateErr error
+		targetFitRecoveryReason, gateErr = requireEmailCandidateForDraft(acc, cand)
+		if gateErr != nil {
+			return nil, errx.New(errx.BadRequest, gateErr.Error())
+		}
+	} else {
+		var gateErr error
+		targetFitRecoveryReason, gateErr = targetFitForDraft(acc)
+		if gateErr != nil {
+			return nil, errx.New(errx.BadRequest, gateErr.Error())
 		}
 	}
 	allCands, listErr := s.repo.ListCandidates(ctx, orgID, tp.AccountID)
@@ -323,7 +376,7 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	rec := ResolveRecipient(acc, allCands, time.Now().UTC())
 	evidence, _ := s.repo.ListEvidence(ctx, orgID, tp.AccountID)
 	priors, _ := s.repo.ListTouchpoints(ctx, orgID, tp.AccountID, models.TouchpointSent, 20, 0)
-	subject, body := jitCompose(tp, acc, cand, evidence, priors)
+	var subject, body string
 	if tp.Channel == "" {
 		tp.Channel = models.OutreachChannelEmail
 	}
@@ -347,13 +400,95 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	if factUsed != "" && plan.Messageability == MessageabilityReady && plan.Hook != "" {
 		st.ObservedFact = factUsed
 	}
-	recent := recentDraftBodies(ctx, s, orgID, tp.AccountID, tp.Channel)
+	excludeDraftID := uuid.Nil
+	if tp.DraftID != nil {
+		excludeDraftID = *tp.DraftID
+	}
+	recent := recentDraftBodiesExcept(ctx, s, orgID, tp.AccountID, tp.Channel, excludeDraftID)
 	var composed DraftOutput
-	if plan.Messageability != MessageabilityReady || !RecipientStateAuthorizable(rec.State) {
+	providerName := "template"
+	modelName := "semantic_" + tp.Purpose
+	var editorialReasons []string
+	aiRewriteSucceeded := false
+	if plan.Messageability == MessageabilityBlocked || !RecipientStateAuthorizable(rec.State) {
 		subject, body = "", ""
 		factUsed = ""
 	} else {
-		composed = ComposeFromPlan(plan, acc, cand, genCh)
+		priorSubject := ""
+		if len(priors) > 0 {
+			priorSubject = priors[len(priors)-1].Subject
+		}
+		class := CandidateRouteClass(cand)
+		personName := ""
+		if cand != nil {
+			personName = firstName(cand.Name)
+		}
+		semantic, reasons := ComposeEditorialTouch(acc, cand, class, genCh, priorSubject)
+		editorialReasons = append(editorialReasons, reasons...)
+		if len(reasons) == 0 {
+			// Missing specificity is a soft planning deficit, not a reason to
+			// discard the lead. A grounded semantic tier-B brief may promote it to
+			// review while the underlying enrichment remains visible in reasons.
+			if plan.Messageability != MessageabilityBlocked {
+				plan.Messageability = MessageabilityReady
+				plan.Reason = ""
+				plan.ReasonCodes = nil
+				st.ObservedFact = semantic.ObservedFact
+			}
+			composed = DraftOutput{
+				Subject: semantic.Subject, BodyText: semantic.Body,
+				ServiceCode: firstNonEmpty(plan.ServiceCode, acc.ServiceCode),
+				FactUsed:    semantic.ObservedFact,
+				EvidenceIDs: firstNonEmptyIDs(plan.EvidenceIDs, evidIDs),
+				Channel:     genCh, CTA: semantic.CTA, Question: semantic.CTA,
+				Rationale: "semantic editorial brief",
+				RiskFlags: []string{"semantic_editorial", "messageability_ready"},
+			}
+			editorialReasons = EditorialQA(composed.Subject, composed.BodyText, EditorialQAContext{
+				RouteClass:      class,
+				RawFact:         firstNonEmpty(acc.FactToMention, acc.MomentSummary),
+				SenderFirstName: editorialSenderFirstName(),
+				PersonProven:    composerMaySeePersonName(cand),
+				PersonName:      personName,
+			})
+		}
+
+		// A deterministic editorial miss is recoverable. When AI is configured,
+		// give it one bounded rewrite attempt over the same evidence-only plan.
+		// The result still has to clear every deterministic validator and remains
+		// pending human approval.
+		if (len(editorialReasons) > 0 || forceAIRewrite) && s.ai != nil && len(reasons) == 0 {
+			touches := make([]TouchSummary, 0, len(priors))
+			for _, prior := range priors {
+				touches = append(touches, TouchSummary{
+					Channel: prior.Channel, Direction: "OUTBOUND",
+					Subject: prior.Subject, Snippet: SanitizeText(prior.BodyText, 500),
+					At: prior.UpdatedAt.UTC().Format(time.RFC3339),
+				})
+			}
+			aiOut, aiProvider, aiModel, aiErr := (&AIDraftGenerator{Provider: s.ai}).Generate(ctx, GenerateInput{
+				Channel: genCh, Account: acc, Contact: cand, Evidence: evidence,
+				Touches: touches, RecentBodies: recent, PriorSubject: priorSubject,
+				AllowNearDupRegen: true,
+			})
+			if aiErr == nil {
+				aiQA := EditorialQA(aiOut.Subject, aiOut.BodyText, EditorialQAContext{
+					RouteClass: class, RawFact: firstNonEmpty(acc.FactToMention, acc.MomentSummary),
+					SenderFirstName: editorialSenderFirstName(),
+					PersonProven:    composerMaySeePersonName(cand), PersonName: personName,
+				})
+				if len(aiQA) == 0 {
+					composed, editorialReasons = aiOut, nil
+					providerName, modelName = aiProvider, aiModel
+					composed.RiskFlags = appendUnique(composed.RiskFlags, "ai_editorial_rewrite")
+					aiRewriteSucceeded = true
+				}
+			}
+		}
+		if forceAIRewrite && !aiRewriteSucceeded {
+			editorialReasons = appendUnique(editorialReasons, "rejected_copy_requires_ai_rewrite")
+		}
+
 		if _, hit := NearDuplicate(composed.BodyText, recent); hit {
 			composed.BodyText = varyTemplateHook(composed.BodyText)
 			composed.RiskFlags = appendUnique(composed.RiskFlags, "near_dup_regenerated")
@@ -378,7 +513,7 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	if cand != nil && recipient == "" {
 		recipient = cand.Email
 	}
-	if plan.Messageability != MessageabilityReady {
+	if plan.Messageability == MessageabilityBlocked {
 		val.OK = false
 		if plan.Reason != "" {
 			val.Errors = appendUnique(val.Errors, plan.Reason)
@@ -391,8 +526,15 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 			val.Errors = appendUnique(val.Errors, rec.Reason)
 		}
 	}
+	if targetFitRecoveryReason != "" {
+		val.OK = false
+		val.Errors = appendUnique(val.Errors, targetFitRecoveryReason)
+	}
 	risk, flags := ClassifyRisk(acc, cand, synth, val)
-	if plan.Messageability != MessageabilityReady {
+	for _, code := range editorialReasons {
+		flags = appendUnique(flags, "editorial_"+code)
+	}
+	if plan.Messageability == MessageabilityBlocked {
 		risk = "RED"
 		flags = appendUnique(flags, "messageability_"+strings.ToLower(plan.Messageability))
 		flags = appendUnique(flags, plan.ReasonCodes...)
@@ -401,6 +543,10 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 		risk = "RED"
 		flags = appendUnique(flags, "recipient_"+strings.ToLower(rec.State))
 		flags = appendUnique(flags, rec.ReasonCodes...)
+	}
+	if targetFitRecoveryReason != "" {
+		risk = "RED"
+		flags = appendUnique(flags, strings.ToLower(targetFitRecoveryReason))
 	}
 	valJSON := PackValidationWithPlan(val, st, plan, recipient)
 	allowTemplateGREEN := false
@@ -411,7 +557,6 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 			}
 		}
 	}
-	modelName := "jit_" + tp.Purpose
 	// Policy-authorized deterministic template: GREEN when validators pass and
 	// ClassifyRisk did not raise RED (YELLOW product topics are allowed).
 	if allowTemplateGREEN && val.OK && risk != "RED" {
@@ -434,16 +579,24 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	// NEEDS_REVIEW is only for sendable copy awaiting human authorization.
 	draftStatus := models.OutreachDraftNeedsReview
 	switch {
-	case rec.State == RecipientBlocked || plan.Messageability == MessageabilityBlocked:
+	case rec.State == RecipientBlocked:
 		draftStatus = models.OutreachDraftBlocked
 		subject, body = "", ""
-	case !RecipientStateAuthorizable(rec.State) || plan.Messageability != MessageabilityReady:
-		draftStatus = models.OutreachDraftSkipped
+	case targetFitRecoveryReason != "":
+		draftStatus = models.OutreachDraftEnrichmentPending
+	case !RecipientStateAuthorizable(rec.State):
+		draftStatus = models.OutreachDraftEnrichmentPending
+	case plan.Messageability == MessageabilityBlocked:
+		// A hard outbound gate on today's dossier is not a terminal lead
+		// decision. Keep the touch recoverable so enrichment or a future
+		// playbook mapping can make it reviewable.
+		draftStatus = models.OutreachDraftEnrichmentPending
 		subject, body = "", ""
+	case forceAIRewrite && !aiRewriteSucceeded:
+		draftStatus = models.OutreachDraftRejectedRewritePending
 	default:
-		if !val.OK || strings.TrimSpace(body) == "" {
-			draftStatus = models.OutreachDraftSkipped
-			subject, body = "", ""
+		if len(editorialReasons) > 0 || !val.OK || strings.TrimSpace(body) == "" {
+			draftStatus = models.OutreachDraftAIRewritePending
 		}
 	}
 	// One active draft per account (unique index). Reuse when present so
@@ -454,7 +607,7 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 			OrganizationID: orgID, AccountID: tp.AccountID, ContactCandidateID: tp.ContactCandidateID,
 			Channel: tp.Channel, Subject: subject, BodyText: body, ServiceCode: acc.ServiceCode,
 			StrategyCode: StrategyCodeFor(st), FactUsed: factUsed, EvidenceIDs: evidIDs,
-			Provider: "template", Model: modelName, PromptVersion: PromptVersion + "+touch",
+			Provider: providerName, Model: modelName, PromptVersion: PromptVersion + "+touch",
 			Status: draftStatus, RiskClass: risk, RiskFlags: flags,
 			ValidationJSON: valJSON,
 		}
@@ -466,7 +619,7 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 		draft.StrategyCode = StrategyCodeFor(st)
 		draft.FactUsed = factUsed
 		draft.EvidenceIDs = evidIDs
-		draft.Provider, draft.Model = "template", modelName
+		draft.Provider, draft.Model = providerName, modelName
 		draft.PromptVersion = PromptVersion + "+touch"
 		draft.Status = draftStatus
 		draft.RiskClass, draft.RiskFlags = risk, flags
@@ -486,17 +639,46 @@ func (s *service) GenerateTouchpointDraft(ctx context.Context, orgID, userID, to
 	if err := s.repo.UpsertDraft(ctx, draft); err != nil {
 		return nil, errx.New(errx.Internal, "save draft: "+err.Error())
 	}
+	if draftStatus == models.OutreachDraftAIRewritePending || draftStatus == models.OutreachDraftEnrichmentPending {
+		reason := "suboptimal_copy"
+		if targetFitRecoveryReason != "" {
+			reason = targetFitRecoveryReason
+		} else if len(editorialReasons) > 0 {
+			reason = editorialReasons[0]
+		} else if len(plan.ReasonCodes) > 0 {
+			reason = plan.ReasonCodes[0]
+		} else if len(val.Errors) > 0 {
+			reason = val.Errors[0]
+		}
+		did, tid := draft.ID, tp.ID
+		s.recordEditorialSignal(ctx, orgID, &did, &tid, draftStatus, reason, tp.Channel)
+	}
 	ApplyContentMutation(tp, tp.Channel, tp.Recipient, draft.Subject, draft.BodyText)
 	tp.DraftID = &draft.ID
 	if draftStatus == models.OutreachDraftNeedsReview {
 		tp.State = models.TouchpointNeedsReview
+		tp.StopReason = ""
+	} else if draftStatus == models.OutreachDraftAIRewritePending {
+		tp.State = models.TouchpointAIRewritePending
+	} else if draftStatus == models.OutreachDraftEnrichmentPending {
+		tp.State = models.TouchpointEnrichmentPending
+	} else if draftStatus == models.OutreachDraftRejectedRewritePending {
+		tp.State = models.TouchpointRejectedRewritePending
+	} else if draftStatus == models.OutreachDraftBlocked {
+		tp.State = models.TouchpointCancelled
 	} else {
 		tp.State = models.TouchpointDrafted
-		tp.StopReason = firstNonEmpty(rec.Reason, plan.Reason, "recipient_"+strings.ToLower(rec.State), "messageability_"+strings.ToLower(plan.Messageability))
+	}
+	if draftStatus != models.OutreachDraftNeedsReview {
+		tp.StopReason = firstNonEmpty(targetFitRecoveryReason, rec.Reason, plan.Reason, "recipient_"+strings.ToLower(rec.State), "messageability_"+strings.ToLower(plan.Messageability))
 	}
 	tp.ServiceCode, tp.FactUsed, tp.EvidenceIDs = acc.ServiceCode, draft.FactUsed, draft.EvidenceIDs
 	// Capture message-material context at generation for stale-approval guard.
 	tp.GeneratedContextHash = acc.MessageContextHash
+	// Evidence and context are part of the approval binding. They are assigned
+	// after the prose mutation above, so recompute once more before exposing the
+	// hash to a reviewer. Approval must not silently replace the reviewed hash.
+	RecomputeContentHash(tp)
 	if err := s.repo.UpdateTouchpoint(ctx, tp); err != nil {
 		return nil, errx.New(errx.Internal, "update touchpoint: "+err.Error())
 	}
@@ -684,6 +866,9 @@ func (s *service) ApproveTouchpoint(ctx context.Context, orgID, userID, id uuid.
 	if xerr := s.assertPriorReleased(ctx, orgID, tp); xerr != nil {
 		return nil, xerr
 	}
+	if xerr := s.assertTouchpointEditorialAuthority(ctx, orgID, tp, "APPROVE"); xerr != nil {
+		return nil, xerr
+	}
 	acc, _ := s.repo.GetAccount(ctx, orgID, tp.AccountID)
 	if acc == nil {
 		return nil, errx.New(errx.NotFound, "account not found")
@@ -709,8 +894,8 @@ func (s *service) ApproveTouchpoint(ctx context.Context, orgID, userID, id uuid.
 	if cand == nil {
 		return nil, errx.New(errx.BadRequest, "approved contact candidate is missing")
 	}
-	if isGenericRecipient(cand) {
-		return nil, errx.New(errx.BadRequest, "generic mailbox cannot be approved")
+	if isGenericRecipient(cand) && !options.GenericRecipientAcknowledged {
+		return nil, errx.New(errx.BadRequest, "generic or role mailbox requires explicit human acknowledgement")
 	}
 	if tp.Channel == models.OutreachChannelWhatsApp {
 		phone := firstNonEmpty(cand.PhoneE164, cand.Phone)
@@ -771,6 +956,16 @@ func (s *service) ApproveTouchpoint(ctx context.Context, orgID, userID, id uuid.
 			map[string]string{"draft_id": draftID, "generic_recipient_acknowledged": fmt.Sprintf("%t", options.GenericRecipientAcknowledged)},
 		)
 	}
+	// Production wires the governor. Approval then means approval plus durable
+	// scheduling, even while dispatch is paused. Unit services without a
+	// governor retain the historical APPROVED state for isolated testing.
+	if s.governor != nil {
+		queued, qerr := s.scheduleApprovedTouchpoint(ctx, orgID, tp)
+		if qerr != nil {
+			return nil, qerr
+		}
+		return queued, nil
+	}
 	return tp, nil
 }
 
@@ -796,7 +991,10 @@ func (s *service) RejectOrSkipTouchpointReason(ctx context.Context, orgID, userI
 	if action == "skip" || action == "SKIPPED" {
 		state, stop = models.TouchpointSkipped, "SKIPPED"
 	} else if action == "reject" || action == "REJECTED" {
-		state, stop = models.TouchpointRejected, "REJECTED"
+		// Reject the copy, not the lead. The same touchpoint remains open for a
+		// new semantic or AI rewrite unless a separate hard suppression is
+		// recorded on the account or recipient.
+		state, stop = models.TouchpointRejectedRewritePending, "REJECTED_REWRITE_PENDING"
 		if r := strings.TrimSpace(reason); r != "" {
 			pb, _ := LoadPlaybook()
 			if ValidRejectionReason(pb, r) {
@@ -822,7 +1020,7 @@ func (s *service) RejectOrSkipTouchpointReason(ctx context.Context, orgID, userI
 				if b, err := json.Marshal(val); err == nil {
 					d.ValidationJSON = b
 				}
-				d.Status = models.OutreachDraftRejected
+				d.Status = models.OutreachDraftRejectedRewritePending
 			} else if action == "skip" || action == "SKIPPED" {
 				d.Status = models.OutreachDraftSkipped
 			}
@@ -842,6 +1040,15 @@ func (s *service) RejectOrSkipTouchpointReason(ctx context.Context, orgID, userI
 	}
 	if err := s.repo.UpdateTouchpoint(ctx, tp); err != nil {
 		return nil, errx.New(errx.Internal, "update failed")
+	}
+	if state == models.TouchpointRejectedRewritePending {
+		var draftID *uuid.UUID
+		if tp.DraftID != nil {
+			id := *tp.DraftID
+			draftID = &id
+		}
+		tid := tp.ID
+		s.recordEditorialSignal(ctx, orgID, draftID, &tid, "HUMAN_REJECTION", firstNonEmpty(reason, "other"), tp.Channel)
 	}
 	if state == models.TouchpointSkipped {
 		_ = s.releaseNextTouch(ctx, orgID, tp)
@@ -875,12 +1082,6 @@ func (s *service) QueueTouchpoint(ctx context.Context, orgID, userID, id uuid.UU
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, xerr
 	}
-	if s.cfg.AutoSendEnabled || s.cfg.GreenAutorunEnabled {
-		return nil, errx.New(errx.BadRequest, "refusing queue: auto-send and green autorun cannot create send jobs")
-	}
-	if !s.cfg.SendingAllowed() {
-		return nil, errx.New(errx.Conflict, "sending paused; approval was preserved and nothing was queued")
-	}
 	tp, err := s.repo.GetTouchpoint(ctx, orgID, id)
 	if err != nil || tp == nil {
 		return nil, errx.New(errx.NotFound, "touchpoint not found")
@@ -888,9 +1089,19 @@ func (s *service) QueueTouchpoint(ctx context.Context, orgID, userID, id uuid.UU
 	if xerr := s.assertPriorReleased(ctx, orgID, tp); xerr != nil {
 		return nil, xerr
 	}
-	// Structural + live CAMPAIGN_POLICY grant revalidation (revoke blocks here).
-	if err := s.AssertTransportable(ctx, orgID, tp); err != nil {
-		return nil, errx.New(errx.BadRequest, "send blocked: "+err.Error())
+	if xerr := s.assertTouchpointEditorialAuthority(ctx, orgID, tp, "QUEUE"); xerr != nil {
+		return nil, xerr
+	}
+	// Scheduling is allowed while transport is paused. The exact hash and
+	// approval state are enforced atomically below; live DNC, policy revocation,
+	// kill switch and transport gates are rechecked by the worker immediately
+	// before any provider handoff.
+	if tp.AuthorizationMode == AuthorizationModeCampaignPolicy {
+		// Unlike a human decision, campaign authority is a live revocable grant.
+		// A revoked grant cannot create new queue work.
+		if err := s.AssertTransportable(ctx, orgID, tp); err != nil {
+			return nil, errx.New(errx.BadRequest, "send blocked: "+err.Error())
+		}
 	}
 	// Final dispatch gate: material context must still match generation-time hash.
 	acc, aerr := s.repo.GetAccount(ctx, orgID, tp.AccountID)
@@ -905,31 +1116,39 @@ func (s *service) QueueTouchpoint(ctx context.Context, orgID, userID, id uuid.UU
 		_ = s.repo.SetAccountHumanFlags(ctx, orgID, tp.AccountID, acc.Blocked, acc.DoNotContact, acc.BlockReason, models.OutreachQueueNeedsReview)
 		return nil, errx.New(errx.Conflict, err.Error())
 	}
-	queued, err := s.repo.CASQueueTouchpoint(ctx, orgID, id, tp.ContentHash)
+	_ = userID
+	return s.scheduleApprovedTouchpoint(ctx, orgID, tp)
+}
+
+func (s *service) scheduleApprovedTouchpoint(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint) (*models.OutreachTouchpoint, *errx.Error) {
+	if s.governor == nil {
+		return nil, errx.New(errx.ServiceUnavailable, "dispatch governor not wired; approval was preserved")
+	}
+	if tp == nil || tp.DraftID == nil {
+		return nil, errx.New(errx.BadRequest, "approved touchpoint has no draft")
+	}
+	if tp.State == models.TouchpointQueued {
+		return tp, nil
+	}
+	cfg := s.governor.Config()
+	now := time.Now().UTC()
+	due := dispatch.NextEligibleSlot(now.Add(cfg.MinGap), cfg.Timezone, cfg.WindowStart, cfg.WindowEnd, cfg.BusinessDaysOnly)
+	messageKey := dispatch.MessageKeyEmail(*tp.DraftID)
+	if tp.Channel == models.OutreachChannelWhatsApp {
+		messageKey = dispatch.MessageKeyWhatsApp(*tp.DraftID)
+	}
+	queued, err := s.repo.CASScheduleTouchpoint(ctx, orgID, tp.ID, tp.ContentHash, messageKey, due)
 	if err != nil {
-		return nil, errx.New(errx.Internal, "queue cas failed: "+err.Error())
+		return nil, errx.New(errx.Internal, "schedule approved touchpoint: "+err.Error())
 	}
 	if queued == nil {
-		tp2, _ := s.repo.GetTouchpoint(ctx, orgID, id)
-		if tp2 != nil && tp2.State == models.TouchpointQueued {
-			return tp2, nil
+		latest, _ := s.repo.GetTouchpoint(ctx, orgID, tp.ID)
+		if latest != nil && latest.State == models.TouchpointQueued && latest.ApprovedContentHash == latest.ContentHash {
+			return latest, nil
 		}
-		return nil, errx.New(errx.Conflict, "touchpoint not queueable (state or hash mismatch)")
+		return nil, errx.New(errx.Conflict, "touchpoint not schedulable (state or approved hash mismatch)")
 	}
-	tp = queued
-	var dispatchErr *errx.Error
-	if tp.Channel == models.OutreachChannelWhatsApp {
-		dispatchErr = s.dispatchWhatsAppTouch(ctx, orgID, userID, tp)
-	} else {
-		dispatchErr = s.dispatchEmailTouch(ctx, orgID, userID, tp)
-	}
-	if dispatchErr != nil {
-		tp.State = models.TouchpointFailed
-		tp.StopReason = dispatchErr.Message
-		_ = s.repo.UpdateTouchpoint(ctx, tp)
-		return nil, dispatchErr
-	}
-	return tp, nil
+	return queued, nil
 }
 
 func (s *service) dispatchEmailTouch(ctx context.Context, orgID, userID uuid.UUID, tp *models.OutreachTouchpoint) *errx.Error {
@@ -1131,4 +1350,65 @@ func (s *service) PromoteDueTouchpoints(ctx context.Context, orgID uuid.UUID) (i
 		n++
 	}
 	return n, nil
+}
+
+// assertTouchpointEditorialAuthority refuses any operational step on a
+// touchpoint whose copy an earlier composer wrote. Fail-closed: a touchpoint
+// with no draft to identify carries no proof the current composer wrote it.
+func (s *service) assertTouchpointEditorialAuthority(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint, action string) *errx.Error {
+	if tp == nil {
+		return errx.New(errx.NotFound, "touchpoint not found")
+	}
+	prompt := ""
+	if tp.Draft != nil {
+		prompt = tp.Draft.PromptVersion
+	} else if tp.DraftID != nil {
+		if d, _ := s.repo.GetDraft(ctx, orgID, *tp.DraftID); d != nil {
+			prompt = d.PromptVersion
+		}
+	}
+	if auth := EvaluateDraftEditorialAuthority(prompt); !auth.Actionable {
+		return errx.New(errx.Conflict, auth.Blocker(action))
+	}
+	return nil
+}
+
+// projectTouchpointEditorial fills the read-only judging context the review
+// screen shows next to the editable copy. Absent facts stay visible as absent
+// rather than being omitted, because a blank field a reader can see is honest
+// and a key that was never written is not.
+func projectTouchpointEditorial(tp *models.OutreachTouchpoint, acc *models.OutreachAccount, cand *models.OutreachContactCandidate, promptVersion string) {
+	auth := EvaluateDraftEditorialAuthority(promptVersion)
+	tp.EditorialState = auth.State
+	tp.EditorialActionable = auth.Actionable
+	tp.EditorialReasonCodes = auth.ReasonCodes
+	tp.EditorialNotice = auth.Notice
+	tp.PromptVersion = promptVersion
+	tp.ComposerVersion = ComposerVersion
+	if !auth.Actionable {
+		// The stamp we can prove is the prompt version; naming the current
+		// composer beside superseded copy would read as if it wrote it.
+		tp.ComposerVersion = ""
+	}
+	if cand != nil {
+		tp.RouteClass = CandidateRouteClass(cand)
+	}
+	if acc != nil {
+		if strings.TrimSpace(acc.FactToMention) != "" && strings.TrimSpace(tp.FactUsed) == acc.FactToMention {
+			tp.FactSource = "fact_to_mention"
+		}
+		d := EvaluateTargetFit(acc)
+		fit := map[string]any{
+			"state":    acc.TargetFitClass,
+			"eligible": d.Eligible,
+			"reason":   d.Reason,
+			"fresh":    acc.TargetFitFresh,
+			"tier":     acc.TargetFitSendTier,
+			"version":  acc.TargetFitVersion,
+		}
+		if acc.TargetFitObservedAt != nil {
+			fit["as_of"] = acc.TargetFitObservedAt.UTC().Format(time.RFC3339)
+		}
+		tp.TargetFit = fit
+	}
 }

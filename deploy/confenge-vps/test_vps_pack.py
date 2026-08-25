@@ -107,6 +107,11 @@ class TestConfengeVpsPack(unittest.TestCase):
             self.fail(f"validate.sh exit {proc.returncode}\n{proc.stdout}\n{proc.stderr}")
         self.assertIn("VALIDATE=PASS", proc.stdout)
 
+    def test_up_rebuilds_release_images(self) -> None:
+        """A new checkout must not silently reuse the previous app images."""
+        text = (PACK / "up.sh").read_text(encoding="utf-8")
+        self.assertIn("compose_cmd up -d --build --remove-orphans", text)
+
     def test_inbound_edge_nginx_allowlist_is_the_shipped_config(self) -> None:
         """Drive the real nginx files that install.sh copies onto the VPS."""
         https = (PACK / "nginx/site-https.conf").read_text(encoding="utf-8")

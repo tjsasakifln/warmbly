@@ -286,6 +286,59 @@ Common reason codes include `feed_missing`, `feed_stale`, `account_not_found`, `
 
 These are per-account workflow results, not transport errors. Fix the indicated data or policy gate and retry with the same `Idempotency-Key`.
 
+## CONFENGE cohort selection
+
+`POST /confenge/cohorts` uses these stable errors for disjoint supplier selection:
+
+| Code | Meaning |
+|------|---------|
+| `invalid_selection_mode` | The request did not use `LEGACY`, `NEXT_UNCLAIMED`, or `RECOVER_PRIOR` |
+| `recover_versions_required` | Recovery did not identify any prior cohort version |
+| `recover_versions_not_allowed` | Recovery ids were supplied for another selection mode |
+| `recover_version_not_found` | At least one prior version is outside the organization or does not exist |
+| `selection_exhausted` | No unclaimed supplier with a controlled eligible route remains |
+| `selection_claim_conflict` | A concurrent cohort claimed the supplier or recipient before this transaction committed |
+| `selection_history_unavailable` | Prior touchpoint or cohort history could not be read, so selection failed closed |
+
+Retry an ambiguous transport failure with the same idempotency key. A definitive conflict or exhausted source requires a new read before another create attempt.
+
+## CONFENGE editorial authority
+
+Frozen CONFENGE copy is operational only while the composer that wrote it is the one the platform ships. Once it is not, the artifact is `LEGACY_SUPERSEDED`: still readable for audit, never actionable. The full model is described in [CONFENGE editorial lifecycle](/guides/confenge-editorial-lifecycle/).
+
+`POST /confenge/cohorts/:id/candidates/:candidateId/review` with `decision=APPROVE` returns `409` and the stable code that names the refusal. `HOLD` and `REJECT` stay open so a reviewer can still close an old version out.
+
+```json
+{
+  "error": "Conflict",
+  "message": "APPROVE refused on LEGACY_SUPERSEDED copy (composer_superseded): composer confenge.composer.v4 wrote this text, current is confenge.composer.v5. Recompose the cohort and decide on the current version.",
+  "code": "composer_superseded",
+  "request_id": "4bbbd1b2-8f86-47dd-8a7f-9476501ad20e"
+}
+```
+
+| Code | Meaning |
+|------|---------|
+| `composer_superseded` | The stamped composer is not the one this build ships |
+| `composer_unstamped` | The artifact carries no composer stamp, so authorship cannot be proven (evaluation fails closed) |
+| `policy_superseded` | The stamped bounded-cohort policy version is not the current one |
+| `superseded_by_version` | A later version of the same cohort exists; the response carries `current_version` and `current_version_id` |
+
+The same three codes are also read fields, not only errors. `GET /confenge/cohorts/:id` returns them in `editorial_reason_codes` on the version and on each candidate, and superseded candidates repeat them in `blocked_by`. An `APPROVE` never schedules superseded copy.
+
+`POST /confenge/touchpoints/:id/approve`, `POST /confenge/touchpoints/:id/queue`, and `POST /confenge/review/drafts/:id/decision` when the decision approves return `409` with code `conflict` and a message naming the same reason codes. Transport refuses a send grant by the same rule, so an already approved item cannot ship after the composer moves on.
+
+**How to fix:** recompose the cohort with `POST /confenge/cohorts/:id/recompose`, then validate and approve the candidate on the new version. That APPROVE schedules it; there is no GO step. Editing the old version is not possible: it is history.
+
+### Editorial QA reason codes
+
+Editorial QA codes are not HTTP errors. They appear in draft QA findings and in the recompose report (`exclusions` and `by_reason_code`), where they explain why a member was left out of version N+1.
+
+| Code | Meaning |
+|------|---------|
+| `generic_cta` | The paragraph carrying the closing question neither states in the first person what the sender does nor shares a word with the observed public fact, so the ask fits any company |
+| `personalization_without_fact` | Observation language ("Vi que", "Notei", "Reparei") is used while the message carries no observed fact |
+
 ## Error handling best practices
 
 ### Implement retry logic

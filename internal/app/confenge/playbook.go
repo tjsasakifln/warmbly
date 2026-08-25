@@ -68,9 +68,13 @@ type ServicesFile struct {
 }
 
 type ServicePlaybook struct {
-	Code               string   `yaml:"code"`
-	Name               string   `yaml:"name"`
-	Aliases            []string `yaml:"aliases"`
+	Code    string   `yaml:"code"`
+	Name    string   `yaml:"name"`
+	Aliases []string `yaml:"aliases"`
+	// OutboundPractice is the one first-person clause the composer may put in
+	// front of a recipient to say what this service actually is. It is the only
+	// per-service field cleared for outbound prose.
+	OutboundPractice   string   `yaml:"outbound_practice"`
 	CommercialInsight  string   `yaml:"commercial_insight"`
 	CommonMiss         string   `yaml:"common_miss"`
 	ProblemHypotheses  []string `yaml:"problem_hypotheses"`
@@ -88,8 +92,12 @@ type TriggersFile struct {
 }
 
 type TriggerRule struct {
-	Code            string   `yaml:"code"`
-	Aliases         []string `yaml:"aliases"`
+	Code    string   `yaml:"code"`
+	Aliases []string `yaml:"aliases"`
+	// RefinesService names the service whose practice line this moment sharpens.
+	// Only a concrete contractual event carries one; a context trigger such as
+	// PORTFOLIO names no work and must leave the account's service alone.
+	RefinesService  string   `yaml:"refines_service"`
 	WhyNowTemplate  string   `yaml:"why_now_template"`
 	FactVsClaim     string   `yaml:"fact_vs_claim"`
 	PreferredOffers []string `yaml:"preferred_offers"`
@@ -267,9 +275,22 @@ func ValidatePlaybook(pb *Playbook) error {
 		}
 		offerCodes[o.Code] = true
 	}
+	serviceCodes := map[string]bool{}
 	for _, s := range pb.Services.Services {
 		if s.DefaultMicroOffer != "" && !offerCodes[s.DefaultMicroOffer] {
 			return fmt.Errorf("service %s default offer %s not in library", s.Code, s.DefaultMicroOffer)
+		}
+		// Without this the service would silently fall back to the generic
+		// practice line, which is the corpus uniformity defect it exists to fix.
+		if strings.TrimSpace(s.OutboundPractice) == "" {
+			return fmt.Errorf("service %s missing outbound_practice", s.Code)
+		}
+		serviceCodes[strings.ToUpper(s.Code)] = true
+	}
+	for _, t := range pb.Triggers.Triggers {
+		rs := strings.ToUpper(strings.TrimSpace(t.RefinesService))
+		if rs != "" && !serviceCodes[rs] {
+			return fmt.Errorf("trigger %s refines unknown service %s", t.Code, t.RefinesService)
 		}
 	}
 	return nil

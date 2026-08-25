@@ -379,14 +379,20 @@ func TestDraftUserPromptContainsNoResearchInstruction(t *testing.T) {
 	}
 }
 
-func TestPromptVersionV5(t *testing.T) {
-	if PromptVersion != "confenge.draft.v5" {
+func TestPromptVersionV6(t *testing.T) {
+	if PromptVersion != "confenge.draft.v6" {
 		t.Fatalf("PromptVersion=%s", PromptVersion)
 	}
 	if OutreachDoctrineVersion != "confenge-outreach-v2" {
 		t.Fatalf("doctrine=%s", OutreachDoctrineVersion)
 	}
-	if ComposerVersion != "confenge.composer.v3" {
+	// v6 (2026-08-24) reads the sentence saying what the sender does from the
+	// lead's own service playbook instead of collapsing every lead to one
+	// string, and lets the closing ask follow the route class. Two v5 messages
+	// to different services were byte-identical below the fact; two v6 messages
+	// are not. The bump is deliberate: a v5 grant must not authorize v6 output.
+	// Bump this pin only with that reasoning.
+	if ComposerVersion != "confenge.composer.v6" {
 		t.Fatalf("composer=%s", ComposerVersion)
 	}
 }

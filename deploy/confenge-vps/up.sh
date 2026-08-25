@@ -7,6 +7,11 @@ source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 load_vps_env
 cd "$ROOT"
 
+# Captured before the private .env is sourced below, because that file can
+# still carry a WARMBLY_RELEASE_SHA written by an earlier deploy.
+RELEASE_SHA_RESOLVED="${WARMBLY_RELEASE_SHA:-}"
+echo "Release SHA for this build: ${RELEASE_SHA_RESOLVED:-<unresolved>}"
+
 ENVF="${CONFENGE_VPS_ENV:-$ROOT/deploy/confenge-vps/.env}"
 if [[ ! -f "$ENVF" ]]; then
   echo "Missing $ENVF — run deploy/confenge-vps/gen-secrets.sh first" >&2
@@ -19,6 +24,11 @@ export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-warmbly-confenge}"
 # Fail closed on unsafe profile flips
 # shellcheck disable=SC1090
 set -a; . "$ENVF"; set +a
+# load_vps_env already resolved this from the caller or from the checkout, and
+# the line above may have put a previous deploy's value back. Restore it.
+WARMBLY_RELEASE_SHA="$RELEASE_SHA_RESOLVED"
+export WARMBLY_RELEASE_SHA
+
 if [[ "${CONFENGE_GREEN_AUTORUN_ENABLED:-false}" == "true" ]]; then
   echo "REFUSE: CONFENGE_GREEN_AUTORUN_ENABLED=true is not allowed on VPS execution plane bootstrap" >&2
   exit 3
@@ -74,7 +84,10 @@ if [[ "${CONFENGE_VPS_SEED:-false}" == "true" ]]; then
 fi
 
 echo "Bringing up project=$COMPOSE_PROJECT_NAME ..."
-compose_cmd up -d --remove-orphans
+# A release checkout is not a release deployment until the local application
+# images have been rebuilt from that checkout.  Compose otherwise reuses the
+# previous tag and can report healthy containers that still run the prior SHA.
+compose_cmd up -d --build --remove-orphans
 
 
 # Keep the kill-switch volume private and writable by the backend user (uid 1000).

@@ -5,6 +5,7 @@ outreach_doctrine_version: confenge-outreach-v2
 services:
   - code: REAJUSTE
     name: Reajuste contratual
+    outbound_practice: Trabalho com reajuste contratual em contratos públicos de engenharia
     aliases: [REAJUSTE_14133, REAJUSTE_CONTRATUAL, reajuste, estruturacao_pleito_reajuste]
     commercial_insight: |
       Anualidade e marco temporal mudam quais documentos e memórias deveriam ser conferidos,
@@ -29,6 +30,7 @@ services:
 
   - code: REEQUILIBRIO
     name: Reequilíbrio econômico-financeiro
+    outbound_practice: Trabalho com reequilíbrio econômico-financeiro em contratos públicos de engenharia
     aliases: [REEQUILIBRIO_ECO, REEQUILIBRIO_ECONOMICO, reequilibrio, reequilibrio_economico_financeiro]
     commercial_insight: |
       Eventos de desequilíbrio pedem nexo, quantificação e memória; publicação isolada raramente basta.
@@ -48,6 +50,7 @@ services:
 
   - code: MEDICOES
     name: Medições e medições contratuais
+    outbound_practice: Trabalho com medição e memória de cálculo em contratos públicos de engenharia
     aliases: [MEDICAO, MEDICOES, MEDIÇÃO, MEDICÃO, medicoes_glosas_memoria, glosa]
     commercial_insight: |
       Medição é onde volume, critério e evidência de campo se encontram; divergência costuma nascer em memória, não só em planilha.
@@ -67,6 +70,7 @@ services:
 
   - code: ADITIVOS
     name: Aditivos contratuais
+    outbound_practice: Trabalho com aditivos e com o que eles mudam em contratos públicos de engenharia
     aliases: [ADITIVO, ADDITIVE_REVIEW, ADITIVOS, additive_review, aditivos_extracontratuais]
     commercial_insight: |
       Aditivo recente muda o escopo e a base de comparação; o risco está no que deixa de ser revisado depois da assinatura.
@@ -86,6 +90,7 @@ services:
 
   - code: EXTRACONTRATUAIS
     name: Serviços e custos extracontratuais
+    outbound_practice: Trabalho com a formalização de serviços extracontratuais em obra pública
     aliases: [EXTRA, EXTRACONTRATUAL, EXTRAS]
     commercial_insight: |
       Trabalho fora do instrumento precisa de ordem, evidência e enquadramento; volume sozinho não sustenta pedido.
@@ -103,6 +108,7 @@ services:
 
   - code: PLANILHAS
     name: Planilhas e quantitativos
+    outbound_practice: Trabalho com auditoria de orçamento e planilhas de obra pública
     aliases: [PLANILHA, QUANTITATIVOS, ORCAMENTO, ORCAMENTO_BDI, auditoria_orcamento_bdi, BDI]
     commercial_insight: |
       Planilha é a memória econômica do contrato; divergência silenciosa vira disputa tarde demais.
@@ -120,6 +126,7 @@ services:
 
   - code: ENCERRAMENTO_CONTRATUAL
     name: Encerramento e close-out
+    outbound_practice: Trabalho com o encerramento de contratos públicos de engenharia
     aliases: [ENCERRAMENTO, CLOSEOUT, CLOSE_OUT, TERMINO]
     commercial_insight: |
       Proximidade de fim de vigência concentra o que ainda pode ser regularizado documentalmente.
@@ -137,6 +144,7 @@ services:
 
   - code: APOIO_LICITACAO
     name: Apoio a licitação e propostas
+    outbound_practice: Trabalho com apoio a empresas de engenharia em licitações públicas
     aliases: [LICITACAO, BID_SUPPORT, PROPOSTA, apoio_licitacoes_propostas]
     commercial_insight: |
       Risco de proposta nasce em premissas e quantitativos, não só no preço final.
@@ -154,6 +162,7 @@ services:
 
   - code: MONITORAMENTO_CONTRATUAL
     name: Monitoramento contratual contínuo
+    outbound_practice: Acompanho carteiras de contratos públicos de engenharia e o que muda neles
     aliases: [MONITORAMENTO, PORTFOLIO, ACOMPANHAMENTO, gestao_monitoramento_contratual]
     commercial_insight: |
       Carteira grande esconde eventos de baixo ruído; o valor está em priorizar o que merece leitura agora.
@@ -172,6 +181,7 @@ services:
 
   - code: DIAGNOSTICO
     name: Diagnóstico contratual B2G
+    outbound_practice: Trabalho com diagnóstico de contratos públicos em empresas de engenharia
     aliases: [DIAGNOSTICO_CONTRATUAL, DISCOVERY, diagnostico_contratual_b2g, DIAGNOSTIC]
     commercial_insight: |
       Quando o material público não sustenta especialidade, o caminho honesto é diagnóstico focal — não inventar reajuste.
@@ -191,6 +201,7 @@ services:
 
   - code: INTELIGENCIA_PNCP
     name: Inteligência PNCP e mercado público
+    outbound_practice: Trabalho com leitura de editais e de mercado público para empresas de engenharia
     aliases: [INTELIGENCIA, PNCP_INTEL, inteligencia_pncp_mercado]
     commercial_insight: |
       Expansão geográfica e padrão de órgãos mudam o mapa competitivo; o valor está no recorte acionável, não no dump.
@@ -208,6 +219,7 @@ services:
 
   - code: BACKOFFICE
     name: Reforço temporário de backoffice técnico/contratual
+    outbound_practice: Trabalho com reforço de backoffice contratual em empresas de engenharia
     aliases: [REFORCO_BACKOFFICE, outsourcing_operacional, reforco_temporario_backoffice]
     commercial_insight: |
       Carga contratual com estrutura enxuta pede reforço pontual — só quando há evidência de volume, nunca por ausência de dados públicos.

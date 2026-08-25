@@ -4,6 +4,7 @@ outreach_doctrine_version: confenge-outreach-v2
 triggers:
   - code: ANUALIDADE
     aliases: [ANNUALITY, ANIVERSARIO, ANIVERSÁRIO, REAJUSTE_JANELA]
+    refines_service: REAJUSTE
     why_now_template: marco temporal/anualidade do contrato sugere janela de verificação documental
     fact_vs_claim: |
       Annualidade is a verify-now signal, never proof of unpaid reajuste.
@@ -17,30 +18,35 @@ triggers:
 
   - code: ADITIVO_RECENTE
     aliases: [ADITIVO, ADDITIVE, TERMO_ADITIVO]
+    refines_service: ADITIVOS
     why_now_template: aditivo ou alteração recente publicada merece leitura de efeitos colaterais
     preferred_offers: [ADITIVO_RISK_CHECK, CONTRACT_TIMELINE]
     risk_flags: []
 
   - code: MEDICAO
     aliases: [MEDIÇÃO, MEDICOES, MEASUREMENT]
+    refines_service: MEDICOES
     why_now_template: contexto de medição/execução em fase em que critérios e memórias importam
     preferred_offers: [MEDICAO_CHECK, DOCUMENT_CHECKLIST]
     risk_flags: []
 
   - code: ENCERRAMENTO
     aliases: [CLOSEOUT, TERMINO, FIM_VIGENCIA, VIGENCIA]
+    refines_service: ENCERRAMENTO_CONTRATUAL
     why_now_template: proximidade de encerramento concentra pendências que ainda podem ser regularizadas
     preferred_offers: [CLOSEOUT_CHECK, CONTRACT_TIMELINE]
     risk_flags: []
 
   - code: NOVA_CONTRATACAO
     aliases: [NOVO_CONTRATO, LICITACAO, AWARD]
+    refines_service: APOIO_LICITACAO
     why_now_template: nova contratação/publicação abre janela de leitura preventiva
     preferred_offers: [CONTRACT_CHECK, PROCUREMENT_RISK_SNAPSHOT]
     risk_flags: []
 
   - code: PRORROGACAO
     aliases: [PRORROGAÇÃO, EXTENSION]
+    refines_service: ADITIVOS
     why_now_template: prorrogação altera horizonte e pode reabrir bases de cálculo e prazos
     preferred_offers: [CONTRACT_TIMELINE, DOCUMENT_CHECKLIST]
     risk_flags: []

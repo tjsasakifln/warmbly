@@ -198,9 +198,10 @@ func candidateFromFeedContact(fc FeedContact) models.OutreachContactCandidate {
 			c.BlockReason = "route_suppression:" + strings.ToUpper(strings.TrimSpace(fc.RouteSuppression))
 		}
 	}
+	controlledReviewAuthority := FeedControlledReviewAuthority(fc)
 	if fc.ProvenanceChainValid != nil && !*fc.ProvenanceChainValid {
 		c.EmailSendReady = false
-		if c.BlockReason == "" {
+		if !controlledReviewAuthority && c.BlockReason == "" {
 			c.BlockReason = "provenance_chain_invalid"
 		}
 	}

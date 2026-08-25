@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,6 +16,7 @@ import (
 	"github.com/warmbly/warmbly/internal/app/whatsapp"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/pkg/emailverify"
 	"github.com/warmbly/warmbly/internal/pkg/generation"
 	"github.com/warmbly/warmbly/internal/repository"
 )
@@ -100,6 +102,9 @@ type Service interface {
 	ResumeDispatch(ctx context.Context, orgID, userID uuid.UUID) *errx.Error
 	CompleteCampaignEmail(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, providerMessageID string, acceptedAt time.Time) error
 	ObserveCampaignEmailAttempt(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, attemptedAt time.Time) error
+	ProcessDispatchQueueOnce(ctx context.Context) (bool, error)
+	ProcessEditorialRecoveryOnce(ctx context.Context) (bool, error)
+	ProcessDraftGenerationOnce(ctx context.Context) (bool, error)
 
 	// Per-touchpoint human approval cadence.
 	PreparePilotCohort(ctx context.Context, orgID, userID uuid.UUID, accountIDs []uuid.UUID, operation PilotOperation) (*PilotCohortResult, *errx.Error)
@@ -113,13 +118,32 @@ type Service interface {
 	RejectOrSkipTouchpoint(ctx context.Context, orgID, userID, id uuid.UUID, action string) (*models.OutreachTouchpoint, *errx.Error)
 	RejectOrSkipTouchpointReason(ctx context.Context, orgID, userID, id uuid.UUID, action, reason string) (*models.OutreachTouchpoint, *errx.Error)
 	QueueTouchpoint(ctx context.Context, orgID, userID, id uuid.UUID) (*models.OutreachTouchpoint, *errx.Error)
+	DecideReviewTouchpoint(ctx context.Context, orgID, actorID, id uuid.UUID, in ReviewDecisionInput) (*ReviewDecisionResult, *errx.Error)
+	ApproveReviewBatch(ctx context.Context, orgID, actorID uuid.UUID, items []ReviewBatchItem) ([]ReviewBatchItemResult, *errx.Error)
 	DispatchBoundedCohort(ctx context.Context, orgID, actor, authID uuid.UUID, now time.Time, limit int) (*CohortDispatchResult, *errx.Error)
 	CancelAccountTouchpoints(ctx context.Context, orgID, userID, accountID uuid.UUID, reason string) (int, *errx.Error)
 
 	// CAMPAIGN_POLICY_AUTHORIZATION + GREEN autorun (no fake approved_by).
 	WirePolicyAuth(store repository.ConfengePolicyRepository)
 	WireCohortAuth(store BoundedCohortStore)
-
+	// Human gate persists immutable cohort versions and review receipts.
+	// APPROVE schedules the exact message; transport remains worker-owned.
+	WireHumanGate(db *pgxpool.Pool)
+	CreateHumanGateCohort(ctx context.Context, orgID, actorID uuid.UUID, in HumanGateCreateInput) (*HumanGateCohort, *errx.Error)
+	ReproduceHumanGateCohort(ctx context.Context, orgID, actorID, id uuid.UUID, in HumanGateCreateInput) (*HumanGateCohort, *errx.Error)
+	ListHumanGateCohorts(ctx context.Context, orgID uuid.UUID, limit int, cursor time.Time, now time.Time) ([]HumanGateCohort, *errx.Error)
+	GetHumanGateCohort(ctx context.Context, orgID, id uuid.UUID, now time.Time) (*HumanGateCohort, *errx.Error)
+	RecordHumanGateValidation(ctx context.Context, orgID, actorID, versionID, candidateID uuid.UUID, result emailverify.Result, key, correlation string) (*HumanGateCohort, *errx.Error)
+	ReviewHumanGateCandidate(ctx context.Context, orgID, actorID, versionID, candidateID uuid.UUID, in HumanGateReviewInput) (*HumanGateCohort, *errx.Error)
+	ReconcileApprovedHumanGateCandidates(ctx context.Context, orgID, actorID uuid.UUID) (*HumanGateReconcileReport, *errx.Error)
+	// AdjustHumanGateCandidate forks an immutable version into N+1 carrying a
+	// human copy edit for one candidate. It queues, dispatches, sends and
+	// resumes nothing.
+	AdjustHumanGateCandidate(ctx context.Context, orgID, actorID, versionID, candidateID uuid.UUID, in HumanGateAdjustInput) (*HumanGateAdjustResult, *errx.Error)
+	// RecomposeHumanGateCohort forks an immutable version into N+1 by re-running
+	// the composer. Copy may change and members may drop out; recipients and
+	// provenance may not. It queues, dispatches, sends and resumes nothing.
+	RecomposeHumanGateCohort(ctx context.Context, orgID, actorID, versionID uuid.UUID, in HumanGateRecomposeInput) (*HumanGateRecomposeResult, *errx.Error)
 	// confenge-dossier/1.0 manifest references. Card metadata, never a send path.
 	WireDossierReferences(store DossierReferenceStore)
 	AttachDossierReference(ctx context.Context, orgID, actorID uuid.UUID, in DossierAttachInput) (*DossierReference, *errx.Error)
@@ -177,10 +201,21 @@ type service struct {
 	governor       *dispatch.Governor
 	policyStore    repository.ConfengePolicyRepository
 	cohortStore    BoundedCohortStore
+	humanGateDB    *pgxpool.Pool
 	dossierStore   DossierReferenceStore
 	intel          intel.Store
 	operatorMail   func(to, subject, body string) error
 	observedEvents []intel.CommercialEvent
+	// Serializes the preparation workers so their shared NEEDS_REVIEW ceiling
+	// cannot be overshot by concurrent draft generation and recovery.
+	reviewBacklogMu sync.Mutex
+}
+
+func (s *service) draftReviewBacklogTarget() int {
+	if s == nil || s.cfg.DraftReviewBacklogTarget < 1 {
+		return DefaultDraftReviewBacklogTarget
+	}
+	return s.cfg.DraftReviewBacklogTarget
 }
 
 // NewService wires confenge outreach. When cfg.Enabled is false, mutators return 404-style disabled errors.
@@ -664,18 +699,22 @@ func leadToCandidate(orgID, accountID, runID uuid.UUID, fc FeedContact) *models.
 	}
 	// Fail-closed provenance taint: demo/fixture never becomes send_ready even if feed claims VERIFIED.
 	derivedFixture := fc.DerivedFromFixture != nil && *fc.DerivedFromFixture
+	controlledReviewAuthority := FeedControlledReviewAuthority(fc)
 	if fc.ProvenanceChainValid != nil && !*fc.ProvenanceChainValid {
 		cand.EmailSendReady = false
 		cand.Recommended = false
-		if cand.BlockReason == "" {
+		if !controlledReviewAuthority && cand.BlockReason == "" {
 			cand.BlockReason = "provenance_chain_invalid"
 		}
 	}
 	if t, reason := ContactProvenanceTainted(fc.Email, fc.SourceURL, fc.RootSourceType, fc.VerificationStatus, derivedFixture); t {
-		cand.EmailSendReady = false
-		cand.Recommended = false
-		cand.Blocked = true
-		if cand.BlockReason == "" {
+		// root_source_type=UNKNOWN belongs to the strict named-person lane.
+		// A complete controlled-review authority stamp is an independent lane;
+		// fixture, demo and every other taint reason remain terminal.
+		if !(controlledReviewAuthority && reason == "root_source_type:UNKNOWN") {
+			cand.EmailSendReady = false
+			cand.Recommended = false
+			cand.Blocked = true
 			cand.BlockReason = "provenance_taint:" + reason
 		}
 	}

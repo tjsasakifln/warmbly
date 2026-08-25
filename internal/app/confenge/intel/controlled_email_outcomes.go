@@ -56,7 +56,7 @@ func normalizeControlledProvider(value string) string {
 
 func SliceControlledEmailOutcomes(events []CommercialEvent) []ControlledEmailOutcomeSlice {
 	idx := map[string]int{}
-	var out []ControlledEmailOutcomeSlice
+	out := make([]ControlledEmailOutcomeSlice, 0)
 	keyOf := func(ev CommercialEvent) string {
 		return strings.Join([]string{
 			orUnknown(ev.EmailRouteClass),

@@ -233,7 +233,10 @@ func (g *Governor) Status(ctx context.Context, orgID *uuid.UUID) (Status, error)
 	inWin, _ := InSendWindowBusiness(now, g.cfg.Timezone, g.cfg.WindowStart, g.cfg.WindowEnd, g.cfg.BusinessDaysOnly)
 	st.InSendWindow = inWin
 	if st.Paused {
-		t := now.Add(g.cfg.MinGap)
+		// A pause gap is plain arithmetic and lands wherever it lands, so on a
+		// Sunday it used to advertise a Sunday slot beside in_send_window=false.
+		// Normalizing it keeps the two fields telling the founder one story.
+		t := NextEligibleSlot(now.Add(g.cfg.MinGap), g.cfg.Timezone, g.cfg.WindowStart, g.cfg.WindowEnd, g.cfg.BusinessDaysOnly)
 		st.NextSlotAt = &t
 	} else if !inWin {
 		t := NextWindowOpenBusiness(now, g.cfg.Timezone, g.cfg.WindowStart, g.cfg.WindowEnd, g.cfg.BusinessDaysOnly)
@@ -249,6 +252,9 @@ func (g *Governor) Status(ctx context.Context, orgID *uuid.UUID) (Status, error)
 		}
 		ok, _, next := snap.CanGrant()
 		if !ok {
+			// A rolling-cap expiry or min-gap can cross the window close or a
+			// Friday evening; it is a lower bound on the slot, not the slot.
+			next = NextEligibleSlot(next, g.cfg.Timezone, g.cfg.WindowStart, g.cfg.WindowEnd, g.cfg.BusinessDaysOnly)
 			st.NextSlotAt = &next
 		}
 	}
@@ -280,6 +286,10 @@ func (g *Governor) CancelByRecipient(ctx context.Context, orgID uuid.UUID, recip
 
 func (g *Governor) MarkQueue(ctx context.Context, id uuid.UUID, status, errText string) error {
 	return g.store.UpdateQueueStatus(ctx, id, status, errText)
+}
+
+func (g *Governor) RetryQueue(ctx context.Context, id uuid.UUID, dueAt time.Time, errText string) error {
+	return g.store.RetryQueue(ctx, id, dueAt.UTC(), errText)
 }
 
 func (g *Governor) countSince(ctx context.Context, since time.Time) int {

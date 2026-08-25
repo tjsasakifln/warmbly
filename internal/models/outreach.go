@@ -377,16 +377,19 @@ type OutreachImportRunListResult struct {
 
 // Draft statuses.
 const (
-	OutreachDraftNotGenerated = "NOT_GENERATED"
-	OutreachDraftGenerating   = "GENERATING"
-	OutreachDraftNeedsReview  = "NEEDS_REVIEW"
-	OutreachDraftApproved     = "APPROVED"
-	OutreachDraftRejected     = "REJECTED"
-	OutreachDraftSkipped      = "SKIPPED"
-	OutreachDraftBlocked      = "BLOCKED"
-	OutreachDraftEnrolled     = "ENROLLED"
-	OutreachDraftSent         = "SENT"
-	OutreachDraftReplied      = "REPLIED"
+	OutreachDraftNotGenerated           = "NOT_GENERATED"
+	OutreachDraftGenerating             = "GENERATING"
+	OutreachDraftAIRewritePending       = "AI_REWRITE_PENDING"
+	OutreachDraftEnrichmentPending      = "ENRICHMENT_PENDING"
+	OutreachDraftRejectedRewritePending = "REJECTED_REWRITE_PENDING"
+	OutreachDraftNeedsReview            = "NEEDS_REVIEW"
+	OutreachDraftApproved               = "APPROVED"
+	OutreachDraftRejected               = "REJECTED"
+	OutreachDraftSkipped                = "SKIPPED"
+	OutreachDraftBlocked                = "BLOCKED"
+	OutreachDraftEnrolled               = "ENROLLED"
+	OutreachDraftSent                   = "SENT"
+	OutreachDraftReplied                = "REPLIED"
 )
 
 // Outreach draft channels.
@@ -520,20 +523,23 @@ type OutreachPilotMembership struct {
 
 // Touchpoint states (per-message human approval authority).
 const (
-	TouchpointPlanned     = "PLANNED"
-	TouchpointDue         = "DUE"
-	TouchpointDrafted     = "DRAFTED"
-	TouchpointNeedsReview = "NEEDS_REVIEW"
-	TouchpointApproved    = "APPROVED"
-	TouchpointQueued      = "QUEUED"
-	TouchpointSent        = "SENT"
-	TouchpointSkipped     = "SKIPPED"
-	TouchpointRejected    = "REJECTED"
-	TouchpointReplied     = "REPLIED"
-	TouchpointDNC         = "DNC"
-	TouchpointBounced     = "BOUNCED"
-	TouchpointCancelled   = "CANCELLED"
-	TouchpointFailed      = "FAILED"
+	TouchpointPlanned                = "PLANNED"
+	TouchpointDue                    = "DUE"
+	TouchpointDrafted                = "DRAFTED"
+	TouchpointAIRewritePending       = "AI_REWRITE_PENDING"
+	TouchpointEnrichmentPending      = "ENRICHMENT_PENDING"
+	TouchpointRejectedRewritePending = "REJECTED_REWRITE_PENDING"
+	TouchpointNeedsReview            = "NEEDS_REVIEW"
+	TouchpointApproved               = "APPROVED"
+	TouchpointQueued                 = "QUEUED"
+	TouchpointSent                   = "SENT"
+	TouchpointSkipped                = "SKIPPED"
+	TouchpointRejected               = "REJECTED"
+	TouchpointReplied                = "REPLIED"
+	TouchpointDNC                    = "DNC"
+	TouchpointBounced                = "BOUNCED"
+	TouchpointCancelled              = "CANCELLED"
+	TouchpointFailed                 = "FAILED"
 )
 
 const (
@@ -546,6 +552,8 @@ const (
 var TouchpointOpenStates = map[string]bool{
 	TouchpointPlanned: true, TouchpointDue: true, TouchpointDrafted: true,
 	TouchpointNeedsReview: true, TouchpointApproved: true, TouchpointQueued: true,
+	TouchpointAIRewritePending: true, TouchpointEnrichmentPending: true,
+	TouchpointRejectedRewritePending: true,
 }
 
 var TouchpointTerminalStates = map[string]bool{
@@ -644,6 +652,18 @@ type OutreachTouchpoint struct {
 	// ConsultantSendability is operator-only: send without editing? yes/no.
 	ConsultantSendability map[string]any `json:"consultant_sendability,omitempty"`
 	GenerationError       string         `json:"generation_error,omitempty"`
+	// Editorial projection (not DB columns). The founder reads Comercial ->
+	// Rascunhos and has to judge the copy there, so what the judgement needs
+	// travels with the row instead of behind a second request.
+	EditorialState       string         `json:"editorial_state,omitempty"`
+	EditorialActionable  bool           `json:"editorial_actionable"`
+	EditorialReasonCodes []string       `json:"editorial_reason_codes,omitempty"`
+	EditorialNotice      string         `json:"editorial_notice,omitempty"`
+	ComposerVersion      string         `json:"composer_version,omitempty"`
+	PromptVersion        string         `json:"prompt_version,omitempty"`
+	RouteClass           string         `json:"route_class,omitempty"`
+	FactSource           string         `json:"fact_source,omitempty"`
+	TargetFit            map[string]any `json:"target_fit,omitempty"`
 }
 
 // Commercial action types. Semantic differences are load-bearing.

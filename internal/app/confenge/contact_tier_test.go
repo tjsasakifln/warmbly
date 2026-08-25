@@ -31,6 +31,69 @@ func loadContactTierFeed(t *testing.T) *Feed {
 	return feed
 }
 
+func TestPublishedExhaustedTierDoesNotBlockExplicitControlledRoute(t *testing.T) {
+	controlled := true
+	purposeBlocked := true
+	provenanceValid := false
+	derivedFixture := false
+	c := leadToCandidate(uuid.New(), uuid.New(), uuid.New(), FeedContact{
+		SourceContactID:                "controlled-generic",
+		Email:                          "contato@fornecedor.com.br",
+		SourceURL:                      "https://fornecedor.com.br/contato",
+		RootSourceType:                 "company_website",
+		VerificationStatus:             models.OutreachVerifyOfficialSource,
+		OwnershipStatus:                "COMPANY_OWNED",
+		RecipientCommercialSuitability: "UNSUITABLE_PROVENANCE",
+		MailboxPurpose:                 "GENERIC_CONTACT",
+		MailboxPurposeSendBlocked:      &purposeBlocked,
+		ProvenanceChainValid:           &provenanceValid,
+		DerivedFromFixture:             &derivedFixture,
+		ControlledEmailEligible:        &controlled,
+		RouteClass:                     RouteClassGenericCompany,
+		MailboxCompanyEvidence:         "OBSERVED",
+		ChannelEpistemic:               "OBSERVED",
+		RouteFreshness:                 "FRESH",
+		RiskClass:                      "ALLOWED",
+		RouteSuppression:               "NONE",
+		ContactTier:                    ContactTierE,
+	})
+	if c.Blocked || c.BlockReason != "" || !CandidateControlledEligible(c) || !CandidateEnrollable(c) {
+		t.Fatalf("explicit controlled route was collapsed into strict EXHAUSTED lane: %+v", c)
+	}
+	if !c.MailboxPurposeSendBlocked || c.EmailSendReady {
+		t.Fatalf("strict autorun guards were weakened: %+v", c)
+	}
+
+	fixture := true
+	unsafe := leadToCandidate(uuid.New(), uuid.New(), uuid.New(), FeedContact{
+		Email: "contato@fornecedor.com.br", VerificationStatus: models.OutreachVerifyOfficialSource,
+		OwnershipStatus: "COMPANY_OWNED", ProvenanceChainValid: &provenanceValid,
+		DerivedFromFixture: &fixture, ControlledEmailEligible: &controlled,
+		RouteClass: RouteClassGenericCompany, MailboxCompanyEvidence: "OBSERVED",
+		ChannelEpistemic: "OBSERVED", RouteFreshness: "FRESH", RiskClass: "ALLOWED",
+		RouteSuppression: "NONE", RootSourceType: "TEST_FIXTURE",
+	})
+	if !unsafe.Blocked || CandidateEnrollable(unsafe) {
+		t.Fatalf("fixture taint was softened by controlled stamp: %+v", unsafe)
+	}
+
+	incomplete := leadToCandidate(uuid.New(), uuid.New(), uuid.New(), FeedContact{
+		Email: "contato@fornecedor.com.br", VerificationStatus: models.OutreachVerifyOfficialSource,
+		OwnershipStatus: "COMPANY_OWNED", ProvenanceChainValid: &provenanceValid,
+		DerivedFromFixture: &derivedFixture, ControlledEmailEligible: &controlled,
+		RouteClass: RouteClassGenericCompany, RouteSuppression: "NONE",
+	})
+	if incomplete.BlockReason != "provenance_chain_invalid" || CandidateEnrollable(incomplete) {
+		t.Fatalf("incomplete controlled authority recovered strict provenance: %+v", incomplete)
+	}
+
+	legacy := &models.OutreachContactCandidate{Email: "contato@fornecedor.com.br"}
+	applyPublishedContactTier(legacy, ContactTierE)
+	if !legacy.Blocked || legacy.BlockReason != "published_exhausted" {
+		t.Fatalf("unstamped EXHAUSTED route must remain blocked: %+v", legacy)
+	}
+}
+
 func TestContactTiersContractualFixture(t *testing.T) {
 	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
 	feed := loadContactTierFeed(t)
@@ -100,7 +163,7 @@ func TestContactTiersContractualFixture(t *testing.T) {
 	}
 }
 
-func TestContactTierGenericCannotApproveViaHumanPath(t *testing.T) {
+func TestContactTierGenericCanReachHumanReviewWithoutPersonValidation(t *testing.T) {
 	repo := newMemRepo()
 	svc := testSvc(repo).(*service)
 	org, user := uuid.New(), uuid.New()
@@ -127,15 +190,15 @@ func TestContactTierGenericCannotApproveViaHumanPath(t *testing.T) {
 	if xerr != nil {
 		t.Fatal(xerr)
 	}
-	if tp.State == models.TouchpointNeedsReview {
-		t.Fatalf("generic cannot enter NEEDS_REVIEW: %+v", tp)
+	if (tp.State != models.TouchpointNeedsReview && tp.State != models.TouchpointAIRewritePending) || strings.TrimSpace(tp.BodyText) == "" {
+		t.Fatalf("generic company route must enter the editorial review pipeline: %+v", tp)
 	}
-	if _, xerr := svc.ApproveTouchpoint(context.Background(), org, user, tp.ID, ApprovalOptions{GenericRecipientAcknowledged: true}); xerr == nil {
-		t.Fatal("generic acknowledgement must not approve")
+	if tp.ApprovedBy != nil {
+		t.Fatalf("generation must not approve or schedule: %+v", tp)
 	}
 }
 
-func TestContactTierRoleMailboxGenerateNeverNeedsReview(t *testing.T) {
+func TestContactTierRoleMailboxGeneratesForHumanReview(t *testing.T) {
 	repo := newMemRepo()
 	svc := testSvc(repo).(*service)
 	org, user := uuid.New(), uuid.New()
@@ -164,8 +227,11 @@ func TestContactTierRoleMailboxGenerateNeverNeedsReview(t *testing.T) {
 	if xerr != nil {
 		t.Fatal(xerr)
 	}
-	if tp.State == models.TouchpointNeedsReview {
-		t.Fatalf("role mailbox must not enter NEEDS_REVIEW: %+v", tp)
+	if tp.State != models.TouchpointNeedsReview || strings.TrimSpace(tp.BodyText) == "" {
+		t.Fatalf("role mailbox must enter NEEDS_REVIEW with copy: %+v", tp)
+	}
+	if tp.ApprovedBy != nil {
+		t.Fatalf("generation must not approve or schedule: %+v", tp)
 	}
 }
 
