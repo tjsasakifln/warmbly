@@ -45,15 +45,14 @@ A version is current only when the version stamp and every member stamp are curr
 |--------|-----------|---------------------|
 | Read the version, its candidates and its audit trail | Allowed | Allowed |
 | `HOLD` or `REJECT` a candidate | Allowed | Allowed, so a reviewer can close an old version out |
-| `APPROVE` a candidate | Allowed | Refused with `409` |
-| `GO` on the cohort | Allowed | Blocked, and the reason codes appear in the version blockers |
+| `APPROVE` a candidate | Allowed and schedules the exact message | Refused with `409` |
 | Approve or queue a touchpoint | Allowed | Refused with `409` |
 | Transport and send | Allowed | Refused at the transport gate |
 | Recompose into version N+1 | Allowed | Allowed, and it is the only way forward |
 
 The transport check is absolute rather than relative. A send grant and the copy it authorizes can agree with each other and still both be the work of a composer this build no longer ships, so the grant is compared against the current composer and policy, not against the copy.
 
-Nothing is deleted when a version becomes legacy. The version, its candidates, its decisions and its receipts stay queryable, which is what makes the refusal safe: history remains auditable and only its ability to act is removed.
+Nothing is deleted when a version becomes legacy. The version, its candidates, reviews, scheduling receipts and any legacy GO/NO-GO history stay queryable, which is what makes the refusal safe: history remains auditable and only its ability to act is removed.
 
 ## Recompose is the way forward
 
@@ -63,7 +62,7 @@ The composer reads each member's own preserved fact, so recipient, mailbox, acco
 
 The request carries no copy. It requires an `Idempotency-Key`, a reason, a `confirmation` naming the version being recomposed (for example `v1`), and the `expected_frozen_hash` of that version. Canonical source evidence must still be `FRESH`: recompose rewrites copy, it cannot refresh evidence.
 
-Version N+1 is born with no validation, no review, no approval and no `GO`. It queues nothing, dispatches nothing, sends nothing and resumes nothing. Every decision is taken again on the new version.
+Version N+1 is born with no validation, no review, no approval and no scheduling. It queues nothing, sends nothing and resumes nothing. Validation and individual approval are taken again on the new version; APPROVE then schedules the exact reviewed message.
 
 The response includes a report of what the composer kept, dropped and rewrote: `parent_members`, `kept_members`, `excluded_members`, `exclusions`, `by_reason_code`, `composer_before` and `composer_after`. Each member passes editorial QA again, so a member whose rewritten copy fails is excluded with its reason code rather than carried forward, and corpus QA still refuses survivors that read as the same mail merge as a neighbour.
 

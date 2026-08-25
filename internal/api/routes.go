@@ -573,6 +573,7 @@ func Run(
 					confengeWrite.POST("/cohorts/:id/reproduce", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ReproduceConfengeHumanGateCohort)
 					confengeWrite.POST("/cohorts/:id/candidates/:candidateId/validation", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ValidateConfengeHumanGateCandidate)
 					confengeWrite.POST("/cohorts/:id/candidates/:candidateId/review", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ReviewConfengeHumanGateCandidate)
+					confengeWrite.POST("/cohorts/reconcile-approved", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ReconcileConfengeHumanGateApprovals)
 					// Adjust is an operator action, deliberately the same
 					// permission as review. It forks the immutable version into
 					// N+1 with human-edited copy; it never queues or sends.
@@ -581,7 +582,6 @@ func Run(
 					// operator permission, same fork-into-N+1 shape, copy
 					// rewritten by the composer instead of by a human.
 					confengeWrite.POST("/cohorts/:id/recompose", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.RecomposeConfengeHumanGateCohort)
-					confengeWrite.POST("/cohorts/:id/decision", m.RequireAccess(models.PermManageCampaigns, models.APIPermWriteCampaigns), h.DecideConfengeHumanGateCohort)
 					confengeWrite.POST("/accounts/:id/cancel-touchpoints", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.CancelConfengeAccountTouchpoints)
 					confengeWrite.POST("/accounts/:id/generate", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.GenerateConfengeDraft)
 					confengeWrite.POST("/accounts/:id/generate-reply", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.GenerateConfengeReplyDraft)
@@ -599,7 +599,6 @@ func Run(
 					confengeWrite.POST("/touchpoints/:id/queue", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.QueueConfengeTouchpoint)
 					confengeWrite.POST("/review/drafts/:id/decision", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.DecideConfengeReviewDraft)
 					confengeWrite.POST("/review/batches", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.ApproveConfengeReviewBatch)
-					confengeWrite.POST("/cohorts/:id/dispatch", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.DispatchConfengeCohort)
 					confengeWrite.POST("/touchpoints/:id/green-autorun", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.GreenAutorunConfengeTouchpoint)
 					confengeWrite.POST("/campaign/policy/authorize", m.RequireAccess(models.PermManageCampaigns, models.APIPermWriteCampaigns), h.AuthorizeConfengeCampaignPolicy)
 					confengeWrite.POST("/campaign/green-autorun/batch", m.RequireAccess(models.PermManageContacts, models.APIPermWriteContacts), h.BatchGreenAutorunConfenge)

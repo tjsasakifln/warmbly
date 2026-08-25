@@ -308,11 +308,11 @@ Frozen CONFENGE copy is operational only while the composer that wrote it is the
 | `policy_superseded` | The stamped bounded-cohort policy version is not the current one |
 | `superseded_by_version` | A later version of the same cohort exists; the response carries `current_version` and `current_version_id` |
 
-The same three codes are also read fields, not only errors. `GET /confenge/cohorts/:id` returns them in `editorial_reason_codes` on the version and on each candidate, superseded candidates repeat them in `blocked_by`, and a `GO` decision lists them among the version blockers instead of minting send authority.
+The same three codes are also read fields, not only errors. `GET /confenge/cohorts/:id` returns them in `editorial_reason_codes` on the version and on each candidate, and superseded candidates repeat them in `blocked_by`. An `APPROVE` never schedules superseded copy.
 
 `POST /confenge/touchpoints/:id/approve`, `POST /confenge/touchpoints/:id/queue`, and `POST /confenge/review/drafts/:id/decision` when the decision approves return `409` with code `conflict` and a message naming the same reason codes. Transport refuses a send grant by the same rule, so an already approved item cannot ship after the composer moves on.
 
-**How to fix:** recompose the cohort with `POST /confenge/cohorts/:id/recompose`, then take the review, approval and `GO` decisions again on the new version. Editing the old version is not possible: it is history.
+**How to fix:** recompose the cohort with `POST /confenge/cohorts/:id/recompose`, then validate and approve the candidate on the new version. That APPROVE schedules it; there is no GO step. Editing the old version is not possible: it is history.
 
 ### Editorial QA reason codes
 

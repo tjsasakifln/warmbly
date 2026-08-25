@@ -249,7 +249,7 @@ func (h *Handler) ReviewConfengeHumanGateCandidate(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": v, "meta": humanGateMeta(c, v, v.Reason), "receipt": receipt})
 }
 
-func (h *Handler) DecideConfengeHumanGateCohort(c *gin.Context) {
+func (h *Handler) ReconcileConfengeHumanGateApprovals(c *gin.Context) {
 	orgID, ok := h.confengeOrg(c)
 	if !ok {
 		return
@@ -258,34 +258,21 @@ func (h *Handler) DecideConfengeHumanGateCohort(c *gin.Context) {
 	if !ok {
 		return
 	}
-	versionID, _, ok := humanGateIDs(c)
-	if !ok {
-		return
-	}
-	var in confenge.HumanGateDecisionInput
-	if c.ShouldBindJSON(&in) != nil {
-		errx.JSON(c, errx.NewWithIdentifier(errx.BadRequest, "invalid_payload", "JSON body is invalid"))
-		return
-	}
-	in.IdempotencyKey = strings.TrimSpace(c.GetHeader("Idempotency-Key"))
-	in.CorrelationID = c.GetString("request_id")
-	v, x := h.ConfengeService.DecideHumanGateCohort(c.Request.Context(), orgID, actor, versionID, in)
+	report, x := h.ConfengeService.ReconcileApprovedHumanGateCandidates(c.Request.Context(), orgID, actor)
 	if x != nil {
 		errx.JSON(c, x)
 		return
 	}
-	receipt := v.Receipt
-	if v.OperationReceipt != "" {
-		receipt = v.OperationReceipt
-	} else if v.Decision != nil {
-		receipt = v.Decision.Receipt
-	}
-	c.JSON(http.StatusOK, gin.H{"data": v, "meta": humanGateMeta(c, v, v.Reason), "receipt": receipt})
+	c.JSON(http.StatusOK, gin.H{
+		"data":    report,
+		"meta":    humanGateMeta(c, nil, nil),
+		"receipt": "reconcile-approved:" + c.GetString("request_id"),
+	})
 }
 
 // AdjustConfengeHumanGateCandidate forks the addressed immutable version into
 // N+1 with human-edited copy for exactly one candidate. It is an operator
-// action (manage-contacts), not an admin one: GO stays manage-campaigns.
+// action (manage-contacts).
 //
 // It neither queues, dispatches, sends nor resumes anything.
 func (h *Handler) AdjustConfengeHumanGateCandidate(c *gin.Context) {
@@ -336,7 +323,7 @@ func (h *Handler) AdjustConfengeHumanGateCandidate(c *gin.Context) {
 
 // RecomposeConfengeHumanGateCohort forks the addressed immutable version into
 // N+1 with copy re-derived by the composer. It is an operator action
-// (manage-contacts), not an admin one: GO stays manage-campaigns.
+// (manage-contacts).
 //
 // It neither queues, dispatches, sends nor resumes anything.
 func (h *Handler) RecomposeConfengeHumanGateCohort(c *gin.Context) {

@@ -65,6 +65,11 @@ func (s *service) ProcessDispatchQueueOnce(ctx context.Context) (bool, error) {
 		_ = s.governor.MarkQueue(ctx, item.ID, dispatch.QueueCancelled, "approval or content hash changed")
 		return true, nil
 	}
+	if linked, reason := s.humanGateDispatchInvalidation(ctx, item.OrganizationID, tp); linked && reason != "" {
+		s.invalidateHumanGateDispatch(ctx, item.OrganizationID, tp, reason)
+		_ = s.governor.MarkQueue(ctx, item.ID, dispatch.QueueCancelled, reason)
+		return true, nil
+	}
 	actor := uuid.Nil
 	if tp.ApprovedBy != nil {
 		actor = *tp.ApprovedBy

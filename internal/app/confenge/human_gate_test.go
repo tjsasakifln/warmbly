@@ -72,58 +72,13 @@ func TestHumanGateGOBlockersCoverEmptyStaleValidationAndLateState(t *testing.T) 
 	}
 }
 
-func TestHumanGateAuthorizationExpiresAtEarliestImmutableEvidence(t *testing.T) {
-	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
-	cohort := &HumanGateCohort{
-		FreshUntil: now.Add(8 * time.Hour),
-		Manifest:   FrozenCohortSnapshot{TTLSeconds: int64((12 * time.Hour) / time.Second)},
-		Candidates: []HumanGateCandidate{
-			{Validation: &HumanGateValidation{ExpiresAt: now.Add(6 * time.Hour)}},
-			{Validation: &HumanGateValidation{ExpiresAt: now.Add(4 * time.Hour)}},
-		},
-	}
-	if got, want := humanGateAuthorizationExpiry(cohort, now), now.Add(4*time.Hour); !got.Equal(want) {
-		t.Fatalf("expiry=%s want earliest evidence %s", got, want)
-	}
-}
-
-func TestHumanGateAuthorizationIDIsStablePerIntentAndScoped(t *testing.T) {
-	org, version := uuid.New(), uuid.New()
-	a := humanGateAuthorizationID(org, version, "same-intent")
-	if a == uuid.Nil || a != humanGateAuthorizationID(org, version, "same-intent") {
-		t.Fatal("retry must resolve the same non-nil authorization id")
-	}
-	if a == humanGateAuthorizationID(uuid.New(), version, "same-intent") || a == humanGateAuthorizationID(org, version, "other-intent") {
-		t.Fatal("authorization id must be scoped to org, version and intent")
-	}
-}
-
-func TestHumanGateHumanConfirmationsAreServerEnforced(t *testing.T) {
+func TestHumanGateApprovalAcknowledgementIsServerEnforced(t *testing.T) {
 	svc := &service{}
 	actor := uuid.New()
 	if _, got := svc.ReviewHumanGateCandidate(t.Context(), uuid.New(), actor, uuid.New(), uuid.New(), HumanGateReviewInput{
 		Decision: "APPROVE", Reason: "fixture", IdempotencyKey: "fixture-review-key",
 	}); got == nil || got.Identifier != "approval_acknowledgement_required" {
 		t.Fatalf("APPROVE without acknowledgement must fail before storage, got %#v", got)
-	}
-	if _, got := svc.DecideHumanGateCohort(t.Context(), uuid.New(), actor, uuid.New(), HumanGateDecisionInput{
-		Decision: "NO_GO", Reason: "fixture", IdempotencyKey: "fixture-decision-key",
-	}); got == nil || got.Identifier != "decision_fields_required" {
-		t.Fatalf("GO/NO-GO without typed version must fail before storage, got %#v", got)
-	}
-	if !humanGateVersionConfirmed(" V3 ", 3) || humanGateVersionConfirmed("v2", 3) {
-		t.Fatal("typed confirmation must bind exactly to the immutable version number")
-	}
-}
-
-func TestHumanGateCrashBeforeDecisionCannotDispatch(t *testing.T) {
-	svc := &service{}
-	auth := &BoundedCohortAuthorization{ID: uuid.New(), GOReviewVerdict: HumanGateReadyVerdict}
-	if got := svc.requireDurableHumanGateGO(t.Context(), uuid.New(), auth); got == nil || got.Identifier != "human_gate_decision_missing" {
-		t.Fatalf("orphan authority must fail closed, got %#v", got)
-	}
-	if got := svc.requireDurableHumanGateGO(t.Context(), uuid.New(), &BoundedCohortAuthorization{ID: uuid.New()}); got != nil {
-		t.Fatalf("legacy authority must remain backward-compatible: %#v", got)
 	}
 }
 

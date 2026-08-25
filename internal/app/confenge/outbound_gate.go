@@ -412,7 +412,7 @@ func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *
 	// A frozen bounded cohort carries its own membership (the grant manifest,
 	// re-validated by CanTransportCohort). The legacy confenge-pilot-v1
 	// membership table is not written for it and must not gate it.
-	if s.cfg.OperatorMode && mode != AuthorizationModeBoundedCohort {
+	if s.cfg.OperatorMode && mode != AuthorizationModeBoundedCohort && mode != AuthorizationModeHumanGate {
 		if err := s.requirePilotMembershipForTouchpoint(ctx, orgID, tp); err != nil {
 			return fmt.Errorf("controlled pilot membership: %w", err)
 		}
@@ -421,9 +421,6 @@ func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *
 	if err != nil || acc == nil {
 		return fmt.Errorf("target-fit account lookup failed")
 	}
-	if err := s.assertAuthoritativeFeedForTransport(ctx, orgID, acc); err != nil {
-		return err
-	}
 	var cand *models.OutreachContactCandidate
 	if tp.ContactCandidateID != nil {
 		cand, _ = s.repo.GetCandidate(ctx, orgID, *tp.ContactCandidateID)
@@ -431,6 +428,31 @@ func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *
 		if draft, _ := s.repo.GetDraft(ctx, orgID, *tp.DraftID); draft != nil && draft.ContactCandidateID != nil {
 			cand, _ = s.repo.GetCandidate(ctx, orgID, *draft.ContactCandidateID)
 		}
+	}
+	linkedHumanGate, humanGateReason := s.humanGateDispatchInvalidation(ctx, orgID, tp)
+	if mode == AuthorizationModeHumanGate {
+		if !linkedHumanGate {
+			return fmt.Errorf("human-gate scheduling binding missing")
+		}
+		if humanGateReason != "" {
+			return fmt.Errorf("human-gate approval revalidation: %s", humanGateReason)
+		}
+		if cand == nil || !CandidateControlledEligible(cand) || !ControlledRouteAllowed(cand, nil) {
+			return fmt.Errorf("human-gate recipient is no longer controlled-eligible")
+		}
+		if !strings.EqualFold(strings.TrimSpace(tp.Recipient), strings.TrimSpace(cand.Email)) {
+			return fmt.Errorf("touchpoint recipient does not match approved contact candidate")
+		}
+		if err := AssertMessageContextFresh(acc, tp.GeneratedContextHash); err != nil {
+			return err
+		}
+		return nil
+	}
+	if linkedHumanGate {
+		return fmt.Errorf("human-gate touchpoint authorization mode mismatch")
+	}
+	if err := s.assertAuthoritativeFeedForTransport(ctx, orgID, acc); err != nil {
+		return err
 	}
 	if tp.Channel == models.OutreachChannelWhatsApp {
 		if err := RequireTargetFit(acc); err != nil {

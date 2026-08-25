@@ -90,6 +90,12 @@ func TestForkSyncBoundaryAppConfengeRouteAndPage(t *testing.T) {
 	if !strings.Contains(routes, `h.ApproveConfengeTouchpoint`) {
 		t.Fatal("routes.go must keep human approve")
 	}
+	if !strings.Contains(routes, `h.ReconcileConfengeHumanGateApprovals`) {
+		t.Fatal("routes.go must expose idempotent approved-candidate reconciliation")
+	}
+	if strings.Contains(routes, `h.DecideConfengeHumanGateCohort`) || strings.Contains(routes, `h.DispatchConfengeCohort`) {
+		t.Fatal("human-gate GO and cohort dispatch must not remain writable API routes")
+	}
 }
 
 // TestForkSyncBoundaryHumanApprovalKillSwitchNoAutoSend drives the shipped
