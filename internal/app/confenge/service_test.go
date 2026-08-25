@@ -961,6 +961,37 @@ func TestImportIdempotencySameKeySamePayload(t *testing.T) {
 	}
 }
 
+func TestImportIdempotencyResumesStaleRunningRun(t *testing.T) {
+	repo := newMemRepo()
+	svc := testSvc(repo)
+	org := uuid.New()
+	raw := mustReadFixture(t, "native_feed_v1.json")
+	stale := time.Now().UTC().Add(-16 * time.Minute)
+	run := &models.OutreachImportRun{
+		OrganizationID: org,
+		PayloadHash:    CanonicalPayloadHash(raw),
+		Status:         models.OutreachImportRunning,
+		StartedAt:      stale,
+		UpdatedAt:      stale,
+		IdempotencyKey: "stale-running",
+	}
+	if err := repo.CreateImportRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed, xerr := svc.ImportFromBytes(context.Background(), org, nil, raw, ImportOptions{IdempotencyKey: run.IdempotencyKey})
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if resumed.ID != run.ID || resumed.Status != models.OutreachImportCompleted {
+		t.Fatalf("expected stale run %s to complete in place, got %+v", run.ID, resumed)
+	}
+	acc, err := repo.GetAccountByCNPJ(context.Background(), org, "11222333000181")
+	if err != nil || acc == nil {
+		t.Fatalf("expected resumed import to apply the feed: account=%+v err=%v", acc, err)
+	}
+}
+
 func TestImportIdempotencyConflictOnDifferentPayload(t *testing.T) {
 	repo := newMemRepo()
 	svc := testSvc(repo)
