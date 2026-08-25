@@ -203,6 +203,19 @@ func TestAuthorizedSyntheticHandoffNeverClaimsRevenue(t *testing.T) {
 	if err == nil {
 		t.Fatal("synthetic financial gate claimed received revenue")
 	}
+
+	realSourceEventID := "financial-gate-reconciled-real-001"
+	mismatched := command
+	mismatched.IdempotencyKey = "fixture:authorized:synthetic-mismatch"
+	mismatched.FinancialGate = FinancialGate{
+		SchemaVersion: FinancialGateSchema, State: FinancialGateAuthorized,
+		Synthetic: false, SourceEventID: &realSourceEventID,
+		EvidenceRefs: []string{"evidence:financial-authorization"},
+	}
+	_, err = service.AuthorizeDelivery(context.Background(), mismatched)
+	if !errors.Is(err, ErrSyntheticMismatch) {
+		t.Fatalf("synthetic proposal accepted real gate err=%v", err)
+	}
 }
 
 func transitionPath(t *testing.T, service *Service, start Proposal, terminal State) Result {

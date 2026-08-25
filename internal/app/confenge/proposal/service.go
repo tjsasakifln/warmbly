@@ -234,6 +234,9 @@ func (s *Service) AuthorizeDelivery(ctx context.Context, command AuthorizeDelive
 	if p.DecisionState != StateAccepted || p.AcceptedSnapshotHash == "" {
 		return Result{}, fmt.Errorf("%w: delivery requires accepted proposal", ErrIllegalTransition)
 	}
+	if p.Synthetic != command.FinancialGate.Synthetic {
+		return Result{}, ErrSyntheticMismatch
+	}
 	at := command.OccurredAt.UTC()
 	if at.IsZero() {
 		at = s.clock().UTC()
