@@ -216,6 +216,90 @@ func TestHumanGateApproveSchedulesOnceAndReconcileIsIdempotentPostgres(t *testin
 	}
 }
 
+func TestHumanGateReconcileLegacyApprovalAfterSourceRunAdvancedPostgres(t *testing.T) {
+	f := newSchedulingPGFixture(t)
+
+	// Model the production shape left by the former contract: the durable
+	// APPROVE committed, but no scheduling path existed. Removing the governor
+	// makes today's method stop at precisely that boundary after storing review.
+	f.svc.WireDispatchGovernor(nil)
+	_, xerr := f.svc.ReviewHumanGateCandidate(f.ctx, f.org, f.actor, f.versionID, f.candidateID, HumanGateReviewInput{
+		Decision: "APPROVE", Reason: "legacy approval before atomic scheduling", Acknowledged: true,
+		IdempotencyKey: "legacy-approval", CorrelationID: "corr-legacy-approval",
+	})
+	if xerr == nil || xerr.Identifier != "dispatch_governor_unavailable" {
+		t.Fatalf("fixture must stop after durable review and before scheduling: %v", xerr)
+	}
+	if got := f.counts(); got != [4]int{1, 0, 0, 0} {
+		t.Fatalf("legacy setup must contain only the review: %v", got)
+	}
+
+	// A later feed refresh advances source_run_id on the canonical account. The
+	// frozen cohort still names the same immutable account/candidate IDs; this is
+	// the exact production condition that used to project
+	// live_candidate_state_unknown and make backfill fail.
+	if _, err := f.pool.Exec(f.ctx, `UPDATE outreach_accounts
+		SET source_run_id=$3,updated_at=now()
+		WHERE organization_id=$1 AND id=(SELECT account_id FROM outreach_contact_candidates WHERE organization_id=$1 AND id=$2)`,
+		f.org, f.candidateID, "newer-feed-run-"+uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	pgStore := dispatch.NewPGStore(f.pool)
+	f.svc.WireDispatchGovernor(dispatch.NewGovernor(dispatch.Config{
+		SendsPerHour: 10, MinGap: time.Minute, Timezone: "America/Sao_Paulo",
+		WindowStart: "09:00", WindowEnd: "18:00", BusinessDaysOnly: true,
+	}, pgStore, nil))
+
+	before, readErr := f.svc.GetHumanGateCohort(f.ctx, f.org, f.versionID, time.Now().UTC())
+	if readErr != nil || len(before.Candidates) != 1 || before.Candidates[0].Review == nil || !before.Candidates[0].Review.Effective {
+		t.Fatalf("canonical-id fallback must keep the approved review effective: cohort=%+v err=%v", before, readErr)
+	}
+	if containsString(before.Candidates[0].BlockedBy, "live_candidate_state_unknown") {
+		t.Fatalf("a newer feed run is not unknown live state: %v", before.Candidates[0].BlockedBy)
+	}
+
+	first, xerr := f.svc.ReconcileApprovedHumanGateCandidates(f.ctx, f.org, f.actor)
+	if xerr != nil || first.ApprovalRecords != 1 || first.LatestApprovedBindings != 1 ||
+		first.UniqueApprovedCandidates != 1 || first.Scheduled != 1 || first.AlreadyScheduled != 0 || first.Failed != 0 {
+		t.Fatalf("legacy backfill failed: report=%+v err=%v", first, xerr)
+	}
+	if got := f.counts(); got != [4]int{1, 1, 1, 1} {
+		t.Fatalf("legacy approval was not queued once: %v", got)
+	}
+	second, xerr := f.svc.ReconcileApprovedHumanGateCandidates(f.ctx, f.org, f.actor)
+	if xerr != nil || second.Scheduled != 0 || second.AlreadyScheduled != 1 || second.Failed != 0 {
+		t.Fatalf("legacy backfill rerun is not idempotent: report=%+v err=%v", second, xerr)
+	}
+	if got := f.counts(); got != [4]int{1, 1, 1, 1} {
+		t.Fatalf("legacy backfill rerun duplicated state: %v", got)
+	}
+}
+
+func TestHumanGateApproveAfterSourceRunAdvancedStillRefusesLateSuppressionPostgres(t *testing.T) {
+	f := newSchedulingPGFixture(t)
+	if _, err := f.pool.Exec(f.ctx, `UPDATE outreach_accounts
+		SET source_run_id=$3,updated_at=now()
+		WHERE organization_id=$1 AND id=(SELECT account_id FROM outreach_contact_candidates WHERE organization_id=$1 AND id=$2)`,
+		f.org, f.candidateID, "newer-feed-run-"+uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `UPDATE outreach_contact_candidates
+		SET blocked=true,block_reason='late suppression fixture',updated_at=now()
+		WHERE organization_id=$1 AND id=$2`, f.org, f.candidateID); err != nil {
+		t.Fatal(err)
+	}
+	_, xerr := f.svc.ReviewHumanGateCandidate(f.ctx, f.org, f.actor, f.versionID, f.candidateID, HumanGateReviewInput{
+		Decision: "APPROVE", Reason: "must not survive suppression", Acknowledged: true,
+		IdempotencyKey: "suppressed-approval", CorrelationID: "corr-suppressed-approval",
+	})
+	if xerr == nil || xerr.Identifier != "approval_not_schedulable" {
+		t.Fatalf("late suppression must refuse before review storage: %v", xerr)
+	}
+	if got := f.counts(); got != [4]int{0, 0, 0, 0} {
+		t.Fatalf("refused approval persisted work: %v", got)
+	}
+}
+
 func TestHumanGateHoldCancelsQueuedMessageAndLaterApproveGetsNewQueueKeyPostgres(t *testing.T) {
 	f := newSchedulingPGFixture(t)
 	f.review("APPROVE", "approve-before-hold")

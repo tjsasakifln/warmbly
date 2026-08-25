@@ -45,6 +45,39 @@ func TestHumanGateLateSuppressionOptOutBounceRemovalAndRecipientDriftInvalidate(
 	}
 }
 
+func TestHumanGateCanonicalFallbackKeepsLateSuppressionFailClosed(t *testing.T) {
+	orgID, accountID, candidateID := uuid.New(), uuid.New(), uuid.New()
+	repo := newMemRepo()
+	repo.byID[accountID] = &models.OutreachAccount{
+		ID: accountID, OrganizationID: orgID, Blocked: true, DoNotContact: true,
+	}
+	repo.cands[accountID] = []models.OutreachContactCandidate{{
+		ID: candidateID, OrganizationID: orgID, AccountID: accountID,
+		Email: "review@fixture.invalid", Blocked: true, DoNotContact: true, Bounced: true,
+	}}
+	svc := &service{repo: repo}
+	live, known := svc.humanGateCurrentAccount(t.Context(), orgID, accountID, map[uuid.UUID]CohortAccountInput{})
+	if !known {
+		t.Fatal("canonical account/candidate rows must be a known live reading")
+	}
+	reasons := humanGateLiveInvalidations(FrozenCohortMember{
+		AccountID: accountID, CandidateID: candidateID, Mailbox: "review@fixture.invalid",
+	}, live, known)
+	for _, want := range []string{
+		"late_account_suppression", "late_account_opt_out", "late_recipient_suppression",
+		"late_recipient_opt_out", "late_hard_bounce",
+	} {
+		if !slices.Contains(reasons, want) {
+			t.Fatalf("canonical fallback weakened %s: %v", want, reasons)
+		}
+	}
+
+	deleted, known := svc.humanGateCurrentAccount(t.Context(), orgID, uuid.New(), map[uuid.UUID]CohortAccountInput{})
+	if !known || !slices.Contains(humanGateLiveInvalidations(FrozenCohortMember{CandidateID: uuid.New()}, deleted, known), "candidate_removed") {
+		t.Fatal("known canonical deletion must fail closed as candidate_removed")
+	}
+}
+
 func TestHumanGateGOBlockersCoverEmptyStaleValidationAndLateState(t *testing.T) {
 	candidateID := uuid.New()
 	approved := &HumanGateReview{Decision: "APPROVE", Effective: true}

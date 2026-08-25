@@ -467,9 +467,8 @@ func (s *service) GetHumanGateCohort(ctx context.Context, orgID, id uuid.UUID, n
 		for _, account := range accounts {
 			current[account.Account.ID] = account
 		}
-	} else {
-		v.Reason = append(v.Reason, "live_suppression_state_unknown")
 	}
+	liveStateUnknown := false
 	for _, m := range v.Manifest.Members {
 		c := HumanGateCandidate{FrozenCohortMember: m, BlockedBy: []string{}}
 		c.Validation = s.latestHumanGateValidation(ctx, orgID, id, m.CandidateID, now)
@@ -486,7 +485,10 @@ func (s *service) GetHumanGateCohort(ctx context.Context, orgID, id uuid.UUID, n
 		if !policyCurrent {
 			c.BlockedBy = append(c.BlockedBy, "policy_drift")
 		}
-		live, ok := current[m.AccountID]
+		live, ok := s.humanGateCurrentAccount(ctx, orgID, m.AccountID, current)
+		if !ok {
+			liveStateUnknown = true
+		}
 		liveReasons := humanGateLiveInvalidations(m, live, ok)
 		if len(liveReasons) > 0 {
 			c.BlockedBy = append(c.BlockedBy, liveReasons...)
@@ -502,6 +504,9 @@ func (s *service) GetHumanGateCohort(ctx context.Context, orgID, id uuid.UUID, n
 		}
 		v.Candidates = append(v.Candidates, c)
 	}
+	if liveStateUnknown {
+		v.Reason = append(v.Reason, "live_suppression_state_unknown")
+	}
 	s.projectHumanGateEditorialAuthority(ctx, orgID, v)
 	v.Decision = s.latestHumanGateDecision(ctx, orgID, id)
 	if v.Decision != nil && v.Decision.Decision == "GO" {
@@ -514,6 +519,45 @@ func (s *service) GetHumanGateCohort(ctx context.Context, orgID, id uuid.UUID, n
 		}
 	}
 	return v, nil
+}
+
+// humanGateCurrentAccount reads late suppression from the original feed-run
+// projection when it is still addressable, and falls back to the same
+// canonical account/candidate rows by immutable IDs when a newer import has
+// advanced source_run_id. A frozen review does not become unknowable merely
+// because the account was refreshed by a later feed; deletion and read failure
+// remain distinct, fail-closed states.
+func (s *service) humanGateCurrentAccount(
+	ctx context.Context,
+	orgID, accountID uuid.UUID,
+	fromOriginalRun map[uuid.UUID]CohortAccountInput,
+) (CohortAccountInput, bool) {
+	if live, ok := fromOriginalRun[accountID]; ok {
+		return live, true
+	}
+	if s == nil || s.repo == nil {
+		return CohortAccountInput{}, false
+	}
+	account, err := s.repo.GetAccount(ctx, orgID, accountID)
+	if err != nil {
+		return CohortAccountInput{}, false
+	}
+	if account == nil {
+		// A successful canonical read that finds no account is known deletion,
+		// not an infrastructure unknown. An empty candidate list makes the
+		// existing invalidator report candidate_removed and refuse scheduling.
+		return CohortAccountInput{}, true
+	}
+	candidates, err := s.repo.ListCandidates(ctx, orgID, accountID)
+	if err != nil {
+		return CohortAccountInput{}, false
+	}
+	return CohortAccountInput{
+		Account:    *account,
+		Candidates: candidates,
+		Source:     account.SourceSystem,
+		Persisted:  true,
+	}, true
 }
 
 // projectHumanGateEditorialAuthority stamps the version-level verdict and, when
@@ -762,6 +806,19 @@ func (s *service) ReviewHumanGateCandidate(ctx context.Context, orgID, actorID, 
 	}
 	if in.Decision == "APPROVE" && (c.Validation == nil || c.Validation.Status != "VALID") {
 		return nil, humanGateError(errx.Conflict, "validation_blocks_approval", "APPROVE requires a current VALID result")
+	}
+	if in.Decision == "APPROVE" {
+		blockers := make([]string, 0, len(c.BlockedBy))
+		for _, blocker := range c.BlockedBy {
+			// This is the expected pre-decision state that APPROVE itself resolves.
+			// Every other current blocker must refuse before the durable review row.
+			if blocker != "approval_missing_or_invalid" {
+				blockers = append(blockers, blocker)
+			}
+		}
+		if len(blockers) > 0 {
+			return nil, humanGateError(errx.Conflict, "approval_not_schedulable", strings.Join(blockers, ","))
+		}
 	}
 	id := uuid.New()
 	receipt := humanGateReceipt("review", id)
