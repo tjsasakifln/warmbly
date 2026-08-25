@@ -92,6 +92,12 @@ func TestHumanGateRecoveryReappliesOperationalSupplierGates(t *testing.T) {
 	if reason := humanGateAccountOperational(acc, "supplier-run", now); reason != "" {
 		t.Fatalf("operational supplier refused: %s", reason)
 	}
+	// Controlled institutional routes intentionally keep the named-person
+	// EMAIL_SEND_READY rollup false until APPROVE performs live validation.
+	acc.EmailSendReady = false
+	if reason := humanGateAccountOperational(acc, "supplier-run", now); reason != "" {
+		t.Fatalf("controlled-route supplier refused by named-person rollup: %s", reason)
+	}
 	acc.SourceRunID = "contracting-authority-run"
 	if reason := humanGateAccountOperational(acc, "supplier-run", now); reason != "source_run_mismatch" {
 		t.Fatalf("cross-run recovery = %q", reason)
@@ -187,7 +193,7 @@ func TestHumanGatePostgresCreatesOneHundredDisjointSupplierMessages(t *testing.T
 			TargetFitObservedAt:      &now,
 			TargetFitFresh:           true,
 			TargetFitEligible:        true,
-			EmailSendReady:           true,
+			EmailSendReady:           false,
 		}
 		if _, err = repo.UpsertAccount(ctx, acc); err != nil {
 			t.Fatalf("upsert supplier %d: %v", i, err)
@@ -199,10 +205,10 @@ func TestHumanGatePostgresCreatesOneHundredDisjointSupplierMessages(t *testing.T
 			Email:                          fmt.Sprintf("contato@fornecedor-%03d.com.br", i),
 			SourceURL:                      fmt.Sprintf("https://fornecedor-%03d.com.br/contato", i),
 			SourceDate:                     &now,
-			VerificationStatus:             models.OutreachVerifyOfficialSource,
+			VerificationStatus:             models.OutreachVerifyCandidateUnverified,
 			Confidence:                     "HIGH",
 			Recommended:                    true,
-			EmailSendReady:                 true,
+			EmailSendReady:                 false,
 			MailboxPurpose:                 "GENERIC_CONTACT",
 			OwnershipStatus:                "COMPANY_OWNED",
 			RecipientCommercialSuitability: "SUITABLE",

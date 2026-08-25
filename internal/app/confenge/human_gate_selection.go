@@ -135,9 +135,10 @@ func humanGateAccountOperational(acc *models.OutreachAccount, sourceRunID string
 	if !acc.TargetFitEligible || acc.TargetFitClass != TargetFitConfirmed || !acc.TargetFitFresh || acc.TargetFitVersion == "" || acc.TargetFitSourceWatermark == "" || acc.TargetFitObservedAt == nil {
 		return "target_fit_not_operational"
 	}
-	if !acc.EmailSendReady {
-		return "account_email_not_ready"
-	}
+	// Company-level EMAIL_SEND_READY is the strict named-person autorun rollup.
+	// Human-gate cohorts also admit an explicitly classified controlled company
+	// mailbox (ROLE/GENERIC/FREEMAIL) whose live validation happens at APPROVE.
+	// The route-level gate below remains authoritative for that distinction.
 	return ""
 }
 
@@ -225,15 +226,15 @@ func (s *service) prepareHumanGateSelection(
 	} else {
 		for offset := 0; ; offset += humanGateSelectionPageSize {
 			page, readErr := s.repo.ListAccounts(ctx, orgID, repository.OutreachAccountFilter{
-				Limit:                humanGateSelectionPageSize,
-				Offset:               offset,
-				DynamicPriority:      true,
-				ActivationState:      ActivationActionableNow,
-				ActivationDueNow:     true,
-				ActivationNotExpired: true,
-				ExcludeTerminal:      true,
-				RequireOperational:   true,
-				SourceRunID:          run.SourceRunID,
+				Limit:                    humanGateSelectionPageSize,
+				Offset:                   offset,
+				DynamicPriority:          true,
+				ActivationState:          ActivationActionableNow,
+				ActivationDueNow:         true,
+				ActivationNotExpired:     true,
+				ExcludeTerminal:          true,
+				RequireTargetFitEligible: true,
+				SourceRunID:              run.SourceRunID,
 			})
 			if readErr != nil {
 				return nil, report, nil, humanGateError(errx.ServiceUnavailable, "source_accounts_unavailable", "canonical source accounts could not be paged")
@@ -372,10 +373,22 @@ func finalizeHumanGateSelectionReport(ctx context.Context, tx pgx.Tx, orgID uuid
 		  AND a.target_fit_eligible=true AND a.target_fit_class='TARGET_CONFIRMED'
 		  AND a.target_fit_fresh=true AND a.target_fit_version<>''
 		  AND a.target_fit_source_watermark<>'' AND a.target_fit_observed_at IS NOT NULL
-		  AND a.email_send_ready=true AND a.do_not_contact=false AND a.blocked=false
+		  AND a.do_not_contact=false AND a.blocked=false
 		  AND a.queue_state NOT IN ('DO_NOT_CONTACT','BLOCKED','BOUNCED','REPLIED','MEETING','PROPOSAL','WON','LOST','SENT','ENROLLED')
 		  AND COALESCE(NULLIF(a.cnpj_root,''),left(a.cnpj14,8)) ~ '^[0-9]{8}$'
-		  AND EXISTS (SELECT 1 FROM outreach_contact_candidates c WHERE c.organization_id=a.organization_id AND c.account_id=a.id AND c.email_send_ready=true AND c.email<>'' AND c.blocked=false AND c.do_not_contact=false AND c.bounced=false AND c.mailbox_purpose_send_blocked=false AND c.verification_status NOT IN ('CANDIDATE_UNVERIFIED','NOT_FOUND','INVALID','BOUNCED','DO_NOT_CONTACT'))
+		  AND EXISTS (
+			SELECT 1 FROM outreach_contact_candidates c
+			WHERE c.organization_id=a.organization_id AND c.account_id=a.id
+			  AND c.email<>'' AND c.blocked=false AND c.do_not_contact=false AND c.bounced=false
+			  AND c.mailbox_purpose_send_blocked=false
+			  AND (
+				(c.email_send_ready=true AND c.verification_status NOT IN ('CANDIDATE_UNVERIFIED','NOT_FOUND','INVALID','BOUNCED','DO_NOT_CONTACT'))
+				OR (
+				  c.discovery_json @> '{"controlled_email_eligible":true}'::jsonb
+				  AND upper(COALESCE(c.discovery_json->>'route_class','')) IN ('DIRECT_PERSON','ROLE_OR_DEPARTMENT','GENERIC_COMPANY','PUBLIC_COMPANY_FREEMAIL')
+				)
+			  )
+		  )
 		  AND NOT EXISTS (SELECT 1 FROM confenge_cohort_selection_claims claim WHERE claim.organization_id=a.organization_id AND claim.source_run_id=a.source_run_id AND (claim.account_id=a.id OR claim.cnpj_root=COALESCE(NULLIF(a.cnpj_root,''),left(a.cnpj14,8))))
 		  AND NOT EXISTS (SELECT 1 FROM outreach_touchpoints tp WHERE tp.organization_id=a.organization_id AND tp.account_id=a.id)
 		  AND NOT EXISTS (SELECT 1 FROM confenge_cohort_versions cv CROSS JOIN LATERAL jsonb_array_elements(COALESCE(cv.frozen_manifest->'members','[]'::jsonb)) member WHERE cv.organization_id=a.organization_id AND member->>'account_id'=a.id::text)`, orgID, sourceRunID).Scan(&report.EligibleRemaining); err != nil {
