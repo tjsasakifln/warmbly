@@ -39,15 +39,21 @@ fi
 echo "Restoring $FILE into warmbly_dev (destructive)..."
 compose_cmd exec -T postgres pg_isready -U warmbly >/dev/null
 # Drop connections and recreate schema content via psql
-cat "$FILE" | compose_cmd exec -T postgres psql -U warmbly -d warmbly_dev -v ON_ERROR_STOP=1
+compose_cmd exec -T postgres psql -U warmbly -d warmbly_dev -v ON_ERROR_STOP=1 < "$FILE"
 echo "Restore complete. Restart backend/worker if needed: deploy/confenge-vps/up.sh"
 echo "Verify encryption keys match the dump era or sealed credentials will not decrypt."
 
 if [[ -n "$ADAPTER_FILE" ]]; then
   echo "Restoring durable Asaas transport queue..."
-  systemctl stop confenge-asaas-adapter.service 2>/dev/null || true
+  ASAAS_WAS_ACTIVE=false
+  if systemctl is-active --quiet confenge-asaas-adapter.service 2>/dev/null; then
+    systemctl stop confenge-asaas-adapter.service
+    ASAAS_WAS_ACTIVE=true
+  fi
   python3 "$ROOT/deploy/confenge-vps/asaas-adapter/adapter.py" restore "$ADAPTER_FILE"
-  systemctl start confenge-asaas-adapter.service 2>/dev/null || true
   python3 "$ROOT/deploy/confenge-vps/asaas-adapter/adapter.py" permissions
+  if [[ "$ASAAS_WAS_ACTIVE" == "true" ]]; then
+    systemctl start confenge-asaas-adapter.service
+  fi
   echo "Asaas queue restore complete; counts are available from its health endpoint."
 fi

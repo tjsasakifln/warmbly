@@ -74,10 +74,11 @@ deploy/confenge-vps/pause.sh "incident"
 | Asaas `blocked` / `dead` | Inspect occurrence code/owner/next action, then compare the provider Webhook Log before replay |
 | Asaas queue interrupted | Fix the endpoint first, then reactivate in Asaas; provider events older than 14 days may be irrecoverable |
 
-The Asaas provider retains webhook events for up to 14 days and interrupts a
-queue after 15 consecutive failures. The local queue is therefore recovery
-state, not a cache. Daily backup freshness is exposed by the adapter health
-endpoint. Restore is exercised in isolation by
+The [Asaas webhook FAQ](https://docs.asaas.com/docs/faq-de-webhooks) states that
+webhook events remain available for up to 14 days and that 15 consecutive
+failures interrupt the queue. The local queue is therefore recovery state, not
+a cache. Daily backup freshness is exposed by the adapter health endpoint.
+Restore is exercised in isolation by
 `deploy/confenge-vps/asaas-adapter/test_adapter.py`; a production restore still
 requires an operator window and financial reconciliation after restart.
 

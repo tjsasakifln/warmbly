@@ -39,6 +39,28 @@ The helper keeps local port `8080` available for Evolution API and forwards the
 CONFENGE backend to `18080`. Use `deploy/confenge-vps/compose.sh` for maintenance;
 raw `docker compose` commands do not load this deployment's override and `.env`.
 
+### Asaas transport adapter
+
+The first install creates `/etc/confenge/asaas-adapter.env` with mode `0600`
+and exits before starting the service. Fill the Asaas auth token, the scoped
+Warmbly bearer token and the internal webhook secret, then run:
+
+```bash
+sudo deploy/confenge-vps/asaas-adapter-install.sh
+curl -fsS http://127.0.0.1:8791/api/v1/webhooks/asaas/health
+sudo python3 deploy/confenge-vps/asaas-adapter/adapter.py permissions
+```
+
+The Asaas token must contain 32 to 255 non-whitespace characters and must not be
+an Asaas API key. Startup validates all secrets, retry bounds, loopback binding
+and the exact Warmbly destination before opening the listener. Dry-run retains
+events as `blocked`; it never labels an unforwarded event `processed`.
+
+To update, check out the reviewed SHA and rerun the install script. It prints
+`ASAAS_ADAPTER_SHA` after restart. To roll back, restore the matching checkout,
+rerun the same script and verify health plus queue permissions. Back up the
+SQLite queue before changing adapter schema versions.
+
 Public inbound edge (host nginx, not a new app):
 
 ```bash

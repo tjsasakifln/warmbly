@@ -109,9 +109,16 @@ pass_fail DISPATCH "$DISPATCH"
 
 # Asaas adapter transport only. This is not proof of payment or revenue.
 ASAAS_HEALTH="$(curl -sS --max-time 5 http://127.0.0.1:8791/api/v1/webhooks/asaas/health 2>/dev/null || true)"
-if printf '%s' "$ASAAS_HEALTH" | grep -q '"schema_version":"confenge.asaas-adapter-health.v1"'; then
+if printf '%s' "$ASAAS_HEALTH" | grep -q '"schema_version":"confenge.asaas-adapter-health.v1"' && \
+  printf '%s' "$ASAAS_HEALTH" | grep -q '"worker_status":"OK"'; then
   pass_fail "ASAAS ADAPTER" PASS
   printf '%s\n' "$ASAAS_HEALTH"
+  ASAAS_BACKUP_STATUS="$(printf '%s' "$ASAAS_HEALTH" | grep -o '"backup_status":"[^"]*"' | head -1 | cut -d'"' -f4)"
+  case "$ASAAS_BACKUP_STATUS" in
+    FRESH) pass_fail "ASAAS BACKUP" PASS ;;
+    STALE) pass_fail "ASAAS BACKUP" STALE ;;
+    *) pass_fail "ASAAS BACKUP" UNKNOWN ;;
+  esac
   if ! python3 "$ROOT/deploy/confenge-vps/asaas-adapter/adapter.py" permissions >/dev/null 2>&1; then
     pass_fail "ASAAS QUEUE PERMISSIONS" FAIL
   else

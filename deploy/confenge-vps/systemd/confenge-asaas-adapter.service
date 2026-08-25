@@ -10,6 +10,7 @@ StateDirectory=confenge-asaas-adapter
 StateDirectoryMode=0700
 EnvironmentFile=/etc/confenge/asaas-adapter.env
 WorkingDirectory=/opt/warmbly-confenge/deploy/confenge-vps/asaas-adapter
+ExecStartPre=/usr/bin/python3 /opt/warmbly-confenge/deploy/confenge-vps/asaas-adapter/adapter.py validate
 ExecStart=/usr/bin/python3 /opt/warmbly-confenge/deploy/confenge-vps/asaas-adapter/adapter.py serve
 Restart=on-failure
 RestartSec=5s
