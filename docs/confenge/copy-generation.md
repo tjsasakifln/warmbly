@@ -150,13 +150,14 @@ the separate first-touch CLI uses its own versioned adversarial QA and policy.
 | `CONFENGE_REQUIRE_HUMAN_APPROVAL` | true | Keeps global automatic approval disabled |
 | `CONFENGE_AUTO_SEND_ENABLED` | false | Fail-closed |
 | `CONFENGE_DELEGATED_FIRST_TOUCH_ENABLED` | false | Enables only `CFG-FIRST-TOUCH-ROUTING-v1` |
+| `CONFENGE_DELEGATED_FIRST_TOUCH_AUTORUN_ENABLED` | false | Maintains the rolling canonical queue under that policy |
 | `CONFENGE_MAX_INITIAL_EMAIL_WORDS` | 120 | Hard word cap |
 | `CONFENGE_WHATSAPP_ENABLED` | false | WA generate/send |
 | `CONFENGE_MAX_WHATSAPP_WORDS` | 70 | WA word cap |
 
 ## Non-claims
 
-- Runtime AI may draft. Humans authorize ordinary flows. The CLI agent may
+- Runtime AI may draft. Humans authorize ordinary flows. The delegated worker may
   authorize only the founder-approved first-touch routing policy.
 - DNC, opt-out, bounce, and reply remain dominant cadence stops.
 - Multi-tenant isolation is enforced by org-scoped repositories.

@@ -111,6 +111,7 @@ type Service interface {
 	ProcessDispatchQueueOnce(ctx context.Context) (bool, error)
 	ProcessEditorialRecoveryOnce(ctx context.Context) (bool, error)
 	ProcessDraftGenerationOnce(ctx context.Context) (bool, error)
+	ProcessDelegatedFirstTouchOnce(ctx context.Context) (bool, error)
 
 	// Per-touchpoint human approval cadence.
 	PreparePilotCohort(ctx context.Context, orgID, userID uuid.UUID, accountIDs []uuid.UUID, operation PilotOperation) (*PilotCohortResult, *errx.Error)
@@ -131,7 +132,7 @@ type Service interface {
 
 	// CAMPAIGN_POLICY_AUTHORIZATION + GREEN autorun (no fake approved_by).
 	WirePolicyAuth(store repository.ConfengePolicyRepository)
-	// Delegated first-touch is a CLI-authored, manifest-driven approval path.
+	// Delegated first-touch is a manifest-driven approval path.
 	// It writes decisions and readbacks to Postgres but reuses the canonical queue.
 	WireDelegatedFirstTouch(db *pgxpool.Pool)
 	WireOrgRisk(risk OrgRiskPolicy)
