@@ -268,7 +268,11 @@ func GetCanonical(store Store, orgID, leadID string) (*CanonicalState, error) {
 }
 
 func rejectOperatorPII(req OperatorRequest) error {
-	for _, v := range []string{req.LeadID, req.ReceiptID, req.CorrelationID, req.Source, req.Query, req.Referrer, req.AssetID, req.CompanyRef} {
+	for _, v := range []string{
+		req.LeadID, req.ReceiptID, req.CorrelationID, req.Source, req.Query, req.Referrer,
+		req.AssetID, req.CompanyRef, req.AccountPublicID, req.OpportunityID, req.ProposalID,
+		req.ChargeID, req.PaymentID, req.DeliverableID, req.Responsible,
+	} {
 		if MetricKeyContainsPII(v) || strings.Contains(v, "@") {
 			return fmt.Errorf("raw PII rejected in operator fields")
 		}

@@ -197,9 +197,14 @@ func (s *service) IngestProviderWebhook(_ context.Context, orgID uuid.UUID, secr
 		return intel.WebhookAck{}, xerr
 	}
 	ack, err := intel.IngestProviderWebhook(s.intelStore(), intel.NewFakeAdapter(), orgID.String(), secret, previous, header, body, time.Now().UTC())
+	if intel.JoinUnavailable(ack.Join) {
+		return ack, errx.New(errx.ServiceUnavailable, "commercial intelligence store unavailable; retry the same provider event ID")
+	}
 	if err != nil && ack.ReceiptID == "" && !ack.Acked {
-		if strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "secret") {
-			return ack, errx.New(errx.Unauthorized, err.Error())
+		for _, ex := range ack.Join.Exceptions {
+			if ex.Code == intel.ExceptionInvalidSecret {
+				return ack, errx.New(errx.Unauthorized, err.Error())
+			}
 		}
 		return ack, errx.New(errx.Unprocessable, err.Error())
 	}

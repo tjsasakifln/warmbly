@@ -81,6 +81,14 @@ func ApplyCommercialTransition(existing *Chain, ev CommercialEvent) TransitionRe
 		}
 		ev.CNPJ = ""
 	}
+	if kind, have, incoming := conflictingCanonicalIdentity(existing, ev); kind != "" {
+		add(ExceptionConflictingExternal,
+			"incoming "+kind+" disagrees with the first canonical identity",
+			"hold; keep "+have+" and review "+incoming, true)
+		res.Rejected = true
+		res.Reason = "conflicting_canonical_identity"
+		return res
+	}
 
 	st := CommercialState{}
 	if existing != nil {
@@ -176,6 +184,14 @@ func ApplyCommercialTransition(existing *Chain, ev CommercialEvent) TransitionRe
 			RetryState:     "pending",
 		})
 	case EventPaymentReceived:
+		if firstNonEmpty(ev.ProviderEventID, ev.Provider.ProviderEventID) != "" &&
+			ev.Payment.ReceivedCents <= 0 && ev.Payment.PrincipalCents <= 0 {
+			add(ExceptionImpossibleCommercial, "provider payment_received has no positive observed amount", "hold; reconcile the provider payload before applying revenue", true)
+			res.Held = true
+			res.Rejected = true
+			res.Reason = "missing_provider_amount"
+			return res
+		}
 		if blocked, why := paymentFinancialGate(existing, ev, st); blocked {
 			add(ExceptionOutOfOrder, why, "hold; do not apply received revenue", true)
 			res.Held = true
@@ -481,6 +497,9 @@ func mergeCommercial(dst, src CommercialState, ev CommercialEvent) CommercialSta
 }
 
 func mergeControl(dst CommercialControlState, ev CommercialEvent) CommercialControlState {
+	if dst.LatestObservedAt != nil && ev.OccurredAt.Before(*dst.LatestObservedAt) {
+		return dst
+	}
 	changed := false
 	if value := strings.TrimSpace(ev.DeliverableID); value != "" {
 		dst.LatestDeliverableID = value
@@ -512,6 +531,30 @@ func mergeControl(dst CommercialControlState, ev CommercialEvent) CommercialCont
 		dst.LatestObservedAt = &t
 	}
 	return dst
+}
+
+func conflictingCanonicalIdentity(existing *Chain, ev CommercialEvent) (string, string, string) {
+	if existing == nil {
+		return "", "", ""
+	}
+	have := CanonicalIdentityOf(*existing)
+	pairs := []struct {
+		kind     string
+		current  string
+		incoming string
+	}{
+		{kind: "correlation_id", current: have.CorrelationID, incoming: firstCanonicalID(ev.CorrelationID, ev.ExternalReference, ev.Provider.ExternalRef)},
+		{kind: "account_id", current: have.AccountID, incoming: firstCanonicalID(ev.AccountPublicID)},
+		{kind: "opportunity_id", current: have.OpportunityID, incoming: firstCanonicalID(ev.OpportunityID)},
+		{kind: "offer_id", current: have.OfferID, incoming: firstCanonicalID(ev.OfferID, ev.Offer.OfferID)},
+		{kind: "proposal_id", current: have.ProposalID, incoming: firstCanonicalID(ev.ProposalID)},
+	}
+	for _, pair := range pairs {
+		if pair.current != Unknown && pair.incoming != Unknown && pair.current != pair.incoming {
+			return pair.kind, pair.current, pair.incoming
+		}
+	}
+	return "", "", ""
 }
 
 func mergeOffer(dst, src OfferSnapshot) OfferSnapshot {
@@ -900,11 +943,12 @@ func checkoutTime(existing *Chain) time.Time {
 
 func appendReceipt(tl []CommercialReceipt, ev CommercialEvent, typ string) []CommercialReceipt {
 	id := strings.TrimSpace(ev.EventID)
+	providerEventID := firstNonEmpty(ev.ProviderEventID, ev.Provider.ProviderEventID)
 	for _, r := range tl {
-		if r.EventID == id && id != "" {
+		if providerEventID == "" && r.EventID == id && id != "" {
 			return tl
 		}
-		if ev.ProviderEventID != "" && r.ProviderEventID == ev.ProviderEventID {
+		if providerEventID != "" && r.ProviderEventID == providerEventID {
 			return tl
 		}
 	}
@@ -915,8 +959,10 @@ func appendReceipt(tl []CommercialReceipt, ev CommercialEvent, typ string) []Com
 	return append(tl, CommercialReceipt{
 		EventID:         id,
 		Type:            typ,
+		ChargeID:        knownID(firstCanonicalID(ev.ChargeID, ev.Provider.ChargeID, ev.Provider.PaymentID)),
+		PaymentID:       knownID(firstCanonicalID(ev.PaymentID)),
 		RawType:         ev.RawEventType,
-		ProviderEventID: firstNonEmpty(ev.ProviderEventID, ev.Provider.ProviderEventID),
+		ProviderEventID: providerEventID,
 		ExternalRef:     firstNonEmpty(ev.ExternalReference, ev.Provider.ExternalRef),
 		OccurredAt:      ev.OccurredAt,
 		IngestedAt:      ing,

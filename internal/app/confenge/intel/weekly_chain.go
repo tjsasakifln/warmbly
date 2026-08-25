@@ -54,22 +54,31 @@ func canonicalID(v string) string {
 	return v
 }
 
+func firstCanonicalID(values ...string) string {
+	for _, value := range values {
+		if id := canonicalID(value); id != Unknown {
+			return id
+		}
+	}
+	return Unknown
+}
+
 func CanonicalIdentityOf(c Chain) CanonicalCommercialIdentity {
-	chargeID := firstNonEmpty(c.ChargeID, c.Keys.ChargeID, c.Commercial.Provider.ChargeID,
+	chargeID := firstCanonicalID(c.ChargeID, c.Keys.ChargeID, c.Commercial.Provider.ChargeID,
 		c.Commercial.Provider.PaymentID)
-	paymentID := firstNonEmpty(c.PaymentID, c.Keys.PaymentID)
-	if paymentID == "" && c.Commercial.Payment.ReceivedCount > 0 {
-		paymentID = c.Commercial.Provider.PaymentID
+	paymentID := firstCanonicalID(c.PaymentID, c.Keys.PaymentID)
+	if paymentID == Unknown && c.Commercial.Payment.ReceivedCount > 0 {
+		paymentID = firstCanonicalID(c.Commercial.Provider.PaymentID)
 	}
 	return CanonicalCommercialIdentity{
-		CorrelationID: canonicalID(firstNonEmpty(c.CorrelationID, c.Keys.CorrelationID,
-			c.Keys.ExternalReference, c.Commercial.Provider.ExternalRef)),
-		AccountID:     canonicalID(firstNonEmpty(c.AccountID, c.Keys.AccountID)),
-		OpportunityID: canonicalID(firstNonEmpty(c.OpportunityID, c.Keys.OpportunityID)),
-		OfferID:       canonicalID(firstNonEmpty(c.OfferID, c.Keys.OfferID, c.Commercial.Offer.OfferID)),
-		ProposalID:    canonicalID(firstNonEmpty(c.ProposalID, c.Keys.ProposalID)),
-		ChargeID:      canonicalID(chargeID),
-		PaymentID:     canonicalID(paymentID),
+		CorrelationID: firstCanonicalID(c.CorrelationID, c.Keys.CorrelationID,
+			c.Keys.ExternalReference, c.Commercial.Provider.ExternalRef),
+		AccountID:     firstCanonicalID(c.AccountID, c.Keys.AccountID),
+		OpportunityID: firstCanonicalID(c.OpportunityID, c.Keys.OpportunityID),
+		OfferID:       firstCanonicalID(c.OfferID, c.Keys.OfferID, c.Commercial.Offer.OfferID),
+		ProposalID:    firstCanonicalID(c.ProposalID, c.Keys.ProposalID),
+		ChargeID:      chargeID,
+		PaymentID:     paymentID,
 	}
 }
 
@@ -92,11 +101,13 @@ func WeeklyRevenueView(c Chain) WeeklyRevenueChain {
 	identity := CanonicalIdentityOf(c)
 	control := c.Commercial.Control
 	decision := normalizeDecision(control.Decision)
-	deadline := AvailabilityUnknown
-	deadlineValue := ""
+	deadline := ObservedText{Availability: AvailabilityUnknown}
 	if control.Deadline != nil && !control.Deadline.IsZero() {
-		deadline = AvailabilityObserved
-		deadlineValue = control.Deadline.UTC().Format(time.RFC3339)
+		deadline = ObservedText{
+			Availability: AvailabilityObserved,
+			Value:        control.Deadline.UTC().Format(time.RFC3339),
+			ObservedAt:   control.LatestObservedAt,
+		}
 	}
 	proposalAt := c.ProposalAt
 	proposal := observedText(identity.ProposalID, proposalAt)
@@ -133,7 +144,7 @@ func WeeklyRevenueView(c Chain) WeeklyRevenueChain {
 		LatestEvidence:    observedText(control.LatestEvidenceRef, control.LatestObservedAt),
 		Decision:          observedText(decision, control.LatestObservedAt),
 		Responsible:       observedText(control.Responsible, control.LatestObservedAt),
-		Deadline:          ObservedText{Availability: deadline, Value: deadlineValue, ObservedAt: control.LatestObservedAt},
+		Deadline:          deadline,
 		NextAction:        observedText(control.NextAction, control.LatestObservedAt),
 		Proposal:          proposal,
 		Charge:            charge,
@@ -176,6 +187,9 @@ func latestTimelineAt(c Chain, types ...string) *time.Time {
 
 func SortWeeklyRevenueChains(rows []WeeklyRevenueChain) {
 	sort.Slice(rows, func(i, j int) bool {
-		return rows[i].Identity.CorrelationID < rows[j].Identity.CorrelationID
+		left := rows[i].Identity
+		right := rows[j].Identity
+		return strings.Join([]string{left.CorrelationID, left.OpportunityID, left.ProposalID, left.ChargeID, left.PaymentID}, "\x00") <
+			strings.Join([]string{right.CorrelationID, right.OpportunityID, right.ProposalID, right.ChargeID, right.PaymentID}, "\x00")
 	})
 }

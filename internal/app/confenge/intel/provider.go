@@ -1,12 +1,16 @@
 package intel
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -51,8 +55,13 @@ func (a *FakeAdapter) ParseWebhook(body []byte) (ProviderEvent, error) {
 		return ProviderEvent{}, fmt.Errorf("provider adapter disabled")
 	}
 	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&raw); err != nil {
 		return ProviderEvent{}, err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return ProviderEvent{}, fmt.Errorf("provider payload must contain one JSON object")
 	}
 	known := map[string]struct{}{
 		"id": {}, "event": {}, "dateCreated": {}, "payment": {}, "checkout": {},
@@ -62,12 +71,13 @@ func (a *FakeAdapter) ParseWebhook(body []byte) (ProviderEvent, error) {
 	}
 	var unknown []string
 	for k := range raw {
-		if _, ok := known[k]; !ok {
+		if _, ok := known[k]; !ok && safeProviderFieldName(k) {
 			unknown = append(unknown, k)
 		}
 	}
+	sort.Strings(unknown)
 	p := ProviderEvent{
-		ProviderEventID: firstNonEmpty(anyString(raw["id"]), anyString(raw["event"])+"-"+anyString(raw["dateCreated"])),
+		ProviderEventID: anyString(raw["id"]),
 		ExternalRef:     anyString(raw["externalReference"]),
 		RawType:         firstNonEmpty(anyString(raw["event"]), anyString(raw["object"])),
 		RawStatus:       anyString(raw["status"]),
@@ -100,11 +110,35 @@ func (a *FakeAdapter) ParseWebhook(body []byte) (ProviderEvent, error) {
 	if p.CustomerID == "" {
 		p.CustomerID = anyString(raw["customer"])
 	}
-	if p.OccurredAt.IsZero() {
-		p.OccurredAt = time.Now().UTC()
-	}
 	if p.ProviderEventID == "" {
 		return p, fmt.Errorf("provider event id required")
+	}
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{name: "provider_event_type", value: p.RawType},
+		{name: "provider_status", value: p.RawStatus},
+		{name: "payment_method", value: p.PaymentMethod},
+	} {
+		if field.value != "" && !safeProviderFieldName(field.value) {
+			return p, fmt.Errorf("%s must be an enum token", field.name)
+		}
+	}
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{name: "provider_event_id", value: p.ProviderEventID},
+		{name: "external_reference", value: p.ExternalRef},
+		{name: "provider_customer_id", value: p.CustomerID},
+		{name: "provider_checkout_id", value: p.CheckoutID},
+		{name: "provider_subscription_id", value: p.SubscriptionID},
+		{name: "provider_payment_id", value: p.PaymentID},
+	} {
+		if err := validateOpaqueIdentifier(field.name, field.value); err != nil {
+			return p, err
+		}
 	}
 	return p, nil
 }
@@ -264,19 +298,40 @@ func IngestProviderWebhook(store Store, adapter ProviderAdapter, orgID, secret, 
 		saved, created, perr := rs.PutEventReceipt(rec)
 		if perr != nil {
 			ex := Exception{
-				Code: ExceptionUnavailable, CodeVersion: ExceptionCodeVersion,
+				OrganizationID: orgID, Code: ExceptionUnavailable, CodeVersion: ExceptionCodeVersion,
 				Reason: "durable receipt failed: " + perr.Error(), NextAction: "retry same provider event id",
-				Held: true, At: now, Owner: "provider-webhook",
+				Held: true, At: now, OpenedAt: now, Owner: "provider-webhook", RetryState: "pending",
 			}
 			return WebhookAck{Acked: false, Held: true, Join: JoinResult{Exceptions: []Exception{ex}, Held: true}}, perr
+		}
+		if parsed.OccurredAt.IsZero() {
+			parsed.OccurredAt = saved.At
+			if parsed.OccurredAt.IsZero() {
+				parsed.OccurredAt = now
+			}
 		}
 		ack := WebhookAck{ReceiptID: saved.ID, Replay: !created, Acked: true}
 		if !created {
 			ack.Processed = saved.Processed
-			if ch := findSeenEvent(store, CommercialEvent{OrganizationID: orgID, ProviderEventID: parsed.ProviderEventID, EventID: "prov-" + parsed.ProviderEventID}); ch != nil {
+			ch, findErr := findSeenEvent(store, CommercialEvent{OrganizationID: orgID, ProviderEventID: parsed.ProviderEventID, EventID: "prov-" + parsed.ProviderEventID})
+			if findErr != nil {
+				ex := storeUnavailableException(CommercialEvent{OrganizationID: orgID}, saved.Identity, "find provider receipt chain", findErr)
+				_ = store.PutException(ex)
+				ack.Held = true
+				ack.Join = JoinResult{Exceptions: []Exception{ex}, Held: true}
+				return ack, nil
+			}
+			if ch != nil {
 				ack.Join = JoinResult{Chain: *ch, Replay: true, Held: ch.Held}
 			}
 			if saved.Processed {
+				if ch == nil {
+					ex := storeUnavailableException(CommercialEvent{OrganizationID: orgID}, saved.Identity, "get processed provider receipt chain", fmt.Errorf("chain %q is missing", saved.Identity))
+					_ = store.PutException(ex)
+					ack.Processed = false
+					ack.Held = true
+					ack.Join = JoinResult{Exceptions: []Exception{ex}, Held: true}
+				}
 				return ack, nil
 			}
 		}
@@ -284,15 +339,26 @@ func IngestProviderWebhook(store Store, adapter ProviderAdapter, orgID, secret, 
 		ev.Synthetic = true
 		ev.AllowReceiptRetry = !created
 		join := IngestEvent(store, ev)
-		ack.Processed = commercialReceiptApplied(join.Chain, ev)
+		applied := commercialReceiptApplied(join.Chain, ev)
+		ack.Processed = applied && !JoinUnavailable(join)
 		ack.Held = join.Held
-		ack.Join = join
 		if ms, ok := store.(interface {
-			MarkReceiptProcessed(string, string)
-		}); ok && ack.Processed {
-			ms.MarkReceiptProcessed(orgID, parsed.ProviderEventID)
+			MarkReceiptProcessed(string, string) error
+		}); ok && join.Replay && applied && !JoinUnavailable(join) {
+			if err := ms.MarkReceiptProcessed(orgID, parsed.ProviderEventID); err != nil {
+				ex := storeUnavailableException(ev, join.Chain.Identity, "mark receipt processed", err)
+				_ = store.PutException(ex)
+				join.Exceptions = append(join.Exceptions, ex)
+				join.Held = true
+				ack.Processed = false
+				ack.Held = true
+			}
 		}
+		ack.Join = join
 		return ack, nil
+	}
+	if parsed.OccurredAt.IsZero() {
+		parsed.OccurredAt = now
 	}
 	ev := adapter.MapEvent(parsed, orgID)
 	ev.Synthetic = true
@@ -301,42 +367,62 @@ func IngestProviderWebhook(store Store, adapter ProviderAdapter, orgID, secret, 
 }
 
 func anyString(v any) string {
-	switch t := v.(type) {
-	case string:
-		return strings.TrimSpace(t)
-	case fmt.Stringer:
-		return strings.TrimSpace(t.String())
-	case float64:
-		if t == float64(int64(t)) {
-			return fmt.Sprintf("%d", int64(t))
-		}
-		return strings.TrimSpace(fmt.Sprintf("%v", t))
-	default:
-		if v == nil {
-			return ""
-		}
-		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	if value, ok := v.(string); ok {
+		return strings.TrimSpace(value)
 	}
+	return ""
 }
 
 func reaisToCents(v any) int64 {
-	switch t := v.(type) {
-	case float64:
-		return int64(t*100 + 0.5)
-	case int:
-		return int64(t) * 100
-	case int64:
-		return t * 100
+	var value string
+	switch amount := v.(type) {
 	case json.Number:
-		f, _ := t.Float64()
-		return int64(f*100 + 0.5)
+		value = amount.String()
 	case string:
-		var f float64
-		fmt.Sscanf(t, "%f", &f)
-		return int64(f*100 + 0.5)
+		value = strings.TrimSpace(amount)
 	default:
 		return 0
 	}
+	parts := strings.Split(value, ".")
+	if len(parts) > 2 || len(parts[0]) == 0 ||
+		(len(parts) == 2 && (len(parts[1]) == 0 || len(parts[1]) > 2)) {
+		return 0
+	}
+	for _, part := range parts {
+		for _, character := range part {
+			if character < '0' || character > '9' {
+				return 0
+			}
+		}
+	}
+	reais, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return 0
+	}
+	fraction := ""
+	if len(parts) == 2 {
+		fraction = parts[1]
+	}
+	fraction += strings.Repeat("0", 2-len(fraction))
+	centavos, err := strconv.ParseInt(fraction, 10, 64)
+	if err != nil || reais > (int64(1<<63-1)-centavos)/100 {
+		return 0
+	}
+	return reais*100 + centavos
+}
+
+func safeProviderFieldName(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if (character < 'a' || character > 'z') &&
+			(character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') && character != '_' && character != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func parseProviderTime(v string) time.Time {
@@ -355,8 +441,11 @@ func parseProviderTime(v string) time.Time {
 func minimizeProviderRaw(raw map[string]any) map[string]any {
 	out := map[string]any{}
 	for _, k := range []string{"id", "event", "status", "externalReference", "object"} {
-		if v, ok := raw[k]; ok {
-			out[k] = v
+		if value := anyString(raw[k]); value != "" {
+			if (k == "event" || k == "status" || k == "object") && !safeProviderFieldName(value) {
+				continue
+			}
+			out[k] = value
 		}
 	}
 	return out

@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/warmbly/warmbly/internal/app/confenge/intel"
+	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
 )
 
@@ -23,6 +24,30 @@ func TestCommercialExecutiveViewEmptyReal(t *testing.T) {
 		t.Fatalf("empty real view invented data: %+v", view)
 	}
 	fmt.Printf("SERVICE_REAL_EMPTY iqp=%d qco=%d real_empty=%v\n", view.InboundQualifiedPipeline, view.QCO, view.RealEmpty)
+}
+
+func TestProviderWebhookErrorsUseStableHTTPClass(t *testing.T) {
+	svc, _, org := inboundTestService(t)
+	now := time.Now().UTC()
+	secret := "sandbox-secret"
+	malformed := []byte(`{"id":`)
+	malformedSignature := intel.SignProviderHMAC(secret, now, malformed)
+	if _, xerr := svc.IngestProviderWebhook(context.Background(), org, secret, "", malformedSignature, malformed); xerr == nil || xerr.Code != errx.Unprocessable {
+		t.Fatalf("signed malformed payload should be 422, got %v", xerr)
+	}
+
+	valid := []byte(`{"id":"evt-service-503","event":"PAYMENT_CREATED","dateCreated":"2026-08-25T12:00:00Z"}`)
+	if _, xerr := svc.IngestProviderWebhook(context.Background(), org, secret, "", "t=1,v1=dead", valid); xerr == nil || xerr.Code != errx.Unauthorized {
+		t.Fatalf("invalid signature should be 401, got %v", xerr)
+	}
+
+	unavailable := intel.NewMemoryStore()
+	unavailable.SetUnavailable(true)
+	svc.intel = unavailable
+	validSignature := intel.SignProviderHMAC(secret, now, valid)
+	if _, xerr := svc.IngestProviderWebhook(context.Background(), org, secret, "", validSignature, valid); xerr == nil || xerr.Code != errx.ServiceUnavailable {
+		t.Fatalf("receipt-store outage should be 503, got %v", xerr)
+	}
 }
 
 func TestCommercialExecutiveViewExcludesIngestedSyntheticQAInternal(t *testing.T) {

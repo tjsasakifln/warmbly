@@ -270,6 +270,8 @@ type GateStates struct {
 type CommercialReceipt struct {
 	EventID         string    `json:"event_id"`
 	Type            string    `json:"type"`
+	ChargeID        string    `json:"charge_id,omitempty"`
+	PaymentID       string    `json:"payment_id,omitempty"`
 	RawType         string    `json:"raw_type,omitempty"`
 	ProviderEventID string    `json:"provider_event_id,omitempty"`
 	ExternalRef     string    `json:"external_reference,omitempty"`

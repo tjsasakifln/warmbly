@@ -106,6 +106,9 @@ func NormalizeProducerCommercialEvent(ev CommercialEvent) CommercialEvent {
 	if ev.Offer.AmountCents == 0 && ev.ProducerAmountCents != 0 {
 		ev.Offer.AmountCents = ev.ProducerAmountCents
 	}
+	if ev.Payment.PrincipalCents == 0 && ev.ProducerAmountCents > 0 && hasFinancialType(ev.Type) {
+		ev.Payment.PrincipalCents = ev.ProducerAmountCents
+	}
 	if strings.TrimSpace(ev.Offer.Currency) == "" {
 		ev.Offer.Currency = firstNonEmpty(ev.ProducerCurrency, CurrencyBRL)
 	}
