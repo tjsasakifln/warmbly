@@ -31,6 +31,42 @@ func loadContactTierFeed(t *testing.T) *Feed {
 	return feed
 }
 
+func TestPublishedExhaustedTierDoesNotBlockExplicitControlledRoute(t *testing.T) {
+	controlled := true
+	purposeBlocked := true
+	provenanceValid := false
+	derivedFixture := false
+	c := leadToCandidate(uuid.New(), uuid.New(), uuid.New(), FeedContact{
+		SourceContactID:                "controlled-generic",
+		Email:                          "contato@fornecedor.com.br",
+		SourceURL:                      "https://fornecedor.com.br/contato",
+		RootSourceType:                 "company_website",
+		VerificationStatus:             models.OutreachVerifyOfficialSource,
+		OwnershipStatus:                "COMPANY_OWNED",
+		RecipientCommercialSuitability: "UNSUITABLE_PROVENANCE",
+		MailboxPurpose:                 "GENERIC_CONTACT",
+		MailboxPurposeSendBlocked:      &purposeBlocked,
+		ProvenanceChainValid:           &provenanceValid,
+		DerivedFromFixture:             &derivedFixture,
+		ControlledEmailEligible:        &controlled,
+		RouteClass:                     RouteClassGenericCompany,
+		RouteSuppression:               "NONE",
+		ContactTier:                    ContactTierE,
+	})
+	if c.Blocked || !CandidateControlledEligible(c) {
+		t.Fatalf("explicit controlled route was collapsed into strict EXHAUSTED lane: %+v", c)
+	}
+	if !c.MailboxPurposeSendBlocked || c.EmailSendReady {
+		t.Fatalf("strict autorun guards were weakened: %+v", c)
+	}
+
+	legacy := &models.OutreachContactCandidate{Email: "contato@fornecedor.com.br"}
+	applyPublishedContactTier(legacy, ContactTierE)
+	if !legacy.Blocked || legacy.BlockReason != "published_exhausted" {
+		t.Fatalf("unstamped EXHAUSTED route must remain blocked: %+v", legacy)
+	}
+}
+
 func TestContactTiersContractualFixture(t *testing.T) {
 	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
 	feed := loadContactTierFeed(t)
