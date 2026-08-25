@@ -357,6 +357,43 @@ func TestReleaseManifestDriftIsNoGo(t *testing.T) {
 	}
 }
 
+func TestReleaseManifestAcceptsBoundDelegatedFirstTouchAuthority(t *testing.T) {
+	base := ReleaseManifest{
+		RepositorySHA:          "abc",
+		ImageDigests:           []string{"sha256:1"},
+		Schema:                 "confenge.outreach.v1",
+		FeedHash:               "feed1",
+		CohortHash:             "coh1",
+		PolicyVersion:          DelegatedFirstTouchPolicyV1,
+		ComposerVersion:        ComposerVersion,
+		DoctrineVersion:        OutreachDoctrineVersion,
+		RecipientPolicyVersion: RecipientPolicyVersion,
+		ApprovalsHash:          "appr1",
+		CIResults:              "pass",
+		RuntimeResults:         "pass",
+		DelegatedApprovals:     8,
+		ApprovalDecisionSource: DelegatedFirstTouchApprovalDecision,
+		ReadyCount:             8,
+		KillSwitch:             true,
+		RequireHumanApproval:   true,
+	}
+	if v := EvaluateRelease(base, base); v.Verdict != ReleaseGO {
+		t.Fatalf("bound delegated authority must GO: %+v", v)
+	}
+
+	missing := base
+	missing.DelegatedApprovals = 0
+	if v := EvaluateRelease(base, missing); v.Verdict != ReleaseNOGO {
+		t.Fatal("missing delegated approvals must NO_GO")
+	}
+
+	drift := base
+	drift.ApprovalDecisionSource = "HUMAN_APPROVE"
+	if v := EvaluateRelease(base, drift); v.Verdict != ReleaseNOGO {
+		t.Fatal("approval source drift must NO_GO")
+	}
+}
+
 func TestCanaryFailClosedNoLiveSend(t *testing.T) {
 	clock := &dispatch.FixedClock{T: time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)}
 	store := dispatch.NewMemoryStore()

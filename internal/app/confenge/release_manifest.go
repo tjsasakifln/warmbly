@@ -93,6 +93,8 @@ type ReleaseManifest struct {
 	CIResults              string   `json:"ci_results"`
 	RuntimeResults         string   `json:"runtime_results"`
 	HumanApprovals         int      `json:"human_approvals"`
+	DelegatedApprovals     int      `json:"delegated_approvals,omitempty"`
+	ApprovalDecisionSource string   `json:"approval_decision_source,omitempty"`
 	ReadyCount             int      `json:"ready_count"`
 	// KillSwitch is the canary-path "mechanism present" flag used by EvaluateRelease.
 	// Controlled-email GO review uses KillSwitchOperational and SendingPaused instead.
@@ -134,7 +136,7 @@ type ReleaseVerdict struct {
 	Reasons []string `json:"reasons,omitempty"`
 }
 
-// EvaluateRelease is fail-closed. Missing human approvals or any drift is NO_GO.
+// EvaluateRelease is fail-closed. Exact human or delegated authority is required.
 func EvaluateRelease(want, got ReleaseManifest) ReleaseVerdict {
 	var reasons []string
 	check := func(ok bool, code string) {
@@ -156,7 +158,19 @@ func EvaluateRelease(want, got ReleaseManifest) ReleaseVerdict {
 	check(got.KillSwitch, "kill_switch_off")
 	check(!got.AutoSend, "auto_send_enabled")
 	check(got.RequireHumanApproval, "human_approval_disabled")
-	check(got.HumanApprovals > 0 && got.HumanApprovals == got.ReadyCount && got.ReadyCount > 0, "insufficient_human_approvals")
+	wantSource := strings.ToUpper(strings.TrimSpace(want.ApprovalDecisionSource))
+	gotSource := strings.ToUpper(strings.TrimSpace(got.ApprovalDecisionSource))
+	switch gotSource {
+	case "", "HUMAN_APPROVE":
+		check(wantSource == "" || wantSource == "HUMAN_APPROVE", "approval_source_drift")
+		check(got.HumanApprovals > 0 && got.HumanApprovals == got.ReadyCount && got.ReadyCount > 0, "insufficient_human_approvals")
+	case DelegatedFirstTouchApprovalDecision:
+		check(wantSource == DelegatedFirstTouchApprovalDecision, "approval_source_drift")
+		check(got.PolicyVersion == DelegatedFirstTouchPolicyV1 && got.PolicyVersion == want.PolicyVersion, "delegated_policy_drift")
+		check(got.DelegatedApprovals > 0 && got.DelegatedApprovals == got.ReadyCount && got.ReadyCount > 0, "insufficient_delegated_approvals")
+	default:
+		check(false, "approval_source_unknown")
+	}
 	if len(reasons) > 0 {
 		return ReleaseVerdict{Verdict: ReleaseNOGO, Reasons: reasons}
 	}
