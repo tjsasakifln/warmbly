@@ -10,6 +10,7 @@ import (
 
 	"github.com/getsentry/sentry-go"
 	"github.com/warmbly/warmbly/internal/app/advanced"
+	"github.com/warmbly/warmbly/internal/app/audit"
 	"github.com/warmbly/warmbly/internal/app/cipher"
 	"github.com/warmbly/warmbly/internal/app/confenge"
 	jobs "github.com/warmbly/warmbly/internal/app/consumer"
@@ -21,6 +22,7 @@ import (
 	"github.com/warmbly/warmbly/internal/app/integration"
 	"github.com/warmbly/warmbly/internal/app/nativeactions"
 	"github.com/warmbly/warmbly/internal/app/notification"
+	"github.com/warmbly/warmbly/internal/app/orgrisk"
 	"github.com/warmbly/warmbly/internal/app/replyclassify"
 	warmupapp "github.com/warmbly/warmbly/internal/app/warmup"
 	"github.com/warmbly/warmbly/internal/app/webhook"
@@ -194,6 +196,8 @@ func main() {
 	crmRepo := repository.NewCRMRepository(primaryDB.Pool)
 	orgRepoConsumer := repository.NewOrganizationRepository(primaryDB.Pool)
 	advancedRepo := repository.NewAdvancedOutreachRepository(primaryDB.Pool)
+	auditService := audit.NewService(repository.NewAuditRepository(primaryDB.Pool), streamingPublisher)
+	orgRiskService := orgrisk.NewService(repository.NewOrgRiskRepository(primaryDB.Pool), auditService)
 
 	// Reply → integration fan-out. The consumer is where inbound replies are
 	// detected, so this is where "prospect replied" turns into a Slack ping /
@@ -420,6 +424,7 @@ func main() {
 	// Persist each mailbox's sending-domain SPF/DKIM/DMARC state (observe-only,
 	// not yet a send gate): sweep hourly, rechecking each domain at most daily.
 	go jobsService.StartAuthCheckSweep(ctx, 1*time.Hour, 24*time.Hour)
+	orgrisk.StartCorrelationSweep(ctx, orgRiskService, 24*time.Hour)
 
 	// Drains the durable delayed-engagement schedule (read/important/star) so the
 	// recipient-side dwell survives worker restarts. Short interval keeps the

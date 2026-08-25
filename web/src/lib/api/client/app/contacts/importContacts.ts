@@ -51,6 +51,16 @@ export interface ImportRowError {
     reason: string;
 }
 
+export interface ImportQuality {
+    assessment_id?: string;
+    invalid: number;
+    disposable: number;
+    role: number;
+    risky_tld: number;
+    bad_address_ratio: number;
+    blocked: boolean;
+}
+
 export interface ImportResult {
     total: number;
     imported: number;
@@ -59,6 +69,7 @@ export interface ImportResult {
     failed: number;
     started_at: string;
     ended_at: string;
+    quality?: ImportQuality;
     errors?: ImportRowError[];
 }
 

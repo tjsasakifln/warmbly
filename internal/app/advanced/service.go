@@ -33,6 +33,7 @@ type Service interface {
 	DeleteABVariant(ctx context.Context, campaignID, variantID uuid.UUID) *errx.Error
 
 	RunPreflight(ctx context.Context, organizationID, campaignID uuid.UUID) (*models.PreflightReport, *errx.Error)
+	ContentSafetyEnabled(ctx context.Context, organizationID, campaignID uuid.UUID) (bool, *errx.Error)
 	GetDeliverabilityDashboard(ctx context.Context, organizationID uuid.UUID, from, to time.Time) (*models.DeliverabilityDashboard, *errx.Error)
 
 	IngestDeliverabilityEvent(ctx context.Context, organizationID uuid.UUID, req *models.IngestDeliverabilityEventRequest) *errx.Error
@@ -41,6 +42,8 @@ type Service interface {
 	// the original campaign send via its Message-ID and records a bounce
 	// deliverability event. Best-effort: unresolvable bounces are a no-op.
 	RecordInboundBounce(ctx context.Context, emailAccountID uuid.UUID, originalMessageID, failedRecipient, reason string) *errx.Error
+	RecordInboundComplaint(ctx context.Context, emailAccountID uuid.UUID, originalMessageID, recipient, feedbackType string) *errx.Error
+	RecordOutboundBounce(ctx context.Context, taskID uuid.UUID, reason string) *errx.Error
 
 	ShouldSuppressRecipient(ctx context.Context, organizationID uuid.UUID, recipient string) (bool, string, *errx.Error)
 	SuppressRecipient(ctx context.Context, organizationID uuid.UUID, email, reason string, source models.DeliverabilityEventType) *errx.Error
@@ -1122,7 +1125,12 @@ func (s *service) IngestDeliverabilityEvent(ctx context.Context, organizationID 
 		provider = "manual"
 	}
 
-	if err := s.repo.CreateDeliverabilityEvent(ctx, &models.DeliverabilityEvent{
+	settings, err := s.repo.GetOutreachSettings(ctx, organizationID)
+	if err != nil {
+		return toErrx(err)
+	}
+
+	created, err := s.repo.CreateDeliverabilityEvent(ctx, &models.DeliverabilityEvent{
 		OrganizationID: organizationID,
 		CampaignID:     req.CampaignID,
 		TaskID:         req.TaskID,
@@ -1133,11 +1141,7 @@ func (s *service) IngestDeliverabilityEvent(ctx context.Context, organizationID 
 		Reason:         req.Reason,
 		IdempotencyKey: idempotencyKey,
 		Metadata:       req.Metadata,
-	}); err != nil {
-		return toErrx(err)
-	}
-
-	settings, err := s.repo.GetOutreachSettings(ctx, organizationID)
+	})
 	if err != nil {
 		return toErrx(err)
 	}
@@ -1147,34 +1151,45 @@ func (s *service) IngestDeliverabilityEvent(ctx context.Context, organizationID 
 		(eventType == models.DeliverabilityEventUnsubscribe && settings.BouncePipeline.AutoSuppressOnUnsubscribe)
 
 	if shouldSuppress {
-		_ = s.repo.UpsertSuppressedRecipient(ctx, &models.SuppressedRecipient{
+		if err := s.repo.UpsertSuppressedRecipient(ctx, &models.SuppressedRecipient{
 			OrganizationID: organizationID,
 			Email:          req.RecipientEmail,
 			Reason:         fmt.Sprintf("%s: %s", eventType, req.Reason),
 			Source:         eventType,
 			CampaignID:     req.CampaignID,
 			Metadata:       req.Metadata,
-		})
+		}); err != nil {
+			return toErrx(err)
+		}
 	}
 
 	if req.CampaignID != nil && req.ContactID != nil {
-		_ = s.repo.MarkVariantEvent(ctx, *req.CampaignID, *req.ContactID, string(eventType))
+		if err := s.repo.MarkVariantEvent(ctx, *req.CampaignID, *req.ContactID, string(eventType)); err != nil {
+			return toErrx(err)
+		}
 	}
 
-	// Record bounces + complaints in campaign progress so analytics and the
-	// breaker work correctly. Complaints were previously never recorded, which
-	// is why complaint-rate auto-pause could never fire.
+	// Keep campaign progress retryable after the event row is claimed.
 	if req.CampaignID != nil && req.ContactID != nil && req.TaskID != nil &&
 		(eventType == models.DeliverabilityEventBounce || eventType == models.DeliverabilityEventComplaint) {
 		campaignTask, cErr := s.taskRepo.GetCampaignTask(ctx, *req.TaskID)
-		if cErr == nil && campaignTask != nil && campaignTask.SequenceID != nil {
+		if cErr != nil {
+			return toErrx(cErr)
+		}
+		if campaignTask != nil && campaignTask.SequenceID != nil {
 			switch eventType {
 			case models.DeliverabilityEventBounce:
-				_ = s.campaignProgressRepo.RecordEmailBounced(ctx, *req.CampaignID, *req.ContactID, *campaignTask.SequenceID)
+				cErr = s.campaignProgressRepo.RecordEmailBounced(ctx, *req.CampaignID, *req.ContactID, *campaignTask.SequenceID)
 			case models.DeliverabilityEventComplaint:
-				_ = s.campaignProgressRepo.RecordEmailComplained(ctx, *req.CampaignID, *req.ContactID, *campaignTask.SequenceID)
+				cErr = s.campaignProgressRepo.RecordEmailComplained(ctx, *req.CampaignID, *req.ContactID, *campaignTask.SequenceID)
+			}
+			if cErr != nil {
+				return toErrx(cErr)
 			}
 		}
+	}
+	if !created {
+		return nil
 	}
 
 	if req.CampaignID != nil &&
@@ -1631,6 +1646,14 @@ func (s *service) RunPreflight(ctx context.Context, organizationID, campaignID u
 		return nil, toErrx(err)
 	}
 	return report, nil
+}
+
+func (s *service) ContentSafetyEnabled(ctx context.Context, organizationID, campaignID uuid.UUID) (bool, *errx.Error) {
+	settings, xerr := s.effectiveSettings(ctx, organizationID, campaignID)
+	if xerr != nil {
+		return false, xerr
+	}
+	return settings.Preflight.Enabled && settings.Preflight.CheckContentSafety, nil
 }
 
 func (s *service) GetDeliverabilityDashboard(ctx context.Context, organizationID uuid.UUID, from, to time.Time) (*models.DeliverabilityDashboard, *errx.Error) {

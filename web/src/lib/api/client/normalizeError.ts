@@ -8,6 +8,7 @@ export interface AppError {
      *  condition rather than matching on human-readable text. */
     code?: string;
     request_id?: string;
+    details?: unknown;
     status?: number;
     redirect?: boolean;
 }
@@ -42,6 +43,7 @@ export function normalizeError(error: unknown): AppError {
                 redirect: true,
                 code: data.code,
                 request_id: data.request_id,
+                details: data.details,
             };
         }
 
@@ -51,7 +53,8 @@ export function normalizeError(error: unknown): AppError {
             status,
             code: data.code,
             request_id: data.request_id,
-        }
+            details: data.details,
+        };
     }
 
     return {

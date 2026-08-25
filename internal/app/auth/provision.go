@@ -13,7 +13,7 @@ import (
 // createAccount provisions a user, their organization and their trial. Both
 // registration paths share it: the emailed-code confirm, and the direct create
 // used when email verification is off.
-func (s *authService) createAccount(ctx context.Context, address, passwordHash, referralCode string) *errx.Error {
+func (s *authService) createAccount(ctx context.Context, address, passwordHash, referralCode string, signup *models.RegistrationSession) *errx.Error {
 	email, perr := mail.ParseAddress(address)
 	if perr != nil {
 		return errx.ErrEmail
@@ -27,6 +27,11 @@ func (s *authService) createAccount(ctx context.Context, address, passwordHash, 
 
 	if err := s.userService.SaveUser(ctx, u); err != nil {
 		return err
+	}
+	if signup != nil {
+		if err := s.userRepository.SetSignupMetadata(ctx, u.ID, signup.SignupIP, signup.SignupUserAgent, signup.SignupEmailRisk, signup.SignupASN); err != nil {
+			sentry.CaptureException(err)
+		}
 	}
 
 	// Auto-create organization for new user
@@ -49,6 +54,15 @@ func (s *authService) createAccount(ctx context.Context, address, passwordHash, 
 		if err := s.trialService.StartFreeTrialWithOrg(ctx, u.ID, org.ID); err != nil {
 			sentry.CaptureException(err)
 			// Don't fail registration if trial creation fails
+		}
+	}
+	if s.orgRisk != nil && org != nil && signup != nil && signup.SignupRiskScore > 0 {
+		if err := s.orgRisk.RecordSignal(ctx, org.ID, "signup", signup.SignupRiskScore, "Signup metadata requires monitoring", map[string]any{
+			"signals":    signup.SignupSignals,
+			"email_risk": signup.SignupEmailRisk,
+			"asn":        signup.SignupASN,
+		}); err != nil {
+			sentry.CaptureException(err)
 		}
 	}
 

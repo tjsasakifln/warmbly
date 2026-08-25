@@ -78,6 +78,7 @@ type EmailRepository interface {
 	// property). checkedAt stamps the evaluation so the sweep can skip fresh
 	// domains.
 	UpdateDomainAuthState(ctx context.Context, domain, state string, spf, dkim, dmarc bool, dmarcPolicy, reason string, checkedAt time.Time) *errx.Error
+	StartColdRamp(ctx context.Context, emailAccountID uuid.UUID, startedAt time.Time) error
 	Delete(ctx context.Context, userID, emailAccountID string) *errx.Error
 
 	NewOauthAccount(ctx context.Context, userID string, data models.NewOauthAccount) (*models.Email, *errx.Error)
@@ -101,6 +102,15 @@ type EmailRepository interface {
 	// worker reconciler uses it to (re)load accounts onto their assigned workers
 	// after onboarding, worker restarts, or reassignment.
 	ListActiveWorkerAccounts(ctx context.Context) ([]uuid.UUID, error)
+}
+
+func (r *emailRepository) StartColdRamp(ctx context.Context, emailAccountID uuid.UUID, startedAt time.Time) error {
+	_, err := r.DB.Exec(ctx, `
+		UPDATE email_accounts
+		SET cold_ramp_started_at = COALESCE(cold_ramp_started_at, $2), updated_at = now()
+		WHERE id = $1
+	`, emailAccountID, startedAt.UTC())
+	return err
 }
 
 type emailRepository struct {
@@ -474,7 +484,7 @@ func (r *emailRepository) Search(ctx context.Context, orgID, search string, curs
 		 ea.min_wait_time, ea.reply_to, ea.tracking_domain, ea.tracking_domain_verified, ea.tracking_domain_verified_at,
 		 ea.auth_state, ea.auth_spf, ea.auth_dkim, ea.auth_dmarc, ea.auth_dmarc_policy, ea.auth_reason, ea.auth_checked_at,
 		 ea.warmup, ea.warmup_paused_at, ea.warmup_base,
-		 ea.warmup_max, ea.warmup_increase, ea.warmup_start_time, ea.warmup_end_time, ea.warmup_days,
+		 ea.warmup_max, ea.warmup_increase, ea.warmup_start_time, ea.warmup_end_time, ea.warmup_days, ea.cold_ramp_started_at,
 		 ea.created_at, ea.updated_at,
 		 COALESCE(
 			array_agg(eat.tag_id) FILTER (WHERE eat.tag_id IS NOT NULL), '{}'
@@ -525,7 +535,7 @@ func (r *emailRepository) Search(ctx context.Context, orgID, search string, curs
 			&i.LastSyncedAt, &i.LastID, &i.CampaignLimit, &i.MinWaitTime, &i.ReplyTo, &i.TrackingDomain, &i.TrackingDomainVerified, &i.TrackingDomainVerifiedAt,
 			&i.AuthState, &i.AuthSPF, &i.AuthDKIM, &i.AuthDMARC, &i.AuthDMARCPolicy, &i.AuthReason, &i.AuthCheckedAt,
 			&i.Warmup, &i.WarmupPausedAt, &i.WarmupBase, &i.WarmupMax, &i.WarmupIncrease,
-			&i.WarmupStartTime, &i.WarmupEndTime, &i.WarmupDays,
+			&i.WarmupStartTime, &i.WarmupEndTime, &i.WarmupDays, &i.ColdRampStartedAt,
 			&i.CreatedAt, &i.UpdatedAt, &i.Tags,
 		)
 		if err != nil {
@@ -596,7 +606,7 @@ func (r *emailRepository) Get(ctx context.Context, orgID, emailAccountID string)
 		 ea.min_wait_time, ea.reply_to, ea.tracking_domain, ea.tracking_domain_verified, ea.tracking_domain_verified_at,
 		 ea.auth_state, ea.auth_spf, ea.auth_dkim, ea.auth_dmarc, ea.auth_dmarc_policy, ea.auth_reason, ea.auth_checked_at,
 		 ea.warmup, ea.warmup_paused_at, ea.warmup_base,
-		 ea.warmup_max, ea.warmup_increase, ea.warmup_start_time, ea.warmup_end_time, ea.warmup_days,
+		 ea.warmup_max, ea.warmup_increase, ea.warmup_start_time, ea.warmup_end_time, ea.warmup_days, ea.cold_ramp_started_at,
 		 ea.created_at, ea.updated_at,
 		 COALESCE(array_agg(eat.tag_id) FILTER (WHERE eat.tag_id IS NOT NULL), '{}') AS tags
 		FROM email_accounts ea
@@ -620,7 +630,7 @@ func (r *emailRepository) Get(ctx context.Context, orgID, emailAccountID string)
 		&i.LastSyncedAt, &i.LastID, &i.CampaignLimit, &i.MinWaitTime, &i.ReplyTo, &i.TrackingDomain, &i.TrackingDomainVerified, &i.TrackingDomainVerifiedAt,
 		&i.AuthState, &i.AuthSPF, &i.AuthDKIM, &i.AuthDMARC, &i.AuthDMARCPolicy, &i.AuthReason, &i.AuthCheckedAt,
 		&i.Warmup, &i.WarmupPausedAt, &i.WarmupBase, &i.WarmupMax, &i.WarmupIncrease,
-		&i.WarmupStartTime, &i.WarmupEndTime, &i.WarmupDays,
+		&i.WarmupStartTime, &i.WarmupEndTime, &i.WarmupDays, &i.ColdRampStartedAt,
 		&i.CreatedAt, &i.UpdatedAt, &i.Tags,
 	)
 	if err != nil {
@@ -829,7 +839,7 @@ func (r *emailRepository) Update(ctx context.Context, userID, emailAccountID str
 		RETURNING id, organization_id, email, name, signature_plain, signature_html, signature_sync, signature_code, provider, status,
 		          COALESCE(last_synced_at, created_at) AS last_synced_at, last_id, campaign_limit, min_wait_time, reply_to, tracking_domain, tracking_domain_verified, tracking_domain_verified_at,
 		          warmup, warmup_paused_at, warmup_base, warmup_max, warmup_increase, warmup_reply_rate, warmup_tag, warmup_pool_type,
-		          warmup_start_time, warmup_end_time, warmup_days, created_at, updated_at
+		          warmup_start_time, warmup_end_time, warmup_days, cold_ramp_started_at, created_at, updated_at
 	`, strings.Join(setClauses, ", "))
 
 	var i models.Email
@@ -837,7 +847,7 @@ func (r *emailRepository) Update(ctx context.Context, userID, emailAccountID str
 		&i.ID, &i.OrganizationID, &i.Email, &i.Name, &i.SignaturePlain, &i.SignatureHTML, &i.SignatureSync, &i.SignatureCode, &i.Provider, &i.Status,
 		&i.LastSyncedAt, &i.LastID, &i.CampaignLimit, &i.MinWaitTime, &i.ReplyTo, &i.TrackingDomain, &i.TrackingDomainVerified, &i.TrackingDomainVerifiedAt,
 		&i.Warmup, &i.WarmupPausedAt, &i.WarmupBase, &i.WarmupMax, &i.WarmupIncrease, &i.WarmupReplyRate, &i.WarmupTag, &i.WarmupPoolType,
-		&i.WarmupStartTime, &i.WarmupEndTime, &i.WarmupDays,
+		&i.WarmupStartTime, &i.WarmupEndTime, &i.WarmupDays, &i.ColdRampStartedAt,
 		&i.CreatedAt, &i.UpdatedAt,
 	)
 	if err != nil {
@@ -1084,7 +1094,7 @@ func (r *emailRepository) GetByID(ctx context.Context, emailAccountID uuid.UUID)
 		 ea.provider, ea.status, COALESCE(ea.last_synced_at, ea.created_at) AS last_synced_at, ea.last_id, ea.campaign_limit,
 		 ea.min_wait_time, ea.reply_to, ea.tracking_domain, ea.tracking_domain_verified, ea.tracking_domain_verified_at, ea.warmup, ea.warmup_paused_at, ea.warmup_base,
 		 ea.warmup_max, ea.warmup_increase, ea.warmup_reply_rate, ea.warmup_tag, ea.warmup_pool_type,
-		 ea.warmup_start_time, ea.warmup_end_time, ea.warmup_days, ea.timezone,
+		 ea.warmup_start_time, ea.warmup_end_time, ea.warmup_days, ea.timezone, ea.cold_ramp_started_at,
 		 ea.created_at, ea.updated_at,
 		 COALESCE(array_agg(eat.tag_id) FILTER (WHERE eat.tag_id IS NOT NULL), '{}') AS tags
 		FROM email_accounts ea
@@ -1099,7 +1109,7 @@ func (r *emailRepository) GetByID(ctx context.Context, emailAccountID uuid.UUID)
 		&i.Provider, &i.Status, &i.LastSyncedAt, &i.LastID, &i.CampaignLimit,
 		&i.MinWaitTime, &i.ReplyTo, &i.TrackingDomain, &i.TrackingDomainVerified, &i.TrackingDomainVerifiedAt, &i.Warmup, &i.WarmupPausedAt, &i.WarmupBase,
 		&i.WarmupMax, &i.WarmupIncrease, &i.WarmupReplyRate, &i.WarmupTag, &i.WarmupPoolType,
-		&i.WarmupStartTime, &i.WarmupEndTime, &i.WarmupDays, &i.Timezone,
+		&i.WarmupStartTime, &i.WarmupEndTime, &i.WarmupDays, &i.Timezone, &i.ColdRampStartedAt,
 		&i.CreatedAt, &i.UpdatedAt, &i.Tags,
 	)
 	if err != nil {
@@ -1125,7 +1135,7 @@ func (r *emailRepository) GetByTags(ctx context.Context, userID string, tags []s
 		 ea.provider, ea.status, COALESCE(ea.last_synced_at, ea.created_at) AS last_synced_at, ea.last_id, ea.campaign_limit,
 		 ea.min_wait_time, ea.reply_to, ea.tracking_domain, ea.tracking_domain_verified, ea.tracking_domain_verified_at, ea.warmup, ea.warmup_paused_at, ea.warmup_base,
 		 ea.warmup_max, ea.warmup_increase, ea.warmup_reply_rate, ea.warmup_tag,
-		 ea.warmup_start_time, ea.warmup_end_time, ea.warmup_days, ea.timezone,
+		 ea.warmup_start_time, ea.warmup_end_time, ea.warmup_days, ea.timezone, ea.cold_ramp_started_at,
 		 ea.created_at, ea.updated_at
 		FROM email_accounts ea
 		JOIN email_tags eat ON eat.email_id = ea.id
@@ -1150,7 +1160,7 @@ func (r *emailRepository) GetByTags(ctx context.Context, userID string, tags []s
 			&i.Provider, &i.Status, &i.LastSyncedAt, &i.LastID, &i.CampaignLimit,
 			&i.MinWaitTime, &i.ReplyTo, &i.TrackingDomain, &i.TrackingDomainVerified, &i.TrackingDomainVerifiedAt, &i.Warmup, &i.WarmupPausedAt, &i.WarmupBase,
 			&i.WarmupMax, &i.WarmupIncrease, &i.WarmupReplyRate, &i.WarmupTag,
-			&i.WarmupStartTime, &i.WarmupEndTime, &i.WarmupDays, &i.Timezone,
+			&i.WarmupStartTime, &i.WarmupEndTime, &i.WarmupDays, &i.Timezone, &i.ColdRampStartedAt,
 			&i.CreatedAt, &i.UpdatedAt,
 		)
 		if err != nil {
@@ -1173,7 +1183,7 @@ func (r *emailRepository) GetAllActiveByUser(ctx context.Context, userID string)
 		 ea.provider, ea.status, COALESCE(ea.last_synced_at, ea.created_at) AS last_synced_at, ea.last_id, ea.campaign_limit,
 		 ea.min_wait_time, ea.reply_to, ea.tracking_domain, ea.tracking_domain_verified, ea.tracking_domain_verified_at, ea.warmup, ea.warmup_paused_at, ea.warmup_base,
 		 ea.warmup_max, ea.warmup_increase, ea.warmup_reply_rate, ea.warmup_tag,
-		 ea.warmup_start_time, ea.warmup_end_time, ea.warmup_days, ea.timezone,
+		 ea.warmup_start_time, ea.warmup_end_time, ea.warmup_days, ea.timezone, ea.cold_ramp_started_at,
 		 ea.created_at, ea.updated_at
 		FROM email_accounts ea
 		WHERE ea.user_id = $1
@@ -1196,7 +1206,7 @@ func (r *emailRepository) GetAllActiveByUser(ctx context.Context, userID string)
 			&i.Provider, &i.Status, &i.LastSyncedAt, &i.LastID, &i.CampaignLimit,
 			&i.MinWaitTime, &i.ReplyTo, &i.TrackingDomain, &i.TrackingDomainVerified, &i.TrackingDomainVerifiedAt, &i.Warmup, &i.WarmupPausedAt, &i.WarmupBase,
 			&i.WarmupMax, &i.WarmupIncrease, &i.WarmupReplyRate, &i.WarmupTag,
-			&i.WarmupStartTime, &i.WarmupEndTime, &i.WarmupDays, &i.Timezone,
+			&i.WarmupStartTime, &i.WarmupEndTime, &i.WarmupDays, &i.Timezone, &i.ColdRampStartedAt,
 			&i.CreatedAt, &i.UpdatedAt,
 		)
 		if err != nil {
@@ -1231,7 +1241,7 @@ func (r *emailRepository) GetByCampaignSenders(ctx context.Context, userID strin
 		 ea.provider, ea.status, COALESCE(ea.last_synced_at, ea.created_at) AS last_synced_at, ea.last_id, ea.campaign_limit,
 		 ea.min_wait_time, ea.reply_to, ea.tracking_domain, ea.tracking_domain_verified, ea.tracking_domain_verified_at, ea.warmup, ea.warmup_paused_at, ea.warmup_base,
 		 ea.warmup_max, ea.warmup_increase, ea.warmup_reply_rate, ea.warmup_tag,
-		 ea.warmup_start_time, ea.warmup_end_time, ea.warmup_days, ea.timezone,
+		 ea.warmup_start_time, ea.warmup_end_time, ea.warmup_days, ea.timezone, ea.cold_ramp_started_at,
 		 ea.created_at, ea.updated_at,
 		 cs.weight, cs.rotation_position, cs.last_sent_at
 		FROM email_accounts ea
@@ -1259,7 +1269,7 @@ func (r *emailRepository) GetByCampaignSenders(ctx context.Context, userID strin
 			&i.Provider, &i.Status, &i.LastSyncedAt, &i.LastID, &i.CampaignLimit,
 			&i.MinWaitTime, &i.ReplyTo, &i.TrackingDomain, &i.TrackingDomainVerified, &i.TrackingDomainVerifiedAt, &i.Warmup, &i.WarmupPausedAt, &i.WarmupBase,
 			&i.WarmupMax, &i.WarmupIncrease, &i.WarmupReplyRate, &i.WarmupTag,
-			&i.WarmupStartTime, &i.WarmupEndTime, &i.WarmupDays, &i.Timezone,
+			&i.WarmupStartTime, &i.WarmupEndTime, &i.WarmupDays, &i.Timezone, &i.ColdRampStartedAt,
 			&i.CreatedAt, &i.UpdatedAt,
 			&sender.Weight, &sender.RotationPosition, &sender.LastSentAt,
 		)

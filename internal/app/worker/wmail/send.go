@@ -412,7 +412,7 @@ func DetermineErrorEventType(err *errx.MailError) models.JobEventType {
 	}
 
 	switch err.Code {
-	case errx.MailErrorCodeGoogleAuth, errx.MailErrorCodeAuthenticationFailed:
+	case errx.MailErrorCodeGoogleAuth, errx.MailErrorCodeInvalidCredentials, errx.MailErrorCodeAuthenticationFailed:
 		return models.JobEventTypeEmailAuthError
 
 	case errx.MailErrorCodeAccountSuspended, errx.MailErrorCodeAuthorizationFailed:

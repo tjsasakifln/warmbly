@@ -146,6 +146,16 @@ func (h *Handler) ImportCommitContacts(c *gin.Context) {
 
 	result, xerr := h.ContactService.ImportCommit(c.Request.Context(), userIDStr, *orgID, file, header.Filename, &opts)
 	if xerr != nil {
+		if xerr.Identifier == "contact_import_quality_blocked" && result != nil {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"error":      "Unprocessable",
+				"message":    xerr.Message,
+				"code":       xerr.Identifier,
+				"request_id": c.GetString("request_id"),
+				"details":    result,
+			})
+			return
+		}
 		errx.Handle(c, xerr)
 		return
 	}

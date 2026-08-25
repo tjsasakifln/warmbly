@@ -12,6 +12,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/repository"
 	"github.com/warmbly/warmbly/internal/tasks/proto"
 )
 
@@ -112,6 +113,11 @@ func (s *tasksService) HandleEmailTask(task *proto.ProcessTask) *errx.Error {
 			Msg("warmup health-check send (mailbox in active campaign, warmup off)")
 	}
 
+	if s.orgRisk != nil && account.OrganizationID != nil && s.orgRisk.SendingSuspended(ctx, *account.OrganizationID) {
+		_ = s.taskRepo.UpdateTaskStatus(ctx, taskID, "skipped_org_suspended")
+		executionStatus = "completed"
+		return nil
+	}
 	// STEP 3.5: Check if organization can use warmup (only paid orgs)
 	if s.featureGate != nil && account.OrganizationID != nil {
 		canWarmup, _ := s.featureGate.CanUseWarmup(ctx, *account.OrganizationID)
@@ -435,6 +441,14 @@ func (s *tasksService) selectWarmupPartner(ctx context.Context, account Email) (
 		// Diversity weighting is best-effort. Fall back to uniform on lookup error.
 		domainsByID = nil
 	}
+	providersByID, err := s.warmupRepo.GetPoolParticipantProviders(ctx, poolType, true)
+	if err != nil {
+		providersByID = nil
+	}
+	providerPlacement, err := s.warmupRepo.SenderPlacementByProvider(ctx, account.ID, time.Now().Add(-7*24*time.Hour))
+	if err != nil {
+		providerPlacement = nil
+	}
 
 	// Load customer routing rules (premium pool only — free pool ignores
 	// rules since trial mailboxes don't need provider-shape preferences).
@@ -512,7 +526,7 @@ func (s *tasksService) selectWarmupPartner(ctx context.Context, account Email) (
 	// CanParticipate re-evaluates and forces just-unblocked mailboxes into
 	// probation, matching the CLAUDE.md re-entry policy on the recipient surface.
 	for attempts := 0; attempts < 5 && len(availablePartners) > 0; attempts++ {
-		partnerID := pickWeightedPartner(availablePartners, domainsByID, domainCounts, routingRules, account.Email, emailsByID)
+		partnerID := pickWeightedPartner(availablePartners, domainsByID, domainCounts, routingRules, account.Email, emailsByID, providersByID, providerPlacement)
 
 		if s.warmupHealth != nil {
 			if ok, _, _ := s.warmupHealth.CanParticipate(ctx, partnerID, poolType); !ok {
@@ -558,11 +572,13 @@ func pickWeightedPartner(
 	rules []models.WarmupRoutingRule,
 	senderEmail string,
 	emailsByID map[uuid.UUID]string,
+	providersByID map[uuid.UUID]string,
+	providerPlacement map[string]repository.ProviderPlacement,
 ) uuid.UUID {
 	if len(candidates) == 1 {
 		return candidates[0]
 	}
-	if len(domainsByID) == 0 && len(rules) == 0 {
+	if len(domainsByID) == 0 && len(rules) == 0 && len(providerPlacement) == 0 {
 		return candidates[rand.Intn(len(candidates))]
 	}
 
@@ -578,6 +594,9 @@ func pickWeightedPartner(
 			if recipientEmail, ok := emailsByID[id]; ok {
 				w *= routingMultiplier(rules, senderEmail, recipientEmail)
 			}
+		}
+		if provider, ok := providersByID[id]; ok {
+			w *= providerPlacementMultiplier(providerPlacement[provider])
 		}
 
 		weights[i] = w
@@ -601,6 +620,14 @@ func pickWeightedPartner(
 	return candidates[len(candidates)-1]
 }
 
+func providerPlacementMultiplier(signal repository.ProviderPlacement) float64 {
+	if signal.Placements <= 0 || signal.Sends <= 0 {
+		return 1
+	}
+	rate := float64(signal.Placements) / float64(signal.Sends)
+	return 1 / (1 + 8*rate)
+}
+
 // routingMultiplier returns the weight multiplier from the first matching
 // rule in priority order (lowest priority value wins). 1.0 when no rule
 // matches — neutral, so unmatched pairs neither preferred nor penalized.
@@ -617,16 +644,26 @@ func (s *tasksService) resolveWarmupPoolType(ctx context.Context, account *Email
 	if account == nil {
 		return "premium"
 	}
-	if account.WarmupPoolType != "" {
-		return account.WarmupPoolType
+	current := account.WarmupPoolType
+	if account.OrganizationID == nil {
+		if current != "" {
+			return current
+		}
+		return "free"
 	}
-	if s.featureGate != nil && account.OrganizationID != nil {
+	if current == "" && s.featureGate != nil {
 		isPaid, xerr := s.featureGate.IsPaidOrganization(ctx, *account.OrganizationID)
 		if xerr == nil && !isPaid {
-			return "free"
+			current = "free"
 		}
 	}
-	return "premium"
+	if current == "" {
+		current = "premium"
+	}
+	if s.orgRisk != nil {
+		return s.orgRisk.WarmupPool(ctx, *account.OrganizationID, current)
+	}
+	return current
 }
 
 func (s *tasksService) scheduleWarmupRecovery(ctx context.Context, accountID uuid.UUID, poolType string) {

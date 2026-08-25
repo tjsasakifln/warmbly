@@ -131,6 +131,11 @@ export default function ImportWizard({ open, onClose, lockedCampaign }: Props) {
                 toast(`Done with ${res.failed} errors`, { icon: "⚠️" });
             }
         } catch (err) {
+            const appError = err as { code?: string; details?: ImportResult };
+            if (appError.code === "contact_import_quality_blocked" && appError.details?.quality) {
+                setResult(appError.details);
+                setStep("result");
+            }
             toast.error(describeError(err, "Import failed."));
         } finally {
             setCommitBusy(false);
@@ -658,6 +663,8 @@ function OptionsStep({
 // ----- Result step ----------------------------------------------
 
 export function ResultStep({ result, filename }: { result: ImportResult; filename: string }) {
+    const blocked = result.quality?.blocked === true;
+
     function downloadErrors() {
         if (!result.errors || result.errors.length === 0) return;
         const rows = [["line", "email", "reason"]];
@@ -685,11 +692,21 @@ export function ResultStep({ result, filename }: { result: ImportResult; filenam
                 )}
                 <div className="flex-1">
                     <p className="text-[13.5px] text-slate-900 font-semibold">
-                        {result.failed === 0 ? "Import complete" : "Import finished with errors"}
+                        {blocked
+                            ? "Import blocked"
+                            : result.failed === 0
+                              ? "Import complete"
+                              : "Import finished with errors"}
                     </p>
                     <p className="text-[11.5px] text-slate-500 leading-snug mt-0.5">
-                        Processed {result.total.toLocaleString()} rows in{" "}
-                        {durationText(result.started_at, result.ended_at)}.
+                        {blocked ? (
+                            <>No contacts were written because the list exceeded the quality threshold.</>
+                        ) : (
+                            <>
+                                Processed {result.total.toLocaleString()} rows in{" "}
+                                {durationText(result.started_at, result.ended_at)}.
+                            </>
+                        )}
                     </p>
                 </div>
             </div>
@@ -700,6 +717,23 @@ export function ResultStep({ result, filename }: { result: ImportResult; filenam
                 <StatCard label="Skipped"   value={result.skipped}  accent="slate" />
                 <StatCard label="Failed"    value={result.failed}   accent={result.failed > 0 ? "red" : "slate"} />
             </div>
+
+            {result.quality && (
+                <div className="rounded-md border border-slate-200 bg-slate-50/40 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                        <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500 font-medium">
+                            List quality
+                        </span>
+                        <span className="text-[11px] text-slate-600 tabular-nums">
+                            {(result.quality.bad_address_ratio * 100).toFixed(1)}% invalid or disposable
+                        </span>
+                    </div>
+                    <p className="mt-1.5 text-[11px] text-slate-500 leading-snug">
+                        {result.quality.invalid} invalid, {result.quality.disposable} disposable, {result.quality.role} role-based, and{" "}
+                        {result.quality.risky_tld} risky-domain addresses detected.
+                    </p>
+                </div>
+            )}
 
             {result.errors && result.errors.length > 0 && (
                 <div className="rounded-md border border-slate-200 overflow-hidden">

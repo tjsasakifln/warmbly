@@ -15,6 +15,7 @@ import (
 	"github.com/warmbly/warmbly/internal/email"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/pkg/signuprisk"
 	"github.com/warmbly/warmbly/internal/utils"
 	"github.com/xuri/excelize/v2"
 )
@@ -142,9 +143,26 @@ func (s *contactService) ImportCommit(
 	}
 
 	parsed := make([]pendingRow, 0, len(data))
+	quality := &models.ContactImportQuality{}
 	for i, row := range data {
 		line := i + dataStart + 1 // 1-based for "open in Excel and jump"
 		p := pendingRow{line: line, raw: row}
+
+		address := strings.ToLower(strings.TrimSpace(mappedImportEmail(row, opts.Mapping)))
+		if address == "" || !email.IsValid(address) {
+			quality.Invalid++
+		} else {
+			addressQuality := signuprisk.ClassifyAddress(address)
+			if addressQuality.Disposable {
+				quality.Disposable++
+			}
+			if addressQuality.Role {
+				quality.Role++
+			}
+			if addressQuality.RiskyTLD {
+				quality.RiskyTLD++
+			}
+		}
 
 		contact, err := buildAddContact(row, opts.Mapping, subscribedDefault, opts.CampaignIDs, opts.CategoryIDs)
 		if err != "" {
@@ -163,6 +181,51 @@ func (s *contactService) ImportCommit(
 		p.ok = true
 		parsed = append(parsed, p)
 	}
+	if len(parsed) > 0 {
+		quality.BadAddressRatio = float64(quality.Invalid+quality.Disposable) / float64(len(parsed))
+	}
+	quality.Blocked = quality.BadAddressRatio > 0.25
+	if s.importAssessment != nil {
+		assessmentID, err := s.importAssessment.Create(ctx, orgID, uid, filename, len(parsed), quality)
+		if err != nil {
+			return nil, errx.InternalError()
+		}
+		quality.AssessmentID = assessmentID.String()
+	}
+	if s.velocity != nil {
+		key := "org-risk:imports:" + orgID.String() + ":" + time.Now().UTC().Format("2006-01-02")
+		if count, err := s.velocity.Incr(ctx, key).Result(); err == nil {
+			if count == 1 {
+				_ = s.velocity.Expire(ctx, key, 25*time.Hour).Err()
+			}
+			if count >= 5 && s.orgRisk != nil {
+				_ = s.orgRisk.RecordSignal(ctx, orgID, "import_velocity", 15, "High contact import velocity", map[string]any{"imports_today": count})
+			}
+		}
+	}
+	if (quality.BadAddressRatio >= 0.10 || quality.Role > 0 || quality.RiskyTLD > 0) && s.orgRisk != nil {
+		addressRiskRatio := quality.BadAddressRatio
+		if len(parsed) > 0 {
+			addressRiskRatio += float64(quality.Role+quality.RiskyTLD) / float64(len(parsed)*2)
+		}
+		score := min(30, max(1, int(addressRiskRatio*100)))
+		_ = s.orgRisk.RecordSignal(ctx, orgID, "list_quality", score, "Contact import contains risky addresses", map[string]any{
+			"bad_address_ratio": quality.BadAddressRatio,
+			"role_addresses":    quality.Role,
+			"risky_tlds":        quality.RiskyTLD,
+		})
+	}
+	res := &models.ContactImportResult{
+		Total:     len(parsed),
+		StartedAt: startedAt,
+		Errors:    make([]models.ContactImportRowError, 0),
+		Quality:   quality,
+	}
+	if quality.Blocked {
+		res.Failed = len(parsed)
+		res.EndedAt = time.Now().UTC()
+		return res, errx.ErrContactImportQuality
+	}
 
 	// Pre-check existing emails in one shot so we can route rows to
 	// the right path (skip / update / dup).
@@ -175,12 +238,6 @@ func (s *contactService) ImportCommit(
 	existing, xerr := s.contactRepository.GetByEmailsAndUser(ctx, uid, emails)
 	if xerr != nil {
 		return nil, xerr
-	}
-
-	res := &models.ContactImportResult{
-		Total:     len(parsed),
-		StartedAt: startedAt,
-		Errors:    make([]models.ContactImportRowError, 0),
 	}
 
 	// Bucket rows by target action. We send fresh inserts through
@@ -301,6 +358,16 @@ func (s *contactService) ImportCommit(
 		s.publishContactsReload(ctx, userID, "contacts:import")
 	}
 	return res, nil
+}
+
+func mappedImportEmail(row []string, mapping []models.ContactImportColumnMapping) string {
+	var address string
+	for _, column := range mapping {
+		if column.Target == models.ContactImportTargetEmail && column.Index >= 0 && column.Index < len(row) {
+			address = row[column.Index]
+		}
+	}
+	return address
 }
 
 // parseSpreadsheet returns rows as a 2-D slice and the detected format.
