@@ -72,6 +72,8 @@ Rascunhos). Each tick drains a bounded burst of up to 100 accounts; failures
 use exponential retry from 15 minutes up to 24 hours.
 
 `ENRICHMENT_PENDING` touchpoints are also retried by the editorial recovery
-worker. When target fit or contact evidence becomes valid, the same touchpoint
-returns to `NEEDS_REVIEW` and its obsolete stop reason is cleared. Neither
-worker can approve, schedule, queue or send a message.
+worker. After a complete feed import, newly fresh and eligible accounts with a
+usable strict or controlled route have stale retry timers moved to `now`; stale,
+suppressed, bounced and probabilistic-only routes stay untouched. The same
+touchpoint can then return to `NEEDS_REVIEW`. Neither worker can approve,
+schedule, queue or send a message.
