@@ -77,6 +77,7 @@ type TasksService interface {
 
 	// WireConfengeDispatch attaches the optional CONFENGE global dispatch gate.
 	WireConfengeDispatch(g ConfengeOutboundGate)
+	SetOrgRiskPolicy(p OrgRiskPolicy)
 }
 
 // AIToolSource yields the read-only web tools (search_web, fetch_url) a
@@ -140,6 +141,16 @@ type tasksService struct {
 	// warmupSettings caches the warmup generation settings in-process so the
 	// per-send AI-vs-static decision doesn't hit Postgres on every warmup.
 	warmupSettings *warmupSettingsCache
+	orgRisk        OrgRiskPolicy
+}
+
+type OrgRiskPolicy interface {
+	WarmupPool(ctx context.Context, organizationID uuid.UUID, current string) string
+	SendingSuspended(ctx context.Context, organizationID uuid.UUID) bool
+}
+
+func (s *tasksService) SetOrgRiskPolicy(p OrgRiskPolicy) {
+	s.orgRisk = p
 }
 
 // warmupSettingsCache is a tiny TTL cache over the generation settings.

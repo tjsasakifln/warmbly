@@ -38,6 +38,12 @@ type schedulerService struct {
 	// and hourly ceilings, send spacing). Optional/nil-safe: without it every
 	// mailbox keeps the legacy fixed cap and min-gap path.
 	behaviorSvc behavior.Service
+	orgRisk     OrgRiskPolicy
+}
+
+type OrgRiskPolicy interface {
+	EffectiveCap(ctx context.Context, organizationID uuid.UUID, current int) int
+	SendingSuspended(ctx context.Context, organizationID uuid.UUID) bool
 }
 
 // WireBehavior attaches the sending-behaviour engine. Kept off the constructor
@@ -51,6 +57,14 @@ func (s *schedulerService) WireBehavior(b behavior.Service) {
 // behaviour engine after construction.
 type BehaviorAware interface {
 	WireBehavior(b behavior.Service)
+}
+
+func (s *schedulerService) WireOrgRisk(p OrgRiskPolicy) {
+	s.orgRisk = p
+}
+
+type OrgRiskAware interface {
+	WireOrgRisk(p OrgRiskPolicy)
 }
 
 // NewSchedulerService creates a new scheduler service

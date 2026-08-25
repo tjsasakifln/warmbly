@@ -98,6 +98,7 @@ func (w *WMail) onImapEmailUpdate(ctx context.Context, msg *models.EmailMessageD
 		}
 
 		w.maybeEmitBounce(msg)
+		w.maybeEmitComplaint(msg)
 
 		// The consumer decodes NEW_EMAIL as JobEventNewEmail{user_id, message}.
 		// Sending the bare message left Message nil on the far side and the

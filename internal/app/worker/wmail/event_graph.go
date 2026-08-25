@@ -78,6 +78,7 @@ func (w *WMail) onGraphMessageAdd(ctx context.Context, msg *models.EmailMessageD
 	}
 
 	w.maybeEmitBounce(msg)
+	w.maybeEmitComplaint(msg)
 	return w.onEvent(models.JobEventTypeNewEmail, &models.JobEventNewEmail{
 		UserID:  w.UserID,
 		Message: data,

@@ -62,6 +62,7 @@ import (
 	"github.com/warmbly/warmbly/internal/app/oauth"
 	"github.com/warmbly/warmbly/internal/app/oidcauth"
 	"github.com/warmbly/warmbly/internal/app/organization"
+	"github.com/warmbly/warmbly/internal/app/orgrisk"
 	"github.com/warmbly/warmbly/internal/app/passkey"
 	"github.com/warmbly/warmbly/internal/app/placement"
 	"github.com/warmbly/warmbly/internal/app/plathealth"
@@ -118,6 +119,7 @@ import (
 	"github.com/warmbly/warmbly/internal/pkg/generation"
 	"github.com/warmbly/warmbly/internal/pkg/geo"
 	"github.com/warmbly/warmbly/internal/pkg/idtoken"
+	"github.com/warmbly/warmbly/internal/pkg/signuprisk"
 	"github.com/warmbly/warmbly/internal/repository"
 	"github.com/warmbly/warmbly/internal/scheduler"
 	"github.com/warmbly/warmbly/internal/tasks"
@@ -250,6 +252,7 @@ func main() {
 
 	// Organization-wide audit trail
 	var auditService audit.AuditService
+	var orgRiskService orgrisk.Service
 
 	// Pub/Sub for realtime streaming
 	var streamingPublisher *pubsub.StreamingPublisher
@@ -711,6 +714,7 @@ func main() {
 		// Organization-wide audit trail (who did what, when, from where).
 		auditRepository := repository.NewAuditRepository(primaryDB.Pool)
 		auditService = audit.NewService(auditRepository, streamingPublisher)
+		orgRiskService = orgrisk.NewService(repository.NewOrgRiskRepository(primaryDB.Pool), auditService)
 		// Bridge audited mutations to typed customer webhooks (campaign/contact/
 		// template/CRM/team/role/settings/subscription .created/.updated/.deleted).
 		auditService.WireWebhookDispatcher(webhookService)
@@ -742,6 +746,7 @@ func main() {
 			userRepostory,
 			userService,
 		)
+		authService.WireSignupRisk(signuprisk.New(cache.Client, nil), orgRiskService)
 		// TOTP 2FA: the secret is sealed with a server-wide key (the per-user DEK
 		// is unreachable at login time). Wire the challenger into auth so the login
 		// gate can issue a pending challenge.
@@ -1054,6 +1059,7 @@ func main() {
 		// only the prod backend has a real cache; jobs / tests build
 		// emailService without one.
 		emailService.WireThrottle(dailyThrottleService)
+		emailService.WireMailboxRisk(orgRiskService)
 		// Seed Graph delta cursors when the reconciler reloads mailboxes.
 		emailService.WireGraphDelta(repository.NewEmailGraphDeltaRepository(primaryDB))
 		analyticsRepository := repository.NewAnalyticsRepository(primaryDB)
@@ -1064,6 +1070,7 @@ func main() {
 		rateLimitService = ratelimit.NewService(cache, rateLimitRepository)
 		sequenceService = sequence.NewService(sequenceRepostory)
 		contactService = contact.NewService(contactRepostory, subscriptionRepository, planRepository, streamingPublisher)
+		contactService.WireImportSafety(repository.NewContactImportAssessmentRepository(primaryDB.Pool), orgRiskService, cache.Client)
 
 		// On-demand Google Sheets -> leads sync (backend-only / control plane).
 		// Reuses the integration service for the Google token + sheet reads and
@@ -1200,6 +1207,9 @@ func main() {
 		if aware, ok := schedulerService.(scheduler.BehaviorAware); ok {
 			aware.WireBehavior(behaviorService)
 		}
+		if aware, ok := schedulerService.(scheduler.OrgRiskAware); ok {
+			aware.WireOrgRisk(orgRiskService)
+		}
 		campaignService = campaign.NewService(campaignRepostory, taskRepository, emailRepostory, campaignLogRepository, featureGateService, dailyThrottleService, schedulerService, tasksClient, streamingPublisher)
 		// CONFENGE enroll uses campaign + contact services (execution plane).
 		if confengeServiceForHandler != nil {
@@ -1209,6 +1219,7 @@ func main() {
 			}
 		}
 		emailSendService = emailsend.NewService(taskRepository, emailRepostory, userRepostory, schedulerService, tasksClient, featureGateService, dailyThrottleService)
+		emailSendService.WireOrgRisk(orgRiskService)
 		composeService = compose.NewService(emailRepostory, repository.NewComposeRepository(primaryDB))
 		// uniboxService is constructed here (rather than alongside the
 		// other service constructors above) because cancel-scheduled
@@ -1400,6 +1411,7 @@ func main() {
 		// Research-mode AI variables run a bounded web-research agent over the
 		// shared tool registry at send time.
 		tasksService.SetAITools(aiToolRegistry)
+		tasksService.SetOrgRiskPolicy(orgRiskService)
 
 		// Admin outreach composer — sends from the platform mailer
 		// (SES/SMTP) with a configurable Reply-To, audits every send.
@@ -1490,7 +1502,7 @@ func main() {
 
 		// Pre-send email verification: verify a capped batch of not-yet-checked
 		// contacts each tick so hard-bouncing addresses are dropped before any
-		// worker sends. CONTROL-PLANE ONLY — the SMTP RCPT probe dials remote MX
+		// worker sends. CONTROL-PLANE ONLY: the SMTP RCPT probe dials remote MX
 		// on :25 from this backend host (a non-sending IP), never a worker.
 		emailVerifyCfg := emailverify.Config{
 			HeloHost: os.Getenv(emailverify.EnvHeloHost), // e.g. verify.warmbly.com
@@ -1508,7 +1520,8 @@ func main() {
 			log.Fatalf("email verifier identity: %v", err)
 		}
 		emailVerifier := emailverify.New(emailVerifyCfg)
-		emailVerifyService = emailverifyapp.NewService(contactRepostory, emailVerifier)
+		emailVerifyService = emailverifyapp.NewService(contactRepostory, emailVerifier, campaignRepostory)
+		campaignService.WireCampaignVerifier(emailVerifyService)
 		emailVerificationJob := jobs.NewEmailVerificationJob(emailVerifyService, 100)
 		emailVerificationScheduler := jobs.NewEmailVerificationScheduler(emailVerificationJob, 15*time.Minute)
 		go emailVerificationScheduler.Start(ctx)

@@ -93,5 +93,11 @@ type RegistrationSession struct {
 	Nonce        string `json:"nonce"`
 	// ReferralCode is the optional referral code captured at RegistrationStart,
 	// applied for attribution once the account + org are created at confirm.
-	ReferralCode string `json:"referral_code,omitempty"`
+	ReferralCode    string   `json:"referral_code,omitempty"`
+	SignupIP        string   `json:"signup_ip,omitempty"`
+	SignupUserAgent string   `json:"signup_user_agent,omitempty"`
+	SignupEmailRisk int      `json:"signup_email_risk,omitempty"`
+	SignupASN       *int64   `json:"signup_asn,omitempty"`
+	SignupRiskScore int      `json:"signup_risk_score,omitempty"`
+	SignupSignals   []string `json:"signup_signals,omitempty"`
 }

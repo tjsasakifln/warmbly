@@ -77,6 +77,7 @@ func (w *WMail) onGoogleMessageAdd(ctx context.Context, msg *models.EmailMessage
 	}
 
 	w.maybeEmitBounce(msg)
+	w.maybeEmitComplaint(msg)
 
 	if err := w.onEvent(models.JobEventTypeNewEmail, &models.JobEventNewEmail{
 		UserID:  w.UserID,
