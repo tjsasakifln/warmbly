@@ -87,7 +87,7 @@ Usage:
   confenge cohort-auth create|show|revoke [flags]
   confenge editorial issues list|sync [flags]
   confenge editorial guidelines list|propose|activate [flags]
-  confenge first-touch authorize-policy|seal|apply|status [flags]
+  confenge first-touch authorize-policy|seal|apply|status|canary-queue-once [flags]
 
 Env: PRIMARY_DB, CONFENGE_*, REDIS, NATS_URL (see .env.confenge.example).
   CONFENGE_REPOSITORY_SHA, CONFENGE_FEED_SCHEMA_VERSION, CONFENGE_EVIDENCE_VERSION

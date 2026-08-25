@@ -21,7 +21,7 @@ import (
 
 func cmdFirstTouch(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "first-touch requires authorize-policy, seal, apply, or status")
+		fmt.Fprintln(os.Stderr, "first-touch requires authorize-policy, seal, apply, status, or canary-queue-once")
 		return 2
 	}
 	switch args[0] {
@@ -33,10 +33,89 @@ func cmdFirstTouch(args []string) int {
 		return cmdFirstTouchApply(args[1:])
 	case "status":
 		return cmdFirstTouchStatus(args[1:])
+	case "canary-queue-once":
+		return cmdFirstTouchCanaryQueueOnce(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown first-touch command %q\n", args[0])
 		return 2
 	}
+}
+
+func validateFirstTouchCanaryConfig(cfg confenge.Config, orgID uuid.UUID, confirm, expectedSHA string) error {
+	if confirm != confenge.DelegatedFirstTouchPolicyV1 {
+		return fmt.Errorf("confirmation must equal %s", confenge.DelegatedFirstTouchPolicyV1)
+	}
+	if orgID == uuid.Nil || cfg.OperatorOrgID != orgID {
+		return fmt.Errorf("organization must match the configured operator organization")
+	}
+	if !cfg.DelegatedFirstTouchAutorunEnabled {
+		return fmt.Errorf("%s must be true for this one-shot evaluator", confenge.EnvDelegatedFirstTouchAutorun)
+	}
+	if !cfg.SendingPaused {
+		return fmt.Errorf("%s must be true for a zero-SMTP canary", confenge.EnvSendingPaused)
+	}
+	expectedSHA = strings.TrimSpace(expectedSHA)
+	if (len(expectedSHA) != 40 && len(expectedSHA) != 64) || strings.ToLower(expectedSHA) != expectedSHA {
+		return fmt.Errorf("expected release SHA must be a full lowercase digest")
+	}
+	for _, r := range expectedSHA {
+		if !strings.ContainsRune("0123456789abcdef", r) {
+			return fmt.Errorf("expected release SHA must be a full lowercase digest")
+		}
+	}
+	if cfg.RepositorySHA != expectedSHA {
+		return fmt.Errorf("runtime release SHA does not match the expected release")
+	}
+	return nil
+}
+
+func cmdFirstTouchCanaryQueueOnce(args []string) int {
+	fs := flag.NewFlagSet("first-touch canary-queue-once", flag.ContinueOnError)
+	orgRaw := fs.String("org-id", "", "operator organization UUID")
+	confirm := fs.String("confirm", "", "must equal CFG-FIRST-TOUCH-ROUTING-v1")
+	expectedSHA := fs.String("expected-release-sha", "", "exact deployed release SHA")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	orgID, err := uuid.Parse(strings.TrimSpace(*orgRaw))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "--org-id is required")
+		return 2
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	pool, svc, cfg, err := openFirstTouchService(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "first-touch canary: %v\n", err)
+		return 1
+	}
+	defer pool.Close()
+	if err := validateFirstTouchCanaryConfig(cfg, orgID, *confirm, *expectedSHA); err != nil {
+		fmt.Fprintf(os.Stderr, "first-touch canary: %v\n", err)
+		return 2
+	}
+	if !confenge.FileKillSwitchActive() {
+		fmt.Fprintln(os.Stderr, "first-touch canary: file kill switch must be engaged")
+		return 2
+	}
+	processed, err := svc.ProcessDelegatedFirstTouchOnce(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "first-touch canary: %v\n", err)
+		return 1
+	}
+	status := "IDLE"
+	if processed {
+		status = "PROCESSED"
+	}
+	printJSON(map[string]any{
+		"status": status, "policy_version": confenge.DelegatedFirstTouchPolicyV1,
+		"runtime_release_sha": cfg.RepositorySHA, "sending_paused": cfg.SendingPaused,
+		"kill_switch_engaged": true,
+	})
+	if !processed {
+		return 3
+	}
+	return 0
 }
 
 func cmdFirstTouchSeal(args []string) int {
