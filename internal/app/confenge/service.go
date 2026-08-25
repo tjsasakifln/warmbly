@@ -499,6 +499,7 @@ func (s *service) applyFeed(ctx context.Context, orgID uuid.UUID, run *models.Ou
 		}
 
 		if dryRun {
+			leadEvidence := materializedLeadEvidence(lead)
 			if existing == nil {
 				counts.Creates++
 			} else if existing.LastPayloadHash == contentHash {
@@ -513,13 +514,13 @@ func (s *service) applyFeed(ctx context.Context, orgID uuid.UUID, run *models.Ou
 				for _, e := range existingEv {
 					known[e.SourceEvidenceID] = true
 				}
-				for _, e := range lead.Evidence {
+				for _, e := range leadEvidence {
 					if e.ID != "" && !known[e.ID] {
 						counts.EvidenceAdded++
 					}
 				}
 			} else {
-				counts.EvidenceAdded += len(lead.Evidence)
+				counts.EvidenceAdded += len(leadEvidence)
 			}
 			counts.LeadsProcessed++
 			continue
@@ -550,7 +551,7 @@ func (s *service) applyFeed(ctx context.Context, orgID uuid.UUID, run *models.Ou
 				counts.Warnings++
 			}
 		}
-		for _, fe := range lead.Evidence {
+		for _, fe := range materializedLeadEvidence(lead) {
 			ev := leadToEvidence(orgID, acc.ID, run.ID, fe)
 			createdEv, err := s.repo.UpsertEvidence(ctx, ev)
 			if err != nil {
@@ -829,6 +830,40 @@ func leadToEvidence(orgID, accountID, runID uuid.UUID, fe FeedEvidence) *models.
 		ConsultedAt:      ParseDate(fe.ConsultedAt),
 		LastImportRunID:  &runID,
 	}
+}
+
+// materializedLeadEvidence projects the typed contractor_role attestation without reinterpreting raw contracts.
+func materializedLeadEvidence(lead FeedLead) []FeedEvidence {
+	out := append([]FeedEvidence(nil), lead.Evidence...)
+	role := lead.ContractorRole
+	if role.Status != ContractorRoleConfirmed || strings.ToUpper(strings.TrimSpace(role.TargetPartyRole)) != "SUPPLIER" {
+		return out
+	}
+	known := make(map[string]bool, len(out))
+	for i := range out {
+		if id := strings.TrimSpace(out[i].ID); id != "" {
+			known[id] = true
+		}
+	}
+	supplier := NormalizeCNPJ14(role.SupplierCNPJ14)
+	buyer := NormalizeCNPJ14(role.BuyerCNPJ14)
+	summary := fmt.Sprintf("extra-cli confirmou o CNPJ %s como CONTRATADA/FORNECEDORA, distinto do CNPJ contratante %s.", supplier, buyer)
+	for _, rawID := range role.EvidenceIDs {
+		id := strings.TrimSpace(rawID)
+		if id == "" || known[id] {
+			continue
+		}
+		known[id] = true
+		out = append(out, FeedEvidence{
+			ID: id, Type: "CONTRACTOR_ROLE_ATTESTATION",
+			Title:    "Papel de contratada confirmado pelo extra-cli",
+			Document: role.EvidenceReference, Date: role.ObservedAt,
+			Excerpt: summary, Synthesis: summary,
+			EpistemicClass: models.OutreachEpistemicConfirmedFact,
+			Reliability:    "HIGH", ConsultedAt: role.ObservedAt,
+		})
+	}
+	return out
 }
 
 func (s *service) GetImportRun(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachImportRun, *errx.Error) {

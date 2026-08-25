@@ -130,6 +130,29 @@ func TestDelegatedFirstTouchAttributedFreemailPasses(t *testing.T) {
 	}
 }
 
+func TestDelegatedFirstTouchControlledInstitutionalRouteDoesNotRequireNamedHumanReadiness(t *testing.T) {
+	f := newDelegatedValidationFixture(t, RouteClassGenericCompany, "contato@empresa.example")
+	f.candidate.EmailSendReady = false
+	f.candidate.VerificationStatus = models.OutreachVerifyInstitutionalGeneric
+	f.candidate.RecipientCommercialSuitability = "UNSUITABLE_HUMAN_EVIDENCE"
+	f.storeCandidate()
+	if blockers := f.validate(); len(blockers) != 0 {
+		t.Fatalf("typed controlled route inherited named-human readiness: %v", blockers)
+	}
+}
+
+func TestDelegatedFirstTouchUnclassifiedRecipientStillRequiresSendReadiness(t *testing.T) {
+	f := newDelegatedValidationFixture(t, RouteClassGenericCompany, "contato@empresa.example")
+	f.candidate.EmailSendReady = false
+	f.candidate.DiscoveryJSON = nil
+	f.candidate.VerificationStatus = models.OutreachVerifyCandidateUnverified
+	f.storeCandidate()
+	if blockers := f.validate(); !delegatedTestContains(blockers, "recipient_not_controlled_eligible") ||
+		!delegatedTestContains(blockers, "email_outbound_gate_failed") {
+		t.Fatalf("unclassified recipient without send readiness passed: %v", blockers)
+	}
+}
+
 func TestDelegatedFirstTouchFailsClosedOnRecipientComplianceAndSourceDrift(t *testing.T) {
 	tests := []struct {
 		name   string

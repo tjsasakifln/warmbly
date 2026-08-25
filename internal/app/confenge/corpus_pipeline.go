@@ -196,8 +196,9 @@ func feedLeadToModels(lead FeedLead) (*models.OutreachAccount, []models.Outreach
 		c := leadToCandidate(uuid.Nil, uuid.Nil, uuid.Nil, fc)
 		cands = append(cands, *c)
 	}
-	ev := make([]models.OutreachEvidence, 0, len(lead.Evidence))
-	for _, fe := range lead.Evidence {
+	leadEvidence := materializedLeadEvidence(lead)
+	ev := make([]models.OutreachEvidence, 0, len(leadEvidence))
+	for _, fe := range leadEvidence {
 		e := leadToEvidence(uuid.Nil, uuid.Nil, uuid.Nil, fe)
 		ev = append(ev, *e)
 	}

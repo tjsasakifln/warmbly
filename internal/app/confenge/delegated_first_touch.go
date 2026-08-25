@@ -811,7 +811,7 @@ func (s *service) validateDelegatedEntry(ctx context.Context, orgID uuid.UUID, m
 	if !CandidateControlledEligible(cand) || !ControlledRouteAllowed(cand, nil) || !CandidateEnrollable(cand) {
 		add("recipient_not_controlled_eligible")
 	}
-	if !cand.EmailSendReady || strings.EqualFold(strings.TrimSpace(cand.EmailDerivation), "INFERRED") ||
+	if strings.EqualFold(strings.TrimSpace(cand.EmailDerivation), "INFERRED") ||
 		!strings.EqualFold(strings.TrimSpace(cand.ChannelEpistemic), "OBSERVED") ||
 		!strings.EqualFold(strings.TrimSpace(cand.RouteFreshness), "FRESH") ||
 		!strings.EqualFold(strings.TrimSpace(cand.OwnershipStatus), "COMPANY_OWNED") ||
