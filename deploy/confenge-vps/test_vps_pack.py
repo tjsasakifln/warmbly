@@ -226,6 +226,18 @@ class TestConfengeVpsPack(unittest.TestCase):
         # network premise recorded (SMTP egress may FAIL on Netcup until unlock)
         self.assertTrue("smtp" in text.lower() and "imap" in text.lower())
 
+    def test_feed_manifest_uses_atomic_current_publication(self) -> None:
+        env = (PACK / "env.example").read_text(encoding="utf-8")
+        override = (PACK / "docker-compose.override.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "CONFENGE_EXTRA_CLI_MANIFEST_URL=https://confenge-feed:8443/current/manifest.json",
+            env,
+        )
+        self.assertIn(
+            "CONFENGE_EXTRA_CLI_MANIFEST_URL:-https://host.docker.internal:8443/current/manifest.json",
+            override,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
