@@ -66,6 +66,8 @@ func (s *service) ProcessEditorialRecoveryOnce(ctx context.Context) (bool, error
 	if s == nil || s.humanGateDB == nil {
 		return false, nil
 	}
+	s.reviewBacklogMu.Lock()
+	defer s.reviewBacklogMu.Unlock()
 	now := time.Now().UTC()
 	var orgID, touchpointID uuid.UUID
 	var state string
@@ -76,6 +78,13 @@ func (s *service) ProcessEditorialRecoveryOnce(ctx context.Context) (bool, error
 			FROM outreach_touchpoints
 			WHERE (state = 'ENRICHMENT_PENDING'
 			       OR ($3 AND state IN ('AI_REWRITE_PENDING','REJECTED_REWRITE_PENDING')))
+			  AND (
+				SELECT count(*)
+				FROM outreach_touchpoints review_backlog
+				WHERE review_backlog.organization_id=outreach_touchpoints.organization_id
+				  AND review_backlog.ordinal=1
+				  AND review_backlog.state='NEEDS_REVIEW'
+			  ) < $4
 			  AND editorial_retry_at <= $1
 			  AND (editorial_reserved_until IS NULL OR editorial_reserved_until <= $1)
 			ORDER BY editorial_retry_at, created_at, id
@@ -86,7 +95,7 @@ func (s *service) ProcessEditorialRecoveryOnce(ctx context.Context) (bool, error
 		SET editorial_reserved_until=$2, editorial_attempts=t.editorial_attempts+1, updated_at=$1
 		FROM next
 		WHERE t.id=next.id
-		RETURNING t.organization_id,t.id,t.state,t.editorial_attempts`, now, now.Add(editorialRecoveryLease), s.ai != nil).Scan(&orgID, &touchpointID, &state, &attempts)
+		RETURNING t.organization_id,t.id,t.state,t.editorial_attempts`, now, now.Add(editorialRecoveryLease), s.ai != nil, s.draftReviewBacklogTarget()).Scan(&orgID, &touchpointID, &state, &attempts)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil

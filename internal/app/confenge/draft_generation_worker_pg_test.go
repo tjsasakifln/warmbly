@@ -102,4 +102,36 @@ func TestDraftGenerationWorkerLeasesControlledRouteWithoutNamedPersonRollup(t *t
 	if attempts != 1 {
 		t.Fatalf("draft_generation_attempts=%d want 1", attempts)
 	}
+
+	// The preparation workers share a per-org first-touch review ceiling. Once
+	// the requested backlog exists, another otherwise eligible supplier must not
+	// be leased; this is preparation capacity, never send authority.
+	if _, err = pool.Exec(ctx, `UPDATE outreach_touchpoints SET state='NEEDS_REVIEW' WHERE organization_id=$1 AND account_id=$2 AND ordinal=1`, orgID, account.ID); err != nil {
+		t.Fatal(err)
+	}
+	account2 := *account
+	account2.ID = uuid.Nil
+	account2.SourceLeadID = "controlled-draft-backlog-cap"
+	account2.CNPJ14 = "76271049000266"
+	account2.CNPJRoot = "76271049"
+	account2.QueueState = models.OutreachQueueReadyToGenerate
+	if _, err = repo.UpsertAccount(ctx, &account2); err != nil {
+		t.Fatal(err)
+	}
+	candidate2 := *candidate
+	candidate2.ID = uuid.Nil
+	candidate2.AccountID = account2.ID
+	candidate2.SourceContactID = "controlled-generic-route-backlog-cap"
+	candidate2.Email = "contato-2@controlled-route.example"
+	if _, err = repo.UpsertCandidate(ctx, &candidate2); err != nil {
+		t.Fatal(err)
+	}
+	svc.cfg.DraftReviewBacklogTarget = 1
+	processed, err = svc.ProcessDraftGenerationOnce(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if processed {
+		t.Fatal("review backlog ceiling leased another supplier")
+	}
 }

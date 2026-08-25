@@ -45,6 +45,9 @@ const (
 	EnvFeedSyncInterval = "CONFENGE_FEED_SYNC_INTERVAL"
 	EnvFeedMaxAge       = "CONFENGE_FEED_MAX_AGE"
 	EnvManifestURL      = "CONFENGE_EXTRA_CLI_MANIFEST_URL"
+	// Preparation-only ceiling. It grants no approval, scheduling, queueing or
+	// transport authority.
+	EnvDraftReviewBacklogTarget = "CONFENGE_DRAFT_REVIEW_BACKLOG_TARGET"
 	// GREEN autorun under campaign policy authorization (fail-closed default).
 	EnvGreenAutorun = "CONFENGE_GREEN_AUTORUN_ENABLED"
 	// Adaptive rate (single capacity authority with dispatch governor).
@@ -74,11 +77,12 @@ const (
 // Default 200 allows adaptive peak 20/h × 9h (=180) plus margin so the daily
 // campaign cap is never the binding constraint ahead of the rolling-hour governor.
 const (
-	DefaultCampaignDailyLimit = 200
-	DefaultMaxInitialWords    = 120
-	DefaultMaxPayloadBytes    = 32 << 20 // 32 MiB
-	DefaultCrossChannelHours  = 24
-	DefaultMaxWhatsAppWords   = 70
+	DefaultCampaignDailyLimit       = 200
+	DefaultMaxInitialWords          = 120
+	DefaultMaxPayloadBytes          = 32 << 20 // 32 MiB
+	DefaultCrossChannelHours        = 24
+	DefaultMaxWhatsAppWords         = 70
+	DefaultDraftReviewBacklogTarget = 100
 )
 
 // Config is runtime configuration for the confenge outreach feature.
@@ -108,6 +112,10 @@ type Config struct {
 	FeedSyncInterval time.Duration
 	FeedMaxAge       time.Duration
 	ManifestURL      string
+	// DraftReviewBacklogTarget keeps at most this many first-touch messages in
+	// NEEDS_REVIEW per organization. Approved messages leave the preparation
+	// backlog and allow the next reviewed batch to be replenished.
+	DraftReviewBacklogTarget int
 	// GreenAutorunEnabled auto-queues GREEN messages under CAMPAIGN_POLICY_AUTHORIZATION.
 	// Default false (fail-closed). Distinct from AutoSendEnabled (legacy ambiguous).
 	GreenAutorunEnabled bool
@@ -196,6 +204,7 @@ func LoadConfig() Config {
 		FeedSyncInterval:             envDuration(EnvFeedSyncInterval, 15*time.Minute),
 		FeedMaxAge:                   envDuration(EnvFeedMaxAge, 24*time.Hour),
 		ManifestURL:                  strings.TrimSpace(os.Getenv(EnvManifestURL)),
+		DraftReviewBacklogTarget:     envInt(EnvDraftReviewBacklogTarget, DefaultDraftReviewBacklogTarget),
 		GreenAutorunEnabled:          envBool(EnvGreenAutorun, false),
 		RateMode:                     strings.ToLower(strings.TrimSpace(os.Getenv(EnvRateMode))),
 		RateStartPerHour:             envInt(EnvRateStartPerHour, 10),
@@ -236,6 +245,9 @@ func LoadConfig() Config {
 	}
 	if cfg.RateMaxPerHour < cfg.RateStartPerHour {
 		cfg.RateMaxPerHour = 20
+	}
+	if cfg.DraftReviewBacklogTarget < 1 {
+		cfg.DraftReviewBacklogTarget = DefaultDraftReviewBacklogTarget
 	}
 
 	// Fall back to chunk feed URL for manifest if only FeedURL is set.
