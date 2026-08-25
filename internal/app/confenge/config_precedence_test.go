@@ -41,6 +41,7 @@ func TestLoadConfigDefaultsMatchCanonicalSemantics(t *testing.T) {
 	t.Setenv(dispatch.EnvMinSendGapSeconds, "")
 	t.Setenv(dispatch.EnvSendWindowStart, "")
 	t.Setenv(dispatch.EnvSendWindowEnd, "")
+	t.Setenv(EnvDraftReviewBacklogTarget, "")
 
 	cfg := LoadConfig()
 	dcfg := dispatch.LoadConfig()
@@ -49,6 +50,9 @@ func TestLoadConfigDefaultsMatchCanonicalSemantics(t *testing.T) {
 	}
 	if cfg.DefaultDailyLimit != 200 {
 		t.Fatalf("LoadConfig default daily want 200, got %d", cfg.DefaultDailyLimit)
+	}
+	if cfg.DraftReviewBacklogTarget != 100 {
+		t.Fatalf("draft review backlog target want 100, got %d", cfg.DraftReviewBacklogTarget)
 	}
 	if dispatch.DefaultSendsPerHour != 10 {
 		t.Fatalf("package DefaultSendsPerHour want 10, got %d", dispatch.DefaultSendsPerHour)

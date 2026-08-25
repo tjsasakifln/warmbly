@@ -39,6 +39,43 @@ type controlledDiscovery struct {
 	SchemaVersion             string `json:"schema_version,omitempty"`
 }
 
+// FeedControlledReviewAuthority recognizes the strong, explicit upstream
+// contract for an institutional route that may be prepared for human review.
+// This is deliberately narrower than CandidateControlledEligible: it is used
+// only to recover a strict/named-person provenance failure and never grants
+// approval, queueing or transport authority.
+func FeedControlledReviewAuthority(fc FeedContact) bool {
+	if fc.ControlledEmailEligible == nil || !*fc.ControlledEmailEligible {
+		return false
+	}
+	if fc.DerivedFromFixture == nil || *fc.DerivedFromFixture {
+		return false
+	}
+	class := strings.ToUpper(strings.TrimSpace(fc.RouteClass))
+	if !defaultPilotRouteClasses[class] || class == RouteClassProbabilisticOrRisky {
+		return false
+	}
+	if strings.ToUpper(strings.TrimSpace(fc.MailboxCompanyEvidence)) != "OBSERVED" ||
+		strings.ToUpper(strings.TrimSpace(fc.ChannelEpistemic)) != "OBSERVED" ||
+		strings.ToUpper(strings.TrimSpace(fc.RouteFreshness)) != "FRESH" ||
+		strings.ToUpper(strings.TrimSpace(fc.RiskClass)) != "ALLOWED" ||
+		strings.ToUpper(strings.TrimSpace(fc.RouteSuppression)) != "NONE" ||
+		strings.ToUpper(strings.TrimSpace(fc.OwnershipStatus)) != "COMPANY_OWNED" ||
+		strings.ToUpper(strings.TrimSpace(fc.VerificationStatus)) != models.OutreachVerifyOfficialSource {
+		return false
+	}
+	if !validExactEmail(fc.Email) {
+		return false
+	}
+	// Re-run the immutable fixture/demo checks without the strict root-source
+	// label. UNKNOWN is accepted only because the stronger controlled contract
+	// above explicitly proves a fresh observed company association.
+	if tainted, _ := ContactProvenanceTainted(fc.Email, fc.SourceURL, "", fc.VerificationStatus, *fc.DerivedFromFixture); tainted {
+		return false
+	}
+	return true
+}
+
 func parseControlledDiscovery(c *models.OutreachContactCandidate) controlledDiscovery {
 	var d controlledDiscovery
 	if c == nil || len(c.DiscoveryJSON) == 0 {

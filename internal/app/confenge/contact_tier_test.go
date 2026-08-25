@@ -50,14 +50,41 @@ func TestPublishedExhaustedTierDoesNotBlockExplicitControlledRoute(t *testing.T)
 		DerivedFromFixture:             &derivedFixture,
 		ControlledEmailEligible:        &controlled,
 		RouteClass:                     RouteClassGenericCompany,
+		MailboxCompanyEvidence:         "OBSERVED",
+		ChannelEpistemic:               "OBSERVED",
+		RouteFreshness:                 "FRESH",
+		RiskClass:                      "ALLOWED",
 		RouteSuppression:               "NONE",
 		ContactTier:                    ContactTierE,
 	})
-	if c.Blocked || !CandidateControlledEligible(c) {
+	if c.Blocked || c.BlockReason != "" || !CandidateControlledEligible(c) || !CandidateEnrollable(c) {
 		t.Fatalf("explicit controlled route was collapsed into strict EXHAUSTED lane: %+v", c)
 	}
 	if !c.MailboxPurposeSendBlocked || c.EmailSendReady {
 		t.Fatalf("strict autorun guards were weakened: %+v", c)
+	}
+
+	fixture := true
+	unsafe := leadToCandidate(uuid.New(), uuid.New(), uuid.New(), FeedContact{
+		Email: "contato@fornecedor.com.br", VerificationStatus: models.OutreachVerifyOfficialSource,
+		OwnershipStatus: "COMPANY_OWNED", ProvenanceChainValid: &provenanceValid,
+		DerivedFromFixture: &fixture, ControlledEmailEligible: &controlled,
+		RouteClass: RouteClassGenericCompany, MailboxCompanyEvidence: "OBSERVED",
+		ChannelEpistemic: "OBSERVED", RouteFreshness: "FRESH", RiskClass: "ALLOWED",
+		RouteSuppression: "NONE", RootSourceType: "TEST_FIXTURE",
+	})
+	if !unsafe.Blocked || CandidateEnrollable(unsafe) {
+		t.Fatalf("fixture taint was softened by controlled stamp: %+v", unsafe)
+	}
+
+	incomplete := leadToCandidate(uuid.New(), uuid.New(), uuid.New(), FeedContact{
+		Email: "contato@fornecedor.com.br", VerificationStatus: models.OutreachVerifyOfficialSource,
+		OwnershipStatus: "COMPANY_OWNED", ProvenanceChainValid: &provenanceValid,
+		DerivedFromFixture: &derivedFixture, ControlledEmailEligible: &controlled,
+		RouteClass: RouteClassGenericCompany, RouteSuppression: "NONE",
+	})
+	if incomplete.BlockReason != "provenance_chain_invalid" || CandidateEnrollable(incomplete) {
+		t.Fatalf("incomplete controlled authority recovered strict provenance: %+v", incomplete)
 	}
 
 	legacy := &models.OutreachContactCandidate{Email: "contato@fornecedor.com.br"}

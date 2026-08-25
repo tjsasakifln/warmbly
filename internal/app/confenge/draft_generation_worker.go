@@ -68,6 +68,8 @@ func (s *service) ProcessDraftGenerationOnce(ctx context.Context) (bool, error) 
 	if s == nil || s.humanGateDB == nil {
 		return false, nil
 	}
+	s.reviewBacklogMu.Lock()
+	defer s.reviewBacklogMu.Unlock()
 	now := time.Now().UTC()
 	var orgID, accountID uuid.UUID
 	var attempts int
@@ -76,6 +78,13 @@ func (s *service) ProcessDraftGenerationOnce(ctx context.Context) (bool, error) 
 			SELECT a.id
 			FROM outreach_accounts a
 			WHERE a.queue_state = 'READY_TO_GENERATE'
+			  AND (
+				SELECT count(*)
+				FROM outreach_touchpoints review_backlog
+				WHERE review_backlog.organization_id=a.organization_id
+				  AND review_backlog.ordinal=1
+				  AND review_backlog.state='NEEDS_REVIEW'
+			  ) < $3
 			  AND a.target_fit_eligible = true
 			  AND a.blocked = false
 			  AND a.do_not_contact = false
@@ -124,7 +133,7 @@ func (s *service) ProcessDraftGenerationOnce(ctx context.Context) (bool, error) 
 			updated_at = $1
 		FROM next
 		WHERE a.id = next.id
-		RETURNING a.organization_id, a.id, a.draft_generation_attempts`, now, now.Add(draftGenerationLease)).Scan(&orgID, &accountID, &attempts)
+		RETURNING a.organization_id, a.id, a.draft_generation_attempts`, now, now.Add(draftGenerationLease), s.draftReviewBacklogTarget()).Scan(&orgID, &accountID, &attempts)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil

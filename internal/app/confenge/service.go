@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -205,6 +206,16 @@ type service struct {
 	intel          intel.Store
 	operatorMail   func(to, subject, body string) error
 	observedEvents []intel.CommercialEvent
+	// Serializes the preparation workers so their shared NEEDS_REVIEW ceiling
+	// cannot be overshot by concurrent draft generation and recovery.
+	reviewBacklogMu sync.Mutex
+}
+
+func (s *service) draftReviewBacklogTarget() int {
+	if s == nil || s.cfg.DraftReviewBacklogTarget < 1 {
+		return DefaultDraftReviewBacklogTarget
+	}
+	return s.cfg.DraftReviewBacklogTarget
 }
 
 // NewService wires confenge outreach. When cfg.Enabled is false, mutators return 404-style disabled errors.
@@ -688,18 +699,22 @@ func leadToCandidate(orgID, accountID, runID uuid.UUID, fc FeedContact) *models.
 	}
 	// Fail-closed provenance taint: demo/fixture never becomes send_ready even if feed claims VERIFIED.
 	derivedFixture := fc.DerivedFromFixture != nil && *fc.DerivedFromFixture
+	controlledReviewAuthority := FeedControlledReviewAuthority(fc)
 	if fc.ProvenanceChainValid != nil && !*fc.ProvenanceChainValid {
 		cand.EmailSendReady = false
 		cand.Recommended = false
-		if cand.BlockReason == "" {
+		if !controlledReviewAuthority && cand.BlockReason == "" {
 			cand.BlockReason = "provenance_chain_invalid"
 		}
 	}
 	if t, reason := ContactProvenanceTainted(fc.Email, fc.SourceURL, fc.RootSourceType, fc.VerificationStatus, derivedFixture); t {
-		cand.EmailSendReady = false
-		cand.Recommended = false
-		cand.Blocked = true
-		if cand.BlockReason == "" {
+		// root_source_type=UNKNOWN belongs to the strict named-person lane.
+		// A complete controlled-review authority stamp is an independent lane;
+		// fixture, demo and every other taint reason remain terminal.
+		if !(controlledReviewAuthority && reason == "root_source_type:UNKNOWN") {
+			cand.EmailSendReady = false
+			cand.Recommended = false
+			cand.Blocked = true
 			cand.BlockReason = "provenance_taint:" + reason
 		}
 	}

@@ -37,6 +37,7 @@ The corrected path stores the complete extra-cli decision, rejects temporal regr
 | `CONFENGE_FEED_SYNC_ENABLED` | `false` | Continuous manifest pull |
 | `CONFENGE_EXTRA_CLI_MANIFEST_URL` | empty | HTTPS or `file://` manifest |
 | `CONFENGE_FEED_SYNC_INTERVAL` | `15m` | Sync cadence |
+| `CONFENGE_DRAFT_REVIEW_BACKLOG_TARGET` | `100` | First-touch messages maintained in `NEEDS_REVIEW`; grants no send authority |
 | `CONFENGE_EXTRA_CLI_FEED_TOKEN` | empty | Bearer for remote fetch |
 | `CONFENGE_EXTRA_CLI_ALLOWED_HOSTS` | empty | Required in prod with remote URL |
 
