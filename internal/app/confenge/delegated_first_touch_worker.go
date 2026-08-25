@@ -166,9 +166,13 @@ func delegatedEntryFromCurrentState(acc *models.OutreachAccount, cand *models.Ou
 	if acc.ContractorRoleObservedAt != nil {
 		observedAt = acc.ContractorRoleObservedAt.UTC()
 	}
-	webObservedAt := cand.UpdatedAt.UTC()
-	if webObservedAt.IsZero() {
-		webObservedAt = observedAt
+	// SourceDate is the imported observation date for the public mailbox
+	// evidence. UpdatedAt is only the Warmbly row/import timestamp and must
+	// never refresh external evidence. Missing source provenance stays zero so
+	// delegatedWebSourceAllowed fails closed.
+	webObservedAt := time.Time{}
+	if cand.SourceDate != nil {
+		webObservedAt = cand.SourceDate.UTC()
 	}
 	key := "delegated-first-touch:" + acc.SourceRunID + ":" + acc.ID.String()
 	return DelegatedFirstTouchEntry{

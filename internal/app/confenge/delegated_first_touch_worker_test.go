@@ -75,3 +75,26 @@ func TestDelegatedFirstTouchAutorunRequiresNarrowGateAndOperatorBinding(t *testi
 		t.Fatalf("valid delegated autorun config: %v", err)
 	}
 }
+
+func TestDelegatedEntryUsesSourceObservationDateNotImportTimestamp(t *testing.T) {
+	sourceDate := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
+	importedAt := time.Date(2026, 8, 25, 20, 52, 0, 0, time.UTC)
+	acc := &models.OutreachAccount{
+		ID: uuid.New(), CNPJ14: "12345678000190", SourceRunID: "run-current",
+	}
+	cand := &models.OutreachContactCandidate{
+		ID: uuid.New(), AccountID: acc.ID, SourceURL: "https://empresa.example/contato",
+		SourceDate: &sourceDate, UpdatedAt: importedAt,
+	}
+
+	entry := delegatedEntryFromCurrentState(acc, cand, uuid.New(), "Assunto", "Corpo")
+	if got := entry.WebSources[0].ObservedAt; !got.Equal(sourceDate) {
+		t.Fatalf("web observation=%s want source date %s; import timestamp must not refresh evidence", got, sourceDate)
+	}
+
+	cand.SourceDate = nil
+	entry = delegatedEntryFromCurrentState(acc, cand, uuid.New(), "Assunto", "Corpo")
+	if got := entry.WebSources[0].ObservedAt; !got.IsZero() {
+		t.Fatalf("missing source date must fail closed, got observation %s", got)
+	}
+}
