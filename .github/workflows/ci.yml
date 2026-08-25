@@ -33,6 +33,7 @@ jobs:
       site: ${{ steps.filter.outputs.site }}
       make: ${{ steps.filter.outputs.make }}
       ios: ${{ steps.filter.outputs.ios }}
+      confenge-vps: ${{ steps.filter.outputs.confenge-vps }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -59,6 +60,24 @@ jobs:
               - 'integrations/make/**'
             ios:
               - 'ios/**'
+            confenge-vps:
+              - 'deploy/confenge-vps/**'
+              - 'deploy/verify-release.sh'
+              - 'docker-compose.yml'
+
+  confenge-vps-pack:
+    name: CONFENGE VPS pack
+    needs: changes
+    if: needs.changes.outputs.confenge-vps == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run structural tests
+        run: python3 -m unittest deploy.confenge-vps.test_vps_pack
+
+      - name: Validate deployment pack
+        run: deploy/confenge-vps/validate.sh
 
   go-ci:
     name: Go CI
@@ -599,7 +618,7 @@ jobs:
   ci-status:
     name: CI Status
     runs-on: ubuntu-latest
-    needs: [changes, go-ci, web-ci, confenge-product-acceptance, admin-ci, site-ci, make-ci, rust-ci, elixir-ci, ios-ci, frontend-images, security]
+    needs: [changes, go-ci, web-ci, confenge-product-acceptance, confenge-vps-pack, admin-ci, site-ci, make-ci, rust-ci, elixir-ci, ios-ci, frontend-images, security]
     if: always()
     steps:
       - name: Check CI status
@@ -622,6 +641,13 @@ jobs:
               confenge_failed=1
             fi
           fi
+          vps_result="${{ needs.confenge-vps-pack.result }}"
+          vps_failed=0
+          if [[ "${{ needs.changes.outputs.confenge-vps }}" == "true" ]] && \
+             [[ "$vps_result" != "success" ]]; then
+            echo "CONFENGE VPS pack did not pass (result=$vps_result)"
+            vps_failed=1
+          fi
           if [[ "${{ needs.go-ci.result }}" == "failure" ]] || \
              [[ "${{ needs.web-ci.result }}" == "failure" ]] || \
              [[ "${{ needs.admin-ci.result }}" == "failure" ]] || \
@@ -632,8 +658,9 @@ jobs:
              [[ "${{ needs.elixir-ci.result }}" == "failure" ]] || \
              [[ "${{ needs.ios-ci.result }}" == "failure" ]] || \
              [[ "${{ needs.security.result }}" == "failure" ]] || \
-             [[ "$confenge_failed" -eq 1 ]]; then
-            echo "CI failed (confenge=$confenge_result)"
+             [[ "$confenge_failed" -eq 1 ]] || \
+             [[ "$vps_failed" -eq 1 ]]; then
+            echo "CI failed (confenge=$confenge_result vps=$vps_result)"
             exit 1
           fi
-          echo "CI passed (confenge=$confenge_result)"
+          echo "CI passed (confenge=$confenge_result vps=$vps_result)"
