@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://confenge.com.br/contracts/confenge.delivery_order_requested.v1.schema.json",
+  "title": "confenge.delivery_order_requested.v1",
+  "description": "Warmbly-owned request consumed by Governance to evaluate delivery admission. Validity never implies readiness, capacity, Work Order creation or received revenue.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "synthetic",
+    "correlation_id",
+    "causation_id",
+    "idempotency_key",
+    "organization_id",
+    "account_id",
+    "client_ref",
+    "opportunity_id",
+    "qco_id",
+    "proposal_id",
+    "proposal_version",
+    "accepted_snapshot_hash",
+    "offer_id",
+    "offer_version",
+    "deliverable_id",
+    "deliverable_version",
+    "scope_version",
+    "price_version",
+    "terms_version",
+    "financial_gate",
+    "onboarding_ref",
+    "occurred_at",
+    "evidence_refs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "confenge.delivery_order_requested.v1"
+    },
+    "event_id": {
+      "$ref": "#/$defs/nonEmptyId"
+    },
+    "synthetic": {
+      "type": "boolean"
+    },
+    "correlation_id": {
+      "$ref": "#/$defs/nonEmptyId"
+    },
+    "causation_id": {
+      "$ref": "#/$defs/nonEmptyId"
+    },
+    "idempotency_key": {
+      "$ref": "#/$defs/nonEmptyId"
+    },
+    "organization_id": {
+      "$ref": "#/$defs/nonEmptyId"
+    },
+    "account_id": {
+      "$ref": "#/$defs/nonEmptyId"
+    },
+    "client_ref": {
+      "$ref": "#/$defs/nonEmptyId"
+    },
+    "opportunity_id": {
+      "$ref": "#/$defs/nonEmptyId"
+    },
+    "qco_id": {
+      "$ref": "#/$defs/nonEmptyId"
+    },
+    "proposal_id": {
+      "$ref": "#/$defs/nonEmptyId"
+    },
+    "proposal_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "accepted_snapshot_hash": {
+      "type": "string",
+      "pattern": "^(sha256:)?[a-f0-9]{64}$"
+    },
+    "offer_id": {
+      "$ref": "#/$defs/nonEmptyId"
+    },
+    "offer_version": {
+      "$ref": "#/$defs/nonEmptyId"
+    },
+    "deliverable_id": {
+      "$ref": "#/$defs/nonEmptyId"
+    },
+    "deliverable_version": {
+      "$ref": "#/$defs/nonEmptyId"
+    },
+    "scope_version": {
+      "$ref": "#/$defs/nonEmptyId"
+    },
+    "price_version": {
+      "$ref": "#/$defs/nonEmptyId"
+    },
+    "terms_version": {
+      "$ref": "#/$defs/nonEmptyId"
+    },
+    "financial_gate": {
+      "$ref": "confenge.financial_gate.v1.schema.json"
+    },
+    "onboarding_ref": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      },
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "nonEmptyId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    }
+  }
+}

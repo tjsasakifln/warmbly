@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://confenge.com.br/contracts/confenge.proposal_event.v1.schema.json",
+  "title": "confenge.proposal_event.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "event_id", "event_type", "organization_id", "proposal_id",
+    "proposal_version", "state", "actor", "occurred_at", "evidence_refs"
+  ],
+  "properties": {
+    "schema_version": { "const": "confenge.proposal_event.v1" },
+    "event_id": { "$ref": "#/$defs/id" },
+    "event_type": { "type": "string", "pattern": "^proposal\\.[a-z_]+$" },
+    "organization_id": { "$ref": "#/$defs/id" },
+    "proposal_id": { "$ref": "#/$defs/id" },
+    "proposal_version": { "type": "integer", "minimum": 1 },
+    "state": {
+      "enum": ["DRAFT", "PREPARED", "APPROVED_TO_SEND", "SENT", "NEGOTIATING", "ACCEPTED", "REJECTED", "EXPIRED", "UNKNOWN"]
+    },
+    "actor": { "$ref": "#/$defs/id" },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "evidence_refs": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 500 },
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 500 }
+  }
+}

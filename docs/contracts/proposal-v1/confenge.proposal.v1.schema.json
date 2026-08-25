@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://confenge.com.br/contracts/confenge.proposal.v1.schema.json",
+  "title": "confenge.proposal.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "proposal_id", "proposal_version", "organization_id",
+    "account_id", "client_ref", "opportunity_id", "qco_id", "correlation_id",
+    "offer_id", "offer_version", "deliverable_id", "deliverable_version",
+    "scope_version", "price_version", "terms_version", "amount", "currency",
+    "credits", "addons", "inputs", "exclusions", "deadline", "valid_until",
+    "decision_state", "evidence_refs", "created_by", "synthetic", "version",
+    "created_at", "updated_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "confenge.proposal.v1" },
+    "proposal_id": { "$ref": "#/$defs/id" },
+    "proposal_version": { "type": "integer", "minimum": 1 },
+    "organization_id": { "$ref": "#/$defs/id" },
+    "account_id": { "$ref": "#/$defs/id" },
+    "client_ref": { "$ref": "#/$defs/id" },
+    "opportunity_id": { "$ref": "#/$defs/id" },
+    "qco_id": { "$ref": "#/$defs/id" },
+    "deal_id": { "$ref": "#/$defs/id" },
+    "source_lead_id": { "$ref": "#/$defs/id" },
+    "correlation_id": { "$ref": "#/$defs/id" },
+    "offer_id": { "$ref": "#/$defs/id" },
+    "offer_version": { "$ref": "#/$defs/id" },
+    "deliverable_id": { "$ref": "#/$defs/id" },
+    "deliverable_version": { "$ref": "#/$defs/id" },
+    "scope_version": { "$ref": "#/$defs/id" },
+    "price_version": { "$ref": "#/$defs/id" },
+    "terms_version": { "$ref": "#/$defs/id" },
+    "amount": { "type": "integer", "minimum": 0, "description": "Minor currency units." },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "credits": { "$ref": "#/$defs/stringSet" },
+    "addons": { "$ref": "#/$defs/stringSet" },
+    "inputs": { "$ref": "#/$defs/nonEmptyStringSet" },
+    "exclusions": { "$ref": "#/$defs/stringSet" },
+    "deadline": { "type": "string", "format": "date-time" },
+    "valid_until": { "type": "string", "format": "date-time" },
+    "prepared_at": { "type": "string", "format": "date-time" },
+    "approved_at": { "type": "string", "format": "date-time" },
+    "sent_at": { "type": "string", "format": "date-time" },
+    "decision_state": {
+      "enum": ["DRAFT", "PREPARED", "APPROVED_TO_SEND", "SENT", "NEGOTIATING", "ACCEPTED", "REJECTED", "EXPIRED", "UNKNOWN"]
+    },
+    "decision_at": { "type": "string", "format": "date-time" },
+    "literal_reason_ref": { "$ref": "#/$defs/id" },
+    "accepted_snapshot_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "evidence_refs": { "$ref": "#/$defs/stringSet" },
+    "created_by": { "$ref": "#/$defs/id" },
+    "synthetic": { "type": "boolean" },
+    "version": { "type": "integer", "minimum": 1 },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "decision_state": { "const": "ACCEPTED" } } },
+      "then": { "required": ["decision_at", "accepted_snapshot_hash"] }
+    }
+  ],
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "stringSet": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 500 },
+      "uniqueItems": true
+    },
+    "nonEmptyStringSet": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1, "maxLength": 500 },
+      "uniqueItems": true
+    }
+  }
+}
