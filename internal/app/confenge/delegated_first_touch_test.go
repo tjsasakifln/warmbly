@@ -216,6 +216,9 @@ func TestCampaignPolicyStructuralTransportHonorsFileKillSwitch(t *testing.T) {
 	if err := CanTransportCampaignPolicy(tp); err == nil || !strings.Contains(err.Error(), "kill switch") {
 		t.Fatalf("file kill switch did not block delegated transport: %v", err)
 	}
+	if err := CanQueueCampaignPolicy(tp); err != nil {
+		t.Fatalf("kill switch must not discard safe queued work: %v", err)
+	}
 }
 
 func delegatedTestContains(values []string, want string) bool {

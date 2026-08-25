@@ -197,10 +197,18 @@ func CanTransport(tp *models.OutreachTouchpoint) error {
 	return nil
 }
 
-// CanTransportCampaignPolicy validates the structural policy path without
-// pretending a human approved the message. The service must still prove the
-// live grant and the per-message delegated decision before transport.
+// Campaign-policy queueing and transport share the same non-human structural
+// binding. Queueing may happen while paused; transport additionally requires
+// the durable kill switch to be open and is revalidated before provider handoff.
+func CanQueueCampaignPolicy(tp *models.OutreachTouchpoint) error {
+	return validateCampaignPolicyBinding(tp, false)
+}
+
 func CanTransportCampaignPolicy(tp *models.OutreachTouchpoint) error {
+	return validateCampaignPolicyBinding(tp, true)
+}
+
+func validateCampaignPolicyBinding(tp *models.OutreachTouchpoint, requireTransportOpen bool) error {
 	if tp == nil {
 		return fmt.Errorf("nil touchpoint")
 	}
@@ -219,7 +227,7 @@ func CanTransportCampaignPolicy(tp *models.OutreachTouchpoint) error {
 	if want == "" || tp.ContentHash != want || tp.ApprovedContentHash != want {
 		return fmt.Errorf("approved_content_hash does not match live recipient/content/evidence versions")
 	}
-	if FileKillSwitchActive() {
+	if requireTransportOpen && FileKillSwitchActive() {
 		return fmt.Errorf("kill switch engaged")
 	}
 	if tp.ApprovedBy != nil {

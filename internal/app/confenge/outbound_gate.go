@@ -422,7 +422,7 @@ func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *
 	// A frozen bounded cohort carries its own membership (the grant manifest,
 	// re-validated by CanTransportCohort). The legacy confenge-pilot-v1
 	// membership table is not written for it and must not gate it.
-	if s.cfg.OperatorMode && mode != AuthorizationModeBoundedCohort && mode != AuthorizationModeHumanGate {
+	if s.cfg.OperatorMode && mode != AuthorizationModeCampaignPolicy && mode != AuthorizationModeBoundedCohort && mode != AuthorizationModeHumanGate {
 		if err := s.requirePilotMembershipForTouchpoint(ctx, orgID, tp); err != nil {
 			return fmt.Errorf("controlled pilot membership: %w", err)
 		}
@@ -512,6 +512,34 @@ func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *
 	}
 	if strings.TrimSpace(tp.AuthorizationMode) == AuthorizationModeBoundedCohort {
 		return s.assertBoundedCohortTransport(ctx, tp, cand, "")
+	}
+	return nil
+}
+
+// assertCampaignPolicyQueueable proves the exact delegated decision and live
+// revocable grant without requiring transport to be open. The dispatch worker
+// invokes AssertTransportable again before provider handoff, where the durable
+// kill switch and process pause remain mandatory gates.
+func (s *service) assertCampaignPolicyQueueable(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint) error {
+	if !s.cfg.DelegatedFirstTouchEnabled {
+		return fmt.Errorf("campaign_policy cannot queue; delegated first-touch is disabled")
+	}
+	if err := CanQueueCampaignPolicy(tp); err != nil {
+		if tp != nil {
+			_ = s.cancelDelegatedDecision(ctx, orgID, tp.ID, "delegated_structural_binding_drift")
+		}
+		return err
+	}
+	if linked, _ := s.humanGateDispatchInvalidation(ctx, orgID, tp); linked {
+		_ = s.cancelDelegatedDecision(ctx, orgID, tp.ID, "authorization_mode_conflict")
+		return fmt.Errorf("human-gate touchpoint authorization mode mismatch")
+	}
+	if err := s.assertDelegatedFirstTouchDecision(ctx, orgID, tp); err != nil {
+		return err
+	}
+	if block := s.revalidateCampaignPolicyGrant(ctx, orgID, tp, true); block != nil {
+		_ = s.cancelDelegatedDecision(ctx, orgID, tp.ID, "delegated_policy_revalidation_failed:"+block.Reason)
+		return fmt.Errorf("campaign policy revalidation: %s", block.Reason)
 	}
 	return nil
 }

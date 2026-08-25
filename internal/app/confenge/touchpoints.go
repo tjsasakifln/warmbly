@@ -1099,8 +1099,8 @@ func (s *service) QueueTouchpoint(ctx context.Context, orgID, userID, id uuid.UU
 	if tp.AuthorizationMode == AuthorizationModeCampaignPolicy {
 		// Unlike a human decision, campaign authority is a live revocable grant.
 		// A revoked grant cannot create new queue work.
-		if err := s.AssertTransportable(ctx, orgID, tp); err != nil {
-			return nil, errx.New(errx.BadRequest, "send blocked: "+err.Error())
+		if err := s.assertCampaignPolicyQueueable(ctx, orgID, tp); err != nil {
+			return nil, errx.New(errx.BadRequest, "queue blocked: "+err.Error())
 		}
 	}
 	// Final dispatch gate: material context must still match generation-time hash.
