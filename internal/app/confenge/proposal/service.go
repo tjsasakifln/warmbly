@@ -10,11 +10,19 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
 
 var proposalNamespace = uuid.MustParse("206b7b3f-fbdf-5238-a45e-6ca74061baf2")
+
+const (
+	contractIDMaxLength        = 200
+	proposalOnlyIDMaxLength    = 500
+	commandIdentityMaxLength   = 500
+	evidenceReferenceMaxLength = 500
+)
 
 type Clock func() time.Time
 
@@ -147,6 +155,12 @@ func (s *Service) Transition(ctx context.Context, command TransitionCommand) (Re
 	if err := validateCommand(command.OrganizationID, command.IdempotencyKey, command.Actor); err != nil {
 		return Result{}, err
 	}
+	if err := validateOptionalString("literal_reason_ref", command.LiteralReasonRef, proposalOnlyIDMaxLength); err != nil {
+		return Result{}, err
+	}
+	if err := validateStringSet("evidence_refs", command.EvidenceRefs, evidenceReferenceMaxLength, false); err != nil {
+		return Result{}, err
+	}
 	payloadHash, err := hashCommand(command)
 	if err != nil {
 		return Result{}, err
@@ -211,14 +225,20 @@ func (s *Service) Transition(ctx context.Context, command TransitionCommand) (Re
 }
 
 func (s *Service) AuthorizeDelivery(ctx context.Context, command AuthorizeDeliveryCommand) (Result, error) {
-	if command.OrganizationID == uuid.Nil || command.ProposalID == uuid.Nil || strings.TrimSpace(command.IdempotencyKey) == "" {
+	if command.OrganizationID == uuid.Nil || command.ProposalID == uuid.Nil {
 		return Result{}, fmt.Errorf("organization_id, proposal_id and idempotency_key required")
+	}
+	if err := validateRequiredString("idempotency_key", command.IdempotencyKey, commandIdentityMaxLength); err != nil {
+		return Result{}, err
 	}
 	if err := validateFinancialGate(command.FinancialGate, true); err != nil {
 		return Result{}, err
 	}
-	if strings.TrimSpace(command.OnboardingRef) == "" || strings.TrimSpace(command.CausationID) == "" {
-		return Result{}, fmt.Errorf("onboarding_ref and causation_id required")
+	if err := validateRequiredString("onboarding_ref", command.OnboardingRef, contractIDMaxLength); err != nil {
+		return Result{}, err
+	}
+	if err := validateRequiredString("causation_id", command.CausationID, contractIDMaxLength); err != nil {
+		return Result{}, err
 	}
 	payloadHash, err := hashCommand(command)
 	if err != nil {
@@ -240,6 +260,9 @@ func (s *Service) AuthorizeDelivery(ctx context.Context, command AuthorizeDelive
 	at := command.OccurredAt.UTC()
 	if at.IsZero() {
 		at = s.clock().UTC()
+	}
+	if at.Before(p.UpdatedAt) {
+		return Result{}, ErrOutOfOrder
 	}
 	handoff, err := deliveryRequest(*p, command.FinancialGate, command.OnboardingRef, command.CausationID, at)
 	if err != nil {
@@ -296,10 +319,13 @@ func proposalFromDraft(orgID, proposalID uuid.UUID, proposalVersion int, actor s
 }
 
 func validateCommand(orgID uuid.UUID, idempotencyKey, actor string) error {
-	if orgID == uuid.Nil || strings.TrimSpace(idempotencyKey) == "" || strings.TrimSpace(actor) == "" {
+	if orgID == uuid.Nil {
 		return fmt.Errorf("organization_id, idempotency_key and actor required")
 	}
-	return nil
+	if err := validateRequiredString("idempotency_key", idempotencyKey, commandIdentityMaxLength); err != nil {
+		return err
+	}
+	return validateRequiredString("actor", actor, proposalOnlyIDMaxLength)
 }
 
 func validateDraft(draft Draft) error {
@@ -311,15 +337,65 @@ func validateDraft(draft Draft) error {
 		"price_version": draft.PriceVersion, "terms_version": draft.TermsVersion, "currency": draft.Currency,
 	}
 	for field, value := range required {
-		if strings.TrimSpace(value) == "" {
-			return fmt.Errorf("%s required", field)
+		if err := validateRequiredString(field, value, contractIDMaxLength); err != nil {
+			return err
 		}
+	}
+	if err := validateOptionalString("deal_id", draft.DealID, proposalOnlyIDMaxLength); err != nil {
+		return err
+	}
+	if err := validateOptionalString("source_lead_id", draft.SourceLeadID, proposalOnlyIDMaxLength); err != nil {
+		return err
+	}
+	currency := strings.ToUpper(strings.TrimSpace(draft.Currency))
+	if len(currency) != 3 || currency[0] < 'A' || currency[0] > 'Z' ||
+		currency[1] < 'A' || currency[1] > 'Z' || currency[2] < 'A' || currency[2] > 'Z' {
+		return fmt.Errorf("currency must be a three-letter code")
 	}
 	if draft.Amount < 0 || draft.Deadline.IsZero() || draft.ValidUntil.IsZero() {
 		return fmt.Errorf("non-negative amount, deadline and valid_until required")
 	}
-	if len(sortedCopy(draft.Inputs)) == 0 {
-		return fmt.Errorf("inputs required")
+	for field, values := range map[string][]string{
+		"credits": draft.Credits, "addons": draft.Addons, "inputs": draft.Inputs,
+		"exclusions": draft.Exclusions, "evidence_refs": draft.EvidenceRefs,
+	} {
+		if err := validateStringSet(field, values, evidenceReferenceMaxLength, field == "inputs"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateRequiredString(field, value string, maxLength int) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("%s required", field)
+	}
+	if utf8.RuneCountInString(value) > maxLength {
+		return fmt.Errorf("%s exceeds %d characters", field, maxLength)
+	}
+	return nil
+}
+
+func validateOptionalString(field, value string, maxLength int) error {
+	if value = strings.TrimSpace(value); value == "" {
+		return nil
+	}
+	if utf8.RuneCountInString(value) > maxLength {
+		return fmt.Errorf("%s exceeds %d characters", field, maxLength)
+	}
+	return nil
+}
+
+func validateStringSet(field string, values []string, maxLength int, required bool) error {
+	normalized := sortedCopy(values)
+	if required && len(normalized) == 0 {
+		return fmt.Errorf("%s required", field)
+	}
+	for _, value := range normalized {
+		if utf8.RuneCountInString(value) > maxLength {
+			return fmt.Errorf("%s entry exceeds %d characters", field, maxLength)
+		}
 	}
 	return nil
 }
@@ -370,12 +446,12 @@ func deliveryRequest(p Proposal, gate FinancialGate, onboardingRef, causationID 
 	if err := validateFinancialGate(gate, false); err != nil {
 		return nil, err
 	}
-	businessKey := strings.Join([]string{p.ProposalID.String(), fmt.Sprint(p.ProposalVersion), p.AcceptedSnapshotHash, p.DeliverableID, p.DeliverableVersion}, ":")
 	source := "none"
 	if gate.SourceEventID != nil {
 		source = strings.TrimSpace(*gate.SourceEventID)
 	}
-	idempotencyKey := "delivery-order:" + businessKey + ":" + string(gate.State) + ":" + source
+	idempotencyKey := stableDigest("delivery-order", p.ProposalID.String(), fmt.Sprint(p.ProposalVersion),
+		p.AcceptedSnapshotHash, p.DeliverableID, p.DeliverableVersion, string(gate.State), source)
 	return &DeliveryOrderRequested{
 		EventID: stableUUID("delivery-order-request", idempotencyKey), SchemaVersion: DeliveryRequestSchema,
 		Synthetic: gate.Synthetic || p.Synthetic, CorrelationID: p.CorrelationID, CausationID: causationID,
@@ -406,6 +482,9 @@ func validateFinancialGate(gate FinancialGate, authorizedOnly bool) error {
 		if authorizedOnly {
 			return fmt.Errorf("UNKNOWN financial gate fails closed")
 		}
+		if gate.SourceEventID != nil {
+			return fmt.Errorf("UNKNOWN financial gate requires null source_event_id")
+		}
 	case FinancialGateSyntheticValid:
 		if !gate.Synthetic || source == "" || len(sortedCopy(gate.EvidenceRefs)) == 0 {
 			return fmt.Errorf("SYNTHETIC_VALID requires synthetic=true, source_event_id and evidence_refs")
@@ -417,11 +496,24 @@ func validateFinancialGate(gate FinancialGate, authorizedOnly bool) error {
 	default:
 		return fmt.Errorf("unsupported financial gate state %q", gate.State)
 	}
+	if source != "" {
+		if err := validateRequiredString("financial_gate.source_event_id", source, contractIDMaxLength); err != nil {
+			return err
+		}
+	}
+	if err := validateStringSet("financial_gate.evidence_refs", gate.EvidenceRefs, evidenceReferenceMaxLength, false); err != nil {
+		return err
+	}
 	return nil
 }
 
 func stableUUID(parts ...string) uuid.UUID {
 	return uuid.NewSHA1(proposalNamespace, []byte(strings.Join(parts, "\x00")))
+}
+
+func stableDigest(prefix string, parts ...string) string {
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return prefix + ":sha256:" + hex.EncodeToString(sum[:])
 }
 
 func hashCommand(command any) (string, error) {

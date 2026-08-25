@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS confenge_proposal_command_receipts (
 CREATE OR REPLACE FUNCTION confenge_proposal_accepted_immutable()
 RETURNS trigger AS $$
 BEGIN
-    IF OLD.decision_state = 'ACCEPTED' AND NEW.payload IS DISTINCT FROM OLD.payload THEN
+    IF OLD.decision_state = 'ACCEPTED' AND NEW IS DISTINCT FROM OLD THEN
         RAISE EXCEPTION 'accepted proposal version is immutable';
     END IF;
     RETURN NEW;

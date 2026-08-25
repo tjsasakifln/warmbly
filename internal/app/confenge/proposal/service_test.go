@@ -3,6 +3,7 @@ package proposal
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -169,6 +170,35 @@ func TestProposalIdempotencyAndOptimisticConcurrency(t *testing.T) {
 	}
 }
 
+func TestProposalCommandsHonorPublishedContractBounds(t *testing.T) {
+	for name, mutate := range map[string]func(*Draft){
+		"long handoff identity": func(draft *Draft) { draft.AccountID = strings.Repeat("a", contractIDMaxLength+1) },
+		"long evidence ref":     func(draft *Draft) { draft.EvidenceRefs = []string{strings.Repeat("e", evidenceReferenceMaxLength+1)} },
+		"invalid currency":      func(draft *Draft) { draft.Currency = "br" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			draft := fixtureDraft()
+			mutate(&draft)
+			_, err := NewService(NewMemoryStore(), fixedClock(testNow)).Create(context.Background(), CreateCommand{
+				OrganizationID: testOrg, IdempotencyKey: "fixture:invalid:" + name,
+				CreatedBy: "actor:synthetic-reviewer", Draft: draft,
+			})
+			if err == nil {
+				t.Fatal("invalid draft satisfied the published contract")
+			}
+		})
+	}
+
+	emptySource := ""
+	err := validateFinancialGate(FinancialGate{
+		SchemaVersion: FinancialGateSchema, State: FinancialGateUnknown,
+		Synthetic: true, SourceEventID: &emptySource,
+	}, false)
+	if err == nil {
+		t.Fatal("UNKNOWN financial gate accepted a non-null source_event_id")
+	}
+}
+
 func TestAuthorizedSyntheticHandoffNeverClaimsRevenue(t *testing.T) {
 	service := NewService(NewMemoryStore(), fixedClock(testNow))
 	accepted := transitionPath(t, service, createFixture(t, service, "fixture:authorized:create"), StateAccepted)
@@ -190,6 +220,9 @@ func TestAuthorizedSyntheticHandoffNeverClaimsRevenue(t *testing.T) {
 	if result.Handoff == nil || !result.Handoff.Synthetic || result.Handoff.FinancialGate.ReceivedRevenue ||
 		result.Handoff.OnboardingRef == "" || result.Handoff.AcceptedSnapshotHash != accepted.Proposal.AcceptedSnapshotHash {
 		t.Fatalf("invalid authorized handoff: %+v", result.Handoff)
+	}
+	if len(result.Handoff.IdempotencyKey) > contractIDMaxLength {
+		t.Fatalf("handoff idempotency key exceeds contract: %d", len(result.Handoff.IdempotencyKey))
 	}
 	replay, err := service.AuthorizeDelivery(context.Background(), command)
 	if err != nil || !replay.Replay || replay.Handoff.EventID != result.Handoff.EventID {
@@ -215,6 +248,14 @@ func TestAuthorizedSyntheticHandoffNeverClaimsRevenue(t *testing.T) {
 	_, err = service.AuthorizeDelivery(context.Background(), mismatched)
 	if !errors.Is(err, ErrSyntheticMismatch) {
 		t.Fatalf("synthetic proposal accepted real gate err=%v", err)
+	}
+
+	outOfOrder := command
+	outOfOrder.IdempotencyKey = "fixture:authorized:out-of-order"
+	outOfOrder.OccurredAt = accepted.Proposal.UpdatedAt.Add(-time.Second)
+	_, err = service.AuthorizeDelivery(context.Background(), outOfOrder)
+	if !errors.Is(err, ErrOutOfOrder) {
+		t.Fatalf("out-of-order delivery authorization err=%v", err)
 	}
 }
 

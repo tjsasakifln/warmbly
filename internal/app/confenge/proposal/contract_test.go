@@ -11,7 +11,16 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
+
+var contractSchemaNames = []string{
+	"confenge.proposal.v1.schema.json",
+	"confenge.proposal_event.v1.schema.json",
+	"confenge.financial_gate.v1.schema.json",
+	"confenge.delivery_order_requested.v1.schema.json",
+}
 
 func TestSyntheticCanaryMatchesGoldenAndConverges(t *testing.T) {
 	goldenPath := contractPath("fixtures", "delivery-order-requested.synthetic.v1.json")
@@ -63,12 +72,7 @@ func TestSyntheticCanaryMatchesGoldenAndConverges(t *testing.T) {
 }
 
 func TestVersionedContractSchemasAreValidJSON(t *testing.T) {
-	for _, name := range []string{
-		"confenge.proposal.v1.schema.json",
-		"confenge.proposal_event.v1.schema.json",
-		"confenge.financial_gate.v1.schema.json",
-		"confenge.delivery_order_requested.v1.schema.json",
-	} {
+	for _, name := range contractSchemaNames {
 		raw, err := os.ReadFile(contractPath(name))
 		if err != nil {
 			t.Fatal(err)
@@ -83,6 +87,50 @@ func TestVersionedContractSchemasAreValidJSON(t *testing.T) {
 		sum := sha256.Sum256(raw)
 		t.Logf("%s sha256=%s", name, hex.EncodeToString(sum[:]))
 	}
+}
+
+func TestContractFixturesMatchPublishedSchemas(t *testing.T) {
+	compiler := jsonschema.NewCompiler()
+	compiler.AssertFormat()
+	for _, name := range contractSchemaNames {
+		raw, err := os.ReadFile(contractPath(name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var document any
+		if err := json.Unmarshal(raw, &document); err != nil {
+			t.Fatalf("decode %s: %v", name, err)
+		}
+		if err := compiler.AddResource(contractSchemaURL(name), document); err != nil {
+			t.Fatalf("add %s: %v", name, err)
+		}
+	}
+	for fixture, schemaName := range map[string]string{
+		"proposal.accepted.synthetic.v1.json":        "confenge.proposal.v1.schema.json",
+		"delivery-order-requested.synthetic.v1.json": "confenge.delivery_order_requested.v1.schema.json",
+	} {
+		t.Run(fixture, func(t *testing.T) {
+			schema, err := compiler.Compile(contractSchemaURL(schemaName))
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(contractPath("fixtures", fixture))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var instance any
+			if err := json.Unmarshal(raw, &instance); err != nil {
+				t.Fatal(err)
+			}
+			if err := schema.Validate(instance); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func contractSchemaURL(name string) string {
+	return "https://confenge.com.br/contracts/" + name
 }
 
 func contractPath(parts ...string) string {

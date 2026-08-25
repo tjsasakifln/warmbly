@@ -20,6 +20,7 @@ The accepted row cannot be updated. A material change appends
 Every command has an organization-scoped idempotency receipt. Reusing the key
 with another payload fails closed. State writes use optimistic record versions.
 Proposal and event rows are durable Postgres state from migration `000125`.
+The service validates contract lengths and currency shape before persistence.
 
 ## Delivery handoff
 
@@ -35,6 +36,10 @@ The future real replacement for the synthetic source is the Warmbly-owned
 `confenge.financial_gate_reconciled.v1`. HTTP success, callback receipt,
 `PAYMENT_CONFIRMED`, checkout creation and the nested gate never prove received
 revenue.
+
+Delivery event identity uses a fixed-length SHA-256 digest of the accepted
+business key, financial state and source event. Long valid business IDs cannot
+overflow the published idempotency-key limit.
 
 ## Reproducible fixture
 

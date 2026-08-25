@@ -1,10 +1,10 @@
 {
-  "event_id": "7bb44bf9-e37f-5833-8958-4e5c313eaceb",
+  "event_id": "e69e1dd3-7204-51d2-9768-36cf5ede789a",
   "schema_version": "confenge.delivery_order_requested.v1",
   "synthetic": true,
   "correlation_id": "corr-synthetic-cfg-diag-exp-001",
   "causation_id": "fixture-financial-gate-cfg-diag-exp-001",
-  "idempotency_key": "delivery-order:220f817a-5b2b-5799-b403-2ce8c731e4bf:1:sha256:7cbe3a5d5663e4ae15001e56f97b852287c94eea2836e200c3a5a309bc73f2bd:CFG-DIAG-EXP-v1:v1:SYNTHETIC_VALID:fixture-financial-gate-cfg-diag-exp-001",
+  "idempotency_key": "delivery-order:sha256:e1e93bd326036d3a399193c9e9492ffd6351c378c6866fda23e9e229f6493c76",
   "organization_id": "11111111-1111-4111-8111-000000000047",
   "account_id": "account-synthetic-cfg-diag-exp-001",
   "client_ref": "client:redacted:cfg-diag-exp-001",
