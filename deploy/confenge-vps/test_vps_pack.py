@@ -135,6 +135,57 @@ class TestConfengeVpsPack(unittest.TestCase):
         """A new checkout must not silently reuse the previous app images."""
         text = (PACK / "up.sh").read_text(encoding="utf-8")
         self.assertIn("compose_cmd up -d --build --remove-orphans", text)
+        env_load = text.index('set -a; . "$ENVF"; set +a')
+        identity_bind = text.index(
+            'bind_release_identity "$RELEASE_SHA_RESOLVED"'
+        )
+        compose_up = text.index("compose_cmd up -d --build --remove-orphans")
+        self.assertLess(env_load, identity_bind)
+        self.assertLess(identity_bind, compose_up)
+
+    def test_release_identity_binding_overrides_stale_audit_sha(self) -> None:
+        release_sha = "a" * 40
+        stale_sha = "b" * 40
+        proc = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'source "$1"; WARMBLY_RELEASE_SHA="$2"; '
+                'CONFENGE_REPOSITORY_SHA="$3"; '
+                'bind_release_identity "$WARMBLY_RELEASE_SHA"; '
+                'printf "%s\\n%s\\n" "$WARMBLY_RELEASE_SHA" "$CONFENGE_REPOSITORY_SHA"',
+                "release-identity-test",
+                str(PACK / "lib.sh"),
+                release_sha,
+                stale_sha,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.splitlines(), [release_sha, release_sha])
+
+    def test_release_identity_binding_rejects_unproven_revision(self) -> None:
+        proc = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'source "$1"; bind_release_identity local',
+                "release-identity-test",
+                str(PACK / "lib.sh"),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 3)
+        self.assertIn("REFUSE: immutable release SHA", proc.stderr)
+
+    def test_release_verifier_requires_decision_audit_sha(self) -> None:
+        text = (ROOT / "deploy/verify-release.sh").read_text(encoding="utf-8")
+        self.assertIn("CONFENGE_REPOSITORY_SHA", text)
+        self.assertIn('if [ "$auditsha" != "$EXPECTED" ]', text)
 
     def test_inbound_edge_nginx_allowlist_is_the_shipped_config(self) -> None:
         """Drive the real nginx files that install.sh copies onto the VPS."""

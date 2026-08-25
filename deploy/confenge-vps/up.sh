@@ -7,10 +7,9 @@ source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 load_vps_env
 cd "$ROOT"
 
-# Captured before the private .env is sourced below, because that file can
-# still carry a WARMBLY_RELEASE_SHA written by an earlier deploy.
+# Captured before the private .env is sourced below because it can carry
+# release identity written by an earlier deploy.
 RELEASE_SHA_RESOLVED="${WARMBLY_RELEASE_SHA:-}"
-echo "Release SHA for this build: ${RELEASE_SHA_RESOLVED:-<unresolved>}"
 
 ENVF="${CONFENGE_VPS_ENV:-$ROOT/deploy/confenge-vps/.env}"
 if [[ ! -f "$ENVF" ]]; then
@@ -24,10 +23,10 @@ export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-warmbly-confenge}"
 # Fail closed on unsafe profile flips
 # shellcheck disable=SC1090
 set -a; . "$ENVF"; set +a
-# load_vps_env already resolved this from the caller or from the checkout, and
-# the line above may have put a previous deploy's value back. Restore it.
-WARMBLY_RELEASE_SHA="$RELEASE_SHA_RESOLVED"
-export WARMBLY_RELEASE_SHA
+# The checkout/caller release is authoritative for both image provenance and
+# the CONFENGE decision audit. A stale private env value cannot outrank it.
+bind_release_identity "$RELEASE_SHA_RESOLVED"
+echo "Release SHA for build and decision audit: $WARMBLY_RELEASE_SHA"
 
 if [[ "${CONFENGE_GREEN_AUTORUN_ENABLED:-false}" == "true" ]]; then
   echo "REFUSE: CONFENGE_GREEN_AUTORUN_ENABLED=true is not allowed on VPS execution plane bootstrap" >&2
