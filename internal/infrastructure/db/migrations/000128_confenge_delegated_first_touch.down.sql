@@ -1,0 +1,20 @@
+DROP TABLE IF EXISTS confenge_delegated_first_touch_decisions;
+DROP TABLE IF EXISTS confenge_delegated_first_touch_batches;
+DROP INDEX IF EXISTS outreach_accounts_contractor_role_gate_idx;
+ALTER TABLE outreach_accounts
+    DROP COLUMN IF EXISTS contractor_role_status,
+    DROP COLUMN IF EXISTS target_party_role,
+    DROP COLUMN IF EXISTS contractor_role_policy_version,
+    DROP COLUMN IF EXISTS contractor_role_source,
+    DROP COLUMN IF EXISTS contractor_role_source_run_id,
+    DROP COLUMN IF EXISTS contractor_role_observed_at,
+    DROP COLUMN IF EXISTS contractor_role_evidence_hash,
+    DROP COLUMN IF EXISTS contractor_role_evidence_reference,
+    DROP COLUMN IF EXISTS contractor_role_evidence_ids,
+    DROP COLUMN IF EXISTS supplier_cnpj14,
+    DROP COLUMN IF EXISTS supplier_identity_ref,
+    DROP COLUMN IF EXISTS buyer_cnpj14,
+    DROP COLUMN IF EXISTS buyer_identity_ref,
+    DROP COLUMN IF EXISTS contractor_role_match_method,
+    DROP COLUMN IF EXISTS contractor_role_confidence,
+    DROP COLUMN IF EXISTS contractor_role_reason_codes;

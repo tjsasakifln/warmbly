@@ -80,6 +80,30 @@ type FeedLead struct {
 	RecommendedTarget      json.RawMessage   `json:"recommended_target,omitempty"`
 	RecommendedRoute       json.RawMessage   `json:"recommended_route,omitempty"`
 	RecommendedAction      string            `json:"recommended_action,omitempty"`
+	// ContractorRole is the typed buyer/supplier truth projected by extra-cli.
+	// Warmbly stores and verifies this contract; it never reinterprets raw PNCP.
+	ContractorRole FeedContractorRole `json:"contractor_role,omitempty"`
+}
+
+// FeedContractorRole is the fail-closed extra-cli projection of the target's
+// role in the public-contract evidence used by the message.
+type FeedContractorRole struct {
+	Status              string   `json:"status"`
+	TargetPartyRole     string   `json:"target_party_role"`
+	PolicyVersion       string   `json:"policy_version"`
+	Source              string   `json:"source"`
+	SourceRunID         string   `json:"source_run_id"`
+	ObservedAt          string   `json:"observed_at"`
+	EvidenceHash        string   `json:"evidence_hash"`
+	EvidenceReference   string   `json:"evidence_reference"`
+	EvidenceIDs         []string `json:"evidence_ids"`
+	ReasonCodes         []string `json:"reason_codes"`
+	SupplierCNPJ14      string   `json:"supplier_cnpj14"`
+	SupplierIdentityRef string   `json:"supplier_identity_ref"`
+	BuyerCNPJ14         string   `json:"buyer_cnpj14"`
+	BuyerIdentityRef    string   `json:"buyer_identity_ref"`
+	RoleMatchMethod     string   `json:"role_match_method"`
+	Confidence          string   `json:"confidence"`
 }
 
 // FeedActivation is the extra-cli commercial activation planner projection.
@@ -345,7 +369,77 @@ func ValidateLead(i int, lead FeedLead) *LeadValidationError {
 			return &LeadValidationError{Index: i, SourceLeadID: sid, CNPJ14: cnpj, Message: err}
 		}
 	}
+	if err := validateFeedContractorRole(cnpj, lead.ContractorRole); err != "" {
+		return &LeadValidationError{Index: i, SourceLeadID: sid, CNPJ14: cnpj, Message: err}
+	}
 	return nil
+}
+
+func validateFeedContractorRole(leadCNPJ string, role FeedContractorRole) string {
+	status := strings.ToUpper(strings.TrimSpace(role.Status))
+	if status == "" {
+		return "" // legacy feed: importable, delegated approval remains impossible
+	}
+	hash := strings.ToLower(strings.TrimSpace(role.EvidenceHash))
+	if role.PolicyVersion != DelegatedFirstTouchEvidenceV1 || role.Source != "extra-cli:v_contracts_canonical_v2" ||
+		strings.TrimSpace(role.SourceRunID) == "" || parseTimePtr(role.ObservedAt) == nil ||
+		!delegatedSHA256Pattern.MatchString(hash) || role.EvidenceReference != role.Source+":sha256:"+hash || len(role.ReasonCodes) == 0 {
+		return "contractor_role typed authority/run/evidence binding is incomplete"
+	}
+	target := strings.ToUpper(strings.TrimSpace(role.TargetPartyRole))
+	switch status {
+	case ContractorRoleUnknown:
+		if target != ContractorRoleUnknown {
+			return "contractor_role UNKNOWN requires target_party_role UNKNOWN"
+		}
+		return ""
+	case ContractorRoleConflict:
+		if target != "BUYER_CONFLICT" || NormalizeCNPJ14(role.BuyerCNPJ14) == "" ||
+			!sameCNPJOrRoot(leadCNPJ, NormalizeCNPJ14(role.BuyerCNPJ14)) || len(role.EvidenceIDs) == 0 ||
+			role.BuyerIdentityRef != "cnpj:"+NormalizeCNPJ14(role.BuyerCNPJ14) ||
+			!containsStr(role.ReasonCodes, "lead_matches_contracting_authority") {
+			return "contractor_role PARTY_ROLE_CONFLICT must identify the lead as buyer"
+		}
+		return ""
+	case ContractorRoleConfirmed:
+	default:
+		return fmt.Sprintf("contractor_role.status %q is not allowed", role.Status)
+	}
+	supplier, buyer := NormalizeCNPJ14(role.SupplierCNPJ14), NormalizeCNPJ14(role.BuyerCNPJ14)
+	if target != "SUPPLIER" || supplier == "" || buyer == "" || leadCNPJ != supplier || sameCNPJOrRoot(leadCNPJ, buyer) {
+		return "confirmed contractor_role must prove lead=supplier and lead!=buyer"
+	}
+	if len(role.EvidenceIDs) == 0 {
+		return "confirmed contractor_role evidence binding is incomplete"
+	}
+	if role.SupplierIdentityRef != "cnpj:"+supplier || role.BuyerIdentityRef != "cnpj:"+buyer {
+		return "confirmed contractor_role identity reference mismatch"
+	}
+	method, confidence := strings.ToUpper(strings.TrimSpace(role.RoleMatchMethod)), strings.ToUpper(strings.TrimSpace(role.Confidence))
+	if method != "SUPPLIER_EXACT_CNPJ14" {
+		return "confirmed contractor_role requires exact supplier CNPJ14"
+	}
+	if confidence != "HIGH" {
+		return "confirmed contractor_role requires HIGH confidence"
+	}
+	if !containsStr(role.ReasonCodes, "lead_matches_supplier") || !containsStr(role.ReasonCodes, "lead_differs_from_buyer") {
+		return "confirmed contractor_role semantic reason codes are incomplete"
+	}
+	return ""
+}
+
+func validateFeedContractorRoleRun(feedRunID string, role FeedContractorRole) string {
+	if strings.TrimSpace(role.Status) == "" {
+		return ""
+	}
+	if strings.TrimSpace(feedRunID) == "" || strings.TrimSpace(role.SourceRunID) != strings.TrimSpace(feedRunID) {
+		return "contractor_role source_run_id does not match feed source.run_id"
+	}
+	return ""
+}
+
+func sameCNPJOrRoot(left, right string) bool {
+	return len(left) == 14 && len(right) == 14 && (left == right || left[:8] == right[:8])
 }
 
 func validateActivation(a *FeedActivation) string {
@@ -383,24 +477,25 @@ func CanonicalPayloadHash(raw []byte) string {
 func LeadContentHash(lead FeedLead) string {
 	// Exclude human-only outcomes; include messaging, priority, moment, offer, contacts, evidence ids.
 	type slim struct {
-		SourceLeadID             string          `json:"source_lead_id"`
-		Company                  FeedCompany     `json:"company"`
-		Priority                 FeedPriority    `json:"priority"`
-		Moment                   FeedMoment      `json:"moment"`
-		Offer                    FeedOffer       `json:"offer"`
-		Messaging                FeedMessaging   `json:"messaging_context"`
-		Contacts                 []FeedContact   `json:"contacts"`
-		Evidence                 []FeedEvidence  `json:"evidence"`
-		State                    string          `json:"commercial_state"`
-		Activation               *FeedActivation `json:"activation,omitempty"`
-		TargetFitClass           string          `json:"target_fit_class,omitempty"`
-		TargetFitVersion         string          `json:"target_fit_version,omitempty"`
-		TargetFitComputedAt      string          `json:"target_fit_computed_at,omitempty"`
-		TargetFitSourceWatermark string          `json:"target_fit_source_watermark,omitempty"`
-		TargetFitFresh           *bool           `json:"target_fit_fresh,omitempty"`
-		TargetFitSendTier        string          `json:"target_fit_send_tier,omitempty"`
-		TargetFitEvidenceIDs     []string        `json:"target_fit_evidence_ids,omitempty"`
-		EmailSendReady           *bool           `json:"email_send_ready,omitempty"`
+		SourceLeadID             string             `json:"source_lead_id"`
+		Company                  FeedCompany        `json:"company"`
+		Priority                 FeedPriority       `json:"priority"`
+		Moment                   FeedMoment         `json:"moment"`
+		Offer                    FeedOffer          `json:"offer"`
+		Messaging                FeedMessaging      `json:"messaging_context"`
+		Contacts                 []FeedContact      `json:"contacts"`
+		Evidence                 []FeedEvidence     `json:"evidence"`
+		State                    string             `json:"commercial_state"`
+		Activation               *FeedActivation    `json:"activation,omitempty"`
+		TargetFitClass           string             `json:"target_fit_class,omitempty"`
+		TargetFitVersion         string             `json:"target_fit_version,omitempty"`
+		TargetFitComputedAt      string             `json:"target_fit_computed_at,omitempty"`
+		TargetFitSourceWatermark string             `json:"target_fit_source_watermark,omitempty"`
+		TargetFitFresh           *bool              `json:"target_fit_fresh,omitempty"`
+		TargetFitSendTier        string             `json:"target_fit_send_tier,omitempty"`
+		TargetFitEvidenceIDs     []string           `json:"target_fit_evidence_ids,omitempty"`
+		EmailSendReady           *bool              `json:"email_send_ready,omitempty"`
+		ContractorRole           FeedContractorRole `json:"contractor_role"`
 	}
 	b, _ := json.Marshal(slim{
 		SourceLeadID:   lead.SourceLeadID,
@@ -417,6 +512,7 @@ func LeadContentHash(lead FeedLead) string {
 		TargetFitComputedAt: lead.TargetFitComputedAt, TargetFitSourceWatermark: lead.TargetFitSourceWatermark,
 		TargetFitFresh: lead.TargetFitFresh, TargetFitSendTier: lead.TargetFitSendTier,
 		TargetFitEvidenceIDs: lead.TargetFitEvidenceIDs, EmailSendReady: lead.EmailSendReady,
+		ContractorRole: lead.ContractorRole,
 	})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
@@ -487,28 +583,29 @@ func MessageContextHash(lead FeedLead) string {
 		actReasons = strings.Join(lead.Activation.ReasonCodes, ",")
 	}
 	type slim struct {
-		Company                  FeedCompany       `json:"company"`
-		Moment                   FeedMoment        `json:"moment"`
-		Offer                    FeedOffer         `json:"offer"`
-		Messaging                FeedMessaging     `json:"messaging_context"`
-		Contacts                 []contactSlim     `json:"contacts"`
-		Contracts                []json.RawMessage `json:"contracts"`
-		Evidence                 []evidSlim        `json:"evidence"`
-		ActSrc                   string            `json:"activation_source_hash"`
-		ActCodes                 string            `json:"activation_reason_codes"`
-		TargetFitClass           string            `json:"target_fit_class"`
-		TargetFitConfidence      *float64          `json:"target_fit_confidence"`
-		TargetFitVersion         string            `json:"target_fit_version"`
-		TargetFitComputedAt      string            `json:"target_fit_computed_at"`
-		TargetFitSourceWatermark string            `json:"target_fit_source_watermark"`
-		TargetFitFresh           *bool             `json:"target_fit_fresh"`
-		TargetFitFreshnessReason string            `json:"target_fit_freshness_reason"`
-		TargetFitEvidenceIDs     []string          `json:"target_fit_evidence_ids"`
-		TargetFitSendTier        string            `json:"target_fit_send_tier"`
-		TargetFitReasons         []string          `json:"target_fit_reasons"`
-		EmailSendReady           *bool             `json:"email_send_ready"`
-		MailboxPurpose           string            `json:"mailbox_purpose"`
-		OwnershipStatus          string            `json:"ownership_status"`
+		Company                  FeedCompany        `json:"company"`
+		Moment                   FeedMoment         `json:"moment"`
+		Offer                    FeedOffer          `json:"offer"`
+		Messaging                FeedMessaging      `json:"messaging_context"`
+		Contacts                 []contactSlim      `json:"contacts"`
+		Contracts                []json.RawMessage  `json:"contracts"`
+		Evidence                 []evidSlim         `json:"evidence"`
+		ActSrc                   string             `json:"activation_source_hash"`
+		ActCodes                 string             `json:"activation_reason_codes"`
+		TargetFitClass           string             `json:"target_fit_class"`
+		TargetFitConfidence      *float64           `json:"target_fit_confidence"`
+		TargetFitVersion         string             `json:"target_fit_version"`
+		TargetFitComputedAt      string             `json:"target_fit_computed_at"`
+		TargetFitSourceWatermark string             `json:"target_fit_source_watermark"`
+		TargetFitFresh           *bool              `json:"target_fit_fresh"`
+		TargetFitFreshnessReason string             `json:"target_fit_freshness_reason"`
+		TargetFitEvidenceIDs     []string           `json:"target_fit_evidence_ids"`
+		TargetFitSendTier        string             `json:"target_fit_send_tier"`
+		TargetFitReasons         []string           `json:"target_fit_reasons"`
+		EmailSendReady           *bool              `json:"email_send_ready"`
+		MailboxPurpose           string             `json:"mailbox_purpose"`
+		OwnershipStatus          string             `json:"ownership_status"`
+		ContractorRole           FeedContractorRole `json:"contractor_role"`
 	}
 	b, _ := json.Marshal(slim{
 		Company:        lead.Company,
@@ -526,6 +623,7 @@ func MessageContextHash(lead FeedLead) string {
 		TargetFitFreshnessReason: lead.TargetFitFreshnessReason, TargetFitEvidenceIDs: lead.TargetFitEvidenceIDs,
 		TargetFitSendTier: lead.TargetFitSendTier, TargetFitReasons: lead.TargetFitReasons,
 		EmailSendReady: lead.EmailSendReady, MailboxPurpose: lead.MailboxPurpose, OwnershipStatus: lead.OwnershipStatus,
+		ContractorRole: lead.ContractorRole,
 	})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])

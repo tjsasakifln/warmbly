@@ -26,6 +26,12 @@ type AuditLogger interface {
 	LogAction(ctx context.Context, orgID, actorID uuid.UUID, action models.AuditAction, entityType models.AuditEntityType, entityID *uuid.UUID, ip, userAgent string, changes, metadata map[string]string)
 }
 
+// OrgRiskPolicy reuses the platform-wide organization sending authority. A
+// lookup failure is treated as suspended by the canonical implementation.
+type OrgRiskPolicy interface {
+	SendingSuspended(ctx context.Context, organizationID uuid.UUID) bool
+}
+
 // Service is the control-plane surface for CONFENGE outreach staging.
 type Service interface {
 	Enabled() bool
@@ -125,6 +131,12 @@ type Service interface {
 
 	// CAMPAIGN_POLICY_AUTHORIZATION + GREEN autorun (no fake approved_by).
 	WirePolicyAuth(store repository.ConfengePolicyRepository)
+	// Delegated first-touch is a CLI-authored, manifest-driven approval path.
+	// It writes decisions and readbacks to Postgres but reuses the canonical queue.
+	WireDelegatedFirstTouch(db *pgxpool.Pool)
+	WireOrgRisk(risk OrgRiskPolicy)
+	ApplyDelegatedFirstTouchManifest(ctx context.Context, orgID uuid.UUID, manifest DelegatedFirstTouchManifest, dryRun bool) (*DelegatedFirstTouchReport, *errx.Error)
+	DelegatedFirstTouchStatus(ctx context.Context, orgID uuid.UUID, batchID string) (*DelegatedFirstTouchStatus, *errx.Error)
 	WireCohortAuth(store BoundedCohortStore)
 	// Human gate persists immutable cohort versions and review receipts.
 	// APPROVE schedules the exact message; transport remains worker-owned.
@@ -202,6 +214,8 @@ type service struct {
 	policyStore    repository.ConfengePolicyRepository
 	cohortStore    BoundedCohortStore
 	humanGateDB    *pgxpool.Pool
+	delegatedDB    *pgxpool.Pool
+	orgRisk        OrgRiskPolicy
 	dossierStore   DossierReferenceStore
 	intel          intel.Store
 	operatorMail   func(to, subject, body string) error
@@ -424,6 +438,16 @@ func (s *service) applyFeed(ctx context.Context, orgID uuid.UUID, run *models.Ou
 			})
 			continue
 		}
+		if roleRunErr := validateFeedContractorRoleRun(feed.Source.RunID, lead.ContractorRole); roleRunErr != "" {
+			counts.Invalid++
+			counts.LeadsSkippedError++
+			leadErrs = append(leadErrs, models.OutreachImportError{
+				SourceLeadID: lead.SourceLeadID,
+				CNPJ14:       NormalizeCNPJ14(lead.Company.CNPJ14),
+				Message:      roleRunErr,
+			})
+			continue
+		}
 		cnpj := NormalizeCNPJ14(lead.Company.CNPJ14)
 		existing, err := s.repo.GetAccountByCNPJ(ctx, orgID, cnpj)
 		if err != nil {
@@ -574,6 +598,7 @@ func leadToAccount(orgID uuid.UUID, lead FeedLead, feed *Feed, runID uuid.UUID, 
 	}
 	// Store activation projection from extra-cli (no local commercial re-score).
 	applyActivationToAccount(acc, lead)
+	applyContractorRoleToAccount(acc, lead.ContractorRole)
 	// Imported send-fit only — never promote ACTIONABLE_NOW → A_AUTOMATIC.
 	acc.TargetFitSendTier = strings.ToUpper(SanitizeText(lead.TargetFitSendTier, 40))
 	acc.TargetFitReasons = lead.TargetFitReasons
@@ -623,6 +648,34 @@ func leadToAccount(orgID uuid.UUID, lead FeedLead, feed *Feed, runID uuid.UUID, 
 		acc.QueueState = models.OutreachQueueTargetFitSuppressed
 	}
 	return acc
+}
+
+func applyContractorRoleToAccount(acc *models.OutreachAccount, role FeedContractorRole) {
+	if acc == nil {
+		return
+	}
+	acc.ContractorRoleStatus = strings.ToUpper(SanitizeText(role.Status, 50))
+	acc.TargetPartyRole = strings.ToUpper(SanitizeText(role.TargetPartyRole, 50))
+	acc.ContractorRolePolicyVersion = SanitizeText(role.PolicyVersion, 100)
+	acc.ContractorRoleSource = SanitizeText(role.Source, 200)
+	acc.ContractorRoleSourceRunID = SanitizeText(role.SourceRunID, 200)
+	acc.ContractorRoleObservedAt = parseTimePtr(role.ObservedAt)
+	acc.ContractorRoleEvidenceHash = strings.ToLower(SanitizeText(role.EvidenceHash, 128))
+	acc.ContractorRoleEvidenceReference = SanitizeText(role.EvidenceReference, 500)
+	acc.ContractorRoleEvidenceIDs = append([]string{}, role.EvidenceIDs...)
+	acc.SupplierCNPJ14 = NormalizeCNPJ14(role.SupplierCNPJ14)
+	acc.SupplierIdentityRef = SanitizeText(role.SupplierIdentityRef, 100)
+	acc.BuyerCNPJ14 = NormalizeCNPJ14(role.BuyerCNPJ14)
+	acc.BuyerIdentityRef = SanitizeText(role.BuyerIdentityRef, 100)
+	acc.ContractorRoleMatchMethod = strings.ToUpper(SanitizeText(role.RoleMatchMethod, 80))
+	acc.ContractorRoleConfidence = strings.ToUpper(SanitizeText(role.Confidence, 40))
+	acc.ContractorRoleReasonCodes = append([]string{}, role.ReasonCodes...)
+	if acc.ContractorRoleStatus == "" {
+		acc.ContractorRoleStatus = ContractorRoleUnknown
+	}
+	if acc.TargetPartyRole == "" {
+		acc.TargetPartyRole = ContractorRoleUnknown
+	}
 }
 
 func leadToCandidate(orgID, accountID, runID uuid.UUID, fc FeedContact) *models.OutreachContactCandidate {

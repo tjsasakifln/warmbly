@@ -68,7 +68,7 @@ func (s *service) BootstrapCampaign(ctx context.Context, orgID, userID uuid.UUID
 	end := "17:00"
 	// Mon-Fri bitmask: leave Days nil so repository uses DefaultDays().
 	steps := defaultCadenceSteps()
-	desc := "CONFENGE consultive outreach. Human-approved enrollments only. Stop on reply/bounce."
+	desc := "CONFENGE consultive outreach. Policy-authorized first touches or human-approved messages. Stop on reply/bounce."
 
 	created, xerr := s.campaigns.Create(ctx, userID.String(), &orgID, &models.CreateCampaign{
 		Name:              DefaultCampaignName,

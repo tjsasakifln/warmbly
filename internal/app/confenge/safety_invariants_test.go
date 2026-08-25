@@ -109,7 +109,7 @@ func TestGreenAutorunAndBatchCreateZeroSendJobsWhenEnvFlipped(t *testing.T) {
 	if xerr != nil {
 		t.Fatal(xerr)
 	}
-	if dec.Allow || !containsString(dec.Reasons, "individual_approval_required") {
+	if dec.Allow || !containsString(dec.Reasons, "legacy_green_autorun_forbidden") {
 		t.Fatalf("autorun must refuse: %+v", dec)
 	}
 	if out != nil && out.State == models.TouchpointQueued {

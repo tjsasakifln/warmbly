@@ -54,6 +54,8 @@ func main() {
 		os.Exit(cmdCohortAuth(os.Args[2:]))
 	case "editorial":
 		os.Exit(cmdEditorial(os.Args[2:]))
+	case "first-touch":
+		os.Exit(cmdFirstTouch(os.Args[2:]))
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -85,6 +87,7 @@ Usage:
   confenge cohort-auth create|show|revoke [flags]
   confenge editorial issues list|sync [flags]
   confenge editorial guidelines list|propose|activate [flags]
+  confenge first-touch authorize-policy|seal|apply|status [flags]
 
 Env: PRIMARY_DB, CONFENGE_*, REDIS, NATS_URL (see .env.confenge.example).
   CONFENGE_REPOSITORY_SHA, CONFENGE_FEED_SCHEMA_VERSION, CONFENGE_EVIDENCE_VERSION

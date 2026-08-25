@@ -135,8 +135,8 @@ func TestCampaignPolicyGreenAutoqueueNoFakeApprovedBy(t *testing.T) {
 	if dec.Allow {
 		t.Fatal("green autorun must not allow")
 	}
-	if !containsString(dec.Reasons, "individual_approval_required") {
-		t.Fatalf("want individual_approval_required, got %v", dec.Reasons)
+	if !containsString(dec.Reasons, "legacy_green_autorun_forbidden") {
+		t.Fatalf("want legacy_green_autorun_forbidden, got %v", dec.Reasons)
 	}
 	if out != nil && (out.State == models.TouchpointQueued || out.ApprovedBy != nil) {
 		t.Fatalf("autorun must not mint a sendable touchpoint: %+v", out)

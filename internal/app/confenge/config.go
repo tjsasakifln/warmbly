@@ -50,6 +50,9 @@ const (
 	EnvDraftReviewBacklogTarget = "CONFENGE_DRAFT_REVIEW_BACKLOG_TARGET"
 	// GREEN autorun under campaign policy authorization (fail-closed default).
 	EnvGreenAutorun = "CONFENGE_GREEN_AUTORUN_ENABLED"
+	// Delegated first-touch is an explicit, manifest-driven agent authority. It
+	// does not enable runtime generation or the legacy GREEN autorun path.
+	EnvDelegatedFirstTouch = "CONFENGE_DELEGATED_FIRST_TOUCH_ENABLED"
 	// Adaptive rate (single capacity authority with dispatch governor).
 	EnvRateMode                     = "CONFENGE_RATE_MODE"
 	EnvRateStartPerHour             = "CONFENGE_RATE_START_PER_HOUR"
@@ -119,6 +122,9 @@ type Config struct {
 	// GreenAutorunEnabled auto-queues GREEN messages under CAMPAIGN_POLICY_AUTHORIZATION.
 	// Default false (fail-closed). Distinct from AutoSendEnabled (legacy ambiguous).
 	GreenAutorunEnabled bool
+	// DelegatedFirstTouchEnabled allows only CFG-FIRST-TOUCH-ROUTING-v1
+	// manifests to bind a founder-authorized campaign policy to one message.
+	DelegatedFirstTouchEnabled bool
 	// RateMode: "fixed" | "adaptive". Adaptive starts at RateStartPerHour and may climb to RateMaxPerHour.
 	RateMode         string
 	RateStartPerHour int
@@ -206,6 +212,7 @@ func LoadConfig() Config {
 		ManifestURL:                  strings.TrimSpace(os.Getenv(EnvManifestURL)),
 		DraftReviewBacklogTarget:     envInt(EnvDraftReviewBacklogTarget, DefaultDraftReviewBacklogTarget),
 		GreenAutorunEnabled:          envBool(EnvGreenAutorun, false),
+		DelegatedFirstTouchEnabled:   envBool(EnvDelegatedFirstTouch, false),
 		RateMode:                     strings.ToLower(strings.TrimSpace(os.Getenv(EnvRateMode))),
 		RateStartPerHour:             envInt(EnvRateStartPerHour, 10),
 		RateMaxPerHour:               envInt(EnvRateMaxPerHour, 20),
@@ -277,10 +284,10 @@ func (c Config) ForbiddenAutomation() error {
 		return fmt.Errorf("%s=true is not supported; CONFENGE requires an explicit dispatch action", EnvAutoSend)
 	}
 	if !c.RequireHumanApproval {
-		return fmt.Errorf("%s must remain true; individual human approval is required", EnvRequireHuman)
+		return fmt.Errorf("%s must remain true; global automatic approval is prohibited", EnvRequireHuman)
 	}
 	if c.GreenAutorunEnabled {
-		return fmt.Errorf("%s=true is not supported; individual human approval is required", EnvGreenAutorun)
+		return fmt.Errorf("%s=true is not supported; use an explicit bounded or delegated policy", EnvGreenAutorun)
 	}
 	return nil
 }

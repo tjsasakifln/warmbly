@@ -197,6 +197,40 @@ func CanTransport(tp *models.OutreachTouchpoint) error {
 	return nil
 }
 
+// CanTransportCampaignPolicy validates the structural policy path without
+// pretending a human approved the message. The service must still prove the
+// live grant and the per-message delegated decision before transport.
+func CanTransportCampaignPolicy(tp *models.OutreachTouchpoint) error {
+	if tp == nil {
+		return fmt.Errorf("nil touchpoint")
+	}
+	if strings.TrimSpace(tp.AuthorizationMode) != AuthorizationModeCampaignPolicy {
+		return fmt.Errorf("touchpoint is not campaign-policy authorized")
+	}
+	switch tp.State {
+	case models.TouchpointApproved, models.TouchpointQueued:
+	default:
+		return fmt.Errorf("touchpoint state %s is not transportable", tp.State)
+	}
+	if tp.ContentHash == "" || tp.ApprovedContentHash == "" {
+		return fmt.Errorf("missing content hash")
+	}
+	want := TouchpointBindingHash(tp)
+	if want == "" || tp.ContentHash != want || tp.ApprovedContentHash != want {
+		return fmt.Errorf("approved_content_hash does not match live recipient/content/evidence versions")
+	}
+	if FileKillSwitchActive() {
+		return fmt.Errorf("kill switch engaged")
+	}
+	if tp.ApprovedBy != nil {
+		return fmt.Errorf("campaign policy must not forge human approved_by")
+	}
+	if tp.CampaignPolicyAuthorizationID == nil || *tp.CampaignPolicyAuthorizationID == uuid.Nil || strings.TrimSpace(tp.AuthorizationPolicyHash) == "" || tp.AuthorizationAt == nil {
+		return fmt.Errorf("campaign policy binding is incomplete")
+	}
+	return nil
+}
+
 // CanTransportCohort is the shipped transport predicate for BOUNDED_COHORT_AUTHORIZATION.
 // Drift, TTL, daily cap, suppression, post-freeze and SHA are enforced here — not metadata.
 func CanTransportCohort(tp *models.OutreachTouchpoint, auth *BoundedCohortAuthorization, in CohortTransportInput) error {

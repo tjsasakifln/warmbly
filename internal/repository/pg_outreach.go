@@ -395,13 +395,21 @@ const outreachAccountSelect = `
 		COALESCE(target_fit_class,''), target_fit_confidence, COALESCE(target_fit_version,''),
 		target_fit_computed_at, COALESCE(target_fit_source_watermark,''), target_fit_observed_at,
 		COALESCE(target_fit_fresh,false), target_fit_evidence_ids, COALESCE(target_fit_freshness_reason,''),
-		COALESCE(target_fit_eligible,false), COALESCE(target_fit_suppression_reason,''), target_fit_reconciled_at `
+		COALESCE(target_fit_eligible,false), COALESCE(target_fit_suppression_reason,''), target_fit_reconciled_at,
+		COALESCE(contractor_role_status,'UNKNOWN'), COALESCE(target_party_role,'UNKNOWN'),
+		COALESCE(contractor_role_policy_version,''), COALESCE(contractor_role_source,''),
+		COALESCE(contractor_role_source_run_id,''), contractor_role_observed_at,
+		COALESCE(contractor_role_evidence_hash,''), COALESCE(contractor_role_evidence_reference,''),
+		contractor_role_evidence_ids, COALESCE(supplier_cnpj14,''), COALESCE(supplier_identity_ref,''),
+		COALESCE(buyer_cnpj14,''), COALESCE(buyer_identity_ref,''),
+		COALESCE(contractor_role_match_method,'NONE'), COALESCE(contractor_role_confidence,'UNKNOWN'),
+		contractor_role_reason_codes `
 
 func scanAccount(row scannable) (*models.OutreachAccount, error) {
 	var a models.OutreachAccount
 	var momentEvid, claims []byte
 	var contracts []byte
-	var reasonCodes, scoreComp, fitReasons, fitEvidence []byte
+	var reasonCodes, scoreComp, fitReasons, fitEvidence, roleEvidence, roleReasons []byte
 	err := row.Scan(
 		&a.ID, &a.OrganizationID, &a.SourceLeadID, &a.CNPJ14, &a.CNPJRoot,
 		&a.RazaoSocial, &a.NomeFantasia, &a.Municipio, &a.UF, &a.Website,
@@ -421,6 +429,11 @@ func scanAccount(row scannable) (*models.OutreachAccount, error) {
 		&a.TargetFitComputedAt, &a.TargetFitSourceWatermark, &a.TargetFitObservedAt,
 		&a.TargetFitFresh, &fitEvidence, &a.TargetFitFreshnessReason,
 		&a.TargetFitEligible, &a.TargetFitSuppressionReason, &a.TargetFitReconciledAt,
+		&a.ContractorRoleStatus, &a.TargetPartyRole, &a.ContractorRolePolicyVersion, &a.ContractorRoleSource,
+		&a.ContractorRoleSourceRunID, &a.ContractorRoleObservedAt, &a.ContractorRoleEvidenceHash,
+		&a.ContractorRoleEvidenceReference, &roleEvidence, &a.SupplierCNPJ14, &a.SupplierIdentityRef,
+		&a.BuyerCNPJ14, &a.BuyerIdentityRef, &a.ContractorRoleMatchMethod, &a.ContractorRoleConfidence,
+		&roleReasons,
 	)
 	if err != nil {
 		return nil, err
@@ -430,6 +443,8 @@ func scanAccount(row scannable) (*models.OutreachAccount, error) {
 	_ = json.Unmarshal(reasonCodes, &a.ActivationReasonCodes)
 	_ = json.Unmarshal(fitReasons, &a.TargetFitReasons)
 	_ = json.Unmarshal(fitEvidence, &a.TargetFitEvidenceIDs)
+	_ = json.Unmarshal(roleEvidence, &a.ContractorRoleEvidenceIDs)
+	_ = json.Unmarshal(roleReasons, &a.ContractorRoleReasonCodes)
 	a.ContractsJSON = contracts
 	a.ScoreComponentsJSON = scoreComp
 	return &a, nil
@@ -438,6 +453,28 @@ func scanAccount(row scannable) (*models.OutreachAccount, error) {
 func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.OutreachAccount) (bool, error) {
 	if acc.ID == uuid.Nil {
 		acc.ID = uuid.New()
+	}
+	// The additive contractor-role contract must remain compatible with legacy
+	// staging callers. Absence is explicitly UNKNOWN and can never authorize a
+	// delegated message; do not let an empty Go zero value violate the database
+	// constraint or accidentally acquire positive semantics.
+	switch strings.ToUpper(strings.TrimSpace(acc.ContractorRoleStatus)) {
+	case "CONTRACTOR_ROLE_CONFIRMED", "PARTY_ROLE_CONFLICT":
+		acc.ContractorRoleStatus = strings.ToUpper(strings.TrimSpace(acc.ContractorRoleStatus))
+	default:
+		acc.ContractorRoleStatus = "UNKNOWN"
+	}
+	switch strings.ToUpper(strings.TrimSpace(acc.TargetPartyRole)) {
+	case "SUPPLIER", "BUYER_CONFLICT":
+		acc.TargetPartyRole = strings.ToUpper(strings.TrimSpace(acc.TargetPartyRole))
+	default:
+		acc.TargetPartyRole = "UNKNOWN"
+	}
+	if strings.TrimSpace(acc.ContractorRoleMatchMethod) == "" {
+		acc.ContractorRoleMatchMethod = "NONE"
+	}
+	if strings.TrimSpace(acc.ContractorRoleConfidence) == "" {
+		acc.ContractorRoleConfidence = "UNKNOWN"
 	}
 	now := time.Now().UTC()
 	acc.UpdatedAt = now
@@ -472,6 +509,14 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 	if fitEvidence == nil {
 		fitEvidence = []byte("[]")
 	}
+	roleEvidence, _ := json.Marshal(acc.ContractorRoleEvidenceIDs)
+	if roleEvidence == nil {
+		roleEvidence = []byte("[]")
+	}
+	roleReasons, _ := json.Marshal(acc.ContractorRoleReasonCodes)
+	if roleReasons == nil {
+		roleReasons = []byte("[]")
+	}
 	// Machine fields update; human_override / blocked / dnc preserved when set on existing.
 	var created bool
 	err := r.db.QueryRow(ctx, `
@@ -492,7 +537,12 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 			target_fit_class, target_fit_confidence, target_fit_version,
 			target_fit_computed_at, target_fit_source_watermark, target_fit_observed_at,
 			target_fit_fresh, target_fit_evidence_ids, target_fit_freshness_reason,
-			target_fit_eligible, target_fit_suppression_reason, target_fit_reconciled_at
+			target_fit_eligible, target_fit_suppression_reason, target_fit_reconciled_at,
+			contractor_role_status, target_party_role, contractor_role_policy_version, contractor_role_source,
+			contractor_role_source_run_id, contractor_role_observed_at, contractor_role_evidence_hash,
+			contractor_role_evidence_reference, contractor_role_evidence_ids, supplier_cnpj14,
+			supplier_identity_ref, buyer_cnpj14, buyer_identity_ref, contractor_role_match_method,
+			contractor_role_confidence, contractor_role_reason_codes
 		) VALUES (
 			$1,$2,$3,$4,$5,
 			$6,$7,$8,$9,$10,
@@ -507,7 +557,8 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 			$44,$45,$46,
 			$47,$48,$49,$50,
 			$51,$52,$53,
-			$54,$55,$56,$57,$58,$59,$60,$61,$62,$63,$64,$65
+			$54,$55,$56,$57,$58,$59,$60,$61,$62,$63,$64,$65,
+			$66,$67,$68,$69,$70,$71,$72,$73,$74,$75,$76,$77,$78,$79,$80,$81
 		)
 		ON CONFLICT (organization_id, cnpj14) DO UPDATE SET
 			source_lead_id = EXCLUDED.source_lead_id,
@@ -649,6 +700,22 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 				(EXCLUDED.target_fit_observed_at IS NULL AND outreach_accounts.target_fit_observed_at IS NULL AND NOT EXCLUDED.target_fit_eligible)
 				THEN EXCLUDED.target_fit_suppression_reason ELSE outreach_accounts.target_fit_suppression_reason END,
 			target_fit_reconciled_at = EXCLUDED.target_fit_reconciled_at,
+			contractor_role_status = EXCLUDED.contractor_role_status,
+			target_party_role = EXCLUDED.target_party_role,
+			contractor_role_policy_version = EXCLUDED.contractor_role_policy_version,
+			contractor_role_source = EXCLUDED.contractor_role_source,
+			contractor_role_source_run_id = EXCLUDED.contractor_role_source_run_id,
+			contractor_role_observed_at = EXCLUDED.contractor_role_observed_at,
+			contractor_role_evidence_hash = EXCLUDED.contractor_role_evidence_hash,
+			contractor_role_evidence_reference = EXCLUDED.contractor_role_evidence_reference,
+			contractor_role_evidence_ids = EXCLUDED.contractor_role_evidence_ids,
+			supplier_cnpj14 = EXCLUDED.supplier_cnpj14,
+			supplier_identity_ref = EXCLUDED.supplier_identity_ref,
+			buyer_cnpj14 = EXCLUDED.buyer_cnpj14,
+			buyer_identity_ref = EXCLUDED.buyer_identity_ref,
+			contractor_role_match_method = EXCLUDED.contractor_role_match_method,
+			contractor_role_confidence = EXCLUDED.contractor_role_confidence,
+			contractor_role_reason_codes = EXCLUDED.contractor_role_reason_codes,
 			updated_at = EXCLUDED.updated_at,
 			id = outreach_accounts.id
 		RETURNING (xmax = 0) AS inserted, id`,
@@ -669,6 +736,11 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 		acc.TargetFitComputedAt, acc.TargetFitSourceWatermark, acc.TargetFitObservedAt,
 		acc.TargetFitFresh, fitEvidence, acc.TargetFitFreshnessReason,
 		acc.TargetFitEligible, acc.TargetFitSuppressionReason, acc.TargetFitReconciledAt,
+		acc.ContractorRoleStatus, acc.TargetPartyRole, acc.ContractorRolePolicyVersion, acc.ContractorRoleSource,
+		acc.ContractorRoleSourceRunID, acc.ContractorRoleObservedAt, acc.ContractorRoleEvidenceHash,
+		acc.ContractorRoleEvidenceReference, roleEvidence, acc.SupplierCNPJ14, acc.SupplierIdentityRef,
+		acc.BuyerCNPJ14, acc.BuyerIdentityRef, acc.ContractorRoleMatchMethod, acc.ContractorRoleConfidence,
+		roleReasons,
 	).Scan(&created, &acc.ID)
 	return created, err
 }

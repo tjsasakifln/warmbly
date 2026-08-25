@@ -90,6 +90,21 @@ func (h *Handler) GetConfengeSummary(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": sum})
 }
 
+// GetConfengeDelegatedFirstTouchStatus exposes only audit/control-plane data.
+// It never applies a policy, queues a message, or mutates transport state.
+func (h *Handler) GetConfengeDelegatedFirstTouchStatus(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	status, xerr := h.ConfengeService.DelegatedFirstTouchStatus(c.Request.Context(), orgID, c.Query("batch_id"))
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": status})
+}
+
 // ListConfengeAccounts — GET /confenge/accounts
 func (h *Handler) ListConfengeAccounts(c *gin.Context) {
 	orgID, ok := h.confengeOrg(c)

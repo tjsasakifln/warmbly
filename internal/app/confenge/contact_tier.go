@@ -120,7 +120,7 @@ func ClassifyContactTier(acc *models.OutreachAccount, c *models.OutreachContactC
 	if sendReady && named && roleOK && validatePilotRecipient(c, now) == nil {
 		// TIER A is identity only. NEEDS_REVIEW is decided later by VALIDATED+READY+body.
 		out.Tier, out.EmailValidated, out.RecipientState = ContactTierA, true, RecipientValidated
-		out.RecommendedNext = "Gerar mensagem so se messageability for READY; autorizacao humana obrigatoria."
+		out.RecommendedNext = "Gerar somente com messageability READY; first touch elegivel pode usar a policy delegada, demais casos exigem humano."
 		return out
 	}
 	if named && roleOK && !generic && !roleBox && (email == "" || !c.EmailSendReady) {
@@ -131,12 +131,12 @@ func ClassifyContactTier(acc *models.OutreachAccount, c *models.OutreachContactC
 	}
 	if roleBox && !named {
 		out.Tier, out.RecipientState, out.Lane = ContactTierC, RecipientException, LaneRoleMailboxException
-		out.RecommendedNext, out.Warning = "Decidir manualmente se a caixa funcional deve ser usada. Nao tratar como humano validado.", "Caixa funcional oficial; nao e uma pessoa nomeada."
+		out.RecommendedNext, out.Warning = "Usar somente com atribuicao comprovada e CTA de encaminhamento; fora da policy, decidir manualmente.", "Caixa funcional oficial; nao e uma pessoa nomeada."
 		return out
 	}
 	if genericBox || generic {
 		out.Tier, out.RecipientState, out.Lane = ContactTierD, RecipientException, LaneLowConfidenceManual
-		out.RecommendedNext, out.Warning = "So abordagem manual de baixa confianca. Nunca mascarar como pessoa.", "Contato corporativo generico."
+		out.RecommendedNext, out.Warning = "Policy delegada somente com atribuicao comprovada; caso contrario, abordagem manual. Nunca mascarar como pessoa.", "Contato corporativo generico."
 		return out
 	}
 	out.Tier, out.RecipientState, out.Lane = ContactTierE, RecipientBlocked, LaneBlockedExhausted

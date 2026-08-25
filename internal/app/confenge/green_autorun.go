@@ -48,6 +48,24 @@ func (s *service) AuthorizeCampaignPolicy(ctx context.Context, orgID, userID uui
 	if auth == nil || auth.CampaignID == uuid.Nil {
 		return nil, errx.New(errx.BadRequest, "campaign_id required")
 	}
+	if auth.PromptPolicyVersion == DelegatedFirstTouchPolicyV1 {
+		if !s.cfg.DelegatedFirstTouchEnabled {
+			return nil, errx.New(errx.Forbidden, "delegated first-touch policy is disabled")
+		}
+		if s.cfg.OperatorUserID == uuid.Nil || s.cfg.OperatorOrgID == uuid.Nil {
+			return nil, errx.New(errx.ServiceUnavailable, "delegated founder authority is not configured")
+		}
+		if userID != s.cfg.OperatorUserID || orgID != s.cfg.OperatorOrgID {
+			return nil, errx.New(errx.Unauthorized, "delegated first-touch policy requires the configured founder authority")
+		}
+		if auth.AuthorizedByLabel != DelegatedFirstTouchAuthority {
+			return nil, errx.New(errx.BadRequest, "delegated first-touch authority label mismatch")
+		}
+		if auth.ValidatorVersion != DelegatedFirstTouchValidatorV1 || auth.ContactPolicyVersion != DelegatedFirstTouchContactPolicyV1 ||
+			auth.TemplatePolicyVersion != DelegatedFirstTouchTemplateV1 || !auth.AllowPolicyTemplateGREEN {
+			return nil, errx.New(errx.BadRequest, "delegated first-touch policy contract mismatch")
+		}
+	}
 	if auth.Channel == "" {
 		auth.Channel = "EMAIL"
 	}
@@ -131,12 +149,12 @@ func (s *service) RevokeCampaignPolicy(ctx context.Context, orgID, campaignID, a
 	return ok, nil
 }
 
-// TryGreenAutorun never approves or queues. AUTO_SEND and bulk/green autorun
-// are forbidden on the CONFENGE profile even if isolated env flips the flag.
-// The predicate engine remains for audit/explain only.
+// TryGreenAutorun never approves or queues. Legacy AUTO_SEND and bulk/green
+// autorun remain forbidden; CFG-FIRST-TOUCH-ROUTING-v1 is the sole bounded
+// delegated path and is implemented separately with material-hash binding.
 func (s *service) TryGreenAutorun(ctx context.Context, orgID, actorID, touchpointID uuid.UUID) (*models.OutreachTouchpoint, GreenAutorunDecision, *errx.Error) {
 	_ = actorID
-	dec := GreenAutorunDecision{Allow: false, Reasons: []string{"individual_approval_required"}}
+	dec := GreenAutorunDecision{Allow: false, Reasons: []string{"legacy_green_autorun_forbidden"}}
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, dec, xerr
 	}

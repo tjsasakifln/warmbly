@@ -216,6 +216,25 @@ type OutreachAccount struct {
 	// Company-level rollup of best-contact email_send_ready from extra-cli.
 	EmailSendReady bool `json:"email_send_ready,omitempty"`
 
+	// Contractor role truth imported from extra-cli. Empty/UNKNOWN is valid for
+	// staging but can never authorize a delegated first touch.
+	ContractorRoleStatus            string     `json:"contractor_role_status,omitempty"`
+	TargetPartyRole                 string     `json:"target_party_role,omitempty"`
+	ContractorRolePolicyVersion     string     `json:"contractor_role_policy_version,omitempty"`
+	ContractorRoleSource            string     `json:"contractor_role_source,omitempty"`
+	ContractorRoleSourceRunID       string     `json:"contractor_role_source_run_id,omitempty"`
+	ContractorRoleObservedAt        *time.Time `json:"contractor_role_observed_at,omitempty"`
+	ContractorRoleEvidenceHash      string     `json:"contractor_role_evidence_hash,omitempty"`
+	ContractorRoleEvidenceReference string     `json:"contractor_role_evidence_reference,omitempty"`
+	ContractorRoleEvidenceIDs       []string   `json:"contractor_role_evidence_ids,omitempty"`
+	SupplierCNPJ14                  string     `json:"supplier_cnpj14,omitempty"`
+	SupplierIdentityRef             string     `json:"supplier_identity_ref,omitempty"`
+	BuyerCNPJ14                     string     `json:"buyer_cnpj14,omitempty"`
+	BuyerIdentityRef                string     `json:"buyer_identity_ref,omitempty"`
+	ContractorRoleMatchMethod       string     `json:"contractor_role_match_method,omitempty"`
+	ContractorRoleConfidence        string     `json:"contractor_role_confidence,omitempty"`
+	ContractorRoleReasonCodes       []string   `json:"contractor_role_reason_codes,omitempty"`
+
 	// Joined / computed (not always filled).
 	Contacts  []OutreachContactCandidate `json:"contacts,omitempty"`
 	Evidence  []OutreachEvidence         `json:"evidence,omitempty"`
@@ -563,8 +582,8 @@ var TouchpointTerminalStates = map[string]bool{
 }
 
 // CampaignPolicyAuthorization is an explicit, auditable campaign/policy grant.
-// After this authorization, GREEN messages may autoqueue when GreenAutorunEnabled.
-// Never forges approved_by=<human> for messages the human did not review.
+// Transport additionally requires the narrow delegated decision or cohort gate.
+// It never forges approved_by=<human> for unreviewed messages.
 type CampaignPolicyAuthorization struct {
 	ID                       uuid.UUID  `json:"id,omitempty"`
 	CampaignID               uuid.UUID  `json:"campaign_id"`
@@ -597,7 +616,7 @@ func (a *CampaignPolicyAuthorization) Active(now time.Time) bool {
 	return !a.EffectiveAt.After(now)
 }
 
-// OutreachTouchpoint is one human-gated message in a CONFENGE cadence.
+// OutreachTouchpoint is one explicitly authorized message in a CONFENGE cadence.
 type OutreachTouchpoint struct {
 	ID                  uuid.UUID  `json:"id"`
 	OrganizationID      uuid.UUID  `json:"organization_id"`

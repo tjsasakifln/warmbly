@@ -135,6 +135,12 @@ if [[ "$GREEN" == "true" ]]; then
 else
   pass_fail "GREEN AUTORUN" OFF
 fi
+DELEGATED="${CONFENGE_DELEGATED_FIRST_TOUCH_ENABLED:-false}"
+if [[ "$DELEGATED" == "true" ]]; then
+  pass_fail "DELEGATED FIRST TOUCH" ENABLED
+else
+  pass_fail "DELEGATED FIRST TOUCH" OFF
+fi
 WA="${CONFENGE_WHATSAPP_ENABLED:-false}"
 if [[ "$WA" == "true" ]]; then
   pass_fail WHATSAPP FAIL
