@@ -80,6 +80,13 @@ func (w *WMail) onImapEmailUpdate(ctx context.Context, msg *models.EmailMessageD
 			CreatedAt:    now,
 		}
 
+		if err := w.maybeEmitBounce(msg); err != nil {
+			return err
+		}
+		if err := w.maybeEmitComplaint(msg); err != nil {
+			return err
+		}
+
 		if err := w.EmailMessageMapRepository.Add(ctx, repository.EmailMessageData{
 			UserID:    w.UserID.String(),
 			EmailID:   w.ID.String(),
@@ -96,9 +103,6 @@ func (w *WMail) onImapEmailUpdate(ctx context.Context, msg *models.EmailMessageD
 		}); err != nil {
 			return err
 		}
-
-		w.maybeEmitBounce(msg)
-		w.maybeEmitComplaint(msg)
 
 		// The consumer decodes NEW_EMAIL as JobEventNewEmail{user_id, message}.
 		// Sending the bare message left Message nil on the far side and the

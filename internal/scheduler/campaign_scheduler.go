@@ -237,13 +237,14 @@ func (s *schedulerService) CalculateNextCampaignTime(ctx context.Context, campai
 				acct.ColdRampStartedAt = &startedAt
 			}
 		}
-		placements := 0
+		placements, warmupSends := 0, 0
 		if s.warmupRepo != nil {
-			if recent, _, err := s.warmupRepo.RecentPlacementSignal(ctx, acct.ID, time.Now().Add(-7*24*time.Hour)); err == nil {
-				placements = recent
+			if recentPlacements, recentSends, err := s.warmupRepo.RecentPlacementSignal(ctx, acct.ID, time.Now().Add(-7*24*time.Hour)); err == nil {
+				placements = recentPlacements
+				warmupSends = recentSends
 			}
 		}
-		coldCeilings[acct.ID] = coldReadinessCeiling(*acct, time.Now().UTC(), placements)
+		coldCeilings[acct.ID] = coldReadinessCeiling(*acct, time.Now().UTC(), placements, warmupSends)
 	}
 
 	// effectiveCap is the per-mailbox cold cap for THIS campaign, after the ramp
@@ -578,12 +579,11 @@ func (s *schedulerService) CalculateNextCampaignTime(ctx context.Context, campai
 	return finalSlot(candidateTime), nextPair, account.ID, nil
 }
 
-func coldReadinessCeiling(account models.Email, now time.Time, placements int) int {
+func coldReadinessCeiling(account models.Email, now time.Time, placements, warmupSendsLastWeek int) int {
 	initial := min(10, account.CampaignLimit)
-	if account.Warmup != nil {
-		daysWarming := max(0, int(now.Sub(*account.Warmup).Hours()/24))
-		warmupVolume := min(account.WarmupBase+daysWarming*account.WarmupIncrease, account.WarmupMax)
-		initial = min(account.CampaignLimit, max(10, warmupVolume))
+	if account.Warmup != nil && warmupSendsLastWeek > 0 {
+		recentDailyAverage := (warmupSendsLastWeek + 6) / 7
+		initial = min(account.CampaignLimit, max(initial, recentDailyAverage))
 	}
 	daysCold := 0
 	if account.ColdRampStartedAt != nil {

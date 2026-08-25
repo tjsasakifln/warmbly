@@ -19,15 +19,15 @@ import (
 // Best-effort: a message without a machine-readable bounce class or resolvable
 // original id is ignored. Transient (4.x.x) observations are emitted as SOFT;
 // suppression remains a consumer-side HARD-only decision.
-func (w *WMail) maybeEmitBounce(msg *models.EmailMessageData) {
+func (w *WMail) maybeEmitBounce(msg *models.EmailMessageData) error {
 	from := strings.Join(msg.From, " ")
 	if !dsn.Detect(from, msg.Subject, headerFlagValue(msg.Flags, "Content-Type")) {
-		return
+		return nil
 	}
 
 	report := dsn.Parse(msg.BodyPlain + "\n" + msg.BodyHTML)
 	if !report.IsBounce {
-		return
+		return nil
 	}
 
 	// Resolve the original outbound Message-ID: the DSN body's returned headers
@@ -37,10 +37,10 @@ func (w *WMail) maybeEmitBounce(msg *models.EmailMessageData) {
 		originalID = strings.Trim(msg.InReplyTo[len(msg.InReplyTo)-1], "<>")
 	}
 	if originalID == "" {
-		return // nothing to resolve the campaign send against
+		return nil
 	}
 
-	_ = w.onEvent(models.JobEventTypeInboundBounce, &models.JobEventInboundBounce{
+	return w.onEvent(models.JobEventTypeInboundBounce, &models.JobEventInboundBounce{
 		UserID:            w.UserID,
 		EmailID:           w.ID,
 		OriginalMessageID: strings.Trim(originalID, "<>"),

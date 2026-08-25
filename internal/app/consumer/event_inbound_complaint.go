@@ -2,17 +2,20 @@ package jobs
 
 import (
 	"context"
+	"fmt"
 
-	"github.com/rs/zerolog/log"
 	"github.com/warmbly/warmbly/internal/models"
 )
 
 func (s *JobsService) HandleInboundComplaint(ctx context.Context, event *models.JobEventInboundComplaint) error {
+	if event == nil {
+		return fmt.Errorf("invalid INBOUND_COMPLAINT event")
+	}
 	if s.AdvancedService == nil {
-		return nil
+		return fmt.Errorf("deliverability service is not configured")
 	}
 	if xerr := s.AdvancedService.RecordInboundComplaint(ctx, event.EmailID, event.OriginalMessageID, event.Recipient, event.FeedbackType); xerr != nil {
-		log.Warn().Str("email_id", event.EmailID.String()).Str("original_message_id", event.OriginalMessageID).Str("error", xerr.Message).Msg("failed to record inbound complaint")
+		return fmt.Errorf("record inbound complaint: %w", xerr)
 	}
 	return nil
 }

@@ -1,6 +1,7 @@
 package wmail
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/warmbly/warmbly/internal/models"
@@ -15,13 +16,15 @@ func TestMaybeEmitBouncePreservesSoftDSN(t *testing.T) {
 		got, _ = body.(*models.JobEventInboundBounce)
 		return nil
 	}}
-	w.maybeEmitBounce(&models.EmailMessageData{
+	if err := w.maybeEmitBounce(&models.EmailMessageData{
 		From:    []string{"Mailer-Daemon <mailer-daemon@example.com>"},
 		Subject: "Delivery delayed",
 		BodyPlain: "Final-Recipient: rfc822; busy@example.com\n" +
 			"Action: delayed\nStatus: 4.4.1\nDiagnostic-Code: smtp; 421 4.4.1 try again\n" +
 			"Message-ID: <cohort-message@example.com>\n",
-	})
+	}); err != nil {
+		t.Fatalf("emit bounce: %v", err)
+	}
 	if got == nil {
 		t.Fatal("soft DSN was discarded before the observable event")
 	}
@@ -30,5 +33,21 @@ func TestMaybeEmitBouncePreservesSoftDSN(t *testing.T) {
 	}
 	if got.OriginalMessageID != "cohort-message@example.com" {
 		t.Fatalf("correlation id=%q", got.OriginalMessageID)
+	}
+}
+
+func TestMaybeEmitBounceReturnsPublishFailure(t *testing.T) {
+	w := &WMail{onEvent: func(models.JobEventType, any) error {
+		return errors.New("broker unavailable")
+	}}
+	err := w.maybeEmitBounce(&models.EmailMessageData{
+		From:    []string{"Mailer-Daemon <mailer-daemon@example.com>"},
+		Subject: "Delivery failed",
+		BodyPlain: "Final-Recipient: rfc822; missing@example.com\n" +
+			"Action: failed\nStatus: 5.1.1\nDiagnostic-Code: smtp; 550 5.1.1 missing\n" +
+			"Message-ID: <campaign-message@example.com>\n",
+	})
+	if err == nil {
+		t.Fatal("publish failure was discarded")
 	}
 }

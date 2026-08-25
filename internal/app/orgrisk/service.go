@@ -57,7 +57,10 @@ func (s *service) RecordSignal(ctx context.Context, organizationID uuid.UUID, ke
 
 func (s *service) EffectiveCap(ctx context.Context, organizationID uuid.UUID, current int) int {
 	risk, err := s.repo.Get(ctx, organizationID)
-	if err != nil || risk == nil {
+	if err != nil {
+		return 0
+	}
+	if risk == nil {
 		return current
 	}
 	switch risk.State {
@@ -72,7 +75,10 @@ func (s *service) EffectiveCap(ctx context.Context, organizationID uuid.UUID, cu
 
 func (s *service) WarmupPool(ctx context.Context, organizationID uuid.UUID, current string) string {
 	risk, err := s.repo.Get(ctx, organizationID)
-	if err == nil && risk != nil && (risk.State == models.OrganizationRiskRestricted || risk.State == models.OrganizationRiskSuspended) {
+	if err != nil {
+		return "free"
+	}
+	if risk != nil && (risk.State == models.OrganizationRiskRestricted || risk.State == models.OrganizationRiskSuspended) {
 		return "free"
 	}
 	return current
@@ -80,7 +86,7 @@ func (s *service) WarmupPool(ctx context.Context, organizationID uuid.UUID, curr
 
 func (s *service) SendingSuspended(ctx context.Context, organizationID uuid.UUID) bool {
 	risk, err := s.repo.Get(ctx, organizationID)
-	return err == nil && risk != nil && risk.Has(models.BanScopeSend)
+	return err != nil || (risk != nil && risk.Has(models.BanScopeSend))
 }
 
 func (s *service) EvaluateCorrelations(ctx context.Context) error {

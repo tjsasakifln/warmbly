@@ -1,3 +1,4 @@
+-- Organization risk, list safety, and cold-ramp state.
 ALTER TYPE public.task_status ADD VALUE IF NOT EXISTS 'skipped_content_guardrail';
 ALTER TYPE public.task_status ADD VALUE IF NOT EXISTS 'skipped_org_suspended';
 

@@ -110,6 +110,11 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 		executionStatus = "completed"
 		return nil // Don't create next task
 	}
+	if s.orgRisk != nil && campaign.OrganizationID != nil && s.orgRisk.SendingSuspended(ctx, *campaign.OrganizationID) {
+		_ = s.taskRepo.UpdateTaskStatus(ctx, taskID, "skipped_org_suspended")
+		executionStatus = "completed"
+		return nil
+	}
 
 	// Publish task started progress event
 	if s.streamingPublisher != nil {
@@ -487,9 +492,22 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 	}
 	if contentScore.Hard && s.advanced != nil && campaign.OrganizationID != nil {
 		enabled, xerr := s.advanced.ContentSafetyEnabled(ctx, *campaign.OrganizationID, campaign.ID)
-		if xerr == nil && enabled {
-			_ = s.campaignRepo.UpdateStatus(ctx, campaign.ID, "paused_guardrail")
-			_ = s.taskRepo.UpdateTaskStatus(ctx, taskID, "skipped_content_guardrail")
+		if xerr != nil {
+			if err := s.taskRepo.UpdateTaskStatus(ctx, taskID, "pending"); err != nil {
+				sentry.CaptureException(err)
+			}
+			executionStatus = "failed"
+			return xerr
+		}
+		if enabled {
+			if err := s.campaignRepo.UpdateStatus(ctx, campaign.ID, "paused_guardrail"); err != nil {
+				_ = s.taskRepo.UpdateTaskStatus(ctx, taskID, "pending")
+				executionStatus = "failed"
+				return errx.InternalError()
+			}
+			if err := s.taskRepo.UpdateTaskStatus(ctx, taskID, "skipped_content_guardrail"); err != nil {
+				sentry.CaptureException(err)
+			}
 			executionStatus = "completed"
 			return nil
 		}

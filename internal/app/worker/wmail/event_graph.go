@@ -60,6 +60,13 @@ func (w *WMail) onGraphMessageAdd(ctx context.Context, msg *models.EmailMessageD
 		CreatedAt:    now,
 	}
 
+	if err := w.maybeEmitBounce(msg); err != nil {
+		return err
+	}
+	if err := w.maybeEmitComplaint(msg); err != nil {
+		return err
+	}
+
 	if err := w.EmailMessageMapRepository.Add(ctx, repository.EmailMessageData{
 		UserID:    w.UserID.String(),
 		EmailID:   w.ID.String(),
@@ -77,8 +84,6 @@ func (w *WMail) onGraphMessageAdd(ctx context.Context, msg *models.EmailMessageD
 		return err
 	}
 
-	w.maybeEmitBounce(msg)
-	w.maybeEmitComplaint(msg)
 	return w.onEvent(models.JobEventTypeNewEmail, &models.JobEventNewEmail{
 		UserID:  w.UserID,
 		Message: data,

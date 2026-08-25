@@ -78,7 +78,10 @@ func (s *service) recordInboundDeliverability(ctx context.Context, emailAccountI
 	}
 
 	task, err := s.taskRepo.GetTaskByMessageID(ctx, originalMessageID)
-	if err != nil || task == nil {
+	if err != nil {
+		return toErrx(err)
+	}
+	if task == nil {
 		// Unknown message id (warmup mail, non-campaign send, or already
 		// pruned) — nothing to attribute the bounce to.
 		return nil
@@ -91,7 +94,10 @@ func (s *service) recordInboundDeliverability(ctx context.Context, emailAccountI
 	}
 
 	account, aerr := s.emailRepo.GetByID(ctx, emailAccountID)
-	if aerr != nil || account == nil || account.OrganizationID == nil {
+	if aerr != nil {
+		return aerr
+	}
+	if account == nil || account.OrganizationID == nil {
 		return nil
 	}
 
@@ -105,11 +111,19 @@ func (s *service) recordInboundDeliverability(ctx context.Context, emailAccountI
 		IdempotencyKey: idempotencyPrefix + originalMessageID,
 	}
 
-	if ct, cerr := s.taskRepo.GetCampaignTask(ctx, task.ID); cerr == nil && ct != nil {
+	ct, err := s.taskRepo.GetCampaignTask(ctx, task.ID)
+	if err != nil {
+		return toErrx(err)
+	}
+	if ct != nil {
 		req.CampaignID = ct.CampaignID
 		req.ContactID = ct.ContactID
 		if req.RecipientEmail == "" && ct.ContactID != nil {
-			if contact, cerr := s.contactRepo.GetByID(ctx, *ct.ContactID); cerr == nil && contact != nil {
+			contact, xerr := s.contactRepo.GetByID(ctx, *ct.ContactID)
+			if xerr != nil {
+				return xerr
+			}
+			if contact != nil {
 				req.RecipientEmail = contact.Email
 			}
 		}
