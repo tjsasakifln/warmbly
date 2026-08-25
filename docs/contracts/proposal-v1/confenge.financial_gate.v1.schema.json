@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://confenge.com.br/contracts/confenge.financial_gate.v1.schema.json",
+  "title": "confenge.financial_gate.v1",
+  "description": "Fail-closed financial admission fact embedded in a delivery order request. It is not a billing ledger or received-revenue fact.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "state",
+    "synthetic",
+    "source_event_id",
+    "received_revenue",
+    "evidence_refs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "confenge.financial_gate.v1"
+    },
+    "state": {
+      "enum": [
+        "UNKNOWN",
+        "SYNTHETIC_VALID",
+        "AUTHORIZED"
+      ]
+    },
+    "synthetic": {
+      "type": "boolean"
+    },
+    "source_event_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "received_revenue": {
+      "const": false
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      },
+      "uniqueItems": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "UNKNOWN"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source_event_id": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "SYNTHETIC_VALID"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "synthetic": {
+            "const": true
+          },
+          "source_event_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_refs": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "AUTHORIZED"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "synthetic": {
+            "const": false
+          },
+          "source_event_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_refs": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
+}
