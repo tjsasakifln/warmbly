@@ -961,7 +961,7 @@ func TestImportIdempotencySameKeySamePayload(t *testing.T) {
 	}
 }
 
-func TestImportIdempotencyResumesStaleRunningRun(t *testing.T) {
+func TestImportIdempotencyDoesNotResumeStaleRunningPublicImport(t *testing.T) {
 	repo := newMemRepo()
 	svc := testSvc(repo)
 	org := uuid.New()
@@ -979,16 +979,16 @@ func TestImportIdempotencyResumesStaleRunningRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resumed, xerr := svc.ImportFromBytes(context.Background(), org, nil, raw, ImportOptions{IdempotencyKey: run.IdempotencyKey})
+	readback, xerr := svc.ImportFromBytes(context.Background(), org, nil, raw, ImportOptions{IdempotencyKey: run.IdempotencyKey})
 	if xerr != nil {
 		t.Fatal(xerr)
 	}
-	if resumed.ID != run.ID || resumed.Status != models.OutreachImportCompleted {
-		t.Fatalf("expected stale run %s to complete in place, got %+v", run.ID, resumed)
+	if readback.ID != run.ID || readback.Status != models.OutreachImportRunning {
+		t.Fatalf("public import reclaimed stale run without the manifest lock: %+v", readback)
 	}
 	acc, err := repo.GetAccountByCNPJ(context.Background(), org, "11222333000181")
-	if err != nil || acc == nil {
-		t.Fatalf("expected resumed import to apply the feed: account=%+v err=%v", acc, err)
+	if err != nil || acc != nil {
+		t.Fatalf("public stale readback mutated the feed: account=%+v err=%v", acc, err)
 	}
 }
 
@@ -1005,6 +1005,75 @@ func TestImportIdempotencyConflictOnDifferentPayload(t *testing.T) {
 	_, xerr := svc.ImportFromBytes(context.Background(), org, nil, other, opts)
 	if xerr == nil {
 		t.Fatal("expected conflict")
+	}
+}
+
+func TestImportIdempotencyRecoversOnlyStaleRunningManifestRun(t *testing.T) {
+	repo := newMemRepo()
+	svc := testSvc(repo)
+	org := uuid.New()
+	raw := mustReadFixture(t, "native_feed_v1.json")
+	key := "sync:" + org.String() + ":snapshot:0"
+	staleAt := time.Now().UTC().Add(-10 * time.Minute)
+	stale := &models.OutreachImportRun{
+		ID: uuid.New(), OrganizationID: org, SourceSystem: "extra-cli",
+		SourceRunID: "run-native-1", SchemaVersion: models.OutreachSchemaV1,
+		SnapshotHash: "snapshot", PayloadHash: CanonicalPayloadHash(raw),
+		Status: models.OutreachImportRunning, IdempotencyKey: key,
+		StartedAt: staleAt, UpdatedAt: staleAt,
+	}
+	if err := repo.CreateImportRun(context.Background(), stale); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed, xerr := svc.ImportFromBytes(context.Background(), org, nil, raw, ImportOptions{
+		IdempotencyKey: key, resumeStaleRunningAfter: time.Minute,
+	})
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if resumed.ID != stale.ID || resumed.Status != models.OutreachImportCompleted {
+		t.Fatalf("stale run was not resumed in place: %+v", resumed)
+	}
+	if !containsString(resumed.Warnings, "resumed_stale_running_import") {
+		t.Fatalf("stale recovery was not audited: %v", resumed.Warnings)
+	}
+	acc, err := repo.GetAccountByCNPJ(context.Background(), org, "11222333000181")
+	if err != nil || acc == nil || acc.LastImportRunID == nil || *acc.LastImportRunID != stale.ID {
+		t.Fatalf("recovered import did not preserve run binding: account=%+v err=%v", acc, err)
+	}
+	again, xerr := svc.ImportFromBytes(context.Background(), org, nil, raw, ImportOptions{
+		IdempotencyKey: key, resumeStaleRunningAfter: time.Minute,
+	})
+	if xerr != nil || again.ID != stale.ID || again.Status != models.OutreachImportCompleted {
+		t.Fatalf("completed recovery was not idempotent: run=%+v err=%v", again, xerr)
+	}
+}
+
+func TestImportIdempotencyDoesNotReclaimFreshRunningRun(t *testing.T) {
+	repo := newMemRepo()
+	svc := testSvc(repo)
+	org := uuid.New()
+	raw := mustReadFixture(t, "native_feed_v1.json")
+	key := "sync:" + org.String() + ":snapshot:0"
+	now := time.Now().UTC()
+	running := &models.OutreachImportRun{
+		ID: uuid.New(), OrganizationID: org, PayloadHash: CanonicalPayloadHash(raw),
+		Status: models.OutreachImportRunning, IdempotencyKey: key,
+		StartedAt: now, UpdatedAt: now,
+	}
+	if err := repo.CreateImportRun(context.Background(), running); err != nil {
+		t.Fatal(err)
+	}
+
+	readback, xerr := svc.ImportFromBytes(context.Background(), org, nil, raw, ImportOptions{
+		IdempotencyKey: key, resumeStaleRunningAfter: time.Hour,
+	})
+	if xerr != nil || readback.ID != running.ID || readback.Status != models.OutreachImportRunning {
+		t.Fatalf("fresh running import was reclaimed: run=%+v err=%v", readback, xerr)
+	}
+	if acc, err := repo.GetAccountByCNPJ(context.Background(), org, "11222333000181"); err != nil || acc != nil {
+		t.Fatalf("fresh running readback mutated feed: account=%+v err=%v", acc, err)
 	}
 }
 
