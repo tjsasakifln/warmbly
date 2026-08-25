@@ -1,0 +1,53 @@
+{
+  "schema_version": "confenge.proposal.v1",
+  "proposal_id": "220f817a-5b2b-5799-b403-2ce8c731e4bf",
+  "proposal_version": 1,
+  "organization_id": "11111111-1111-4111-8111-000000000047",
+  "account_id": "account-synthetic-cfg-diag-exp-001",
+  "client_ref": "client:redacted:cfg-diag-exp-001",
+  "opportunity_id": "opportunity-synthetic-cfg-diag-exp-001",
+  "qco_id": "qco-synthetic-cfg-diag-exp-001",
+  "deal_id": "deal-synthetic-cfg-diag-exp-001",
+  "source_lead_id": "lead-synthetic-cfg-diag-exp-001",
+  "correlation_id": "corr-synthetic-cfg-diag-exp-001",
+  "offer_id": "CFG-DIAG-EXP-v1",
+  "offer_version": "v1",
+  "deliverable_id": "CFG-DIAG-EXP-v1",
+  "deliverable_version": "v1",
+  "scope_version": "CFG-SCOPE-DIAG-EXP-v1",
+  "price_version": "CFG-OFFER-CATALOG-v1",
+  "terms_version": "CFG-TERMS-B2B-2026-08-17-v1",
+  "amount": 250000,
+  "currency": "BRL",
+  "credits": [],
+  "addons": [],
+  "inputs": [
+    "company_context_ref",
+    "expansion_hypothesis_ref"
+  ],
+  "exclusions": [
+    "provider_charge",
+    "real_customer_data"
+  ],
+  "deadline": "2026-08-27T12:00:00Z",
+  "valid_until": "2026-09-01T12:00:00Z",
+  "prepared_at": "2026-08-25T12:01:00Z",
+  "approved_at": "2026-08-25T12:02:00Z",
+  "sent_at": "2026-08-25T12:03:00Z",
+  "decision_state": "ACCEPTED",
+  "decision_at": "2026-08-25T12:04:00Z",
+  "literal_reason_ref": "reason:synthetic:ACCEPTED",
+  "accepted_snapshot_hash": "sha256:7cbe3a5d5663e4ae15001e56f97b852287c94eea2836e200c3a5a309bc73f2bd",
+  "evidence_refs": [
+    "evidence:synthetic:ACCEPTED",
+    "evidence:synthetic:APPROVED_TO_SEND",
+    "evidence:synthetic:PREPARED",
+    "evidence:synthetic:SENT",
+    "fixture:cfg-diag-exp-v1:proposal"
+  ],
+  "created_by": "actor:synthetic-reviewer",
+  "synthetic": true,
+  "version": 5,
+  "created_at": "2026-08-25T12:00:00Z",
+  "updated_at": "2026-08-25T12:04:00Z"
+}
