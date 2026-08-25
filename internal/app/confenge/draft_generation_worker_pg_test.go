@@ -2,6 +2,7 @@ package confenge
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -171,5 +172,59 @@ func TestDraftGenerationWorkerLeasesControlledRouteWithoutNamedPersonRollup(t *t
 	}
 	if processed {
 		t.Fatal("review backlog ceiling leased another supplier")
+	}
+
+	// A current delegated HOLD is an exception, not active review capacity.
+	campaignID := uuid.New()
+	if _, err = pool.Exec(ctx, `
+		INSERT INTO campaigns(id,user_id,organization_id,name,description,status,days,updated_at,created_at)
+		VALUES($1,$2,$3,'Delegated backlog fixture','rolling capacity','draft',62,now(),now())`, campaignID, actor, orgID); err != nil {
+		t.Fatal(err)
+	}
+	policyStore := repository.NewConfengePolicyRepository(pool)
+	auth := &models.CampaignPolicyAuthorization{
+		ID: uuid.New(), CampaignID: campaignID, PromptPolicyVersion: DelegatedFirstTouchPolicyV1,
+		ValidatorVersion: DelegatedFirstTouchValidatorV1, ContactPolicyVersion: DelegatedFirstTouchContactPolicyV1,
+		TemplatePolicyVersion: DelegatedFirstTouchTemplateV1, SenderMailbox: "draft-worker@example.test",
+		Channel: models.OutreachChannelEmail, AllowedRiskClass: "GREEN", MaxRatePerHour: 10,
+		AllowPolicyTemplateGREEN: true, EffectiveAt: now.Add(-time.Minute), AuthorizedBy: actor,
+		AuthorizedByLabel: DelegatedFirstTouchAuthority,
+	}
+	if _, err = policyStore.InsertCampaignPolicy(ctx, orgID, auth); err != nil {
+		t.Fatal(err)
+	}
+	manifest := DelegatedFirstTouchManifest{
+		SchemaVersion: DelegatedFirstTouchManifestV1, BatchID: "hold-" + uuid.NewString(), AgentID: "agent:test",
+		PolicyVersion: DelegatedFirstTouchPolicyV1, PolicyHash: DelegatedFirstTouchPolicyHashV1,
+		AuthorityReference: DelegatedFirstTouchAuthorityRef, PolicyAuthorizationID: auth.ID,
+		SourceRunID: account.SourceRunID, SourceSnapshotHash: "controlled-draft-current-snapshot",
+		EvidenceVersion: DelegatedFirstTouchEvidenceV1, ComposerVersion: ComposerVersion,
+		TemplateVersion: DelegatedFirstTouchTemplateV1, PromptVersion: PromptVersion, GeneratedAt: now,
+	}
+	svc.WireDelegatedFirstTouch(pool)
+	if err = svc.reserveDelegatedBatch(ctx, orgID, manifest, strings.Repeat("d", 64)); err != nil {
+		t.Fatal(err)
+	}
+	hold := DelegatedFirstTouchEntry{
+		IdempotencyKey: "held-current-run:" + account.ID.String(), CorrelationID: "held-current-run",
+		AccountID: account.ID, ContactCandidateID: candidate.ID, CNPJ14: account.CNPJ14,
+		EvidenceObservedAt: now, RouteClass: RouteClassGenericCompany,
+		QA: DelegatedFirstTouchQA{Result: "NOT_RUN"},
+	}
+	if err = svc.persistDelegatedHold(ctx, orgID, manifest, hold, []string{"recipient_attribution_or_freshness_invalid"}); err != nil {
+		t.Fatal(err)
+	}
+	processed, err = svc.ProcessDraftGenerationOnce(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !processed {
+		t.Fatal("delegated HOLD consumed active rolling backlog capacity")
+	}
+	if err = pool.QueryRow(ctx, `SELECT draft_generation_attempts FROM outreach_accounts WHERE id=$1`, account2.ID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 {
+		t.Fatalf("next supplier draft_generation_attempts=%d want 1", attempts)
 	}
 }
