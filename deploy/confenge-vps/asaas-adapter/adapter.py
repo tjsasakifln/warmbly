@@ -42,6 +42,7 @@ QUEUE_PROOF_VERSION = "confenge.asaas-queue-proof.v1"
 BACKUP_RECEIPT_VERSION = "confenge.asaas-backup-receipt.v1"
 CURRENT_QUEUE_SCHEMA = "confenge.asaas-queue.current-v1"
 LEGACY_QUEUE_SCHEMA = "confenge.asaas-queue.legacy-stateless-v0"
+LEGACY_PERSIST_FIRST_QUEUE_SCHEMA = "confenge.asaas-queue.legacy-persist-first-v0"
 CURRENT_TABLE_COLUMNS = {
     "metadata": ("key", "value"),
     "events": (
@@ -73,6 +74,21 @@ CURRENT_TABLE_COLUMNS = {
         "detail",
     ),
     "backups": ("path", "created_at", "sha256"),
+}
+LEGACY_PERSIST_FIRST_TABLE_COLUMNS = {
+    "events": (
+        "provider_event_id",
+        "received_at",
+        "raw_type",
+        "payload_json",
+        "payload_sha256",
+        "status",
+        "attempts",
+        "next_attempt_at",
+        "last_error",
+        "canonical_json",
+    ),
+    "metadata": ("key", "value"),
 }
 
 
@@ -379,6 +395,9 @@ def _classify_queue_schema(
             raise ValueError("adapter queue contains an unsupported state")
         return CURRENT_QUEUE_SCHEMA, version
 
+    if tables == LEGACY_PERSIST_FIRST_TABLE_COLUMNS and version is None:
+        return LEGACY_PERSIST_FIRST_QUEUE_SCHEMA, None
+
     event_columns = set(tables.get("events", ()))
     if (
         version is None
@@ -396,7 +415,7 @@ def _classify_queue_schema(
         raise ValueError("unsupported adapter queue schema: events table is missing")
     raise ValueError(
         "unsupported adapter queue schema: events columns do not match "
-        "current-v1 or legacy-stateless-v0"
+        "current-v1 or a recognized legacy schema"
     )
 
 

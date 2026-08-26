@@ -16,6 +16,9 @@ from unittest.mock import patch
 
 MODULE = Path(__file__).with_name("adapter.py")
 LEGACY_FIXTURE = Path(__file__).with_name("testdata") / "legacy-stateless-v0.sql"
+LEGACY_PERSIST_FIRST_FIXTURE = (
+    Path(__file__).with_name("testdata") / "legacy-persist-first-v0.sql"
+)
 SPEC = importlib.util.spec_from_file_location("confenge_asaas_adapter", MODULE)
 assert SPEC and SPEC.loader
 adapter = importlib.util.module_from_spec(SPEC)
@@ -391,6 +394,27 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(restore_proof["schema"], adapter.LEGACY_QUEUE_SCHEMA)
         self.assertEqual(adapter.file_sha256(restored), adapter.file_sha256(backup))
         self.queue = adapter.Queue(self.root / "replacement" / "events.sqlite3")
+
+    def test_live_legacy_persist_first_fixture_backup_is_read_only(self):
+        legacy = self.root / "legacy-persist-first" / "events.sqlite3"
+        legacy.parent.mkdir()
+        connection = adapter.sqlite3.connect(legacy)
+        connection.executescript(
+            LEGACY_PERSIST_FIRST_FIXTURE.read_text(encoding="utf-8")
+        )
+        connection.close()
+        before_bytes = legacy.read_bytes()
+        before_stat = legacy.stat()
+
+        preflight = adapter.inspect_queue_database(legacy)
+        backup = self.root / "legacy-persist-first-backup" / "events.sqlite3"
+        proof = adapter.backup_database(legacy, backup)
+
+        self.assertEqual(preflight["schema"], adapter.LEGACY_PERSIST_FIRST_QUEUE_SCHEMA)
+        self.assertEqual(proof["schema"], adapter.LEGACY_PERSIST_FIRST_QUEUE_SCHEMA)
+        self.assertEqual(proof["table_counts"], {"metadata": 0, "events": 1})
+        self.assertEqual(legacy.read_bytes(), before_bytes)
+        self.assertEqual(legacy.stat().st_mtime_ns, before_stat.st_mtime_ns)
 
     def test_backup_preflight_fails_closed_for_future_schema_without_writing(self):
         self.queue.close()

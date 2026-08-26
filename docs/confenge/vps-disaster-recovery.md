@@ -28,7 +28,7 @@ deploy/confenge-vps/backup.sh
 ```
 
 The script preflights a present Asaas SQLite schema before starting `pg_dump`.
-It accepts the current versioned schema and the known unversioned legacy schema
+It accepts the current versioned schema and the known unversioned legacy schemas
 without initializing `Queue`. An unknown version, unknown column layout, missing
 `events` table, or SQLite integrity error fails early with no PostgreSQL dump.
 
