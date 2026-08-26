@@ -13,21 +13,23 @@ import (
 )
 
 type delegatedFirstTouchProcessorStub struct {
-	remaining int
-	calls     atomic.Int32
+	calls atomic.Int32
+}
+
+type delegatedFirstTouchAlwaysProcesses struct{ calls atomic.Int32 }
+
+func (s *delegatedFirstTouchAlwaysProcesses) ProcessDelegatedFirstTouchOnce(context.Context) (bool, error) {
+	s.calls.Add(1)
+	return true, nil
 }
 
 func (s *delegatedFirstTouchProcessorStub) ProcessDelegatedFirstTouchOnce(context.Context) (bool, error) {
 	s.calls.Add(1)
-	if s.remaining == 0 {
-		return false, nil
-	}
-	s.remaining--
-	return true, errors.New("held item must not stop the remaining burst")
+	return false, errors.New("capacity or policy blocker")
 }
 
-func TestDelegatedFirstTouchWorkerDrainsHoldsUntilQueuedOrIdle(t *testing.T) {
-	processor := &delegatedFirstTouchProcessorStub{remaining: 3}
+func TestDelegatedFirstTouchWorkerSleepsWhenProcessorReportsBlocker(t *testing.T) {
+	processor := &delegatedFirstTouchProcessorStub{}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -35,13 +37,34 @@ func TestDelegatedFirstTouchWorkerDrainsHoldsUntilQueuedOrIdle(t *testing.T) {
 		close(done)
 	}()
 	deadline := time.Now().Add(time.Second)
-	for processor.calls.Load() < 4 && time.Now().Before(deadline) {
+	for processor.calls.Load() < 1 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
+	time.Sleep(10 * time.Millisecond)
 	cancel()
 	<-done
-	if processor.calls.Load() != 4 {
-		t.Fatalf("worker calls=%d want 4", processor.calls.Load())
+	if processor.calls.Load() != 1 {
+		t.Fatalf("worker calls=%d want one attempt before sleep", processor.calls.Load())
+	}
+}
+
+func TestDelegatedFirstTouchWorkerSleepsAfterBoundedBurst(t *testing.T) {
+	processor := &delegatedFirstTouchAlwaysProcesses{}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		NewDelegatedFirstTouchWorker(processor, time.Hour).Run(ctx)
+		close(done)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for processor.calls.Load() < delegatedFirstTouchMaxBurst && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+	<-done
+	if processor.calls.Load() != delegatedFirstTouchMaxBurst {
+		t.Fatalf("worker calls=%d want bounded burst=%d", processor.calls.Load(), delegatedFirstTouchMaxBurst)
 	}
 }
 
@@ -71,6 +94,10 @@ func TestDelegatedFirstTouchAutorunRequiresNarrowGateAndOperatorBinding(t *testi
 		t.Fatalf("autorun without operator binding: %v", err)
 	}
 	cfg.OperatorUserID, cfg.OperatorOrgID = uuid.New(), uuid.New()
+	if err := cfg.ValidateStartup("test"); err == nil || !strings.Contains(err.Error(), EnvDelegatedFirstTouchRunwayDays) {
+		t.Fatalf("autorun without capacity runway: %v", err)
+	}
+	cfg.DelegatedFirstTouchRunwayDays = 30
 	if err := cfg.ValidateStartup("test"); err != nil {
 		t.Fatalf("valid delegated autorun config: %v", err)
 	}

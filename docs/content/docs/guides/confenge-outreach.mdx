@@ -19,7 +19,9 @@ CONFENGE_OUTREACH_ENABLED=true
 
 The CONFENGE first-touch campaign has one narrow exception. `CONFENGE_DELEGATED_FIRST_TOUCH_ENABLED=true` permits only `CFG-FIRST-TOUCH-ROUTING-v1` after proving the company is the private supplier, reconciling a published mailbox, running adversarial QA, and binding the exact evidence and content hashes. The decision is recorded as `DELEGATED_POLICY_APPROVE`, `approved_by` remains empty, and the canonical scheduler performs a database readback before the item counts as queued. Suppression, opt-out, bounce, reply, kill switch, mailbox limits, business windows, and the live policy grant remain final gates. The flag defaults to `false`.
 
-`CONFENGE_DELEGATED_FIRST_TOUCH_AUTORUN_ENABLED=true` starts the rolling evaluator for that same narrow policy. It keeps at most one first touch in the canonical dispatch queue, converts ordinary QA failures into exceptions, and replenishes the next eligible item after dispatch. It does not enable legacy auto-send or GREEN autorun, create another queue, or bypass any send-time gate. The flag defaults to `false`.
+`CONFENGE_DELEGATED_FIRST_TOUCH_AUTORUN_ENABLED=true` starts the rolling evaluator for that same narrow policy. It requires `CONFENGE_DELEGATED_FIRST_TOUCH_RUNWAY_DAYS` between 1 and 90. The default horizon is 0, so autorun fails closed until an operator configures it. The evaluator converts the horizon into future business-window slots from the selected mailboxes' live cold ramp, campaign limits, minimum wait, campaign ramp, policy rate and global governor. Unknown capacity schedules nothing. It fills the existing canonical queue in bounded bursts and replenishes the horizon as due slots are consumed. It does not enable legacy auto-send or GREEN autorun, create another queue, or bypass any send-time gate.
+
+The prepared reservoir reuses `CONFENGE_DRAFT_REVIEW_BACKLOG_TARGET`; no second reservoir setting exists. The application default is 100 and the dedicated CONFENGE VPS profile uses 1,000. This setting grants no approval, queue or transport authority. Feed, runtime or active-policy advance retires stale approvals and lets the worker reapprove the same first touch with the new binding. Mailbox or campaign pause, stale feed, suppression, risk controls and kill switches stop filling. Follow-ups never enter this policy.
 
 For a manual batch, the agent first writes a research manifest containing candidate IDs, public evidence and copy, but no mailbox address. `confenge first-touch seal` reads the selected mailbox from the operational database, derives its route class, binds the subject and body hashes, and creates a new mode `0600` manifest without printing the address. `confenge first-touch apply --dry-run` validates that sealed artifact before the confirmed write path records approval and canonical queue readback. Autorun constructs the same manifest from current persisted supplier, recipient, feed, and evidence records, then sends it through the same validator and apply path.
 
@@ -206,8 +208,12 @@ CONFENGE outbound email and WhatsApp share one local rolling-hour cap (default 1
 | `CONFENGE_SEND_TIMEZONE` | `America/Sao_Paulo` |
 | `CONFENGE_SEND_WINDOW_START` / `END` | `09:00` / `18:00` |
 | `CONFENGE_DISPATCH_PAUSED` | `false` |
+| `CONFENGE_DELEGATED_FIRST_TOUCH_RUNWAY_DAYS` | `0` |
+| `CONFENGE_DRAFT_REVIEW_BACKLOG_TARGET` | `100` |
 
 API: `GET /confenge/dispatch/status`, `POST /confenge/dispatch/pause`, `POST /confenge/dispatch/resume`.
+
+`GET /confenge/first-touch/status` includes a `runway` readback with prepared reservoir, queued/reserved depth, runway duration, furthest and target due times, mailbox and daily capacity, recent fill rate, stale retirement, hold, no-candidate and capacity-blocked metrics. Queue depth is inventory, not send velocity. The governor and mailbox limits still decide when transport may occur.
 
 ## Architecture notes
 

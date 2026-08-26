@@ -400,7 +400,15 @@ func TestDelegatedFirstTouchWorkerSkipsMismatchedDecisionBoundByCurrentIdempoten
 		t.Fatal(err)
 	}
 
-	touchpointID, accountID, candidateID, err := f.svc.nextDelegatedFirstTouchCandidate(f.ctx, f.orgID)
+	feed, err := f.repo.GetFeedSyncState(f.ctx, f.orgID)
+	if err != nil || feed == nil {
+		t.Fatalf("feed unavailable: %+v %v", feed, err)
+	}
+	auth, err := f.svc.policyStore.GetCampaignPolicyByID(f.ctx, f.orgID, f.manifest.PolicyAuthorizationID)
+	if err != nil || auth == nil {
+		t.Fatalf("policy unavailable: %+v %v", auth, err)
+	}
+	touchpointID, accountID, candidateID, err := f.svc.nextDelegatedFirstTouchCandidate(f.ctx, f.orgID, feed, auth)
 	if err != nil {
 		t.Fatal(err)
 	}

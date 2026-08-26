@@ -353,9 +353,20 @@ func (s *PGStore) Enqueue(ctx context.Context, item *QueueItem) error {
 			priority = EXCLUDED.priority,
 			recipient_ref = EXCLUDED.recipient_ref,
 			status = CASE
+				WHEN confenge_dispatch_queue.status = 'cancelled'
+				  AND confenge_dispatch_queue.cancel_reason = 'delegated_authority_or_source_binding_advanced' THEN 'queued'
 				WHEN confenge_dispatch_queue.status IN ('sent','cancelled') THEN confenge_dispatch_queue.status
 				ELSE 'queued'
 			END,
+			cancel_reason = CASE
+				WHEN confenge_dispatch_queue.status = 'cancelled'
+				  AND confenge_dispatch_queue.cancel_reason <> 'delegated_authority_or_source_binding_advanced'
+				  THEN confenge_dispatch_queue.cancel_reason ELSE '' END,
+			last_error = CASE
+				WHEN confenge_dispatch_queue.status = 'cancelled'
+				  AND confenge_dispatch_queue.cancel_reason <> 'delegated_authority_or_source_binding_advanced'
+				  THEN confenge_dispatch_queue.last_error ELSE '' END,
+			reserved_until = NULL,
 			updated_at = now()`,
 		item.ID, item.OrganizationID, item.Channel, item.DraftID, item.MessageKey, item.RecipientRef,
 		item.DueAt, item.Priority,

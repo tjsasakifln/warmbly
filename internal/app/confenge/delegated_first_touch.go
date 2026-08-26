@@ -160,6 +160,7 @@ type DelegatedFirstTouchStatus struct {
 	QueuedReadback       int                               `json:"queued_readback"`
 	DuplicateLiveAccount int                               `json:"duplicate_live_account"`
 	DuplicateLiveRoot    int                               `json:"duplicate_live_root"`
+	Runway               DelegatedFirstTouchRunwayMetrics  `json:"runway"`
 	Items                []DelegatedFirstTouchDecisionView `json:"items"`
 }
 
@@ -217,7 +218,7 @@ func (s *service) ReconcileDelegatedFirstTouchLedger(ctx context.Context, orgID 
 			  AND d.state IN ('APPROVED','QUEUED','APPROVED_NOT_SCHEDULED')
 			  AND (
 				(d.state IN ('APPROVED','APPROVED_NOT_SCHEDULED') AND t.state <> 'APPROVED')
-				OR (d.state='QUEUED' AND (t.state <> 'QUEUED' OR q.status IS DISTINCT FROM 'queued'))
+				OR (d.state='QUEUED' AND (t.state <> 'QUEUED' OR q.status IS NULL OR q.status NOT IN ('queued','reserved')))
 			  )
 		)
 		UPDATE confenge_delegated_first_touch_decisions d
@@ -283,6 +284,10 @@ func digits(value string) string {
 }
 
 func (s *service) ApplyDelegatedFirstTouchManifest(ctx context.Context, orgID uuid.UUID, manifest DelegatedFirstTouchManifest, dryRun bool) (*DelegatedFirstTouchReport, *errx.Error) {
+	return s.applyDelegatedFirstTouchManifest(ctx, orgID, manifest, dryRun, nil)
+}
+
+func (s *service) applyDelegatedFirstTouchManifest(ctx context.Context, orgID uuid.UUID, manifest DelegatedFirstTouchManifest, dryRun bool, plannedDueAt *time.Time) (*DelegatedFirstTouchReport, *errx.Error) {
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, xerr
 	}
@@ -344,7 +349,7 @@ func (s *service) ApplyDelegatedFirstTouchManifest(ctx context.Context, orgID uu
 				_ = s.persistDelegatedHold(ctx, orgID, manifest, entry, item.Blockers)
 			}
 		} else {
-			item, qaPass, repaired = s.applyDelegatedFirstTouchEntry(ctx, orgID, manifest, auth, entry, dryRun, duplicateRoots, recentBodies, corpusAvailable)
+			item, qaPass, repaired = s.applyDelegatedFirstTouchEntry(ctx, orgID, manifest, auth, entry, dryRun, duplicateRoots, recentBodies, corpusAvailable, plannedDueAt)
 			unlock()
 		}
 		report.Items = append(report.Items, item)
@@ -594,6 +599,7 @@ func (s *service) applyDelegatedFirstTouchEntry(
 	duplicateRoots map[string]bool,
 	recentBodies []delegatedRecentBody,
 	corpusAvailable bool,
+	plannedDueAt *time.Time,
 ) (DelegatedFirstTouchItemResult, bool, bool) {
 	item := DelegatedFirstTouchItemResult{IdempotencyKey: entry.IdempotencyKey}
 	acc, cand, blockers := s.validateDelegatedEntry(ctx, orgID, manifest, entry, duplicateRoots, recentBodies, corpusAvailable)
@@ -628,7 +634,7 @@ func (s *service) applyDelegatedFirstTouchEntry(
 			return item, true, entry.QA.Repaired
 		}
 		if existing.TouchpointID != nil && (existing.State == "APPROVED" || existing.State == "APPROVED_NOT_SCHEDULED") {
-			queued, xerr := s.QueueTouchpoint(ctx, orgID, uuid.Nil, *existing.TouchpointID)
+			queued, xerr := s.queueTouchpointAt(ctx, orgID, uuid.Nil, *existing.TouchpointID, plannedDueAt)
 			if xerr != nil || queued == nil {
 				item.State = "APPROVED_NOT_SCHEDULED"
 				item.Blockers = []string{schedulingBlocker(xerr)}
@@ -694,7 +700,7 @@ func (s *service) applyDelegatedFirstTouchEntry(
 		return item, true, entry.QA.Repaired
 	}
 	item.State, item.TouchpointID = "APPROVED", tp.ID
-	queued, xerr := s.QueueTouchpoint(ctx, orgID, uuid.Nil, tp.ID)
+	queued, xerr := s.queueTouchpointAt(ctx, orgID, uuid.Nil, tp.ID, plannedDueAt)
 	if xerr != nil || queued == nil {
 		item.State = "APPROVED_NOT_SCHEDULED"
 		item.Blockers = []string{schedulingBlocker(xerr)}
@@ -1515,7 +1521,7 @@ func (s *service) delegatedQueueReadback(ctx context.Context, orgID uuid.UUID, t
 		JOIN confenge_dispatch_queue q ON q.organization_id=t.organization_id AND q.draft_id=t.draft_id
 		WHERE t.organization_id=$1 AND t.id=$2 AND q.message_key=$3`, orgID, tp.ID, key).
 		Scan(&touchState, &touchDue, &queueState, &queueDue, &queueKey)
-	if err != nil || touchState != models.TouchpointQueued || queueState != "queued" || queueKey != key || !touchDue.Equal(queueDue) {
+	if err != nil || touchState != models.TouchpointQueued || (queueState != "queued" && queueState != "reserved") || queueKey != key || !touchDue.Equal(queueDue) {
 		return &queueDue, key, false
 	}
 	return &queueDue, key, true
@@ -1605,7 +1611,7 @@ func (s *service) DelegatedFirstTouchStatus(ctx context.Context, orgID uuid.UUID
 		JOIN outreach_touchpoints t ON t.organization_id=d.organization_id AND t.id=d.touchpoint_id
 		JOIN confenge_dispatch_queue q ON q.organization_id=d.organization_id AND q.draft_id=d.draft_id AND q.message_key=d.queue_message_key
 		WHERE d.organization_id=$1 AND ($2='' OR d.batch_id=$2) AND d.state='QUEUED'
-		  AND d.readback_at IS NOT NULL AND t.state='QUEUED' AND q.status='queued' AND q.due_at=d.due_at`, orgID, batchID).Scan(&out.QueuedReadback); err != nil {
+		  AND d.readback_at IS NOT NULL AND t.state='QUEUED' AND q.status IN ('queued','reserved') AND q.due_at=d.due_at`, orgID, batchID).Scan(&out.QueuedReadback); err != nil {
 		return nil, errx.New(errx.Internal, err.Error())
 	}
 	if err := s.delegatedDB.QueryRow(ctx, `
@@ -1616,6 +1622,7 @@ func (s *service) DelegatedFirstTouchStatus(ctx context.Context, orgID uuid.UUID
 		) x`, orgID).Scan(&out.DuplicateLiveAccount); err != nil {
 		return nil, errx.New(errx.Internal, err.Error())
 	}
+	out.Runway = s.delegatedFirstTouchRunwayMetrics(ctx, orgID)
 	if err := s.delegatedDB.QueryRow(ctx, `
 		SELECT count(*)::int FROM (
 			SELECT cnpj_root FROM confenge_delegated_first_touch_decisions
