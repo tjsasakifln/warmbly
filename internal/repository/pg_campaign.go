@@ -1507,6 +1507,8 @@ func (r *campaignRepository) HasPendingDelegatedFirstTouch(ctx context.Context, 
 			FROM outreach_touchpoints t
 			JOIN outreach_accounts account
 			  ON account.organization_id=t.organization_id AND account.id=t.account_id
+			JOIN outreach_contact_candidates candidate
+			  ON candidate.organization_id=t.organization_id AND candidate.id=t.contact_candidate_id
 			JOIN outreach_feed_sync_state feed
 			  ON feed.organization_id=t.organization_id
 			JOIN outreach_org_settings settings
@@ -1514,8 +1516,11 @@ func (r *campaignRepository) HasPendingDelegatedFirstTouch(ctx context.Context, 
 			JOIN confenge_campaign_policy_authorizations auth
 			  ON auth.organization_id=t.organization_id AND auth.campaign_id=$1
 			WHERE t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
-			  AND t.state='NEEDS_REVIEW' AND t.contact_candidate_id IS NOT NULL
+			  AND t.state IN ('DUE','NEEDS_REVIEW') AND t.contact_candidate_id IS NOT NULL
 			  AND feed.last_status='completed' AND account.source_run_id=feed.last_run_id
+			  AND (t.source_run_id='' OR t.source_run_id=feed.last_run_id)
+			  AND account.initial_backlog_reason_code=''
+			  AND account.last_import_run_id IS NOT NULL AND candidate.last_import_run_id=account.last_import_run_id
 			  AND auth.revoked_at IS NULL AND auth.effective_at <= now()
 			  AND auth.prompt_policy_version='CFG-FIRST-TOUCH-ROUTING-v1'
 			  AND auth.authorized_by_label='founder-approved-first-touch-policy'

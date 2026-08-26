@@ -110,6 +110,21 @@ Use `?dry_run=true` for counts only (`creates`, `updates`, `unchanged`, `missing
 
 Companies with eligible current target-fit but no enrollable contact enter as `NEEDS_CONTACT`. They are not discarded and are not forced into the contacts table.
 
+### Manifest sync and prepared backlog
+
+`POST /api/v1/confenge/sync` validates the complete `confenge.outreach.manifest.v1` before publishing a new current run. It checks every chunk hash, source binding, declared count, pagination marker, and cross-chunk company and lead identity. Validated chunks are staged in a private temporary directory and imported with at most four chunks active, so a large manifest does not require every chunk payload to remain in memory or thousands of account writes to run serially. The safety ceilings are 100,000 leads, 1,000 chunks, and 1 GiB of staged payload. These ceilings protect the host without truncating the supported 1,000 to 10,000 account range.
+
+Each chunk uses a durable idempotency key. A retry reads back a completed chunk, and a `RUNNING` chunk with no activity for two minutes is reclaimed and replayed against the same import run. A `source_run_id` is immutable and cannot later identify another snapshot, including after it becomes historical. The manifest becomes current only after every chunk completes, deactivations apply, and the backlog denominator closes. A corrupt, incomplete, or partial attempt never replaces the last completed `source_run_id` in feed state.
+
+For every current account, the sync records one of these outcomes:
+
+- a canonical `DUE` touchpoint with `ordinal=1`, `purpose=INITIAL`, `channel=EMAIL`, the unique preferred current recipient, and the current `source_run_id`
+- a stable `initial_backlog_reason_code` such as missing, conflicting, ineligible, or non-delegated recipient, unknown or conflicting supplier role, stale supplier evidence, target-fit suppression, or account suppression
+
+Prepared manifest touchpoints are the delegated worker backlog. They do not appear in the human review queue or create a parallel commercial-action queue merely because the feed is large. Manual `POST /confenge/import` keeps its existing commercial-action planning behavior. The worker leases one due item at a time, records a durable retry after failure, and submits the item through the same delegated policy validator used by manual manifests. A refresh cancels open `INITIAL` work from the previous run with `source_run_superseded`; historical rows remain readable for audit.
+
+The sync response and persisted feed state expose the stage counts `imported`, `supplier_confirmed`, `candidate_attributed`, `initial_touchpoint_prepared`, `delegated_eligible`, `held_exception`, and `stale_initial_retired`. `delegated_eligible + held_exception` must equal `imported` before publication. An idempotent replay returns the stored stage counts and creates no new touchpoint.
+
 ## Target-fit authorization
 
 `extra-cli` is the sole authority for CONFENGE target-fit. Warmbly does not infer ICP membership from company names, industry text, public contracts, email availability, old scores, or prior `enrollable` values.
@@ -158,6 +173,7 @@ Target-fit is updated only by a current authoritative decision. A downgrade take
 | `GET /confenge/accounts` | Staged companies |
 | `GET /confenge/accounts/:id` | Company with candidates and evidence |
 | `POST /confenge/import` | Dry-run or apply feed |
+| `POST /confenge/sync` | Validate a complete manifest, resume chunks, and materialize the current-run `INITIAL` backlog |
 | `GET /confenge/import-runs` | Import audit history |
 | `GET /confenge/touchpoints/review` | Human review queue, including recoverable editorial states |
 | `GET /confenge/review/drafts` | Control Center review alias with exact content hashes and the editorial verdict per row |

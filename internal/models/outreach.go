@@ -213,6 +213,7 @@ type OutreachAccount struct {
 	TargetFitEligible          bool       `json:"target_fit_eligible"`
 	TargetFitSuppressionReason string     `json:"target_fit_suppression_reason,omitempty"`
 	TargetFitReconciledAt      *time.Time `json:"target_fit_reconciled_at,omitempty"`
+	InitialBacklogReasonCode   string     `json:"initial_backlog_reason_code,omitempty"`
 	// Company-level rollup of best-contact email_send_ready from extra-cli.
 	EmailSendReady bool `json:"email_send_ready,omitempty"`
 
@@ -655,6 +656,7 @@ type OutreachTouchpoint struct {
 	FactUsed             string           `json:"fact_used"`
 	EvidenceIDs          []string         `json:"evidence_ids,omitempty"`
 	GeneratedContextHash string           `json:"generated_context_hash,omitempty"`
+	SourceRunID          string           `json:"source_run_id,omitempty"`
 	CreatedAt            time.Time        `json:"created_at"`
 	UpdatedAt            time.Time        `json:"updated_at"`
 	Account              *OutreachAccount `json:"account,omitempty"`

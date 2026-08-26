@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path"
 	"strings"
 	"sync"
@@ -30,7 +31,13 @@ type FeedSyncResult struct {
 	Counts         map[string]int `json:"counts,omitempty"`
 }
 
-const feedChunkStaleImportRecoveryAfter = 2 * time.Minute
+const (
+	feedChunkStaleImportRecoveryAfter = 2 * time.Minute
+	feedManifestMaxLeads              = 100_000
+	feedManifestMaxChunks             = 1_000
+	feedManifestMaxStagedBytes        = int64(1 << 30)
+	feedManifestImportConcurrency     = 4
+)
 
 // outreachManifest is confenge.outreach.manifest.v1 (extra-cli export).
 type outreachManifest struct {
@@ -59,6 +66,16 @@ type manifestChunk struct {
 	HasMore     bool   `json:"has_more"`
 }
 
+type validatedManifestChunk struct {
+	manifest manifestChunk
+	path     string
+}
+
+type manifestChunkImportResult struct {
+	completed bool
+	err       string
+}
+
 // org-level single-flight so two sync workers cannot double-import.
 var feedSyncLocks sync.Map // orgID string → *sync.Mutex
 
@@ -67,8 +84,7 @@ func orgFeedSyncLock(orgID uuid.UUID) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
-// SyncFeedManifest fetches a confenge.outreach.manifest.v1, validates chunks,
-// imports in order, applies deactivations. Fail-closed on hash mismatch.
+// SyncFeedManifest validates a manifest, imports bounded chunks, and applies deactivations.
 // Never deletes DNC/human state. Never auto-generates or sends.
 func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID *uuid.UUID, manifestURI string) (*FeedSyncResult, *errx.Error) {
 	if xerr := s.requireEnabled(); xerr != nil {
@@ -167,6 +183,16 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 		s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "failed", result, false, nil)
 		return result, errx.New(errx.BadRequest, "manifest generated_at is missing or invalid")
 	}
+	runConflict, conflictErr := s.repo.HasImportRunSnapshotConflict(ctx, orgID, man.Source.RunID, man.Source.SnapshotHash)
+	if conflictErr != nil {
+		s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "failed", result, false, nil)
+		return result, errx.New(errx.ServiceUnavailable, "feed source run history unavailable")
+	}
+	if runConflict || (lastRun != "" && man.Source.RunID == lastRun && man.Source.SnapshotHash != lastSnap) {
+		result.Errors = append(result.Errors, "source run ID reused with different snapshot")
+		s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "failed", result, false, nil)
+		return result, errx.New(errx.Conflict, "source run ID cannot identify more than one snapshot")
+	}
 	if lastGeneratedAt != nil && (generatedAt.Before(lastGeneratedAt.UTC()) ||
 		(generatedAt.Equal(lastGeneratedAt.UTC()) && man.Source.SnapshotHash != lastSnap)) {
 		result.Errors = append(result.Errors, "snapshot rollback rejected")
@@ -182,14 +208,31 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 		result.Status = "noop"
 		result.SkippedSame = true
 		result.RunID = lastRun
-		s.persistFeedSync(ctx, orgID, man.Source.SnapshotHash, lastRun, uri, "completed", result, true, &generatedAt)
+		if current != nil {
+			result.Counts = decodeFeedSyncCounts(current.CountsJSON)
+		}
+		if persistErr := s.persistFeedSync(ctx, orgID, man.Source.SnapshotHash, lastRun, uri, "completed", result, true, &generatedAt); persistErr != nil {
+			result.Status = "partial"
+			result.Errors = append(result.Errors, "feed state publication failed")
+			return result, errx.New(errx.ServiceUnavailable, "feed state publication failed")
+		}
 		return result, nil
 	}
 
 	baseURI := manifestBaseURI(uri)
 	var partialErrs []string
-	chunkPayloads := make([][]byte, 0, len(man.Chunks))
-	for _, ch := range man.Chunks {
+	stageDir, err := os.MkdirTemp("", "warmbly-confenge-feed-")
+	if err != nil {
+		result.Errors = append(result.Errors, "chunk staging unavailable")
+		s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "failed", result, false, nil)
+		return result, errx.New(errx.ServiceUnavailable, "feed chunk staging unavailable")
+	}
+	defer func() { _ = os.RemoveAll(stageDir) }()
+	validatedChunks := make([]validatedManifestChunk, 0, len(man.Chunks))
+	seenCNPJ := make(map[string]string, man.LeadCount)
+	seenLeadID := make(map[string]string, man.LeadCount)
+	var stagedBytes int64
+	for index, ch := range man.Chunks {
 		if strings.TrimSpace(ch.File) == "" {
 			partialErrs = append(partialErrs, "chunk missing file name")
 			continue
@@ -198,7 +241,7 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 		chunkRaw, err := fetcher.Fetch(ctx, chunkURI)
 		if err != nil {
 			partialErrs = append(partialErrs, fmt.Sprintf("%s fetch: %v", ch.File, err))
-			break // fail closed — do not mark snapshot complete
+			break // A fetch failure cannot publish the snapshot.
 		}
 		if ch.ContentHash != "" {
 			sum := sha256.Sum256(chunkRaw)
@@ -213,6 +256,10 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 			partialErrs = append(partialErrs, fmt.Sprintf("%s invalid feed: %v", ch.File, normalizeErr))
 			break
 		}
+		if validateErr := ValidateFeed(chunkFeed); validateErr != nil {
+			partialErrs = append(partialErrs, fmt.Sprintf("%s invalid feed: %v", ch.File, validateErr))
+			break
+		}
 		chunkGeneratedAt, timeErr := time.Parse(time.RFC3339, strings.TrimSpace(chunkFeed.GeneratedAt))
 		if timeErr != nil || chunkFeed.Source.RunID != man.Source.RunID ||
 			chunkFeed.Source.SnapshotHash != man.Source.SnapshotHash || !chunkGeneratedAt.Equal(generatedAt) {
@@ -223,33 +270,45 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 			partialErrs = append(partialErrs, fmt.Sprintf("%s lead_count does not match payload", ch.File))
 			break
 		}
-		chunkPayloads = append(chunkPayloads, chunkRaw)
-	}
-
-	// Validate every remote object before the first database mutation. A corrupt,
-	// missing, or mismatched later chunk must leave the current snapshot untouched.
-	imported := 0
-	for index, chunkRaw := range chunkPayloads {
+		for leadIndex := range chunkFeed.Leads {
+			lead := chunkFeed.Leads[leadIndex]
+			cnpj := NormalizeCNPJ14(lead.Company.CNPJ14)
+			if previous, duplicate := seenCNPJ[cnpj]; duplicate {
+				partialErrs = append(partialErrs, fmt.Sprintf("%s duplicates cnpj14 from %s", ch.File, previous))
+				break
+			}
+			seenCNPJ[cnpj] = ch.File
+			leadID := strings.TrimSpace(lead.SourceLeadID)
+			if previous, duplicate := seenLeadID[leadID]; duplicate {
+				partialErrs = append(partialErrs, fmt.Sprintf("%s duplicates source_lead_id from %s", ch.File, previous))
+				break
+			}
+			seenLeadID[leadID] = ch.File
+		}
 		if len(partialErrs) != 0 {
 			break
 		}
-		ch := man.Chunks[index]
-		chunkURI := joinURI(baseURI, ch.File)
-		idem := fmt.Sprintf("sync:%s:%s:%d", orgID, man.Source.SnapshotHash, ch.ChunkIndex)
-		importRun, xerr := s.ImportFromBytes(ctx, orgID, userID, chunkRaw, ImportOptions{
-			IdempotencyKey:          idem,
-			SourceURI:               chunkURI,
-			resumeStaleRunningAfter: feedChunkStaleImportRecoveryAfter,
-		})
-		if xerr != nil {
-			partialErrs = append(partialErrs, fmt.Sprintf("%s import: %s", ch.File, xerr.Message))
+		stagedBytes += int64(len(chunkRaw))
+		if stagedBytes > feedManifestMaxStagedBytes {
+			partialErrs = append(partialErrs, "manifest staged payload exceeds safe disk ceiling")
 			break
 		}
-		if importRun == nil || importRun.Status != models.OutreachImportCompleted {
-			partialErrs = append(partialErrs, fmt.Sprintf("%s import did not complete", ch.File))
+		stagedPath := path.Join(stageDir, fmt.Sprintf("%06d.chunk", index))
+		if writeErr := os.WriteFile(stagedPath, chunkRaw, 0o600); writeErr != nil {
+			partialErrs = append(partialErrs, fmt.Sprintf("%s staging: %v", ch.File, writeErr))
 			break
 		}
-		imported++
+		validatedChunks = append(validatedChunks, validatedManifestChunk{manifest: ch, path: stagedPath})
+	}
+
+	// Validate every remote object before the first account mutation.
+	imported := 0
+	if len(partialErrs) == 0 {
+		var importErrs []string
+		imported, importErrs = s.importValidatedManifestChunks(
+			ctx, orgID, userID, baseURI, man.Source.SnapshotHash, validatedChunks,
+		)
+		partialErrs = append(partialErrs, importErrs...)
 	}
 	result.ChunksImported = imported
 	result.Errors = partialErrs
@@ -281,6 +340,26 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 		}
 		result.Counts["stale_reviews_retired"] = retired
 		result.Counts["stale_review_accounts_requeued"] = requeued
+		backlog, backlogErr := s.repo.MaterializeCurrentInitialBacklog(ctx, orgID, man.Source.RunID)
+		if backlogErr != nil {
+			result.Status = "partial"
+			result.Errors = append(result.Errors, "initial backlog materialization: "+backlogErr.Error())
+			s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "partial", result, false, nil)
+			return result, errx.New(errx.ServiceUnavailable, "feed initial backlog materialization failed; snapshot not committed")
+		}
+		result.Counts["imported"] = backlog.Imported
+		result.Counts["supplier_confirmed"] = backlog.SupplierConfirmed
+		result.Counts["candidate_attributed"] = backlog.CandidateAttributed
+		result.Counts["initial_touchpoint_prepared"] = backlog.InitialPrepared
+		result.Counts["delegated_eligible"] = backlog.DelegatedEligible
+		result.Counts["held_exception"] = backlog.HeldException
+		result.Counts["stale_initial_retired"] = backlog.StaleRetired
+		if backlog.Imported != man.LeadCount || backlog.DelegatedEligible+backlog.HeldException != man.LeadCount {
+			result.Status = "partial"
+			result.Errors = append(result.Errors, "initial backlog denominator mismatch")
+			s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "partial", result, false, nil)
+			return result, errx.New(errx.ServiceUnavailable, "feed counts did not close; snapshot not committed")
+		}
 		woken, wakeErr := s.wakeEligibleEnrichmentRecovery(ctx, orgID)
 		if wakeErr != nil {
 			result.Status = "partial"
@@ -290,7 +369,11 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 		}
 		result.Counts["enrichment_recovery_woken"] = woken
 		result.Status = "completed"
-		s.persistFeedSync(ctx, orgID, man.Source.SnapshotHash, man.Source.RunID, uri, "completed", result, true, &generatedAt)
+		if persistErr := s.persistFeedSync(ctx, orgID, man.Source.SnapshotHash, man.Source.RunID, uri, "completed", result, true, &generatedAt); persistErr != nil {
+			result.Status = "partial"
+			result.Errors = append(result.Errors, "feed state publication failed")
+			return result, errx.New(errx.ServiceUnavailable, "feed state publication failed")
+		}
 		return result, nil
 	}
 
@@ -298,6 +381,67 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 	result.Status = "partial"
 	s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "partial", result, false, nil)
 	return result, errx.New(errx.BadRequest, "feed sync partial: "+strings.Join(partialErrs, "; "))
+}
+
+func (s *service) importValidatedManifestChunks(
+	ctx context.Context,
+	orgID uuid.UUID,
+	userID *uuid.UUID,
+	baseURI, snapshotHash string,
+	chunks []validatedManifestChunk,
+) (int, []string) {
+	results := make([]manifestChunkImportResult, len(chunks))
+	jobs := make(chan int, len(chunks))
+	workers := min(feedManifestImportConcurrency, len(chunks))
+	var wg sync.WaitGroup
+	for worker := 0; worker < workers; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for index := range jobs {
+				staged := chunks[index]
+				ch := staged.manifest
+				chunkRaw, readErr := os.ReadFile(staged.path)
+				if readErr != nil {
+					results[index].err = fmt.Sprintf("%s staged read: %v", ch.File, readErr)
+					continue
+				}
+				idem := fmt.Sprintf("sync:%s:%s:%d", orgID, snapshotHash, ch.ChunkIndex)
+				importRun, xerr := s.ImportFromBytes(ctx, orgID, userID, chunkRaw, ImportOptions{
+					IdempotencyKey:          idem,
+					SourceURI:               joinURI(baseURI, ch.File),
+					resumeStaleRunningAfter: feedChunkStaleImportRecoveryAfter,
+					skipCommercialPlanning:  true,
+				})
+				if xerr != nil {
+					results[index].err = fmt.Sprintf("%s import: %s", ch.File, xerr.Message)
+					continue
+				}
+				if importRun == nil || importRun.Status != models.OutreachImportCompleted {
+					results[index].err = fmt.Sprintf("%s import did not complete", ch.File)
+					continue
+				}
+				results[index].completed = true
+			}
+		}()
+	}
+	for index := range chunks {
+		jobs <- index
+	}
+	close(jobs)
+	wg.Wait()
+
+	completed := 0
+	errs := make([]string, 0)
+	for index := range results {
+		if results[index].completed {
+			completed++
+		}
+		if results[index].err != "" {
+			errs = append(errs, results[index].err)
+		}
+	}
+	return completed, errs
 }
 
 func validateOutreachManifest(manifest *outreachManifest) error {
@@ -309,6 +453,12 @@ func validateOutreachManifest(manifest *outreachManifest) error {
 	}
 	if manifest.ChunkCount != len(manifest.Chunks) || manifest.ChunkCount < 1 {
 		return fmt.Errorf("manifest chunk_count does not match chunks")
+	}
+	if manifest.ChunkCount > feedManifestMaxChunks {
+		return fmt.Errorf("manifest exceeds safe chunk ceiling")
+	}
+	if manifest.LeadCount < 1 || manifest.LeadCount > feedManifestMaxLeads {
+		return fmt.Errorf("manifest lead_count exceeds safe import ceiling")
 	}
 	seenFiles := make(map[string]struct{}, len(manifest.Chunks))
 	totalLeads := 0
@@ -346,6 +496,27 @@ func validateOutreachManifest(manifest *outreachManifest) error {
 		}
 	}
 	return nil
+}
+
+func decodeFeedSyncCounts(raw []byte) map[string]int {
+	out := map[string]int{}
+	var stored map[string]any
+	if json.Unmarshal(raw, &stored) != nil {
+		return out
+	}
+	for key, value := range stored {
+		switch key {
+		case "chunks_total", "chunks_imported", "deactivations", "skipped_same":
+			continue
+		}
+		switch n := value.(type) {
+		case float64:
+			out[key] = int(n)
+		case int:
+			out[key] = n
+		}
+	}
+	return out
 }
 
 func manifestBaseURI(uri string) string {
@@ -395,7 +566,7 @@ func (s *service) lastAppliedSnapshot(ctx context.Context, orgID uuid.UUID) (sna
 	return "", ""
 }
 
-func (s *service) persistFeedSync(ctx context.Context, orgID uuid.UUID, snap, run, uri, status string, res *FeedSyncResult, success bool, sourceGeneratedAt *time.Time) {
+func (s *service) persistFeedSync(ctx context.Context, orgID uuid.UUID, snap, run, uri, status string, res *FeedSyncResult, success bool, sourceGeneratedAt *time.Time) error {
 	now := time.Now().UTC()
 	st := &models.OutreachFeedSyncState{
 		OrganizationID:   orgID,
@@ -426,5 +597,5 @@ func (s *service) persistFeedSync(ctx context.Context, orgID uuid.UUID, snap, ru
 		b, _ := json.Marshal(counts)
 		st.CountsJSON = b
 	}
-	_ = s.repo.UpsertFeedSyncState(ctx, st)
+	return s.repo.UpsertFeedSyncState(ctx, st)
 }
