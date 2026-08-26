@@ -404,7 +404,7 @@ func TestPostgresGateThenCompleteLastSlot(t *testing.T) {
 	if err := svc.CompleteCampaignEmail(ctx, org, campaignID, enrollContactID, sequenceID, uuid.New(), uuid.New(), "prov-1", "smtp", time.Now().UTC()); err != nil {
 		t.Fatalf("complete last reserved slot must succeed: %v", err)
 	}
-	st, err := store.HeldSlot(ctx, auth.ID, MessageKeyCampaignEmail(campaignID, enrollContactID, sequenceID))
+	st, err := store.HeldSlot(ctx, auth.ID, cohortMessageKey(auth.ID, tp.ID))
 	if err != nil || st != CohortSlotSent {
 		t.Fatalf("slot state=%s err=%v want sent", st, err)
 	}

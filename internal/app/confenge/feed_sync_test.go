@@ -327,6 +327,30 @@ func TestPersistFeedSyncStoresAuthoritativeExpiryAndMembership(t *testing.T) {
 	}
 }
 
+func TestValidateOutreachManifestAllowsOnlyExplicitDeactivationStates(t *testing.T) {
+	base := outreachManifest{
+		SchemaVersion: "confenge.outreach.manifest.v1",
+		LeadCount:     1, ChunkCount: 1,
+		Chunks: []manifestChunk{{File: "chunk.json", ContentHash: strings.Repeat("a", 64), LeadCount: 1}},
+	}
+	for _, state := range []string{ActivationWatch, ActivationResearchRequired, ActivationSuppressed} {
+		manifest := base
+		manifest.Deactivations = []map[string]any{{"cnpj14": "11222333000144", "to_state": state}}
+		manifest.DeactivationCnt = 1
+		if err := validateOutreachManifest(&manifest); err != nil {
+			t.Fatalf("allowed deactivation %s rejected: %v", state, err)
+		}
+	}
+	for _, state := range []string{ActivationActionableNow, "UNKNOWN_STATE", ""} {
+		manifest := base
+		manifest.Deactivations = []map[string]any{{"cnpj14": "11222333000144", "to_state": state}}
+		manifest.DeactivationCnt = 1
+		if err := validateOutreachManifest(&manifest); err == nil {
+			t.Fatalf("unsupported deactivation %q accepted", state)
+		}
+	}
+}
+
 func TestSyncFeedManifestValidatesAllChunksBeforeMutation(t *testing.T) {
 	dir := t.TempDir()
 	org := uuid.New()

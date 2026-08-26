@@ -564,6 +564,10 @@ export type ConfengeDelegatedFirstTouchItem = {
     evidence_hash?: string;
     source_run_id: string;
     source_snapshot_hash: string;
+    source_expires_at?: string | null;
+    source_freshness_hash?: string;
+    target_membership_hash?: string;
+    target_membership_count: number;
     reason_codes?: string[];
     blocker_codes?: string[];
     content_hash?: string;
@@ -574,6 +578,8 @@ export type ConfengeDelegatedFirstTouchItem = {
 };
 
 export type ConfengeDelegatedFirstTouchStatus = {
+    schema_version: "warmbly.confenge.first-touch-control.v1";
+    runtime_release_sha?: string;
     batch_id?: string;
     policy_id: string;
     policy_version: string;
@@ -606,6 +612,40 @@ export type ConfengeDelegatedFirstTouchStatus = {
         no_candidate: number;
         capacity_blocked: number;
         capacity_blocker?: string;
+    };
+    control: {
+        schema_version: "warmbly.confenge.first-touch-control.v1";
+        source: {
+            run_id?: string;
+            snapshot_hash?: string;
+            freshness_state: "fresh" | "expired" | "stale" | "invalid" | "missing";
+            generated_at?: string | null;
+            expires_at?: string | null;
+            freshness_hash?: string;
+            target_membership_complete: boolean;
+            target_membership_hash?: string;
+            target_membership_count: number;
+            supplier_confirmed_count: number;
+        };
+        prepared: number;
+        ready_reservoir: number;
+        delegated_approved: number;
+        human_approved: number;
+        queued: number;
+        reserved: number;
+        next_due_at?: string | null;
+        furthest_due_at?: string | null;
+        transport: {
+            provider_attempts: number;
+            provider_accepted: number;
+            sent: number;
+            kill_switch_engaged: boolean;
+            dispatch_paused: boolean;
+            pause_reason?: string;
+        };
+        outcomes: Record<string, number>;
+        capacity?: ConfengeDispatchStatus;
+        blocker?: string;
     };
     items: ConfengeDelegatedFirstTouchItem[];
 };
@@ -880,6 +920,8 @@ export type ConfengeMailboxCapacity = {
     provider: string;
     credentials_ready: boolean;
     worker_assigned: boolean;
+    worker_healthy: boolean;
+    worker_last_seen_at?: string;
     auth_state: string;
     auth_spf: boolean;
     auth_dkim: boolean;

@@ -34,6 +34,7 @@ func completeTargetMembership() *authoritativeTargetMembership {
 func TestManifestAuthorityRequiresContemporaryFreshnessAndCompleteMembership(t *testing.T) {
 	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
 	manifest := &outreachManifest{SourceFreshness: freshSource(now), TargetMembership: completeTargetMembership()}
+	manifest.Source.RunID = "pncp-run-1"
 	authority, err := validateManifestAuthority(manifest, now, true)
 	if err != nil || authority == nil || authority.TargetMembershipCount != 10 || authority.SupplierConfirmedCount != 8 {
 		t.Fatalf("valid authority rejected: authority=%+v err=%v", authority, err)
@@ -59,6 +60,30 @@ func TestManifestAuthorityRequiresContemporaryFreshnessAndCompleteMembership(t *
 	incomplete.TargetMembership = &incompleteMembership
 	if _, err := validateManifestAuthority(&incomplete, now, true); err == nil || !strings.Contains(err.Error(), "membership_complete") {
 		t.Fatalf("incomplete membership accepted: %v", err)
+	}
+
+	mismatchedRun := *manifest
+	mismatchedRun.Source.RunID = "substituted-run"
+	if _, err := validateManifestAuthority(&mismatchedRun, now, true); err == nil || !strings.Contains(err.Error(), "run_id") {
+		t.Fatalf("freshness attestation for another run accepted: %v", err)
+	}
+}
+
+func TestHashStagedTargetMembershipUsesSortedUniqueRoots(t *testing.T) {
+	got, count, err := hashStagedTargetMembership(map[string]string{
+		"99888777000166": "chunk-2", "11222333000144": "chunk-1",
+	})
+	if err != nil || count != 2 {
+		t.Fatalf("membership hash failed: hash=%q count=%d err=%v", got, count, err)
+	}
+	want := hashText("11222333\n99888777\n")
+	if got != want {
+		t.Fatalf("membership hash=%q want %q", got, want)
+	}
+	if _, _, err := hashStagedTargetMembership(map[string]string{
+		"11222333000144": "chunk-1", "11222333000225": "chunk-2",
+	}); err == nil || !strings.Contains(err.Error(), "duplicate CNPJ roots") {
+		t.Fatalf("duplicate root accepted: %v", err)
 	}
 }
 

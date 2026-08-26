@@ -76,35 +76,41 @@ func (s *service) ProcessDraftGenerationOnce(ctx context.Context) (bool, error) 
 	var orgID, accountID uuid.UUID
 	var attempts int
 	err := s.humanGateDB.QueryRow(ctx, `
-		WITH next AS (
+		WITH review_capacity AS MATERIALIZED (
+			SELECT review_backlog.organization_id,count(*)::int AS review_count
+			FROM outreach_touchpoints review_backlog
+			JOIN outreach_accounts review_account
+			  ON review_account.organization_id=review_backlog.organization_id
+			 AND review_account.id=review_backlog.account_id
+			JOIN outreach_feed_sync_state review_feed
+			  ON review_feed.organization_id=review_backlog.organization_id
+			WHERE review_backlog.ordinal=1
+			  AND review_backlog.state='NEEDS_REVIEW'
+			  AND ($5::uuid='00000000-0000-0000-0000-000000000000'::uuid
+			    OR review_backlog.organization_id=$5)
+			  AND review_feed.last_status='completed'
+			  AND review_account.source_run_id=review_feed.last_run_id
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM confenge_delegated_first_touch_decisions decision
+				WHERE decision.organization_id=review_backlog.organization_id
+				  AND decision.account_id=review_backlog.account_id
+				  AND decision.evidence_source_run_id=review_account.source_run_id
+			  )
+			GROUP BY review_backlog.organization_id
+		), next AS (
 			SELECT a.id
 			FROM outreach_accounts a
 			JOIN outreach_feed_sync_state feed
 			  ON feed.organization_id=a.organization_id
+			LEFT JOIN review_capacity capacity
+			  ON capacity.organization_id=a.organization_id
 			WHERE a.queue_state = 'READY_TO_GENERATE'
+			  AND ($5::uuid='00000000-0000-0000-0000-000000000000'::uuid
+			    OR a.organization_id=$5)
 			  AND feed.last_status='completed'
 			  AND a.source_run_id=feed.last_run_id
-			  AND (
-				SELECT count(*)
-				FROM outreach_touchpoints review_backlog
-				JOIN outreach_accounts review_account
-				  ON review_account.organization_id=review_backlog.organization_id
-				 AND review_account.id=review_backlog.account_id
-				JOIN outreach_feed_sync_state review_feed
-				  ON review_feed.organization_id=review_backlog.organization_id
-				WHERE review_backlog.organization_id=a.organization_id
-				  AND review_backlog.ordinal=1
-				  AND review_backlog.state='NEEDS_REVIEW'
-				  AND review_feed.last_status='completed'
-				  AND review_account.source_run_id=review_feed.last_run_id
-				  AND NOT EXISTS (
-					SELECT 1
-					FROM confenge_delegated_first_touch_decisions decision
-					WHERE decision.organization_id=review_backlog.organization_id
-					  AND decision.account_id=review_backlog.account_id
-					  AND decision.evidence_source_run_id=review_account.source_run_id
-				  )
-			  ) < $3
+			  AND COALESCE(capacity.review_count,0) < $3
 			  AND a.target_fit_eligible = true
 			  AND a.blocked = false
 			  AND a.do_not_contact = false
@@ -152,7 +158,7 @@ func (s *service) ProcessDraftGenerationOnce(ctx context.Context) (bool, error) 
 			  ))
 			ORDER BY a.draft_generation_retry_at, a.created_at, a.id
 			LIMIT 1
-			FOR UPDATE SKIP LOCKED
+			FOR UPDATE OF a SKIP LOCKED
 		)
 		UPDATE outreach_accounts a
 		SET draft_generation_reserved_until = $2,
@@ -161,7 +167,7 @@ func (s *service) ProcessDraftGenerationOnce(ctx context.Context) (bool, error) 
 		FROM next
 		WHERE a.id = next.id
 		RETURNING a.organization_id, a.id, a.draft_generation_attempts`, now, now.Add(draftGenerationLease),
-		s.draftReviewBacklogTarget(), s.cfg.DelegatedFirstTouchEnabled).Scan(&orgID, &accountID, &attempts)
+		s.draftReviewBacklogTarget(), s.cfg.DelegatedFirstTouchEnabled, s.cfg.OperatorOrgID).Scan(&orgID, &accountID, &attempts)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil

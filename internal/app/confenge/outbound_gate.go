@@ -598,7 +598,7 @@ func (s *service) assertBoundedCohortTransport(ctx context.Context, tp *models.O
 	if auth == nil {
 		return fmt.Errorf("bounded cohort grant missing at transport")
 	}
-	return CanTransportCohort(tp, auth, s.liveCohortInput(ctx, tp, cand, messageKey))
+	return CanTransportCohort(tp, auth, s.liveCohortInput(ctx, tp, cand, boundedCohortMessageKey(tp, messageKey)))
 }
 
 func (s *service) assertAuthoritativeFeedForTransport(ctx context.Context, orgID uuid.UUID, acc *models.OutreachAccount) error {
@@ -761,7 +761,7 @@ func (s *service) transitionCompletedTouchpointKeyed(ctx context.Context, orgID 
 		if err != nil {
 			return fmt.Errorf("bounded cohort store unavailable: %w", err)
 		}
-		in := s.liveCohortInput(ctx, tp, cand, messageKey)
+		in := s.liveCohortInput(ctx, tp, cand, boundedCohortMessageKey(tp, messageKey))
 		if err := TransitionToSentCohort(tp, now, providerMessageID, auth, in); err != nil {
 			return err
 		}
@@ -817,17 +817,25 @@ func cohortMessageKey(authID, touchpointID uuid.UUID) string {
 	return fmt.Sprintf("cohort:%s:tp:%s", authID, touchpointID)
 }
 
+func boundedCohortMessageKey(tp *models.OutreachTouchpoint, fallback string) string {
+	if tp != nil && tp.ID != uuid.Nil && tp.CampaignPolicyAuthorizationID != nil {
+		return cohortMessageKey(*tp.CampaignPolicyAuthorizationID, tp.ID)
+	}
+	return fallback
+}
+
 func (s *service) commitCohortSlot(ctx context.Context, tp *models.OutreachTouchpoint, now time.Time, messageKey string) error {
 	if s == nil || s.cohortStore == nil || tp == nil || tp.CampaignPolicyAuthorizationID == nil {
 		return nil
 	}
-	if messageKey == "" {
-		if tp.ID == uuid.Nil {
-			s.cohortStore.RecordSent(*tp.CampaignPolicyAuthorizationID, now.UTC().Format("2006-01-02"))
-			return nil
+	if tp.ID == uuid.Nil {
+		if messageKey != "" {
+			return fmt.Errorf("bounded cohort touchpoint id missing")
 		}
-		messageKey = cohortMessageKey(*tp.CampaignPolicyAuthorizationID, tp.ID)
+		s.cohortStore.RecordSent(*tp.CampaignPolicyAuthorizationID, now.UTC().Format("2006-01-02"))
+		return nil
 	}
+	messageKey = boundedCohortMessageKey(tp, messageKey)
 	if err := s.cohortStore.CommitSlot(ctx, *tp.CampaignPolicyAuthorizationID, messageKey, now); err != nil {
 		if errors.Is(err, ErrCohortSlotNotHeld) {
 			if _, rerr := s.cohortStore.ReserveSlot(ctx, *tp.CampaignPolicyAuthorizationID, messageKey, now); rerr != nil {

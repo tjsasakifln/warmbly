@@ -1275,7 +1275,7 @@ function MailboxCapacityPanel({ status }: { status: ConfengeDispatchStatus }) {
             <div className="text-[11.5px] text-slate-600">
               <div className="text-[10px] uppercase tracking-[0.14em] text-slate-400">Autenticação</div>
               <div className="mt-1">{mailbox.auth_state === "passing" && mailbox.auth_spf && mailbox.auth_dkim && mailbox.auth_dmarc ? "SPF, DKIM e DMARC válidos" : capacityReasonLabel(mailbox.health_reason)}</div>
-              <div className="text-[11px] text-slate-400">Credencial {mailbox.credentials_ready ? "presente" : "ausente"} · worker {mailbox.worker_assigned ? "atribuído" : "ausente"}</div>
+              <div className="text-[11px] text-slate-400">Credencial {mailbox.credentials_ready ? "presente" : "ausente"} · worker {!mailbox.worker_assigned ? "ausente" : mailbox.worker_healthy ? "saudável" : "sem heartbeat"}</div>
             </div>
             <div className="text-[11.5px] text-slate-600">
               <div className="text-[10px] uppercase tracking-[0.14em] text-slate-400">Envelope configurado</div>
@@ -1373,6 +1373,7 @@ function DelegatedFirstTouchPanel({
 }) {
   const counts = status?.counts ?? {};
   const runway = status?.runway;
+  const control = status?.control;
   const holds = (counts.HOLD ?? 0) + (counts.CANCELLED ?? 0);
   const delegated = (counts.APPROVED ?? 0) + (counts.APPROVED_NOT_SCHEDULED ?? 0) + (counts.QUEUED ?? 0) + (counts.SENT ?? 0);
   return (
@@ -1402,6 +1403,18 @@ function DelegatedFirstTouchPanel({
         <ReadinessItem label="Stale retired" value={String(runway?.stale_retired ?? 0)} />
         <ReadinessItem label="HOLD / sem candidato" value={`${runway?.held ?? 0} / ${runway?.no_candidate ?? 0}`} />
         <ReadinessItem label="Capacity blocker" value={runway?.capacity_blocked ? runway.capacity_blocker || "blocked" : "ok"} />
+      </div>
+      <div className="grid grid-cols-2 gap-2 border-t border-slate-100 px-3 py-3 text-[11.5px] sm:grid-cols-5">
+        <ReadinessItem label="Current feed" value={control?.source.run_id ? `${control.source.run_id} · ${control.source.freshness_state}` : "ausente"} />
+        <ReadinessItem label="Prepared / READY" value={`${control?.prepared ?? 0} / ${control?.ready_reservoir ?? 0}`} />
+        <ReadinessItem label="Delegated / human" value={`${control?.delegated_approved ?? 0} / ${control?.human_approved ?? 0}`} />
+        <ReadinessItem label="Attempted / accepted / sent" value={`${control?.transport.provider_attempts ?? 0} / ${control?.transport.provider_accepted ?? 0} / ${control?.transport.sent ?? 0}`} />
+        <ReadinessItem label="Transport" value={control?.blocker || (control?.transport.dispatch_paused || control?.transport.kill_switch_engaged ? "pausado" : "aberto")} />
+        <ReadinessItem label="Next due" value={control?.next_due_at ? formatPtBrDate(control.next_due_at) || "UNKNOWN" : "sem slot"} />
+        <ReadinessItem label="Feed hash" value={control?.source.snapshot_hash?.slice(0, 12) || "ausente"} />
+        <ReadinessItem label="Membership" value={`${control?.source.target_membership_count ?? 0} · ${control?.source.target_membership_complete ? "completo" : "incompleto"}`} />
+        <ReadinessItem label="Outcomes" value={String(Object.values(control?.outcomes ?? {}).reduce((sum, value) => sum + value, 0))} />
+        <ReadinessItem label="Schema" value={status?.schema_version ?? "indisponível"} />
       </div>
       <p className="px-3 pb-2 text-[11.5px] text-slate-500">
         Itens elegíveis são aprovados por <code>DELEGATED_POLICY_APPROVE</code>. Revisão humana é reservada a HOLD, conflito, UNKNOWN, drift ou reprovação de gate.

@@ -241,6 +241,8 @@ type MailboxCapacity struct {
 	Provider             string                `json:"provider"`
 	CredentialsReady     bool                  `json:"credentials_ready"`
 	WorkerAssigned       bool                  `json:"worker_assigned"`
+	WorkerHealthy        bool                  `json:"worker_healthy"`
+	WorkerLastSeenAt     *time.Time            `json:"worker_last_seen_at,omitempty"`
 	AuthState            string                `json:"auth_state"`
 	AuthSPF              bool                  `json:"auth_spf"`
 	AuthDKIM             bool                  `json:"auth_dkim"`

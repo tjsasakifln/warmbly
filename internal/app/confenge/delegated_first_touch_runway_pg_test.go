@@ -3,6 +3,7 @@ package confenge
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,7 +26,8 @@ func enableDelegatedRunwayFixture(t *testing.T, f *delegatedPGFixture, days, dai
 	f.svc.WireDispatchGovernor(dispatch.NewGovernor(dispatch.Config{
 		SendsPerHour: 10, MinGap: 10 * time.Minute, Timezone: "America/Sao_Paulo",
 		WindowStart: "09:00", WindowEnd: "18:00", BusinessDaysOnly: true,
-	}, dispatch.NewMemoryStore(), nil))
+		EnvPaused: true, EnvPauseReason: "delegated runway no-SMTP test",
+	}, dispatch.NewPGStore(f.pool), nil))
 }
 
 func prepareDelegatedRunwayCandidates(t *testing.T, f *delegatedPGFixture, total int) {
@@ -56,8 +58,8 @@ func prepareDelegatedRunwayCandidates(t *testing.T, f *delegatedPGFixture, total
 		account.SourceLeadID = fmt.Sprintf("runway-lead-%04d", i)
 		account.CNPJ14 = fmt.Sprintf("%08d000100", 20000000+i)
 		account.CNPJRoot = account.CNPJ14[:8]
-		account.RazaoSocial = "Empresa Runway Ltda"
-		account.NomeFantasia = "Empresa Runway"
+		account.RazaoSocial = "Empresa Runway " + strings.Repeat("A", i) + " Ltda"
+		account.NomeFantasia = "Empresa Runway " + strings.Repeat("A", i)
 		account.SupplierCNPJ14 = account.CNPJ14
 		account.SupplierIdentityRef = "cnpj:" + account.CNPJ14
 		account.ContractorRoleEvidenceIDs = []string{fmt.Sprintf("contract-runway-%04d", i)}
@@ -76,25 +78,22 @@ func prepareDelegatedRunwayCandidates(t *testing.T, f *delegatedPGFixture, total
 		if _, err := f.repo.UpsertCandidate(f.ctx, &candidate); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.repo.UpsertEvidence(f.ctx, &models.OutreachEvidence{
+		evidence := models.OutreachEvidence{
 			ID: uuid.New(), OrganizationID: f.orgID, AccountID: account.ID,
 			SourceEvidenceID: account.ContractorRoleEvidenceIDs[0], EvidenceType: "CONTRACT",
 			URL: "https://pncp.gov.br/contratos/runway", Synthesis: account.NomeFantasia + " figura como contratada.",
 			EpistemicClass: models.OutreachEpistemicConfirmedFact, Reliability: "HIGH",
 			ConsultedAt: &now, LastImportRunID: account.LastImportRunID,
-		}); err != nil {
+		}
+		if _, err := f.repo.UpsertEvidence(f.ctx, &evidence); err != nil {
 			t.Fatal(err)
 		}
-		entry := baseEntry
+		copy := buildDelegatedRoutingCopy(&account, &candidate, []models.OutreachEvidence{evidence})
+		entry := delegatedEntryFromCurrentState(&account, &candidate, uuid.New(), copy)
 		entry.IdempotencyKey = "prepared-runway:" + account.ID.String()
-		entry.AccountID, entry.ContactCandidateID = account.ID, candidate.ID
-		entry.CNPJ14, entry.SupplierCNPJ14 = account.CNPJ14, account.SupplierCNPJ14
-		entry.SupplierIdentityRef = account.SupplierIdentityRef
-		entry.ContractEvidenceIDs, entry.EvidenceIDs = account.ContractorRoleEvidenceIDs, account.ContractorRoleEvidenceIDs
-		entry.Recipient, entry.RouteClass = candidate.Email, CandidateRouteClass(&candidate)
-		entry.WebSources = []DelegatedWebSource{{
-			URL: candidate.SourceURL, Kind: "PUBLIC_COMPANY_SOURCE", Supports: "COMPANY_MAILBOX", ObservedAt: now,
-		}}
+		entry.CorrelationID = "prepared-runway:" + account.ID.String()
+		entry.Recipient = candidate.Email
+		entry.RouteClass = CandidateRouteClass(&candidate)
 		entry.SubjectHash, entry.BodyHash = hashText(entry.Subject), hashText(entry.BodyText)
 		if _, _, err := f.svc.prepareDelegatedTouchpoint(f.ctx, f.orgID, &account, &candidate, f.manifest, entry); err != nil {
 			t.Fatal(err)
@@ -118,7 +117,12 @@ func TestDelegatedFirstTouchRunwayFillsThirtyDaysPostgres(t *testing.T) {
 		}
 	}
 	if processed < 2 || processed >= 100 {
-		t.Fatalf("runway fill processed=%d, want finite multi-item fill", processed)
+		var states string
+		_ = f.pool.QueryRow(f.ctx, `SELECT COALESCE(string_agg(state || ':' || blocker_codes::text,','),'') FROM confenge_delegated_first_touch_decisions WHERE organization_id=$1`, f.orgID).Scan(&states)
+		feed, _ := f.repo.GetFeedSyncState(f.ctx, f.orgID)
+		auth, _ := f.svc.policyStore.GetCampaignPolicyByID(f.ctx, f.orgID, f.manifest.PolicyAuthorizationID)
+		plan, _ := f.svc.delegatedFirstTouchRunwayPlan(f.ctx, f.orgID, feed, auth, time.Now().UTC())
+		t.Fatalf("runway fill processed=%d, want finite multi-item fill; plan=%+v states=%s", processed, plan, states)
 	}
 	metrics := f.svc.delegatedFirstTouchRunwayMetrics(f.ctx, f.orgID)
 	if metrics.CapacityBlocked != 0 || metrics.QueuedCount < 2 || metrics.ReservedCount != 0 {
@@ -127,7 +131,9 @@ func TestDelegatedFirstTouchRunwayFillsThirtyDaysPostgres(t *testing.T) {
 		t.Fatalf("unexpected runway metrics: %+v blockers=%s", metrics, blockers)
 	}
 	if metrics.FurthestDueAt == nil || metrics.TargetRunwayUntil == nil || metrics.FurthestDueAt.Before(*metrics.TargetRunwayUntil) {
-		t.Fatalf("runway did not reach 30-day target: %+v", metrics)
+		var states string
+		_ = f.pool.QueryRow(f.ctx, `SELECT COALESCE(string_agg(state || ':' || blocker_codes::text,','),'') FROM confenge_delegated_first_touch_decisions WHERE organization_id=$1`, f.orgID).Scan(&states)
+		t.Fatalf("runway did not reach 30-day target: %+v states=%s", metrics, states)
 	}
 	if metrics.CurrentScheduledCount < metrics.TargetScheduledCount || metrics.CurrentScheduledCount > metrics.TargetScheduledCount+1 {
 		t.Fatalf("scheduled=%d target=%d", metrics.CurrentScheduledCount, metrics.TargetScheduledCount)
@@ -166,7 +172,7 @@ func TestDelegatedFirstTouchReadyReservoirCountsOneThousandPostgres(t *testing.T
 	prepareDelegatedRunwayCandidates(t, f, 1)
 	baseAccountID := f.manifest.Entries[0].AccountID
 	baseCandidateID := f.manifest.Entries[0].ContactCandidateID
-	baseTouchpointID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(DelegatedFirstTouchPolicyV1+"\x00touchpoint\x00"+f.orgID.String()+"\x00"+baseAccountID.String()))
+	baseTouchpointID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(DelegatedFirstTouchPolicyV1+"\x00touchpoint\x00"+f.orgID.String()+"\x00"+f.manifest.SourceRunID+"\x00"+baseAccountID.String()))
 	if _, err := f.pool.Exec(f.ctx, `
 		WITH new_accounts AS (
 		  INSERT INTO outreach_accounts
@@ -241,7 +247,7 @@ func TestDelegatedFirstTouchReadyReservoirCountsOneThousandPostgres(t *testing.T
 	}
 }
 
-func TestDelegatedFirstTouchRunwayAggregatesSelectedMailboxesPostgres(t *testing.T) {
+func TestDelegatedFirstTouchRunwayUsesOnlyAuthorizedMailboxPostgres(t *testing.T) {
 	f := newDelegatedPGFixture(t)
 	enableDelegatedRunwayFixture(t, f, 30, 50)
 	feed, _ := f.repo.GetFeedSyncState(f.ctx, f.orgID)
@@ -253,8 +259,9 @@ func TestDelegatedFirstTouchRunwayAggregatesSelectedMailboxesPostgres(t *testing
 	mailboxID := uuid.New()
 	mailbox := "runway-second-" + f.orgID.String() + "@example.test"
 	if _, err := f.pool.Exec(f.ctx, `
-		INSERT INTO email_accounts(id,user_id,organization_id,worker_id,email,name,signature_plain,signature_html,provider,status,warmup_tag,campaign_limit,min_wait_time,risk_band)
-		VALUES($1,$2,$3,$4,$5,'Runway 2','','','smtp_imap','active','runway-test',50,600,'clean')`,
+		INSERT INTO email_accounts(id,user_id,organization_id,worker_id,email,name,signature_plain,signature_html,provider,status,warmup_tag,campaign_limit,min_wait_time,risk_band,
+			auth_state,auth_spf,auth_dkim,auth_dmarc,auth_checked_at)
+		VALUES($1,$2,$3,$4,$5,'Runway 2','','','smtp_imap','active','runway-test',50,600,'clean','passing',true,true,true,now())`,
 		mailboxID, f.actorID, f.orgID, f.workerID, mailbox); err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +271,7 @@ func TestDelegatedFirstTouchRunwayAggregatesSelectedMailboxesPostgres(t *testing
 		t.Fatal(err)
 	}
 	two, err := f.svc.delegatedFirstTouchRunwayPlan(f.ctx, f.orgID, feed, auth, time.Now().UTC())
-	if err != nil || !two.CapacityKnown || two.MailboxCount != 2 || two.DailyCapacity != 20 {
+	if err != nil || !two.CapacityKnown || two.MailboxCount != 1 || two.DailyCapacity != 10 {
 		t.Fatalf("two mailbox plan: %+v err=%v", two, err)
 	}
 }
@@ -354,12 +361,19 @@ func TestDelegatedFirstTouchRunwayRefreshesBindingsAndStopsOnMailboxPausePostgre
 			t.Fatal(err)
 		}
 	}
+	sourceExpiresAt := now.Add(time.Hour)
 	if err := f.repo.UpsertFeedSyncState(f.ctx, &models.OutreachFeedSyncState{
 		OrganizationID: f.orgID, LastSnapshotHash: newSnapshot, LastRunID: newRunID,
 		LastManifestURI: "file:///runway-refresh.json", LastSuccessAt: &now, LastAttemptAt: &now,
-		LastStatus: "completed", SourceGeneratedAt: &now,
+		LastStatus: "completed", SourceGeneratedAt: &now, SourceExpiresAt: &sourceExpiresAt,
+		SourceFreshnessHash: hashText("freshness-" + newRunID), TargetMembershipComplete: true,
+		TargetMembershipHash: hashText("membership-" + newRunID), TargetMembershipCount: 1, SupplierConfirmedCount: 1,
 	}); err != nil {
 		t.Fatal(err)
+	}
+	backlog, err := f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, newRunID)
+	if err != nil || backlog.InitialPrepared != 1 || backlog.StaleRetired != 1 {
+		t.Fatalf("feed refresh materialization: counts=%+v err=%v", backlog, err)
 	}
 	if ok, err := f.svc.ProcessDelegatedFirstTouchOnce(f.ctx); err != nil || !ok {
 		t.Fatalf("feed refresh replenishment: processed=%v err=%v", ok, err)
@@ -431,7 +445,7 @@ func TestDelegatedFirstTouchRunwayNeverSelectsFollowupsPostgres(t *testing.T) {
 	f := newDelegatedPGFixture(t)
 	enableDelegatedRunwayFixture(t, f, 30, 50)
 	prepareDelegatedRunwayCandidates(t, f, 1)
-	baseID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(DelegatedFirstTouchPolicyV1+"\x00touchpoint\x00"+f.orgID.String()+"\x00"+f.manifest.Entries[0].AccountID.String()))
+	baseID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(DelegatedFirstTouchPolicyV1+"\x00touchpoint\x00"+f.orgID.String()+"\x00"+f.manifest.SourceRunID+"\x00"+f.manifest.Entries[0].AccountID.String()))
 	base, err := f.repo.GetTouchpoint(f.ctx, f.orgID, baseID)
 	if err != nil || base == nil {
 		t.Fatalf("base first touch unavailable: %+v %v", base, err)

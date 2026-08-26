@@ -77,17 +77,18 @@ func newRecomposeFixture(t *testing.T) *recomposeFixture {
 func (f *recomposeFixture) seedCanonicalSource() {
 	f.t.Helper()
 	unknown := true
-	for _, spec := range []struct{ ref, cnpj, fact, mailbox string }{
+	for _, spec := range []struct{ ref, cnpj, fact, mailbox, service string }{
 		// Record-shaped facts, because the composer digests a public record and
 		// refuses a generic phrase that names no work.
-		{"acc-recompose-a", "11111111000191", "objeto: recuperação estrutural da ponte sobre o Rio Sapucaí; órgão: DNIT; UF MG", "contato@empresa-ra.invalid"},
-		{"acc-recompose-b", "22222222000192", "objeto: licenciamento ambiental para mineração de calcário; órgão: SEMAD; UF MG", "contato@empresa-rb.invalid"},
-		{"acc-recompose-c", "33333333000193", "objeto: manutenção preventiva das estações elevatórias de esgoto; órgão: SANEAGO; UF GO", "contato@empresa-rc.invalid"},
+		{"acc-recompose-a", "11111111000191", "objeto: recuperação estrutural da ponte sobre o Rio Sapucaí; órgão: DNIT; UF MG", "contato@empresa-ra.invalid", "REAJUSTE_14133"},
+		{"acc-recompose-b", "22222222000192", "objeto: licenciamento ambiental para mineração de calcário; órgão: SEMAD; UF MG", "contato@empresa-rb.invalid", "MONITORAMENTO_CONTRATUAL"},
+		{"acc-recompose-c", "33333333000193", "objeto: manutenção preventiva das estações elevatórias de esgoto; órgão: SANEAGO; UF GO", "contato@empresa-rc.invalid", "DIAGNOSTICO"},
 	} {
 		acc := cohortAccount(spec.ref, spec.cnpj, spec.fact)
 		acc.ID = uuid.New()
 		acc.OrganizationID = f.org
 		acc.SourceRunID = f.runID
+		acc.ServiceCode = spec.service
 		cand := models.OutreachContactCandidate{
 			ID:              uuid.New(),
 			AccountID:       acc.ID,
@@ -144,7 +145,6 @@ func (f *recomposeFixture) freezeLegacyVersionOne() {
 		m.ContentHash = hashControlledContent(m.Mailbox, m.RouteClass, m.Subject, m.BodyText)
 	}
 	snap.CohortHash = HashFrozenCohort(snap)
-
 	f.cohortID, f.versionID = uuid.New(), uuid.New()
 	raw, err := json.Marshal(snap)
 	if err != nil {

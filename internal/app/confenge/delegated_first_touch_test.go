@@ -53,6 +53,17 @@ func TestDelegatedOrganizationRiskFailsClosed(t *testing.T) {
 	}
 }
 
+func TestDelegatedDraftIdentityIsStableWithinRunAndDistinctAcrossRuns(t *testing.T) {
+	orgID, accountID := uuid.New(), uuid.New()
+	first := delegatedFirstTouchDraftID(orgID, "source-run-1", accountID)
+	if replay := delegatedFirstTouchDraftID(orgID, "source-run-1", accountID); replay != first {
+		t.Fatalf("same source run produced a different draft id: %s != %s", replay, first)
+	}
+	if refreshed := delegatedFirstTouchDraftID(orgID, "source-run-2", accountID); refreshed == first {
+		t.Fatal("source refresh reused the previous draft id")
+	}
+}
+
 func TestDelegatedPolicyBindsTemplateAndExplicitGreenTemplateAuthority(t *testing.T) {
 	now := time.Now().UTC()
 	orgID, founderID := uuid.New(), uuid.New()

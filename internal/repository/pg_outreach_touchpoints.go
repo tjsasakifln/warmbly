@@ -353,17 +353,26 @@ func (r *outreachRepository) CASScheduleTouchpoint(ctx context.Context, orgID, i
 			due_at=EXCLUDED.due_at, recipient_ref=EXCLUDED.recipient_ref,
 			status=CASE
 				WHEN confenge_dispatch_queue.status='cancelled'
-				  AND confenge_dispatch_queue.cancel_reason='delegated_authority_or_source_binding_advanced' THEN 'queued'
+				  AND confenge_dispatch_queue.cancel_reason IN (
+					'delegated_authority_or_source_binding_advanced',
+					'source_run_superseded'
+				  ) THEN 'queued'
 				WHEN confenge_dispatch_queue.status IN ('sent','cancelled') THEN confenge_dispatch_queue.status
 				ELSE 'queued'
 			END,
 			cancel_reason=CASE
 				WHEN confenge_dispatch_queue.status='cancelled'
-				  AND confenge_dispatch_queue.cancel_reason<>'delegated_authority_or_source_binding_advanced'
+				  AND confenge_dispatch_queue.cancel_reason NOT IN (
+					'delegated_authority_or_source_binding_advanced',
+					'source_run_superseded'
+				  )
 				  THEN confenge_dispatch_queue.cancel_reason ELSE '' END,
 			last_error=CASE
 				WHEN confenge_dispatch_queue.status='cancelled'
-				  AND confenge_dispatch_queue.cancel_reason<>'delegated_authority_or_source_binding_advanced'
+				  AND confenge_dispatch_queue.cancel_reason NOT IN (
+					'delegated_authority_or_source_binding_advanced',
+					'source_run_superseded'
+				  )
 				  THEN confenge_dispatch_queue.last_error ELSE '' END,
 			reserved_until=NULL, updated_at=EXCLUDED.updated_at`,
 		orgID, tp.Channel, *tp.DraftID, messageKey, strings.ToLower(strings.TrimSpace(tp.Recipient)), dueAt.UTC(), now)

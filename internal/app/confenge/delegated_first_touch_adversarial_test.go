@@ -31,9 +31,12 @@ func newDelegatedValidationFixture(t *testing.T, routeClass, email string) deleg
 	snapshot := strings.Repeat("b", 64)
 	evidenceHash := strings.Repeat("a", 64)
 	repo := newMemRepo()
+	expiresAt := now.Add(time.Hour)
 	repo.feedSync = map[uuid.UUID]*models.OutreachFeedSyncState{orgID: {
 		OrganizationID: orgID, LastRunID: runID, LastSnapshotHash: snapshot,
-		LastStatus: "completed", SourceGeneratedAt: &now,
+		LastStatus: "completed", SourceGeneratedAt: &now, SourceExpiresAt: &expiresAt,
+		SourceFreshnessHash: strings.Repeat("d", 64), TargetMembershipComplete: true,
+		TargetMembershipHash: strings.Repeat("e", 64), TargetMembershipCount: 1, SupplierConfirmedCount: 1,
 	}}
 	account := &models.OutreachAccount{
 		ID: accountID, OrganizationID: orgID, SourceLeadID: "lead-1", CNPJ14: "11222333000144", CNPJRoot: "11222333",
@@ -287,9 +290,11 @@ func TestDelegatedFirstTouchRejectsExactContentReuse(t *testing.T) {
 }
 
 func TestDelegatedFirstTouchCanonicalTransportStateFailsClosed(t *testing.T) {
+	authCheckedAt := time.Now().UTC()
 	valid := delegatedTransportAuthority{
 		CampaignStatus: "paused", MailboxStatus: "active", MailboxRiskBand: "clean",
-		WorkerAssigned: true, CredentialsPresent: true, SenderSelected: true,
+		WorkerAssigned: true, WorkerHealthy: true, CredentialsPresent: true, SenderSelected: true,
+		AuthState: "passing", AuthSPF: true, AuthDKIM: true, AuthDMARC: true, AuthCheckedAt: &authCheckedAt,
 		CampaignLimit: 50, MinWaitTime: 600,
 	}
 	if blockers := validateDelegatedTransportState(valid); len(blockers) != 0 {
@@ -310,7 +315,9 @@ func TestDelegatedFirstTouchCanonicalTransportStateFailsClosed(t *testing.T) {
 		"inactive_mailbox":    func(s *delegatedTransportAuthority) { s.MailboxStatus = "inactive" },
 		"quarantined_mailbox": func(s *delegatedTransportAuthority) { s.MailboxRiskBand = "quarantine" },
 		"missing_worker":      func(s *delegatedTransportAuthority) { s.WorkerAssigned = false },
+		"unhealthy_worker":    func(s *delegatedTransportAuthority) { s.WorkerHealthy = false },
 		"missing_credentials": func(s *delegatedTransportAuthority) { s.CredentialsPresent = false },
+		"dns_auth_unknown":    func(s *delegatedTransportAuthority) { s.AuthState = "unknown" },
 		"outside_sender_pool": func(s *delegatedTransportAuthority) { s.SenderSelected = false },
 		"invalid_rate_bounds": func(s *delegatedTransportAuthority) { s.MinWaitTime = 0 },
 	} {

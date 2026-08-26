@@ -114,13 +114,7 @@ func (s *service) delegatedFirstTouchRunwayPlan(
 		plan.CapacityBlocker = "runway_horizon_invalid"
 		return plan, nil
 	}
-	maxAge := s.cfg.FeedMaxAge
-	if maxAge <= 0 {
-		maxAge = 24 * time.Hour
-	}
-	if feed.LastStatus != "completed" || feed.SourceGeneratedAt == nil ||
-		strings.TrimSpace(feed.LastRunID) == "" || strings.TrimSpace(feed.LastSnapshotHash) == "" ||
-		feed.SourceGeneratedAt.After(now.Add(5*time.Minute)) || now.Sub(feed.SourceGeneratedAt.UTC()) > maxAge {
+	if err := validateAuthoritativeFeedState(feed, now, s.cfg.FeedMaxAge, true); err != nil {
 		plan.CapacityBlocker = "policy_or_feed_stale"
 		return plan, nil
 	}
@@ -144,8 +138,19 @@ func (s *service) delegatedFirstTouchRunwayPlan(
 	if err != nil {
 		return plan, err
 	}
-	if status.Paused || !s.cfg.SendingAllowed() {
-		plan.CapacityBlocker = "transport_paused"
+	var selectedMailbox *dispatch.MailboxCapacity
+	for i := range status.Mailboxes {
+		if strings.EqualFold(status.Mailboxes[i].Email, auth.SenderMailbox) {
+			selectedMailbox = &status.Mailboxes[i]
+			break
+		}
+	}
+	if selectedMailbox == nil {
+		plan.CapacityBlocker = "authorized_mailbox_capacity_unknown"
+		return plan, nil
+	}
+	if selectedMailbox.Health == "blocked" || selectedMailbox.EffectiveDailyCap < 1 || selectedMailbox.EffectiveHourlyCap < 1 {
+		plan.CapacityBlocker = firstNonEmpty(selectedMailbox.HealthReason, "authorized_mailbox_capacity_blocked")
 		return plan, nil
 	}
 
@@ -216,6 +221,7 @@ func (s *service) delegatedFirstTouchDailyCapacity(
 		FROM campaigns c
 		JOIN email_accounts ea ON ea.user_id=c.user_id AND ea.organization_id=c.organization_id
 		WHERE c.organization_id=$1 AND c.id=$2
+		  AND lower(ea.email)=lower($3)
 		  AND (
 		    (NOT EXISTS (SELECT 1 FROM campaign_senders cs WHERE cs.campaign_id=c.id AND cs.enabled)
 		      AND NOT EXISTS (SELECT 1 FROM campaign_email_tags cet WHERE cet.campaign_id=c.id))
@@ -226,7 +232,7 @@ func (s *service) delegatedFirstTouchDailyCapacity(
 		        WHERE cet.campaign_id=c.id AND et.email_id=ea.id
 		      )
 		  )
-		ORDER BY ea.id`, orgID, auth.CampaignID)
+		ORDER BY ea.id`, orgID, auth.CampaignID, auth.SenderMailbox)
 	if err != nil {
 		return 0, 0, "", err
 	}
@@ -248,10 +254,7 @@ func (s *service) delegatedFirstTouchDailyCapacity(
 		); err != nil {
 			return 0, 0, "", err
 		}
-		if campaignStatus == "paused" {
-			return 0, mailboxCount, "campaign_paused", nil
-		}
-		if campaignStatus != "active" && campaignStatus != "draft" {
+		if campaignStatus != "active" && campaignStatus != "draft" && campaignStatus != "paused" {
 			return 0, mailboxCount, "canonical_campaign_not_schedulable", nil
 		}
 		if mailboxStatus != "active" || !workerAssigned || !credentialsPresent {
@@ -356,8 +359,14 @@ func (s *service) delegatedFirstTouchReadyReservoirCount(
 		JOIN outreach_feed_sync_state feed ON feed.organization_id=t.organization_id
 		WHERE t.organization_id=$1
 		  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
-		  AND t.state='NEEDS_REVIEW' AND t.contact_candidate_id IS NOT NULL
+		  AND t.state IN ('DUE','NEEDS_REVIEW') AND t.contact_candidate_id IS NOT NULL
 		  AND feed.last_status='completed' AND a.source_run_id=feed.last_run_id
+		  AND t.source_run_id=feed.last_run_id AND a.initial_backlog_reason_code=''
+		  AND a.last_import_run_id IS NOT NULL AND EXISTS (
+		    SELECT 1 FROM outreach_contact_candidates c
+		    WHERE c.organization_id=t.organization_id AND c.id=t.contact_candidate_id
+		      AND c.last_import_run_id=a.last_import_run_id
+		  )
 		  AND NOT EXISTS (
 		    SELECT 1 FROM confenge_delegated_first_touch_decisions d
 		    WHERE d.organization_id=t.organization_id AND d.account_id=t.account_id

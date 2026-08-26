@@ -163,7 +163,8 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (processed
 		UPDATE outreach_touchpoints
 		SET delegated_reserved_until=NULL,delegated_last_error='',updated_at=now()
 		WHERE organization_id=$1 AND id=$2`, orgID, touchpointID)
-	return report != nil && len(report.Items) == 1 && report.Items[0].State == "QUEUED", nil
+	// A terminal HOLD consumed this candidate and the burst should keep filling from the reservoir.
+	return report != nil && len(report.Items) == 1, nil
 }
 
 func (s *service) nextDelegatedFirstTouchCandidate(ctx context.Context, orgID uuid.UUID, feed *models.OutreachFeedSyncState, auth *models.CampaignPolicyAuthorization) (uuid.UUID, uuid.UUID, uuid.UUID, error) {
@@ -184,7 +185,7 @@ func (s *service) nextDelegatedFirstTouchCandidate(ctx context.Context, orgID uu
 			  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
 			  AND t.state IN ('DUE','NEEDS_REVIEW') AND t.contact_candidate_id IS NOT NULL
 			  AND feed.last_status='completed' AND a.source_run_id=feed.last_run_id
-			  AND (t.source_run_id='' OR t.source_run_id=feed.last_run_id)
+			  AND t.source_run_id=feed.last_run_id
 			  AND a.initial_backlog_reason_code=''
 			  AND a.last_import_run_id IS NOT NULL AND c.last_import_run_id=a.last_import_run_id
 			  AND t.delegated_retry_at <= $6

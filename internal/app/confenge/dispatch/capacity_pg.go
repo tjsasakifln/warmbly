@@ -28,6 +28,8 @@ type mailboxAuthority struct {
 	timezone           string
 	credentialsReady   bool
 	workerAssigned     bool
+	workerHealthy      bool
+	workerLastSeenAt   *time.Time
 	authState          string
 	authSPF            bool
 	authDKIM           bool
@@ -63,6 +65,12 @@ func queryMailboxAuthority(ctx context.Context, q pgRowQuerier, orgID, emailAcco
 		           SELECT 1 FROM email_accounts_oauth oauth WHERE oauth.email_account_id = ea.id
 		       ) END AS credentials_ready,
 		       ea.worker_id IS NOT NULL,
+		       EXISTS (
+		           SELECT 1 FROM workers w
+		           WHERE w.id=ea.worker_id AND w.active
+		             AND w.last_seen_at > now() - interval '10 minutes'
+		       ),
+		       (SELECT w.last_seen_at FROM workers w WHERE w.id=ea.worker_id),
 		       ea.auth_state, ea.auth_spf, ea.auth_dkim, ea.auth_dmarc,
 		       ea.auth_dmarc_policy, ea.auth_checked_at, ea.created_at,
 		       ea.warmup, ea.warmup_days, ea.cold_ramp_started_at, ea.risk_band::text,
@@ -94,7 +102,7 @@ func queryMailboxAuthority(ctx context.Context, q pgRowQuerier, orgID, emailAcco
 	err := q.QueryRow(ctx, query, orgID, emailAccountID).Scan(
 		&out.id, &out.organizationID, &out.email, &out.status, &out.provider,
 		&out.dailyCap, &out.minWaitSeconds, &out.timezone,
-		&out.credentialsReady, &out.workerAssigned,
+		&out.credentialsReady, &out.workerAssigned, &out.workerHealthy, &out.workerLastSeenAt,
 		&out.authState, &out.authSPF, &out.authDKIM, &out.authDMARC,
 		&out.authDMARCPolicy, &out.authCheckedAt, &out.createdAt,
 		&out.warmupStartedAt, &out.warmupDays, &out.coldRampStartedAt, &out.riskBand,
@@ -127,6 +135,8 @@ func (m mailboxAuthority) envelope(now time.Time) MailboxEnvelope {
 		out.Ready, out.HealthReason = false, "credentials_missing"
 	case !m.workerAssigned:
 		out.Ready, out.HealthReason = false, "worker_missing"
+	case !m.workerHealthy:
+		out.Ready, out.HealthReason = false, "worker_unhealthy"
 	case m.authState == "unknown" || m.authCheckedAt == nil:
 		out.Ready, out.HealthReason = false, "dns_auth_unknown"
 	case m.authState != "passing" || !m.authSPF || !m.authDKIM || !m.authDMARC:
@@ -154,11 +164,6 @@ func (s *PGStore) MailboxCapacitySnapshot(ctx context.Context, orgID uuid.UUID, 
 		SELECT ea.id
 		FROM email_accounts ea
 		WHERE ea.organization_id = $1
-		  AND CASE WHEN ea.provider = 'smtp_imap' THEN EXISTS (
-		      SELECT 1 FROM email_accounts_smtp_imap smtp WHERE smtp.email_account_id = ea.id
-		  ) ELSE EXISTS (
-		      SELECT 1 FROM email_accounts_oauth oauth WHERE oauth.email_account_id = ea.id
-		  ) END
 		ORDER BY lower(ea.email), ea.id`, orgID)
 	if err != nil {
 		return MailboxCapacitySnapshot{}, err
@@ -194,6 +199,8 @@ func (s *PGStore) MailboxCapacitySnapshot(ctx context.Context, orgID uuid.UUID, 
 			Provider:             authority.provider,
 			CredentialsReady:     authority.credentialsReady,
 			WorkerAssigned:       authority.workerAssigned,
+			WorkerHealthy:        authority.workerHealthy,
+			WorkerLastSeenAt:     authority.workerLastSeenAt,
 			AuthState:            authority.authState,
 			AuthSPF:              authority.authSPF,
 			AuthDKIM:             authority.authDKIM,
@@ -243,6 +250,16 @@ func (s *PGStore) MailboxCapacitySnapshot(ctx context.Context, orgID uuid.UUID, 
 		if err := s.fillMailboxErrors(ctx, &mailbox, now); err != nil {
 			return MailboxCapacitySnapshot{}, err
 		}
+		if mailbox.Latest.AttemptAt == nil {
+			mailbox.Unknown = append(mailbox.Unknown, "attempt_observations")
+		}
+		if mailbox.Latest.AcceptedAt == nil {
+			mailbox.Unknown = append(mailbox.Unknown, "acceptance_observations")
+		}
+		if mailbox.Latest.ProviderRejectionAt == nil {
+			mailbox.Unknown = append(mailbox.Unknown, "provider_failure_observations")
+		}
+		mailbox.Unknown = append(mailbox.Unknown, "delivery_evidence")
 		candidate := nextRollingSlot(now, mailbox.occupiedAt, mailbox.EffectiveHourlyCap, envelope.MinGap, RollingWindow)
 		if mailbox.UsedToday >= mailbox.EffectiveDailyCap {
 			candidate = nextLocalDay(now, cfg.Timezone)

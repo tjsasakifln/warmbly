@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -244,6 +245,13 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 
 	// Idempotent: same snapshot already applied → noop
 	if lastSnap == man.Source.SnapshotHash && lastSnap != "" {
+		if s.cfg.DelegatedFirstTouchEnabled && (lastRun != man.Source.RunID ||
+			!sameFeedAuthority(current, authority)) {
+			result.Status = "failed"
+			result.Errors = append(result.Errors, "same snapshot reused with different run or authority")
+			s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "failed", result, false, nil)
+			return result, errx.New(errx.Conflict, "same snapshot cannot change authoritative binding")
+		}
 		result.Status = "noop"
 		result.SkippedSame = true
 		result.RunID = lastRun
@@ -339,6 +347,15 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 		}
 		validatedChunks = append(validatedChunks, validatedManifestChunk{manifest: ch, path: stagedPath})
 	}
+	if len(partialErrs) == 0 && authority != nil {
+		membershipHash, membershipCount, membershipErr := hashStagedTargetMembership(seenCNPJ)
+		if membershipErr != nil {
+			partialErrs = append(partialErrs, membershipErr.Error())
+		} else if membershipCount != authority.TargetMembershipCount || membershipCount != man.LeadCount ||
+			membershipHash != authority.TargetMembershipHash {
+			partialErrs = append(partialErrs, "authoritative TARGET_CONFIRMED membership does not match staged chunks")
+		}
+	}
 
 	// Validate every remote object before the first account mutation.
 	imported := 0
@@ -399,6 +416,12 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 			s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "partial", result, false, nil)
 			return result, errx.New(errx.ServiceUnavailable, "feed counts did not close; snapshot not committed")
 		}
+		if authority != nil && backlog.SupplierConfirmed != authority.SupplierConfirmedCount {
+			result.Status = "partial"
+			result.Errors = append(result.Errors, "supplier-confirmed denominator mismatch")
+			s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "partial", result, false, nil)
+			return result, errx.New(errx.ServiceUnavailable, "feed supplier count did not close; snapshot not committed")
+		}
 		woken, wakeErr := s.wakeEligibleEnrichmentRecovery(ctx, orgID)
 		if wakeErr != nil {
 			result.Status = "partial"
@@ -431,6 +454,9 @@ func validateManifestAuthority(manifest *outreachManifest, now time.Time, requir
 	}
 	if err := ValidateAuthoritativeSourceFreshness(manifest.SourceFreshness, now); err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(manifest.SourceFreshness.RunID) != strings.TrimSpace(manifest.Source.RunID) {
+		return nil, fmt.Errorf("authoritative PNCP freshness run_id does not match manifest source run")
 	}
 	expiresAt, err := parseFreshnessTime(manifest.SourceFreshness.ExpiresAt)
 	if err != nil {
@@ -468,6 +494,44 @@ func validateManifestAuthority(manifest *outreachManifest, now time.Time, requir
 		TargetMembershipCount:    membership.PopulationCount,
 		SupplierConfirmedCount:   membership.SupplierConfirmedCount,
 	}, nil
+}
+
+func sameFeedAuthority(current *models.OutreachFeedSyncState, authority *feedAuthority) bool {
+	if current == nil || authority == nil || current.SourceExpiresAt == nil {
+		return false
+	}
+	return current.SourceExpiresAt.Equal(authority.SourceExpiresAt) &&
+		current.SourceFreshnessHash == authority.SourceFreshnessHash &&
+		current.TargetMembershipComplete == authority.TargetMembershipComplete &&
+		current.TargetMembershipHash == authority.TargetMembershipHash &&
+		current.TargetMembershipCount == authority.TargetMembershipCount &&
+		current.SupplierConfirmedCount == authority.SupplierConfirmedCount
+}
+
+func hashStagedTargetMembership(cnpjs map[string]string) (string, int, error) {
+	roots := make(map[string]struct{}, len(cnpjs))
+	for cnpj := range cnpjs {
+		if len(cnpj) != 14 {
+			return "", 0, fmt.Errorf("staged TARGET_CONFIRMED CNPJ is invalid")
+		}
+		root := cnpj[:8]
+		if _, duplicate := roots[root]; duplicate {
+			return "", 0, fmt.Errorf("staged TARGET_CONFIRMED membership contains duplicate CNPJ roots")
+		}
+		roots[root] = struct{}{}
+	}
+	ordered := make([]string, 0, len(roots))
+	for root := range roots {
+		ordered = append(ordered, root)
+	}
+	sort.Strings(ordered)
+	var canonical strings.Builder
+	for _, root := range ordered {
+		canonical.WriteString(root)
+		canonical.WriteByte('\n')
+	}
+	sum := sha256.Sum256([]byte(canonical.String()))
+	return hex.EncodeToString(sum[:]), len(ordered), nil
 }
 
 func validSHA256(value string) bool {
@@ -583,8 +647,12 @@ func validateOutreachManifest(manifest *outreachManifest) error {
 			return fmt.Errorf("manifest deactivation has invalid cnpj14")
 		}
 		toState, _ := deactivation["to_state"].(string)
-		if strings.EqualFold(strings.TrimSpace(toState), ActivationActionableNow) {
+		switch strings.ToUpper(strings.TrimSpace(toState)) {
+		case ActivationWatch, ActivationResearchRequired, ActivationSuppressed:
+		case ActivationActionableNow:
 			return fmt.Errorf("manifest deactivation cannot target ACTIONABLE_NOW")
+		default:
+			return fmt.Errorf("manifest deactivation has unsupported to_state")
 		}
 	}
 	return nil
