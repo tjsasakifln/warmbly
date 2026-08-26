@@ -24,19 +24,24 @@ const (
 
 // Readiness is the discrete operator status panel payload.
 type Readiness struct {
-	Email             string     `json:"email"`
-	WhatsApp          string     `json:"whatsapp"`
-	FeedConfigured    bool       `json:"feed_configured"`
-	FeedAgeSeconds    *int64     `json:"feed_age_seconds,omitempty"`
-	FeedAgeLabel      string     `json:"feed_age"`
-	FeedState         string     `json:"feed_state"`
-	FeedSnapshot      string     `json:"feed_snapshot_hash,omitempty"`
-	FeedLastSyncAt    *time.Time `json:"feed_last_success_at,omitempty"`
-	FeedSourceAt      *time.Time `json:"feed_source_generated_at,omitempty"`
-	FeedSyncedAt      *time.Time `json:"feed_synced_at,omitempty"`
-	FeedMaxAgeSeconds int64      `json:"feed_max_age_seconds"`
-	OutcomeLoop       string     `json:"outcome_loop"`
-	AI                string     `json:"ai"`
+	Email                    string     `json:"email"`
+	WhatsApp                 string     `json:"whatsapp"`
+	FeedConfigured           bool       `json:"feed_configured"`
+	FeedAgeSeconds           *int64     `json:"feed_age_seconds,omitempty"`
+	FeedAgeLabel             string     `json:"feed_age"`
+	FeedState                string     `json:"feed_state"`
+	FeedSnapshot             string     `json:"feed_snapshot_hash,omitempty"`
+	FeedLastSyncAt           *time.Time `json:"feed_last_success_at,omitempty"`
+	FeedSourceAt             *time.Time `json:"feed_source_generated_at,omitempty"`
+	FeedSourceExpiresAt      *time.Time `json:"feed_source_expires_at,omitempty"`
+	FeedSyncedAt             *time.Time `json:"feed_synced_at,omitempty"`
+	FeedMaxAgeSeconds        int64      `json:"feed_max_age_seconds"`
+	FeedAuthorityState       string     `json:"feed_authority_state"`
+	TargetMembershipComplete bool       `json:"target_membership_complete"`
+	TargetMembershipCount    int        `json:"target_membership_count"`
+	SupplierConfirmedCount   int        `json:"supplier_confirmed_count"`
+	OutcomeLoop              string     `json:"outcome_loop"`
+	AI                       string     `json:"ai"`
 	// GovernorCap is the global rolling-hour outbound cap (email+WhatsApp).
 	// Primary CONFENGE pacing control (~10/h). Not the campaign daily limit.
 	GovernorCap int `json:"governor_cap"`
@@ -127,16 +132,22 @@ func boundedCohortReadiness(auth *BoundedCohortAuthorization, now time.Time) *Bo
 
 // ReadinessInputs are optional live signals for BuildReadiness.
 type ReadinessInputs struct {
-	EmailReady            bool
-	WhatsAppReady         bool
-	WhatsAppPolicyBlocked bool
-	LastImportAt          *time.Time
-	LastSyncAt            *time.Time
-	FeedSnapshot          string
-	Queue                 *models.OutreachQueueSummary
-	AIConfigured          bool
-	WA                    *whatsapp.Config
-	Now                   time.Time
+	EmailReady               bool
+	WhatsAppReady            bool
+	WhatsAppPolicyBlocked    bool
+	LastImportAt             *time.Time
+	LastSyncAt               *time.Time
+	SourceExpiresAt          *time.Time
+	SourceFreshnessHash      string
+	TargetMembershipComplete bool
+	TargetMembershipHash     string
+	TargetMembershipCount    int
+	SupplierConfirmedCount   int
+	FeedSnapshot             string
+	Queue                    *models.OutreachQueueSummary
+	AIConfigured             bool
+	WA                       *whatsapp.Config
+	Now                      time.Time
 }
 
 // BuildReadiness aggregates operator-facing readiness without side effects.
@@ -239,14 +250,32 @@ func BuildReadiness(cfg Config, in ReadinessInputs) Readiness {
 		r.FeedSourceAt = in.LastImportAt
 		r.FeedSyncedAt = in.LastSyncAt
 		r.FeedSnapshot = in.FeedSnapshot
-		if time.Duration(age)*time.Second > maxAge {
+		r.FeedSourceExpiresAt = in.SourceExpiresAt
+		r.TargetMembershipComplete = in.TargetMembershipComplete
+		r.TargetMembershipCount = in.TargetMembershipCount
+		r.SupplierConfirmedCount = in.SupplierConfirmedCount
+		if cfg.DelegatedFirstTouchEnabled && (in.SourceExpiresAt == nil || !validSHA256(in.SourceFreshnessHash) ||
+			!in.TargetMembershipComplete || !validSHA256(in.TargetMembershipHash) || in.TargetMembershipCount < 1) {
+			r.FeedState = "missing"
+			r.FeedAuthorityState = "missing"
+		} else if cfg.DelegatedFirstTouchEnabled && !now.Before(in.SourceExpiresAt.UTC()) {
 			r.FeedState = "stale"
+			r.FeedAuthorityState = "expired"
+		} else if time.Duration(age)*time.Second > maxAge {
+			r.FeedState = "stale"
+			r.FeedAuthorityState = "stale"
 		} else {
 			r.FeedState = "fresh"
+			if cfg.DelegatedFirstTouchEnabled {
+				r.FeedAuthorityState = "fresh"
+			} else {
+				r.FeedAuthorityState = "not_required"
+			}
 		}
 	} else {
 		r.FeedAgeLabel = "unknown"
 		r.FeedState = "missing"
+		r.FeedAuthorityState = "missing"
 	}
 
 	if in.Queue != nil {
@@ -305,6 +334,12 @@ func (s *service) CollectReadiness(ctx context.Context, orgID uuid.UUID, emailRe
 			in.LastImportAt = state.SourceGeneratedAt
 			in.LastSyncAt = state.LastSuccessAt
 			in.FeedSnapshot = state.LastSnapshotHash
+			in.SourceExpiresAt = state.SourceExpiresAt
+			in.SourceFreshnessHash = state.SourceFreshnessHash
+			in.TargetMembershipComplete = state.TargetMembershipComplete
+			in.TargetMembershipHash = state.TargetMembershipHash
+			in.TargetMembershipCount = state.TargetMembershipCount
+			in.SupplierConfirmedCount = state.SupplierConfirmedCount
 		}
 	} else if stateErr == nil && state == nil {
 		runs, err := s.repo.ListImportRuns(ctx, orgID, 1)

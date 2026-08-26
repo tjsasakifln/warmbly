@@ -590,16 +590,9 @@ func (s *service) assertAuthoritativeFeedForTransport(ctx context.Context, orgID
 	if err != nil || state == nil {
 		return fmt.Errorf("authoritative feed state unavailable")
 	}
-	if state.LastStatus != "completed" || state.SourceGeneratedAt == nil || state.LastSnapshotHash == "" || state.LastRunID == "" {
-		return fmt.Errorf("authoritative feed is not completely applied")
-	}
-	maxAge := s.cfg.FeedMaxAge
-	if maxAge <= 0 {
-		maxAge = 24 * time.Hour
-	}
 	now := time.Now().UTC()
-	if state.SourceGeneratedAt.After(now.Add(5*time.Minute)) || now.Sub(state.SourceGeneratedAt.UTC()) > maxAge {
-		return fmt.Errorf("authoritative feed is stale")
+	if err := validateAuthoritativeFeedState(state, now, s.cfg.FeedMaxAge, s.cfg.DelegatedFirstTouchEnabled); err != nil {
+		return err
 	}
 	if acc == nil || strings.TrimSpace(acc.SourceRunID) != strings.TrimSpace(state.LastRunID) {
 		return fmt.Errorf("account is not from the completely applied authoritative snapshot")

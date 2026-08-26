@@ -361,13 +361,13 @@ func (s *service) pilotFeedEvidence(ctx context.Context, orgID uuid.UUID, now ti
 		return pilotFeedEvidence{State: "missing"}
 	}
 	if state != nil {
-		if state.LastStatus != "completed" || state.SourceGeneratedAt == nil || state.LastSnapshotHash == "" || state.LastRunID == "" {
+		if err := validateAuthoritativeFeedState(state, now, maxAge, s.cfg.DelegatedFirstTouchEnabled); err != nil {
+			if strings.Contains(err.Error(), "stale") || strings.Contains(err.Error(), "expired") {
+				return pilotFeedEvidence{State: "stale", SnapshotHash: state.LastSnapshotHash, RunID: state.LastRunID, Timestamp: state.SourceGeneratedAt}
+			}
 			return pilotFeedEvidence{State: "missing"}
 		}
 		value := pilotFeedEvidence{State: "fresh", SnapshotHash: state.LastSnapshotHash, RunID: state.LastRunID, Timestamp: state.SourceGeneratedAt}
-		if state.SourceGeneratedAt.After(now.Add(5*time.Minute)) || now.Sub(state.SourceGeneratedAt.UTC()) > maxAge {
-			value.State = "stale"
-		}
 		return value
 	}
 	if runs, err := s.repo.ListImportRuns(ctx, orgID, 1); err == nil && len(runs) > 0 && runs[0].Status == models.OutreachImportCompleted {

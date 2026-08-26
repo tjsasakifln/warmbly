@@ -28,6 +28,7 @@ type FeedSyncResult struct {
 	SkippedSame    bool           `json:"skipped_same_snapshot"`
 	Errors         []string       `json:"errors,omitempty"`
 	Counts         map[string]int `json:"counts,omitempty"`
+	authority      *feedAuthority
 }
 
 const feedChunkStaleImportRecoveryAfter = 2 * time.Minute
@@ -44,11 +45,42 @@ type outreachManifest struct {
 		ProfileID    string `json:"profile_id"`
 		ProfileVer   string `json:"profile_version"`
 	} `json:"source"`
-	LeadCount       int              `json:"lead_count"`
-	ChunkCount      int              `json:"chunk_count"`
-	Chunks          []manifestChunk  `json:"chunks"`
-	Deactivations   []map[string]any `json:"deactivations"`
-	DeactivationCnt int              `json:"deactivation_count"`
+	LeadCount        int                            `json:"lead_count"`
+	ChunkCount       int                            `json:"chunk_count"`
+	Chunks           []manifestChunk                `json:"chunks"`
+	Deactivations    []map[string]any               `json:"deactivations"`
+	DeactivationCnt  int                            `json:"deactivation_count"`
+	SourceFreshness  *FeedSourceFreshness           `json:"authoritative_source_freshness"`
+	TargetMembership *authoritativeTargetMembership `json:"authoritative_target_membership"`
+}
+
+const (
+	targetMembershipSchemaV1  = "confenge.target_membership.v1"
+	targetMembershipIdentity  = "cnpj_root8"
+	targetMembershipAlgorithm = "sha256(sorted_unique_cnpj_root8_newline_utf8)"
+)
+
+type authoritativeTargetMembership struct {
+	SchemaVersion          string `json:"schema_version"`
+	IdentityKey            string `json:"identity_key"`
+	HashAlgorithm          string `json:"hash_algorithm"`
+	PopulationCount        int    `json:"population_count"`
+	MembershipHash         string `json:"membership_hash"`
+	DuplicateMemberCount   int    `json:"duplicate_member_count"`
+	TargetFitClass         string `json:"target_fit_class"`
+	TargetConfirmedCount   int    `json:"target_confirmed_count"`
+	SupplierConfirmedCount int    `json:"supplier_confirmed_count"`
+	SourceMemberCount      int    `json:"source_member_count"`
+	MembershipComplete     bool   `json:"membership_complete"`
+}
+
+type feedAuthority struct {
+	SourceExpiresAt          time.Time
+	SourceFreshnessHash      string
+	TargetMembershipComplete bool
+	TargetMembershipHash     string
+	TargetMembershipCount    int
+	SupplierConfirmedCount   int
 }
 
 type manifestChunk struct {
@@ -173,6 +205,13 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 		s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "failed", result, false, nil)
 		return result, errx.New(errx.Conflict, "manifest is older than the applied authoritative snapshot")
 	}
+	authority, authorityErr := validateManifestAuthority(&man, now, s.cfg.DelegatedFirstTouchEnabled)
+	if authorityErr != nil {
+		result.Errors = append(result.Errors, authorityErr.Error())
+		s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "failed", result, false, nil)
+		return result, errx.New(errx.BadRequest, authorityErr.Error())
+	}
+	result.authority = authority
 	result.SnapshotHash = man.Source.SnapshotHash
 	result.RunID = man.Source.RunID
 	result.ChunksTotal = len(man.Chunks)
@@ -300,6 +339,59 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 	return result, errx.New(errx.BadRequest, "feed sync partial: "+strings.Join(partialErrs, "; "))
 }
 
+func validateManifestAuthority(manifest *outreachManifest, now time.Time, required bool) (*feedAuthority, error) {
+	if manifest == nil {
+		return nil, fmt.Errorf("authoritative feed manifest is required")
+	}
+	if !required && manifest.SourceFreshness == nil && manifest.TargetMembership == nil {
+		return nil, nil
+	}
+	if err := ValidateAuthoritativeSourceFreshness(manifest.SourceFreshness, now); err != nil {
+		return nil, err
+	}
+	expiresAt, err := parseFreshnessTime(manifest.SourceFreshness.ExpiresAt)
+	if err != nil {
+		return nil, fmt.Errorf("authoritative PNCP freshness expires_at invalid")
+	}
+	membership := manifest.TargetMembership
+	if membership == nil {
+		return nil, fmt.Errorf("authoritative TARGET_CONFIRMED membership missing")
+	}
+	if membership.SchemaVersion != targetMembershipSchemaV1 || membership.IdentityKey != targetMembershipIdentity ||
+		membership.HashAlgorithm != targetMembershipAlgorithm {
+		return nil, fmt.Errorf("authoritative TARGET_CONFIRMED membership contract unsupported")
+	}
+	if !membership.MembershipComplete {
+		return nil, fmt.Errorf("authoritative TARGET_CONFIRMED membership_complete=true is required")
+	}
+	if membership.TargetFitClass != TargetFitConfirmed || membership.PopulationCount < 1 ||
+		membership.TargetConfirmedCount != membership.PopulationCount || membership.SourceMemberCount != membership.PopulationCount ||
+		membership.DuplicateMemberCount != 0 || membership.SupplierConfirmedCount < 0 ||
+		membership.SupplierConfirmedCount > membership.PopulationCount {
+		return nil, fmt.Errorf("authoritative TARGET_CONFIRMED membership counts are invalid")
+	}
+	if !validSHA256(membership.MembershipHash) {
+		return nil, fmt.Errorf("authoritative TARGET_CONFIRMED membership_hash is invalid")
+	}
+	freshnessHash := HashAuthoritativeSourceFreshness(manifest.SourceFreshness)
+	if !validSHA256(freshnessHash) {
+		return nil, fmt.Errorf("authoritative PNCP freshness hash is invalid")
+	}
+	return &feedAuthority{
+		SourceExpiresAt:          expiresAt.UTC(),
+		SourceFreshnessHash:      freshnessHash,
+		TargetMembershipComplete: true,
+		TargetMembershipHash:     strings.ToLower(membership.MembershipHash),
+		TargetMembershipCount:    membership.PopulationCount,
+		SupplierConfirmedCount:   membership.SupplierConfirmedCount,
+	}, nil
+}
+
+func validSHA256(value string) bool {
+	decoded, err := hex.DecodeString(strings.TrimSpace(value))
+	return err == nil && len(decoded) == sha256.Size
+}
+
 func validateOutreachManifest(manifest *outreachManifest) error {
 	if manifest == nil {
 		return fmt.Errorf("manifest is required")
@@ -412,6 +504,14 @@ func (s *service) persistFeedSync(ctx context.Context, orgID uuid.UUID, snap, ru
 	if success {
 		st.LastSuccessAt = &now
 		st.SourceGeneratedAt = sourceGeneratedAt
+		if res != nil && res.authority != nil {
+			st.SourceExpiresAt = &res.authority.SourceExpiresAt
+			st.SourceFreshnessHash = res.authority.SourceFreshnessHash
+			st.TargetMembershipComplete = res.authority.TargetMembershipComplete
+			st.TargetMembershipHash = res.authority.TargetMembershipHash
+			st.TargetMembershipCount = res.authority.TargetMembershipCount
+			st.SupplierConfirmedCount = res.authority.SupplierConfirmedCount
+		}
 	}
 	if res != nil {
 		counts := map[string]any{
