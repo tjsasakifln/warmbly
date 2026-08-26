@@ -1787,15 +1787,11 @@ func (s *service) assertDelegatedFirstTouchDecision(ctx context.Context, orgID u
 		return fail("recipient_import_run_drift")
 	}
 	feedState, feedErr := s.repo.GetFeedSyncState(ctx, orgID)
-	if feedErr != nil || feedState == nil || feedState.LastStatus != "completed" || feedState.SourceGeneratedAt == nil ||
-		feedState.LastRunID != got.SourceRunID || feedState.LastSnapshotHash != got.SourceSnapshotHash || acc.SourceRunID != got.SourceRunID {
+	if feedErr != nil || feedState == nil || feedState.LastRunID != got.SourceRunID ||
+		feedState.LastSnapshotHash != got.SourceSnapshotHash || acc.SourceRunID != got.SourceRunID {
 		return fail("source_run_or_snapshot_drift")
 	}
-	maxAge := s.cfg.FeedMaxAge
-	if maxAge <= 0 {
-		maxAge = 24 * time.Hour
-	}
-	if feedState.SourceGeneratedAt.After(now.Add(5*time.Minute)) || now.Sub(feedState.SourceGeneratedAt.UTC()) > maxAge {
+	if err := validateAuthoritativeFeedState(feedState, now, s.cfg.FeedMaxAge, true); err != nil {
 		return fail("source_freshness_drift")
 	}
 	var evidenceIDs, roleReasons []string

@@ -86,6 +86,7 @@ func newDelegatedPGFixture(t *testing.T) *delegatedPGFixture {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Truncate(time.Second)
+	sourceExpiresAt := now.Add(time.Hour)
 	runID, snapshot := "run-delegated-"+uuid.NewString(), strings.Repeat("b", 64)
 	importID := uuid.New()
 	run := &models.OutreachImportRun{
@@ -99,7 +100,9 @@ func newDelegatedPGFixture(t *testing.T) *delegatedPGFixture {
 	if err := f.repo.UpsertFeedSyncState(ctx, &models.OutreachFeedSyncState{
 		OrganizationID: f.orgID, LastSnapshotHash: snapshot, LastRunID: runID,
 		LastManifestURI: "file:///delegated-test.json", LastSuccessAt: &now, LastAttemptAt: &now,
-		LastStatus: "completed", SourceGeneratedAt: &now,
+		LastStatus: "completed", SourceGeneratedAt: &now, SourceExpiresAt: &sourceExpiresAt,
+		SourceFreshnessHash: strings.Repeat("c", 64), TargetMembershipComplete: true,
+		TargetMembershipHash: strings.Repeat("d", 64), TargetMembershipCount: 1, SupplierConfirmedCount: 1,
 	}); err != nil {
 		t.Fatal(err)
 	}

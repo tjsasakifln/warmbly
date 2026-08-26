@@ -8,8 +8,13 @@ export type ConfengeReadiness = {
     feed_snapshot_hash?: string;
     feed_last_success_at?: string | Date | null;
     feed_source_generated_at?: string | Date | null;
+    feed_source_expires_at?: string | Date | null;
     feed_synced_at?: string | Date | null;
     feed_max_age_seconds?: number;
+    feed_authority_state?: "fresh" | "expired" | "stale" | "missing" | "not_required";
+    target_membership_complete?: boolean;
+    target_membership_count?: number;
+    supplier_confirmed_count?: number;
     outcome_loop: string;
     ai: string;
     governor_cap: number;

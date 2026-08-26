@@ -232,3 +232,25 @@ export function formatFeedAge(seconds?: number | null): string {
   const days = Math.floor(seconds / 86400);
   return `há ${days} ${days === 1 ? "dia" : "dias"}`;
 }
+
+export function formatFeedStatus(readiness: {
+  feed_configured: boolean;
+  feed_age_seconds?: number | null;
+  feed_state?: "fresh" | "stale" | "missing";
+  feed_authority_state?: "fresh" | "expired" | "stale" | "missing" | "not_required";
+  target_membership_complete?: boolean;
+  target_membership_count?: number;
+  supplier_confirmed_count?: number;
+}): string {
+  if (!readiness.feed_configured) return "Não configurado";
+  const age = formatFeedAge(readiness.feed_age_seconds);
+  if (readiness.feed_authority_state === "expired") return `Autoridade expirada · dados ${age}`;
+  if (readiness.feed_state === "stale") return `Desatualizado · dados ${age}`;
+  if (readiness.feed_state === "missing" || readiness.feed_authority_state === "missing") {
+    return "Autoridade ausente ou incompleta";
+  }
+  if (readiness.target_membership_complete && readiness.target_membership_count !== undefined) {
+    return `Atualizado ${age} · ${readiness.target_membership_count} TARGET / ${readiness.supplier_confirmed_count ?? 0} fornecedores`;
+  }
+  return `Atualizado ${age}`;
+}

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -266,6 +267,25 @@ func TestLastAppliedSnapshotNeverPromotesPartialChunkRun(t *testing.T) {
 	snapshot, runID := svc.lastAppliedSnapshot(context.Background(), orgID)
 	if snapshot != "last-complete-snapshot" || runID != "last-complete-run" {
 		t.Fatalf("partial attempt displaced last complete snapshot: snapshot=%q run=%q", snapshot, runID)
+	}
+}
+
+func TestPersistFeedSyncStoresAuthoritativeExpiryAndMembership(t *testing.T) {
+	orgID := uuid.New()
+	repo := newMemRepo()
+	svc := &service{repo: repo}
+	generatedAt := time.Now().UTC().Add(-time.Minute)
+	expiresAt := generatedAt.Add(6 * time.Hour)
+	result := &FeedSyncResult{Status: "completed", Counts: map[string]int{}, authority: &feedAuthority{
+		SourceExpiresAt: expiresAt, SourceFreshnessHash: strings.Repeat("a", 64),
+		TargetMembershipComplete: true, TargetMembershipHash: strings.Repeat("b", 64),
+		TargetMembershipCount: 8653, SupplierConfirmedCount: 7276,
+	}}
+	svc.persistFeedSync(context.Background(), orgID, "snapshot", "run", "file:///manifest.json", "completed", result, true, &generatedAt)
+	state, err := repo.GetFeedSyncState(context.Background(), orgID)
+	if err != nil || state == nil || state.SourceExpiresAt == nil || !state.SourceExpiresAt.Equal(expiresAt) ||
+		!state.TargetMembershipComplete || state.TargetMembershipCount != 8653 || state.SupplierConfirmedCount != 7276 {
+		t.Fatalf("authoritative feed attestation not persisted: state=%+v err=%v", state, err)
 	}
 }
 

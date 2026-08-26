@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { channelLabel, formatFeedAge, formatPtBrDate, intentLabel, purposeLabel, reasonLabel, stateLabel } from "./labels";
+import { channelLabel, formatFeedAge, formatFeedStatus, formatPtBrDate, intentLabel, purposeLabel, reasonLabel, stateLabel } from "./labels";
 
 describe("rótulos da Central comercial CONFENGE", () => {
   it("traduz estados, canais, etapas e motivos conhecidos", () => {
@@ -36,5 +36,17 @@ describe("rótulos da Central comercial CONFENGE", () => {
   it("formata datas no padrão brasileiro", () => {
     expect(formatPtBrDate("2026-08-12T12:00:00Z")).toBe("12/08/2026");
     expect(formatFeedAge(7200)).toBe("há 2 h");
+  });
+
+  it("does not present expired authoritative data as updated", () => {
+    expect(formatFeedStatus({
+      feed_configured: true,
+      feed_age_seconds: 3600,
+      feed_state: "stale",
+      feed_authority_state: "expired",
+      target_membership_complete: true,
+      target_membership_count: 8653,
+      supplier_confirmed_count: 7276,
+    })).toBe("Autoridade expirada · dados há 1 h");
   });
 });

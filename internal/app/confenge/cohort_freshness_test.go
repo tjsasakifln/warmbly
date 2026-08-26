@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/warmbly/warmbly/internal/models"
 )
 
 func freshSource(now time.Time) *FeedSourceFreshness {
@@ -16,6 +18,66 @@ func freshSource(now time.Time) *FeedSourceFreshness {
 		ExpiresAt: now.Add(time.Hour).Format(time.RFC3339Nano),
 		RunID:     "pncp-run-1", PagesExpected: &expected, PagesFetched: &fetched,
 		CurrentLagHours: &lag,
+	}
+}
+
+func completeTargetMembership() *authoritativeTargetMembership {
+	return &authoritativeTargetMembership{
+		SchemaVersion: targetMembershipSchemaV1, IdentityKey: targetMembershipIdentity,
+		HashAlgorithm: targetMembershipAlgorithm, PopulationCount: 10,
+		MembershipHash: strings.Repeat("a", 64), TargetConfirmedCount: 10,
+		SupplierConfirmedCount: 8, SourceMemberCount: 10, MembershipComplete: true,
+		TargetFitClass: TargetFitConfirmed,
+	}
+}
+
+func TestManifestAuthorityRequiresContemporaryFreshnessAndCompleteMembership(t *testing.T) {
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	manifest := &outreachManifest{SourceFreshness: freshSource(now), TargetMembership: completeTargetMembership()}
+	authority, err := validateManifestAuthority(manifest, now, true)
+	if err != nil || authority == nil || authority.TargetMembershipCount != 10 || authority.SupplierConfirmedCount != 8 {
+		t.Fatalf("valid authority rejected: authority=%+v err=%v", authority, err)
+	}
+
+	missingMembership := *manifest
+	missingMembership.TargetMembership = nil
+	if _, err := validateManifestAuthority(&missingMembership, now, true); err == nil || !strings.Contains(err.Error(), "membership missing") {
+		t.Fatalf("missing membership accepted: %v", err)
+	}
+
+	expired := *manifest
+	expiredFreshness := *manifest.SourceFreshness
+	expiredFreshness.ExpiresAt = now.Format(time.RFC3339Nano)
+	expired.SourceFreshness = &expiredFreshness
+	if _, err := validateManifestAuthority(&expired, now, true); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expired source accepted: %v", err)
+	}
+
+	incomplete := *manifest
+	incompleteMembership := *manifest.TargetMembership
+	incompleteMembership.MembershipComplete = false
+	incomplete.TargetMembership = &incompleteMembership
+	if _, err := validateManifestAuthority(&incomplete, now, true); err == nil || !strings.Contains(err.Error(), "membership_complete") {
+		t.Fatalf("incomplete membership accepted: %v", err)
+	}
+}
+
+func TestAuthoritativeFeedStateExpiryOverridesGenericMaxAge(t *testing.T) {
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	generatedAt := now.Add(-time.Hour)
+	expiresAt := now.Add(-time.Second)
+	state := &models.OutreachFeedSyncState{
+		LastStatus: "completed", LastSnapshotHash: "snapshot", LastRunID: "run",
+		SourceGeneratedAt: &generatedAt, SourceExpiresAt: &expiresAt,
+		SourceFreshnessHash: strings.Repeat("a", 64), TargetMembershipComplete: true,
+		TargetMembershipHash: strings.Repeat("b", 64), TargetMembershipCount: 10,
+		SupplierConfirmedCount: 8,
+	}
+	if err := validateAuthoritativeFeedState(state, now, 24*time.Hour, false); err != nil {
+		t.Fatalf("legacy max-age state unexpectedly rejected: %v", err)
+	}
+	if err := validateAuthoritativeFeedState(state, now, 24*time.Hour, true); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("producer expiry did not dominate delegated gate: %v", err)
 	}
 }
 
