@@ -38,6 +38,42 @@ RETRYABLE_HTTP = {408, 425, 429, 500, 502, 503, 504}
 MAX_BODY_BYTES = 256 * 1024
 MAX_PROVIDER_TEXT_CHARS = 500
 WARMBLY_PROVIDER_PATH = "/v1/confenge/intel/commercial/provider-events"
+QUEUE_PROOF_VERSION = "confenge.asaas-queue-proof.v1"
+BACKUP_RECEIPT_VERSION = "confenge.asaas-backup-receipt.v1"
+CURRENT_QUEUE_SCHEMA = "confenge.asaas-queue.current-v1"
+LEGACY_QUEUE_SCHEMA = "confenge.asaas-queue.legacy-stateless-v0"
+CURRENT_TABLE_COLUMNS = {
+    "metadata": ("key", "value"),
+    "events": (
+        "provider_event_id",
+        "correlation_id",
+        "event_type",
+        "occurred_at",
+        "received_at",
+        "payload",
+        "payload_sha256",
+        "state",
+        "attempts",
+        "next_attempt_at",
+        "lease_until",
+        "last_http_status",
+        "last_code",
+        "updated_at",
+        "processed_at",
+    ),
+    "occurrences": (
+        "id",
+        "provider_event_id",
+        "correlation_id",
+        "code",
+        "owner",
+        "next_action",
+        "state",
+        "opened_at",
+        "detail",
+    ),
+    "backups": ("path", "created_at", "sha256"),
+}
 
 
 def utc_now() -> str:
@@ -155,6 +191,7 @@ class Config:
     warmbly_bearer_token: str
     warmbly_webhook_secret: str
     warmbly_previous_secret: str
+    backup_receipt_path: Path | None = None
     max_attempts: int = 8
     base_backoff_seconds: int = 5
     max_backoff_seconds: int = 900
@@ -168,8 +205,9 @@ class Config:
         state = Path(
             os.getenv("ASAAS_ADAPTER_STATE_DIR", "/var/lib/confenge-asaas-adapter")
         )
+        db_path = Path(os.getenv("ASAAS_ADAPTER_DB", str(state / "events.sqlite3")))
         return cls(
-            db_path=Path(os.getenv("ASAAS_ADAPTER_DB", str(state / "events.sqlite3"))),
+            db_path=db_path,
             listen_host=os.getenv("ASAAS_ADAPTER_HOST", "127.0.0.1"),
             listen_port=int(os.getenv("ASAAS_ADAPTER_PORT", "8791")),
             asaas_token=os.getenv("ASAAS_WEBHOOK_TOKEN", ""),
@@ -183,6 +221,12 @@ class Config:
             ),
             warmbly_previous_secret=os.getenv(
                 "ASAAS_ADAPTER_WARMBLY_WEBHOOK_SECRET_PREVIOUS", ""
+            ),
+            backup_receipt_path=Path(
+                os.getenv(
+                    "ASAAS_ADAPTER_BACKUP_RECEIPT",
+                    f"{db_path}.backup-receipt.json",
+                )
             ),
             max_attempts=int(os.getenv("ASAAS_ADAPTER_MAX_ATTEMPTS", "8")),
             base_backoff_seconds=int(
@@ -273,9 +317,172 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _database_path_from_env() -> Path:
+    state = Path(
+        os.getenv("ASAAS_ADAPTER_STATE_DIR", "/var/lib/confenge-asaas-adapter")
+    )
+    return Path(os.getenv("ASAAS_ADAPTER_DB", str(state / "events.sqlite3")))
+
+
+def _read_only_database(path: Path) -> sqlite3.Connection:
+    if not path.is_file():
+        raise ValueError("adapter queue database does not exist")
+    database = sqlite3.connect(
+        f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=30
+    )
+    database.row_factory = sqlite3.Row
+    database.execute("PRAGMA query_only=ON")
+    return database
+
+
+def _table_columns(database: sqlite3.Connection) -> dict[str, tuple[str, ...]]:
+    tables: dict[str, tuple[str, ...]] = {}
+    rows = database.execute(
+        "SELECT name FROM sqlite_schema "
+        "WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    )
+    for row in rows:
+        name = str(row["name"])
+        columns = database.execute(
+            "SELECT name FROM pragma_table_info(?) ORDER BY cid", (name,)
+        )
+        tables[name] = tuple(str(column["name"]) for column in columns)
+    return tables
+
+
+def _stored_schema_version(
+    database: sqlite3.Connection, tables: dict[str, tuple[str, ...]]
+) -> int | None:
+    if tables.get("metadata") != CURRENT_TABLE_COLUMNS["metadata"]:
+        return None
+    row = database.execute(
+        "SELECT value FROM metadata WHERE key='schema_version'"
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        return int(row["value"])
+    except (TypeError, ValueError) as error:
+        raise ValueError("invalid adapter queue schema version") from error
+
+
+def _classify_queue_schema(
+    database: sqlite3.Connection, tables: dict[str, tuple[str, ...]]
+) -> tuple[str, int | None]:
+    version = _stored_schema_version(database, tables)
+    if tables == CURRENT_TABLE_COLUMNS and version == SCHEMA_VERSION:
+        invalid = database.execute(
+            "SELECT COUNT(*) FROM events WHERE state NOT IN (?,?,?,?,?,?)",
+            QUEUE_STATES,
+        ).fetchone()[0]
+        if invalid:
+            raise ValueError("adapter queue contains an unsupported state")
+        return CURRENT_QUEUE_SCHEMA, version
+
+    event_columns = set(tables.get("events", ()))
+    if (
+        version is None
+        and "state" not in event_columns
+        and {"provider_event_id", "payload"}.issubset(event_columns)
+    ):
+        return LEGACY_QUEUE_SCHEMA, None
+
+    if version is not None and version != SCHEMA_VERSION:
+        raise ValueError(
+            f"unsupported adapter queue schema version {version}; "
+            f"backup tooling supports version {SCHEMA_VERSION}"
+        )
+    if "events" not in tables:
+        raise ValueError("unsupported adapter queue schema: events table is missing")
+    raise ValueError(
+        "unsupported adapter queue schema: events columns do not match "
+        "current-v1 or legacy-stateless-v0"
+    )
+
+
+def inspect_queue_database(
+    path: Path, *, full_integrity: bool = False
+) -> dict[str, Any]:
+    database = _read_only_database(path)
+    try:
+        check = "integrity_check" if full_integrity else "quick_check(1)"
+        check_result = [row[0] for row in database.execute(f"PRAGMA {check}")]
+        if check_result != ["ok"]:
+            raise ValueError("adapter queue failed SQLite integrity validation")
+        tables = _table_columns(database)
+        schema, version = _classify_queue_schema(database, tables)
+        counted_tables = tuple(
+            name
+            for name in ("metadata", "events", "occurrences", "backups")
+            if name in tables
+        )
+        table_counts = {
+            name: int(database.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0])
+            for name in counted_tables
+        }
+        queue_counts: dict[str, int] | None = None
+        if schema == CURRENT_QUEUE_SCHEMA:
+            queue_counts = {state: 0 for state in QUEUE_STATES}
+            for row in database.execute(
+                "SELECT state,COUNT(*) AS count FROM events GROUP BY state"
+            ):
+                queue_counts[str(row["state"])] = int(row["count"])
+        return {
+            "proof_version": QUEUE_PROOF_VERSION,
+            "schema": schema,
+            "schema_version": version,
+            "sqlite_version": sqlite3.sqlite_version,
+            "integrity_check": "ok",
+            "table_counts": table_counts,
+            "queue_state_counts": queue_counts,
+        }
+    finally:
+        database.close()
+
+
+def backup_database(source: Path, destination: Path) -> dict[str, Any]:
+    source_proof = inspect_queue_database(source)
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor, staged_name = tempfile.mkstemp(
+        prefix="asaas-backup.", suffix=".sqlite3", dir=destination.parent
+    )
+    os.close(descriptor)
+    staged = Path(staged_name)
+    try:
+        source_database = _read_only_database(source)
+        target_database = sqlite3.connect(staged)
+        try:
+            source_database.backup(target_database)
+        finally:
+            target_database.close()
+            source_database.close()
+        os.chmod(staged, 0o600)
+        proof = inspect_queue_database(staged, full_integrity=True)
+        if proof["schema"] != source_proof["schema"]:
+            raise ValueError("adapter queue schema changed during backup")
+        os.replace(staged, destination)
+        return {
+            **proof,
+            "sha256": file_sha256(destination),
+            "size_bytes": destination.stat().st_size,
+        }
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            staged.unlink()
+
+
 class Queue:
-    def __init__(self, path: Path, *, recover_processing: bool = True):
+    def __init__(
+        self,
+        path: Path,
+        *,
+        recover_processing: bool = True,
+        backup_receipt_path: Path | None = None,
+    ):
         self.path = path
+        self.backup_receipt_path = backup_receipt_path or Path(
+            f"{path}.backup-receipt.json"
+        )
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         secure_database_permissions(path)
         self.db = sqlite3.connect(path, timeout=30, check_same_thread=False)
@@ -507,10 +714,23 @@ class Queue:
             last_backup = self.db.execute(
                 "SELECT created_at FROM backups ORDER BY created_at DESC LIMIT 1"
             ).fetchone()
+        backup_stamps = [last_backup["created_at"]] if last_backup else []
+        with contextlib.suppress(OSError, json.JSONDecodeError, TypeError, ValueError):
+            if self.backup_receipt_path.stat().st_size > 4096:
+                raise ValueError("backup receipt is oversized")
+            receipt = json.loads(self.backup_receipt_path.read_text(encoding="utf-8"))
+            if receipt.get("format_version") != BACKUP_RECEIPT_VERSION:
+                raise ValueError("unknown backup receipt")
+            created_at = receipt.get("created_at")
+            if not isinstance(created_at, str):
+                raise TypeError("invalid backup receipt")
+            datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            backup_stamps.append(created_at)
         backup_age: int | None = None
-        if last_backup:
-            stamp = datetime.fromisoformat(
-                last_backup["created_at"].replace("Z", "+00:00")
+        if backup_stamps:
+            stamp = max(
+                datetime.fromisoformat(value.replace("Z", "+00:00"))
+                for value in backup_stamps
             )
             backup_age = max(
                 0, int((datetime.now(timezone.utc) - stamp).total_seconds())
@@ -546,25 +766,8 @@ class Queue:
             return cur.rowcount
 
     def backup(self, destination: Path) -> dict[str, Any]:
-        destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with self.lock:
-            target = sqlite3.connect(destination)
-            try:
-                self.db.backup(target)
-            finally:
-                target.close()
-        os.chmod(destination, 0o600)
-        digest = file_sha256(destination)
-        with self.lock, self.db:
-            self.db.execute(
-                "INSERT OR REPLACE INTO backups(path,created_at,sha256) VALUES(?,?,?)",
-                (str(destination), utc_now(), digest),
-            )
-        return {
-            "path": str(destination),
-            "sha256": digest,
-            "counts": self.stats(0)["queue"],
-        }
+            return backup_database(self.path, destination)
 
 
 class Processor:
@@ -713,7 +916,9 @@ class Processor:
 class App:
     def __init__(self, config: Config):
         self.config = config
-        self.queue = Queue(config.db_path)
+        self.queue = Queue(
+            config.db_path, backup_receipt_path=config.backup_receipt_path
+        )
         self.processor = Processor(self.queue, config)
         self.wake = threading.Event()
         self.stop = threading.Event()
@@ -840,24 +1045,8 @@ def handler_for(app: App) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-def restore_database(source: Path, destination: Path) -> None:
-    if not source.is_file():
-        raise ValueError("backup does not exist")
-    probe = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
-    try:
-        version = probe.execute(
-            "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone()
-        invalid = probe.execute(
-            "SELECT COUNT(*) FROM events WHERE state NOT IN (?,?,?,?,?,?)", QUEUE_STATES
-        ).fetchone()[0]
-        if version is None or int(version[0]) != SCHEMA_VERSION or invalid:
-            raise ValueError("incompatible adapter backup")
-        integrity = probe.execute("PRAGMA integrity_check").fetchall()
-        if integrity != [("ok",)]:
-            raise ValueError("adapter backup failed integrity_check")
-    finally:
-        probe.close()
+def restore_database(source: Path, destination: Path) -> dict[str, Any]:
+    proof = inspect_queue_database(source, full_integrity=True)
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(destination.parent, 0o700)
     fd, staged_name = tempfile.mkstemp(prefix="events.restore.", dir=destination.parent)
@@ -872,6 +1061,11 @@ def restore_database(source: Path, destination: Path) -> None:
     finally:
         with contextlib.suppress(FileNotFoundError):
             staged.unlink()
+    return {
+        **proof,
+        "sha256": file_sha256(destination),
+        "size_bytes": destination.stat().st_size,
+    }
 
 
 def assert_permissions(path: Path) -> None:
@@ -899,6 +1093,7 @@ def main() -> int:
             "serve",
             "drain",
             "health",
+            "preflight",
             "backup",
             "restore",
             "permissions",
@@ -907,6 +1102,19 @@ def main() -> int:
     )
     parser.add_argument("path", nargs="?")
     args = parser.parse_args()
+    if args.command in ("preflight", "backup"):
+        try:
+            source = _database_path_from_env()
+            if args.command == "preflight":
+                proof = inspect_queue_database(source)
+            else:
+                if not args.path:
+                    parser.error("backup requires a destination path")
+                proof = backup_database(source, Path(args.path))
+        except (OSError, sqlite3.Error, ValueError) as error:
+            parser.exit(1, f"ASAAS_QUEUE_BACKUP=FAIL reason={error}\n")
+        print(json.dumps(proof, sort_keys=True))
+        return 0
     try:
         config = Config.from_env()
         config.validate(args.command)
@@ -915,7 +1123,11 @@ def main() -> int:
     if args.command == "restore":
         if not args.path:
             parser.error("restore requires a backup path")
-        restore_database(Path(args.path), config.db_path)
+        try:
+            proof = restore_database(Path(args.path), config.db_path)
+        except (OSError, sqlite3.Error, ValueError) as error:
+            parser.exit(1, f"ASAAS_QUEUE_RESTORE=FAIL reason={error}\n")
+        print(json.dumps(proof, sort_keys=True))
         return 0
     if args.command == "permissions":
         assert_permissions(config.db_path)
@@ -930,10 +1142,6 @@ def main() -> int:
             print(
                 json.dumps(queue.stats(config.backup_max_age_seconds), sort_keys=True)
             )
-        elif args.command == "backup":
-            if not args.path:
-                parser.error("backup requires a destination path")
-            print(json.dumps(queue.backup(Path(args.path)), sort_keys=True))
         elif args.command == "drain":
             processor = Processor(queue, config)
             while processor.process_one():

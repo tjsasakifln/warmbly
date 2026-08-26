@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 MODULE = Path(__file__).with_name("adapter.py")
+LEGACY_FIXTURE = Path(__file__).with_name("testdata") / "legacy-stateless-v0.sql"
 SPEC = importlib.util.spec_from_file_location("confenge_asaas_adapter", MODULE)
 assert SPEC and SPEC.loader
 adapter = importlib.util.module_from_spec(SPEC)
@@ -270,10 +271,17 @@ class AdapterTest(unittest.TestCase):
 
     def test_online_backup_restore_and_permissions(self):
         self.queue.persist(event("evt_backup"))
+        before = tuple(self.queue.db.execute("SELECT * FROM events ORDER BY rowid"))
         backup = self.root / "backup" / "events.sqlite3"
         proof = self.queue.backup(backup)
-        self.assertEqual(proof["counts"]["pending"], 1)
+        self.assertEqual(proof["queue_state_counts"]["pending"], 1)
         self.assertEqual(proof["sha256"], adapter.file_sha256(backup))
+        self.assertEqual(
+            tuple(self.queue.db.execute("SELECT * FROM events ORDER BY rowid")), before
+        )
+        self.assertEqual(
+            self.queue.db.execute("SELECT COUNT(*) FROM backups").fetchone()[0], 0
+        )
         restored = self.root / "restore" / "events.sqlite3"
         restored.parent.mkdir()
         Path(f"{restored}-wal").write_bytes(b"stale-wal")
@@ -303,6 +311,108 @@ class AdapterTest(unittest.TestCase):
         ).fetchone()
         self.assertEqual(row["state"], "processing")
         self.assertIsNone(row["last_code"])
+        self.assertEqual(
+            self.queue.db.execute("SELECT COUNT(*) FROM backups").fetchone()[0], 0
+        )
+
+    def test_external_backup_receipt_keeps_health_fresh_without_a_queue_row(self):
+        before = tuple(self.queue.db.execute("SELECT * FROM events ORDER BY rowid"))
+        self.queue.backup_receipt_path.write_text(
+            json.dumps(
+                {
+                    "format_version": adapter.BACKUP_RECEIPT_VERSION,
+                    "created_at": adapter.utc_now(),
+                    "archive_sha256": "a" * 64,
+                    "queue_schema": adapter.CURRENT_QUEUE_SCHEMA,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(self.queue.stats(60)["backup_status"], "FRESH")
+        self.assertEqual(
+            tuple(self.queue.db.execute("SELECT * FROM events ORDER BY rowid")), before
+        )
+        self.assertEqual(
+            self.queue.db.execute("SELECT COUNT(*) FROM backups").fetchone()[0], 0
+        )
+
+    def test_legacy_fixture_reproduces_initialize_failure_but_backup_is_read_only(self):
+        self.queue.close()
+        fixture_sql = LEGACY_FIXTURE.read_text(encoding="utf-8")
+
+        reproduced = self.root / "reproduced" / "events.sqlite3"
+        reproduced.parent.mkdir()
+        connection = adapter.sqlite3.connect(reproduced)
+        connection.executescript(fixture_sql)
+        connection.close()
+        with self.assertRaisesRegex(
+            adapter.sqlite3.OperationalError, "no such column: state"
+        ):
+            adapter.Queue(reproduced)
+
+        legacy = self.root / "legacy" / "events.sqlite3"
+        legacy.parent.mkdir()
+        connection = adapter.sqlite3.connect(legacy)
+        connection.executescript(fixture_sql)
+        connection.close()
+        before_bytes = legacy.read_bytes()
+        before_stat = legacy.stat()
+        connection = adapter.sqlite3.connect(legacy)
+        before_rows = connection.execute("SELECT * FROM events").fetchall()
+        before_tables = connection.execute(
+            "SELECT name,sql FROM sqlite_schema WHERE type='table' ORDER BY name"
+        ).fetchall()
+        connection.close()
+
+        preflight = adapter.inspect_queue_database(legacy)
+        backup = self.root / "legacy-backup" / "events.sqlite3"
+        proof = adapter.backup_database(legacy, backup)
+
+        self.assertEqual(preflight["schema"], adapter.LEGACY_QUEUE_SCHEMA)
+        self.assertEqual(proof["schema"], adapter.LEGACY_QUEUE_SCHEMA)
+        self.assertEqual(proof["table_counts"], {"events": 1})
+        self.assertEqual(legacy.read_bytes(), before_bytes)
+        self.assertEqual(legacy.stat().st_mtime_ns, before_stat.st_mtime_ns)
+        connection = adapter.sqlite3.connect(legacy)
+        self.assertEqual(
+            connection.execute("SELECT * FROM events").fetchall(), before_rows
+        )
+        self.assertEqual(
+            connection.execute(
+                "SELECT name,sql FROM sqlite_schema WHERE type='table' ORDER BY name"
+            ).fetchall(),
+            before_tables,
+        )
+        connection.close()
+
+        restored = self.root / "legacy-restore" / "events.sqlite3"
+        restore_proof = adapter.restore_database(backup, restored)
+        self.assertEqual(restore_proof["schema"], adapter.LEGACY_QUEUE_SCHEMA)
+        self.assertEqual(adapter.file_sha256(restored), adapter.file_sha256(backup))
+        self.queue = adapter.Queue(self.root / "replacement" / "events.sqlite3")
+
+    def test_backup_preflight_fails_closed_for_future_schema_without_writing(self):
+        self.queue.close()
+        connection = adapter.sqlite3.connect(self.queue.path)
+        connection.execute("UPDATE metadata SET value='2' WHERE key='schema_version'")
+        connection.commit()
+        connection.close()
+        before = self.queue.path.read_bytes()
+
+        with self.assertRaisesRegex(
+            ValueError, "unsupported adapter queue schema version 2"
+        ):
+            adapter.inspect_queue_database(self.queue.path)
+
+        self.assertEqual(self.queue.path.read_bytes(), before)
+        self.queue = adapter.Queue(self.root / "replacement" / "events.sqlite3")
+
+    def test_backup_preflight_does_not_create_a_missing_source(self):
+        missing = self.root / "missing" / "events.sqlite3"
+        with self.assertRaisesRegex(ValueError, "does not exist"):
+            adapter.inspect_queue_database(missing)
+        self.assertFalse(missing.exists())
 
     def test_queue_refuses_to_overwrite_a_different_schema_version(self):
         self.queue.close()
