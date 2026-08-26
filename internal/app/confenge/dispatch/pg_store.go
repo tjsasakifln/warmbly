@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -89,11 +90,11 @@ func (s *PGStore) GetReservationByKey(ctx context.Context, messageKey string) (*
 	var draftID *uuid.UUID
 	var committedAt *time.Time
 	err := s.db.QueryRow(ctx, `
-		SELECT id, organization_id, channel, message_key, draft_id, state,
-		       reserved_at, lease_until, committed_at
+		SELECT id, organization_id, email_account_id, task_id, channel, message_key, draft_id, state,
+		       reserved_at, attempted_at, lease_until, committed_at
 		FROM confenge_dispatch_reservations WHERE message_key = $1`, messageKey,
-	).Scan(&r.ID, &r.OrganizationID, &r.Channel, &r.MessageKey, &draftID, &r.State,
-		&r.ReservedAt, &r.LeaseUntil, &committedAt)
+	).Scan(&r.ID, &r.OrganizationID, &r.EmailAccountID, &r.TaskID, &r.Channel, &r.MessageKey, &draftID, &r.State,
+		&r.ReservedAt, &r.AttemptedAt, &r.LeaseUntil, &committedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -145,9 +146,9 @@ func (s *PGStore) TryReserveAtomic(ctx context.Context, in AtomicReserveInput) (
 	_, _ = tx.Exec(ctx, `
 		UPDATE confenge_dispatch_reservations
 		SET state = 'released', last_error = 'lease_expired'
-		WHERE state = 'reserved' AND lease_until <= $1`, now)
+			WHERE state = 'reserved' AND lease_until <= $1`, now)
 
-	// Already sent?
+	// Provider-confirmed replays remain final after later mailbox disablement.
 	var sentAt time.Time
 	err = tx.QueryRow(ctx, `SELECT sent_at FROM confenge_dispatch_sends WHERE message_key = $1`, in.Req.MessageKey).Scan(&sentAt)
 	if err == nil {
@@ -164,15 +165,56 @@ func (s *PGStore) TryReserveAtomic(ctx context.Context, in AtomicReserveInput) (
 		return out, err
 	}
 
+	if in.Req.Channel == ChannelEmail {
+		if in.Req.EmailAccountID == nil || *in.Req.EmailAccountID == uuid.Nil {
+			out.Reason = "mailbox_missing"
+			if err := tx.Commit(ctx); err != nil {
+				return out, err
+			}
+			return out, nil
+		}
+		authority, aerr := queryMailboxAuthority(ctx, tx, in.Req.OrganizationID, *in.Req.EmailAccountID, true)
+		if errors.Is(aerr, errMailboxNotConfigured) {
+			out.Reason = "mailbox_not_configured"
+			if err := tx.Commit(ctx); err != nil {
+				return out, err
+			}
+			return out, nil
+		}
+		if aerr != nil {
+			return out, aerr
+		}
+		envelope := authority.envelope(now)
+		in.Mailbox = &envelope
+		if !envelope.Ready {
+			out.Reason = envelope.HealthReason
+			if err := tx.Commit(ctx); err != nil {
+				return out, err
+			}
+			return out, nil
+		}
+	}
+
 	// Existing open lease?
 	var existing Reservation
 	var draftID *uuid.UUID
 	err = tx.QueryRow(ctx, `
-		SELECT id, organization_id, channel, message_key, draft_id, state, reserved_at, lease_until
-		FROM confenge_dispatch_reservations WHERE message_key = $1`, in.Req.MessageKey,
-	).Scan(&existing.ID, &existing.OrganizationID, &existing.Channel, &existing.MessageKey,
-		&draftID, &existing.State, &existing.ReservedAt, &existing.LeaseUntil)
+			SELECT id, organization_id, email_account_id, task_id, channel, message_key, draft_id, state, reserved_at, attempted_at, lease_until
+			FROM confenge_dispatch_reservations WHERE message_key = $1`, in.Req.MessageKey,
+	).Scan(&existing.ID, &existing.OrganizationID, &existing.EmailAccountID, &existing.TaskID, &existing.Channel, &existing.MessageKey,
+		&draftID, &existing.State, &existing.ReservedAt, &existing.AttemptedAt, &existing.LeaseUntil)
 	if err == nil && existing.State == StateReserved && existing.LeaseUntil.After(now) {
+		mailboxConflict := in.Req.Channel == ChannelEmail && in.Req.EmailAccountID != nil &&
+			(existing.EmailAccountID == nil || *existing.EmailAccountID != *in.Req.EmailAccountID)
+		taskConflict := in.Req.TaskID != nil && (existing.TaskID == nil || *existing.TaskID != *in.Req.TaskID)
+		if mailboxConflict || taskConflict {
+			out.Reason = "message_binding_conflict"
+			out.NextSlot = existing.LeaseUntil
+			if err := tx.Commit(ctx); err != nil {
+				return out, err
+			}
+			return out, nil
+		}
 		_, _ = tx.Exec(ctx, `UPDATE confenge_dispatch_reservations SET lease_until = $2, worker_token = COALESCE(NULLIF($3,''), worker_token) WHERE id = $1`,
 			existing.ID, now.Add(in.LeaseTTL), in.Req.WorkerToken)
 		existing.DraftID = draftID
@@ -188,6 +230,42 @@ func (s *PGStore) TryReserveAtomic(ctx context.Context, in AtomicReserveInput) (
 	}
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return out, err
+	}
+
+	if in.Req.Channel == ChannelEmail && in.Mailbox != nil {
+		mailboxTimes, mailboxLast, merr := listMailboxOccupiedTx(ctx, tx, in.Mailbox.EmailAccountID, now, window)
+		if merr != nil {
+			return out, merr
+		}
+		mailboxCap := in.Mailbox.HourlyCap
+		if in.Req.CapOverride > 0 {
+			mailboxCap = minPositive(mailboxCap, in.Req.CapOverride)
+		}
+		mailboxSnapshot := WindowSnapshot{
+			OccupiedAt: mailboxTimes, LastOccupied: mailboxLast,
+			Cap: mailboxCap, MinGap: in.Mailbox.MinGap, Window: window, Now: now,
+		}
+		if ok, reason, next := mailboxSnapshot.CanGrant(); !ok {
+			out.Reason = "mailbox_" + reason
+			out.NextSlot = next
+			if err := tx.Commit(ctx); err != nil {
+				return out, err
+			}
+			return out, nil
+		}
+		start, end := localDayBounds(now, in.Mailbox.Timezone)
+		used, uerr := countMailboxDailyUseTx(ctx, tx, in.Mailbox.EmailAccountID, start, end)
+		if uerr != nil {
+			return out, uerr
+		}
+		if used >= in.Mailbox.DailyCap {
+			out.Reason = "mailbox_daily_cap"
+			out.NextSlot = end
+			if err := tx.Commit(ctx); err != nil {
+				return out, err
+			}
+			return out, nil
+		}
 	}
 
 	// Count occupied under lock.
@@ -247,9 +325,10 @@ func (s *PGStore) TryReserveAtomic(ctx context.Context, in AtomicReserveInput) (
 	resID := uuid.New()
 	_, err = tx.Exec(ctx, `
 		INSERT INTO confenge_dispatch_reservations
-			(id, organization_id, channel, message_key, draft_id, state, reserved_at, lease_until, worker_token)
-		VALUES ($1,$2,$3,$4,$5,'reserved',$6,$7,$8)`,
-		resID, in.Req.OrganizationID, in.Req.Channel, in.Req.MessageKey, in.Req.DraftID,
+			(id, organization_id, email_account_id, task_id, channel, message_key, draft_id, state, reserved_at, lease_until, worker_token)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,'reserved',$8,$9,$10)`,
+		resID, in.Req.OrganizationID, in.Req.EmailAccountID, in.Req.TaskID,
+		in.Req.Channel, in.Req.MessageKey, in.Req.DraftID,
 		now, now.Add(in.LeaseTTL), in.Req.WorkerToken,
 	)
 	if err != nil {
@@ -261,6 +340,7 @@ func (s *PGStore) TryReserveAtomic(ctx context.Context, in AtomicReserveInput) (
 	out.Allowed = true
 	out.Reservation = &Reservation{
 		ID: resID, OrganizationID: in.Req.OrganizationID, Channel: in.Req.Channel,
+		EmailAccountID: in.Req.EmailAccountID, TaskID: in.Req.TaskID,
 		MessageKey: in.Req.MessageKey, DraftID: in.Req.DraftID, State: StateReserved,
 		ReservedAt: now, LeaseUntil: now.Add(in.LeaseTTL), WorkerToken: in.Req.WorkerToken,
 	}
@@ -287,9 +367,9 @@ func (s *PGStore) CommitReservation(ctx context.Context, id uuid.UUID, sentAt ti
 	var r Reservation
 	var draftID *uuid.UUID
 	err = tx.QueryRow(ctx, `
-		SELECT id, organization_id, channel, message_key, draft_id, state
+		SELECT id, organization_id, email_account_id, task_id, channel, message_key, draft_id, state
 		FROM confenge_dispatch_reservations WHERE id = $1 FOR UPDATE`, id,
-	).Scan(&r.ID, &r.OrganizationID, &r.Channel, &r.MessageKey, &draftID, &r.State)
+	).Scan(&r.ID, &r.OrganizationID, &r.EmailAccountID, &r.TaskID, &r.Channel, &r.MessageKey, &draftID, &r.State)
 	if err != nil {
 		return err
 	}
@@ -300,10 +380,10 @@ func (s *PGStore) CommitReservation(ctx context.Context, id uuid.UUID, sentAt ti
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO confenge_dispatch_sends
-			(organization_id, channel, message_key, draft_id, reservation_id, sent_at)
-		VALUES ($1,$2,$3,$4,$5,$6)
+			(organization_id, email_account_id, task_id, channel, message_key, draft_id, reservation_id, sent_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 		ON CONFLICT (message_key) DO NOTHING`,
-		r.OrganizationID, r.Channel, r.MessageKey, r.DraftID, r.ID, sentAt,
+		r.OrganizationID, r.EmailAccountID, r.TaskID, r.Channel, r.MessageKey, r.DraftID, r.ID, sentAt,
 	)
 	if err != nil {
 		return err
@@ -323,10 +403,36 @@ func (s *PGStore) ReleaseReservation(ctx context.Context, id uuid.UUID, state, e
 	if state == "" {
 		state = StateReleased
 	}
-	_, err := s.db.Exec(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var orgID uuid.UUID
+	var emailAccountID, taskID, draftID *uuid.UUID
+	var channel, messageKey string
+	err = tx.QueryRow(ctx, `
 		UPDATE confenge_dispatch_reservations SET state = $2, last_error = $3
-		WHERE id = $1 AND state = 'reserved'`, id, state, errText)
-	return err
+		WHERE id = $1 AND state = 'reserved'
+		RETURNING organization_id, email_account_id, task_id, channel, message_key, draft_id`,
+		id, state, errText).Scan(&orgID, &emailAccountID, &taskID, &channel, &messageKey, &draftID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return tx.Commit(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(errText) != "" {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO confenge_dispatch_failures
+				(organization_id, email_account_id, task_id, channel, message_key, draft_id, error_code, error_class, error_text, occurred_at)
+			VALUES ($1,$2,$3,$4,$5,$6,'','unknown',$7,now())`,
+			orgID, emailAccountID, taskID, channel, messageKey, draftID, errText)
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *PGStore) ExpireStaleReservations(ctx context.Context, now time.Time) (int, error) {
@@ -346,9 +452,10 @@ func (s *PGStore) Enqueue(ctx context.Context, item *QueueItem) error {
 	}
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO confenge_dispatch_queue
-			(id, organization_id, channel, draft_id, message_key, recipient_ref, due_at, priority, status, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued', now(), now())
+			(id, organization_id, email_account_id, channel, draft_id, message_key, recipient_ref, due_at, priority, status, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued', now(), now())
 		ON CONFLICT (message_key) DO UPDATE SET
+			email_account_id = COALESCE(EXCLUDED.email_account_id, confenge_dispatch_queue.email_account_id),
 			due_at = EXCLUDED.due_at,
 			priority = EXCLUDED.priority,
 			recipient_ref = EXCLUDED.recipient_ref,
@@ -357,8 +464,8 @@ func (s *PGStore) Enqueue(ctx context.Context, item *QueueItem) error {
 				ELSE 'queued'
 			END,
 			updated_at = now()`,
-		item.ID, item.OrganizationID, item.Channel, item.DraftID, item.MessageKey, item.RecipientRef,
-		item.DueAt, item.Priority,
+		item.ID, item.OrganizationID, item.EmailAccountID, item.Channel, item.DraftID, item.MessageKey,
+		item.RecipientRef, item.DueAt, item.Priority,
 	)
 	return err
 }
@@ -413,14 +520,14 @@ func (s *PGStore) ClaimNextQueued(ctx context.Context, now time.Time) (*QueueIte
 
 	var q QueueItem
 	err = tx.QueryRow(ctx, `
-		SELECT id, organization_id, channel, draft_id, message_key, COALESCE(recipient_ref,''), due_at, priority, attempts, status,
+			SELECT id, organization_id, email_account_id, channel, draft_id, message_key, COALESCE(recipient_ref,''), due_at, priority, attempts, status,
 		       cancel_reason, last_error, created_at
 		FROM confenge_dispatch_queue
 		WHERE status = 'queued' AND due_at <= $1
 		ORDER BY due_at ASC, priority DESC, created_at ASC
 		LIMIT 1
 		FOR UPDATE SKIP LOCKED`, now,
-	).Scan(&q.ID, &q.OrganizationID, &q.Channel, &q.DraftID, &q.MessageKey, &q.RecipientRef, &q.DueAt,
+	).Scan(&q.ID, &q.OrganizationID, &q.EmailAccountID, &q.Channel, &q.DraftID, &q.MessageKey, &q.RecipientRef, &q.DueAt,
 		&q.Priority, &q.Attempts, &q.Status, &q.CancelReason, &q.LastError, &q.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		_ = tx.Commit(ctx)
@@ -472,9 +579,10 @@ func (s *PGStore) RecordFailure(ctx context.Context, f FailureRecord) error {
 	}
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO confenge_dispatch_failures
-			(id, organization_id, channel, message_key, draft_id, error_text, occurred_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-		f.ID, f.OrganizationID, f.Channel, f.MessageKey, f.DraftID, f.ErrorText, f.OccurredAt,
+			(id, organization_id, email_account_id, task_id, channel, message_key, draft_id, error_code, error_class, error_text, occurred_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		f.ID, f.OrganizationID, f.EmailAccountID, f.TaskID, f.Channel, f.MessageKey, f.DraftID,
+		f.ErrorCode, firstNonEmptyString(f.ErrorClass, "unknown"), f.ErrorText, f.OccurredAt,
 	)
 	return err
 }
@@ -484,7 +592,8 @@ func (s *PGStore) ListRecentFailures(ctx context.Context, limit int) ([]FailureR
 		limit = DefaultMaxRecentFails
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT id, organization_id, channel, message_key, draft_id, error_text, occurred_at
+		SELECT id, organization_id, email_account_id, task_id, channel, message_key, draft_id,
+		       error_code, error_class, error_text, occurred_at
 		FROM confenge_dispatch_failures ORDER BY occurred_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -493,12 +602,20 @@ func (s *PGStore) ListRecentFailures(ctx context.Context, limit int) ([]FailureR
 	var out []FailureRecord
 	for rows.Next() {
 		var f FailureRecord
-		if err := rows.Scan(&f.ID, &f.OrganizationID, &f.Channel, &f.MessageKey, &f.DraftID, &f.ErrorText, &f.OccurredAt); err != nil {
+		if err := rows.Scan(&f.ID, &f.OrganizationID, &f.EmailAccountID, &f.TaskID, &f.Channel, &f.MessageKey,
+			&f.DraftID, &f.ErrorCode, &f.ErrorClass, &f.ErrorText, &f.OccurredAt); err != nil {
 			return nil, err
 		}
 		out = append(out, f)
 	}
 	return out, rows.Err()
+}
+
+func firstNonEmptyString(value, fallback string) string {
+	if strings.TrimSpace(value) != "" {
+		return value
+	}
+	return fallback
 }
 
 func (s *PGStore) CountActiveLeases(ctx context.Context, now time.Time) (int, error) {

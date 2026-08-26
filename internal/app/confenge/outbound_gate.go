@@ -61,6 +61,12 @@ type CampaignGateResult struct {
 	Err           error // only meaningful for GateTransient
 }
 
+// CampaignTransportBinding binds a reservation to the scheduler-selected mailbox and task.
+type CampaignTransportBinding struct {
+	EmailAccountID uuid.UUID
+	TaskID         uuid.UUID
+}
+
 // PermanentSuppress reports whether the campaign task may org-wide suppress / bounce-mark.
 // Only GateHardBlock is true; Transient/Deferred/Already/Proceed never permanent-suppress.
 func (r CampaignGateResult) PermanentSuppress() bool {
@@ -85,6 +91,24 @@ func MessageKeyCampaignEmail(campaignID, contactID, sequenceID uuid.UUID) string
 // CAMPAIGN_POLICY revalidation always runs for open transportable touchpoints on
 // the resolved account, independent of MessageContextHash presence.
 func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campaignName, recipientEmail string, campaignID, contactID, sequenceID uuid.UUID) CampaignGateResult {
+	return s.gateCampaignEmail(ctx, orgID, campaignName, recipientEmail, campaignID, contactID, sequenceID, CampaignTransportBinding{})
+}
+
+// GateCampaignEmailForTransport requires the scheduler-selected mailbox and task binding.
+func (s *service) GateCampaignEmailForTransport(ctx context.Context, orgID uuid.UUID, campaignName, recipientEmail string, campaignID, contactID, sequenceID uuid.UUID, binding CampaignTransportBinding) CampaignGateResult {
+	return s.gateCampaignEmail(ctx, orgID, campaignName, recipientEmail, campaignID, contactID, sequenceID, binding)
+}
+
+func (s *service) gateCampaignEmail(ctx context.Context, orgID uuid.UUID, campaignName, recipientEmail string, campaignID, contactID, sequenceID uuid.UUID, binding CampaignTransportBinding) CampaignGateResult {
+	var emailAccountID, taskID *uuid.UUID
+	if binding.EmailAccountID != uuid.Nil {
+		value := binding.EmailAccountID
+		emailAccountID = &value
+	}
+	if binding.TaskID != uuid.Nil {
+		value := binding.TaskID
+		taskID = &value
+	}
 	isConfenge := IsConfengeCampaign(campaignName)
 	var enrolledTouchpoint *models.OutreachTouchpoint
 	if s != nil && s.repo != nil && campaignID != uuid.Nil {
@@ -259,6 +283,8 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 	}
 	res, err := s.governor.TryReserve(ctx, dispatch.ReserveRequest{
 		OrganizationID: orgID,
+		EmailAccountID: emailAccountID,
+		TaskID:         taskID,
 		Channel:        dispatch.ChannelEmail,
 		MessageKey:     key,
 		CapOverride:    capOverride,
@@ -283,14 +309,7 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 		if due.IsZero() {
 			due = time.Now().UTC().Add(s.governor.Config().MinGap)
 		}
-		_ = s.governor.Enqueue(ctx, dispatch.EnqueueRequest{
-			OrganizationID: orgID,
-			Channel:        dispatch.ChannelEmail,
-			DraftID:        uuid.Nil,
-			MessageKey:     key,
-			RecipientRef:   strings.TrimSpace(strings.ToLower(recipientEmail)),
-			DueAt:          due,
-		})
+		// The campaign task already provides durable retry; do not add a zero-draft queue row.
 		return CampaignGateResult{Kind: GateDeferred, NextSlot: due, Reason: res.Reason}
 	}
 	if cohortAuthID != uuid.Nil && res.Reservation != nil {
@@ -649,6 +668,13 @@ func (s *service) ObserveCampaignEmailAttempt(ctx context.Context, orgID, campai
 	if touchpoint == nil {
 		return ErrCampaignTouchpointNotFound
 	}
+	messageKey := MessageKeyCampaignEmail(campaignID, contactID, sequenceID)
+	if s.governor == nil {
+		return fmt.Errorf("dispatch governor unavailable for provider attempt")
+	}
+	if err := s.governor.MarkAttempt(ctx, messageKey, attemptedAt); err != nil {
+		return err
+	}
 	if !isBoundedCohortTouch(touchpoint) {
 		return nil
 	}
@@ -656,7 +682,6 @@ func (s *service) ObserveCampaignEmailAttempt(ctx context.Context, orgID, campai
 	if touchpoint.ContactCandidateID != nil {
 		cand, _ = s.repo.GetCandidate(ctx, orgID, *touchpoint.ContactCandidateID)
 	}
-	messageKey := MessageKeyCampaignEmail(campaignID, contactID, sequenceID)
 	if err := s.assertBoundedCohortTransport(ctx, touchpoint, cand, messageKey); err != nil {
 		return err
 	}
@@ -664,6 +689,14 @@ func (s *service) ObserveCampaignEmailAttempt(ctx context.Context, orgID, campai
 		OccurredAt: attemptedAt, ProviderName: "smtp",
 	})
 	return nil
+}
+
+// RecordCampaignEmailFailure persists a factual mailbox-bound rejection.
+func (s *service) RecordCampaignEmailFailure(ctx context.Context, taskID uuid.UUID, errorCode, errorText string, occurredAt time.Time) error {
+	if s == nil || s.governor == nil {
+		return fmt.Errorf("dispatch governor unavailable for provider failure")
+	}
+	return s.governor.RecordProviderFailure(ctx, taskID, errorCode, errorText, occurredAt)
 }
 
 func (s *service) transitionCompletedTouchpoint(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint, now time.Time, providerMessageID string) error {
@@ -773,7 +806,6 @@ func (s *service) ReleaseCampaignEmail(ctx context.Context, reservationID uuid.U
 	}
 	if s.governor != nil && reservationID != uuid.Nil {
 		_ = s.governor.Release(ctx, reservationID, errText)
-		_ = s.governor.RecordFailure(ctx, uuid.Nil, dispatch.ChannelEmail, "", nil, errText)
 	}
 	if s.cohortStore != nil && reservationID != uuid.Nil {
 		_ = s.cohortStore.ReleaseSlotByLease(ctx, reservationID.String(), errText)

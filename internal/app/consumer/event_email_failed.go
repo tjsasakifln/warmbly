@@ -15,8 +15,14 @@ func (s *JobsService) HandleEmailFailed(ctx context.Context, event *models.SendE
 	if event == nil || event.TaskID == uuid.Nil {
 		return fmt.Errorf("invalid EMAIL_FAILED result")
 	}
+	errorCode, errorText := "", strings.TrimSpace(event.LegacyErrorMsg)
+	if event.Error != nil {
+		errorCode = strings.TrimSpace(event.Error.Code)
+		errorText = strings.TrimSpace(event.Error.Message)
+	}
+	observedErr := s.recordConfengeMailboxFailure(ctx, event.TaskID, errorCode, errorText, event.SentAt)
 	if event.Error == nil || !strings.EqualFold(event.Error.Code, string(errx.MailErrorCodeRecipientRejected)) {
-		return nil
+		return observedErr
 	}
 	if s.AdvancedService == nil {
 		return fmt.Errorf("deliverability service is not configured")
@@ -24,5 +30,5 @@ func (s *JobsService) HandleEmailFailed(ctx context.Context, event *models.SendE
 	if xerr := s.AdvancedService.RecordOutboundBounce(ctx, event.TaskID, event.Error.Message); xerr != nil {
 		return fmt.Errorf("record outbound SMTP rejection: %w", xerr)
 	}
-	return nil
+	return observedErr
 }

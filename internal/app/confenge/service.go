@@ -101,13 +101,14 @@ type Service interface {
 	SendApprovedWhatsApp(ctx context.Context, orgID, userID, draftID uuid.UUID) (*models.OutreachDraft, *errx.Error)
 	HandleWhatsAppInbound(ctx context.Context, orgID uuid.UUID, ev whatsapp.ChannelEvent) (whatsapp.InboundResult, error)
 
-	// Global dispatch governor (email + WhatsApp shared cap).
+	// Mailbox-first email pacing with a shared email and WhatsApp ceiling.
 	WireDispatch(db *pgxpool.Pool)
 	DispatchStatus(ctx context.Context, orgID uuid.UUID) (dispatch.Status, *errx.Error)
 	PauseDispatch(ctx context.Context, orgID, userID uuid.UUID, reason string) *errx.Error
 	ResumeDispatch(ctx context.Context, orgID, userID uuid.UUID) *errx.Error
 	CompleteCampaignEmail(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, providerMessageID string, acceptedAt time.Time) error
 	ObserveCampaignEmailAttempt(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, attemptedAt time.Time) error
+	RecordCampaignEmailFailure(ctx context.Context, taskID uuid.UUID, errorCode, errorText string, occurredAt time.Time) error
 	ProcessDispatchQueueOnce(ctx context.Context) (bool, error)
 	ProcessEditorialRecoveryOnce(ctx context.Context) (bool, error)
 	ProcessDraftGenerationOnce(ctx context.Context) (bool, error)

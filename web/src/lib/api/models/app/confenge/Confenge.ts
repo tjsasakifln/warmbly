@@ -833,11 +833,80 @@ export type ConfengeTouchpoint = {
 export type ConfengeDispatchFailure = {
     id: string;
     organization_id?: string;
+    email_account_id?: string;
+    task_id?: string;
     channel: string;
     message_key: string;
     draft_id?: string;
+    error_code?: string;
+    error_class: string;
     error_text: string;
     occurred_at: string;
+};
+
+export type ConfengeMailboxCapacity = {
+    email_account_id: string;
+    email: string;
+    enabled: boolean;
+    status: string;
+    provider: string;
+    credentials_ready: boolean;
+    worker_assigned: boolean;
+    auth_state: string;
+    auth_spf: boolean;
+    auth_dkim: boolean;
+    auth_dmarc: boolean;
+    auth_dmarc_policy?: string;
+    auth_checked_at?: string;
+    mailbox_age_days: number;
+    warmup_started_at?: string;
+    warmup_age_days?: number;
+    warmup_days_observed: number;
+    cold_ramp_started_at?: string;
+    configured_daily_cap: number;
+    configured_min_wait_seconds: number;
+    derived_hourly_cap: number;
+    effective_daily_cap: number;
+    effective_hourly_cap: number;
+    provider_daily_cap?: number;
+    provider_hourly_cap?: number;
+    provider_cap_source: string;
+    business_window: {
+        timezone: string;
+        start: string;
+        end: string;
+        business_days_only: boolean;
+    };
+    observed_throughput: {
+        accepted_last_hour: number;
+        accepted_today: number;
+        accepted_last_7d: number;
+    };
+    latest: {
+        attempt_at?: string;
+        accepted_at?: string;
+        bounce_at?: string;
+        complaint_at?: string;
+        reply_at?: string;
+        provider_rejection_at?: string;
+        provider_error_class?: string;
+    };
+    pause_source?: string;
+    health: string;
+    health_reason: string;
+    health_signals?: string[];
+    unknown?: string[];
+    used_today: number;
+    next_eligible_slot?: string;
+};
+
+export type ConfengeCapacityAlert = {
+    code: string;
+    severity: string;
+    email_account_id?: string;
+    count?: number;
+    occurred_at?: string;
+    reason: string;
 };
 
 export type ConfengeDispatchStatus = {
@@ -854,4 +923,16 @@ export type ConfengeDispatchStatus = {
     window_end: string;
     active_leases: number;
     recent_failures?: ConfengeDispatchFailure[];
+    pause_source?: string;
+    capacity_source: string;
+    mailboxes: ConfengeMailboxCapacity[];
+    forecast: {
+        slots_next_24h: number;
+        slots_next_7d: number;
+        potential_slots_next_24h: number;
+        potential_slots_next_7d: number;
+        estimated_days_to_drain?: number;
+        delivery_promised: boolean;
+    };
+    alerts?: ConfengeCapacityAlert[];
 };

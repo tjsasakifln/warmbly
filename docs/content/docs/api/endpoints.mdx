@@ -96,6 +96,9 @@ All paths below are relative to the versioned base URL `https://api.warmbly.com/
 | POST | `/confenge/review/drafts/:id/decision` | `WRITE_CONTACTS` |
 | POST | `/confenge/touchpoints/:id/approve` | `WRITE_CONTACTS` |
 | POST | `/confenge/touchpoints/:id/queue` | `WRITE_CONTACTS` |
+| GET | `/confenge/dispatch/status` | `READ_CONTACTS` |
+| POST | `/confenge/dispatch/pause` | `WRITE_CONTACTS` |
+| POST | `/confenge/dispatch/resume` | `WRITE_CONTACTS` |
 | GET | `/confenge/cockpit` | `READ_CONTACTS` |
 | GET | `/confenge/inbound` | `READ_CONTACTS` |
 | POST | `/confenge/inbound/:leadId/outcome` | `WRITE_CONTACTS` |
@@ -120,6 +123,8 @@ All paths below are relative to the versioned base URL `https://api.warmbly.com/
 | POST | `/confenge/manual-queue/:id/action` | `WRITE_CONTACTS` |
 
 `GET /contacts/custom-fields` lists the distinct custom-field keys used across your contacts (frequency-ranked), for building personalization pickers. It returns a flat string array under `data`, capped at 200 keys.
+
+`GET /confenge/dispatch/status` reports configured mailbox envelopes and observed transport facts separately. Only email accounts with a stored SMTP/IMAP or OAuth credential record appear. Each mailbox includes enabled state, provider type, worker assignment, SPF/DKIM/DMARC state, mailbox and warmup age when known, configured daily cap, minimum wait, derived hourly cap, business window, latest attempt/acceptance/bounce/complaint/reply/provider rejection, health reason, pause source, and next eligible slot. Provider ceilings remain `null` and are listed under `unknown` until an explicit source is stored. The aggregate forecast reports effective and potential slots for 24 hours and 7 days, plus estimated queue drain time when transport has effective capacity. While paused, effective next-slot fields are absent because resume time is unknown. A slot is capacity for an attempt, not a delivery promise. `POST /confenge/dispatch/pause` and `POST /confenge/dispatch/resume` are naturally idempotent state assignments and keep the file and durable kill controls authoritative.
 
 `GET /confenge/inbound` is the INBOUND NOW queue. Default `include_synthetic=0`. `POST /confenge/inbound/:leadId/acknowledge` records a human acknowledgement (actor required, idempotent). `POST /confenge/inbound/:leadId/resolve` records a no-action resolution with a reason code. Neither contacts the lead nor sets WON, LOST, pipeline, or revenue. `POST /confenge/inbound/:leadId/outcome` remains the first-action registrar.
 

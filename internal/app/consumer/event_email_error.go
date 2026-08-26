@@ -80,7 +80,7 @@ func (s *JobsService) HandleEmailAuthError(ctx context.Context, event models.Ema
 		)
 	}
 
-	return nil
+	return s.recordConfengeEmailError(ctx, event)
 }
 
 // HandleEmailDisabled handles errors indicating the account has been disabled
@@ -152,7 +152,7 @@ func (s *JobsService) HandleEmailDisabled(ctx context.Context, event models.Emai
 		)
 	}
 
-	return nil
+	return s.recordConfengeEmailError(ctx, event)
 }
 
 // HandleEmailRateLimited handles rate limit exceeded errors (anti-abuse)
@@ -231,7 +231,7 @@ func (s *JobsService) HandleEmailRateLimited(ctx context.Context, event models.E
 		)
 	}
 
-	return nil
+	return s.recordConfengeEmailError(ctx, event)
 }
 
 // HandleEmailServerError handles temporary server errors (may auto-resolve)
@@ -295,7 +295,7 @@ func (s *JobsService) HandleEmailServerError(ctx context.Context, event models.E
 		)
 	}
 
-	return nil
+	return s.recordConfengeEmailError(ctx, event)
 }
 
 // ptrString returns a pointer to a string, or nil if empty
