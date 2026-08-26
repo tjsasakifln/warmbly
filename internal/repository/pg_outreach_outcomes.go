@@ -174,7 +174,7 @@ func (r *outreachRepository) GetTouchpointByEnrollment(ctx context.Context, orgI
 			WHERE t.organization_id=$1 AND d.campaign_id=$2 AND d.enrollment_contact_id=$3
 			ORDER BY t.updated_at DESC
 			LIMIT 1
-		) enrolled_touchpoint`, orgID, campaignID, contactID)
+		) t`, orgID, campaignID, contactID)
 	touchpoint, err := scanTouchpoint(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
