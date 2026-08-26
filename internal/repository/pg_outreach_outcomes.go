@@ -167,11 +167,14 @@ func (r *outreachRepository) FindCandidateByEnrollment(ctx context.Context, orgI
 
 func (r *outreachRepository) GetTouchpointByEnrollment(ctx context.Context, orgID, campaignID, contactID uuid.UUID) (*models.OutreachTouchpoint, error) {
 	row := r.db.QueryRow(ctx, outreachTouchpointSelect+`
-		FROM outreach_touchpoints t
-		JOIN outreach_drafts d ON d.id=t.draft_id AND d.organization_id=t.organization_id
-		WHERE t.organization_id=$1 AND d.campaign_id=$2 AND d.enrollment_contact_id=$3
-		ORDER BY t.updated_at DESC
-		LIMIT 1`, orgID, campaignID, contactID)
+		FROM (
+			SELECT t.*
+			FROM outreach_touchpoints t
+			JOIN outreach_drafts d ON d.id=t.draft_id AND d.organization_id=t.organization_id
+			WHERE t.organization_id=$1 AND d.campaign_id=$2 AND d.enrollment_contact_id=$3
+			ORDER BY t.updated_at DESC
+			LIMIT 1
+		) enrolled_touchpoint`, orgID, campaignID, contactID)
 	touchpoint, err := scanTouchpoint(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
