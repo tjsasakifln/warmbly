@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -80,6 +81,8 @@ func (g *Governor) TryReserve(ctx context.Context, req ReserveRequest) (ReserveR
 		capN = DefaultSendsPerHour
 	}
 	out := ReserveResult{Cap: capN}
+	effectiveGap := g.cfg.MinGap
+	var mailbox *MailboxEnvelope
 
 	if req.MessageKey == "" {
 		return out, fmt.Errorf("message_key required")
@@ -87,13 +90,47 @@ func (g *Governor) TryReserve(ctx context.Context, req ReserveRequest) (ReserveR
 	if req.Channel != ChannelEmail && req.Channel != ChannelWhatsApp {
 		return out, fmt.Errorf("invalid channel %q", req.Channel)
 	}
+	if _, committed, err := g.store.GetSendByKey(ctx, req.MessageKey); err != nil {
+		return out, err
+	} else if committed {
+		out.Allowed = true
+		out.AlreadyCommitted = true
+		out.Reason = "already_sent"
+		return out, nil
+	}
+	if req.Channel == ChannelEmail {
+		mailboxStore, ok := g.store.(MailboxStore)
+		if !ok {
+			return out, fmt.Errorf("dispatch store cannot resolve mailbox capacity")
+		}
+		mailboxID := uuid.Nil
+		if req.EmailAccountID != nil {
+			mailboxID = *req.EmailAccountID
+		}
+		envelope, err := mailboxStore.GetMailboxEnvelope(ctx, req.OrganizationID, mailboxID, now)
+		if errors.Is(err, errMailboxNotConfigured) {
+			out.Reason = "mailbox_not_configured"
+			return out, nil
+		}
+		if err != nil {
+			return out, err
+		}
+		mailbox = &envelope
+		if !envelope.Ready {
+			out.Reason = envelope.HealthReason
+			return out, nil
+		}
+		if envelope.MinGap > effectiveGap {
+			effectiveGap = envelope.MinGap
+		}
+	}
 
 	if g.cfg.EnvPaused {
 		out.Reason = "env_paused"
 		if g.cfg.EnvPauseReason != "" {
 			out.Reason = g.cfg.EnvPauseReason
 		}
-		out.NextSlot = now.Add(g.cfg.MinGap)
+		out.NextSlot = NextEligibleSlot(now.Add(effectiveGap), g.cfg.Timezone, g.cfg.WindowStart, g.cfg.WindowEnd, g.cfg.BusinessDaysOnly)
 		return out, nil
 	}
 	ctrl, err := g.store.GetControl(ctx)
@@ -105,7 +142,7 @@ func (g *Governor) TryReserve(ctx context.Context, req ReserveRequest) (ReserveR
 		if ctrl.PauseReason != "" {
 			out.Reason = ctrl.PauseReason
 		}
-		out.NextSlot = now.Add(g.cfg.MinGap)
+		out.NextSlot = NextEligibleSlot(now.Add(effectiveGap), g.cfg.Timezone, g.cfg.WindowStart, g.cfg.WindowEnd, g.cfg.BusinessDaysOnly)
 		return out, nil
 	}
 
@@ -126,7 +163,7 @@ func (g *Governor) TryReserve(ctx context.Context, req ReserveRequest) (ReserveR
 	// Full reserve decision under store serialization (multi-worker safe).
 	atomic, err := g.store.TryReserveAtomic(ctx, AtomicReserveInput{
 		Req: req, Now: now, Cap: capN, MinGap: g.cfg.MinGap,
-		LeaseTTL: g.cfg.LeaseTTL, Window: RollingWindow,
+		Mailbox: mailbox, LeaseTTL: g.cfg.LeaseTTL, Window: RollingWindow,
 	})
 	if err != nil {
 		return out, err
@@ -136,6 +173,9 @@ func (g *Governor) TryReserve(ctx context.Context, req ReserveRequest) (ReserveR
 	out.Reservation = atomic.Reservation
 	out.Reason = atomic.Reason
 	out.NextSlot = atomic.NextSlot
+	if !out.NextSlot.IsZero() {
+		out.NextSlot = NextEligibleSlot(out.NextSlot, g.cfg.Timezone, g.cfg.WindowStart, g.cfg.WindowEnd, g.cfg.BusinessDaysOnly)
+	}
 	out.SentLastHour = atomic.SentLastHour
 	return out, nil
 }
@@ -172,7 +212,8 @@ func (g *Governor) Enqueue(ctx context.Context, req EnqueueRequest) error {
 		req.DueAt = g.clock.Now().UTC()
 	}
 	return g.store.Enqueue(ctx, &QueueItem{
-		OrganizationID: req.OrganizationID, Channel: req.Channel, DraftID: req.DraftID,
+		OrganizationID: req.OrganizationID, EmailAccountID: req.EmailAccountID,
+		Channel: req.Channel, DraftID: req.DraftID,
 		MessageKey: req.MessageKey, RecipientRef: req.RecipientRef,
 		DueAt: req.DueAt.UTC(), Priority: req.Priority,
 		Status: QueueQueued, CreatedAt: g.clock.Now().UTC(),
@@ -199,6 +240,7 @@ func (g *Governor) Status(ctx context.Context, orgID *uuid.UUID) (Status, error)
 	st := Status{
 		Cap: g.cfg.SendsPerHour, MinGapSeconds: int(g.cfg.MinGap / time.Second),
 		Timezone: g.cfg.Timezone, WindowStart: g.cfg.WindowStart, WindowEnd: g.cfg.WindowEnd,
+		CapacitySource: "global_legacy",
 	}
 	_, _ = g.store.ExpireStaleReservations(ctx, now)
 	sent, err := g.store.CountSendsSince(ctx, now.Add(-RollingWindow))
@@ -230,8 +272,17 @@ func (g *Governor) Status(ctx context.Context, orgID *uuid.UUID) (Status, error)
 			st.PauseReason = "env_paused"
 		}
 	}
+	if g.cfg.EnvPaused {
+		st.PauseSource = "environment"
+	} else if ctrl.Paused {
+		st.PauseSource = "durable_control"
+	}
 	inWin, _ := InSendWindowBusiness(now, g.cfg.Timezone, g.cfg.WindowStart, g.cfg.WindowEnd, g.cfg.BusinessDaysOnly)
 	st.InSendWindow = inWin
+	occupied, last, err := g.store.ListOccupied(ctx, now, RollingWindow)
+	if err != nil {
+		return st, err
+	}
 	if st.Paused {
 		// A pause gap is plain arithmetic and lands wherever it lands, so on a
 		// Sunday it used to advertise a Sunday slot beside in_send_window=false.
@@ -242,10 +293,6 @@ func (g *Governor) Status(ctx context.Context, orgID *uuid.UUID) (Status, error)
 		t := NextWindowOpenBusiness(now, g.cfg.Timezone, g.cfg.WindowStart, g.cfg.WindowEnd, g.cfg.BusinessDaysOnly)
 		st.NextSlotAt = &t
 	} else {
-		occupied, last, err := g.store.ListOccupied(ctx, now, RollingWindow)
-		if err != nil {
-			return st, err
-		}
 		snap := WindowSnapshot{
 			OccupiedAt: occupied, LastOccupied: last,
 			Cap: g.cfg.SendsPerHour, MinGap: g.cfg.MinGap, Window: RollingWindow, Now: now,
@@ -263,7 +310,49 @@ func (g *Governor) Status(ctx context.Context, orgID *uuid.UUID) (Status, error)
 		return st, err
 	}
 	st.RecentFailures = fails
+	if orgID != nil {
+		if capacityStore, ok := g.store.(MailboxStore); ok {
+			snapshot, err := capacityStore.MailboxCapacitySnapshot(ctx, *orgID, now, g.cfg)
+			if err != nil {
+				return st, err
+			}
+			st.CapacitySource = "mailbox_envelopes"
+			st.Mailboxes = snapshot.Mailboxes
+			st.QueuedApproved = snapshot.QueuedMessages
+			st.Forecast, st.NextSlotAt = buildCapacityForecast(now, g.cfg, st.Mailboxes, occupied, snapshot.QueuedMessages, st.Paused)
+			for i := range st.Mailboxes {
+				st.Mailboxes[i].HealthSignals = normalizeHealthSignals(st.Mailboxes[i].HealthSignals)
+				if st.Paused {
+					st.Mailboxes[i].PauseSource = st.PauseSource
+					st.Mailboxes[i].NextEligibleSlot = nil
+				}
+				st.Alerts = append(st.Alerts, mailboxAlerts(&st.Mailboxes[i])...)
+			}
+			if snapshot.QueuedMessages > 0 && st.Forecast.SlotsNext24h == 0 {
+				st.Alerts = append(st.Alerts, CapacityAlert{
+					Code: AlertQueueRunoff, Severity: "critical", Count: snapshot.QueuedMessages,
+					Reason: "approved queue has no effective mailbox capacity in the next 24 hours",
+				})
+			}
+		}
+	}
 	return st, nil
+}
+
+func (g *Governor) MarkAttempt(ctx context.Context, messageKey string, attemptedAt time.Time) error {
+	store, ok := g.store.(MailboxStore)
+	if !ok {
+		return fmt.Errorf("dispatch store cannot record mailbox attempt")
+	}
+	return store.MarkAttempt(ctx, messageKey, attemptedAt)
+}
+
+func (g *Governor) RecordProviderFailure(ctx context.Context, taskID uuid.UUID, errorCode, errorText string, occurredAt time.Time) error {
+	store, ok := g.store.(MailboxStore)
+	if !ok {
+		return fmt.Errorf("dispatch store cannot record provider failure")
+	}
+	return store.RecordProviderFailure(ctx, taskID, errorCode, errorText, occurredAt)
 }
 
 func (g *Governor) RecordFailure(ctx context.Context, orgID uuid.UUID, channel, messageKey string, draftID *uuid.UUID, errText string) error {

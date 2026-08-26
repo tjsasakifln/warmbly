@@ -75,7 +75,7 @@ type TasksService interface {
 	// single completion with one optional web search).
 	SetAITools(src AIToolSource)
 
-	// WireConfengeDispatch attaches the optional CONFENGE global dispatch gate.
+	// WireConfengeDispatch attaches the optional CONFENGE mailbox dispatch gate.
 	WireConfengeDispatch(g ConfengeOutboundGate)
 	SetOrgRiskPolicy(p OrgRiskPolicy)
 }
@@ -135,7 +135,7 @@ type tasksService struct {
 	// agent over (SetAITools). Nil = research degrades.
 	aiTools AIToolSource
 
-	// confengeGate paces CONFENGE campaign email with the shared global governor.
+	// confengeGate applies mailbox pacing plus the shared CONFENGE ceiling.
 	confengeGate ConfengeOutboundGate
 
 	// warmupSettings caches the warmup generation settings in-process so the

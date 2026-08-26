@@ -233,9 +233,15 @@ Execution state (`PLANNED`, `READY`, `IN_PROGRESS`, `COMPLETED`, `NEEDS_FOLLOWUP
 
 The extra-cli plug contract (additive fields the future producer can fill) is documented in `docs/confenge/commercial-actions.md`.
 
-## Global dispatch governor
+## Mailbox capacity and dispatch governor
 
-CONFENGE outbound email and WhatsApp share one local rolling-hour cap (default 10 sends/hour, min gap 360s, timezone America/Sao_Paulo). The governor is the final gate before provider send: approved items that exceed capacity re-compete for future slots and never burst after restart.
+CONFENGE email pacing is mailbox-first. The campaign scheduler selects an existing email account, and the final transport reservation is bound to that exact account and task. The mailbox's configured `campaign_limit`, `min_wait_time`, readiness, and factual provider state are checked inside the same transaction that reserves the slot. The shared governor remains an additional ceiling across email and WhatsApp. It cannot increase a mailbox envelope.
+
+Only accounts with stored SMTP/IMAP or OAuth credentials are inventoried. A mailbox is blocked when it is disabled, has no assigned worker, lacks credentials, has unknown or failing SPF/DKIM/DMARC state, is quarantined by an existing health authority, or has an unresolved factual authentication, provider-block, rate-limit, or connectivity failure. Provider 4xx/5xx responses, hard bounces, complaints, replies, attempts, and acceptances remain separate observations. A bounce or complaint rate does not create a new threshold here. Existing explicit campaign/provider policies remain authoritative.
+
+For each mailbox, the hourly cap is derived from the minimum wait and tightened by any explicit cap. The daily cap is the configured mailbox campaign limit. Attempts that reached the provider consume that daily envelope even when the provider later rejects them. A growing queue cannot raise either cap, and retries retain the same account/recipient/sequence idempotency key across mailboxes.
+
+The status forecast simulates the configured business window, business days, mailbox daily and rolling-hour limits, minimum wait, occupied reservations, observed attempts, provider acceptances, and the shared ceiling. It returns slots for the next 24 hours and 7 days and an estimated queue drain time only while effective capacity exists. During a pause, effective slots are zero and potential slots remain visible. These are possible attempt slots, not promised deliveries.
 
 | Env | Default |
 | --- | --- |

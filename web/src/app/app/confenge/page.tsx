@@ -67,6 +67,7 @@ import type {
   ConfengeTouchpoint,
   ConfengeWorkingQueueItem,
 	ConfengeDelegatedFirstTouchStatus,
+  ConfengeDispatchStatus,
 } from "@/lib/api/models/app/confenge/Confenge";
 import type { AppError } from "@/lib/api/client/normalizeError";
 import { channelLabel, formatFeedStatus, formatPtBrDate, intentLabel, purposeLabel, reasonLabel, stateLabel } from "./labels";
@@ -134,6 +135,18 @@ export default function ConfengePage() {
   const [body, setBody] = useState("");
   const [recipient, setRecipient] = useState("");
   const [pilotSelection, setPilotSelection] = useState<string[]>([]);
+  const configuredMailboxes = dispatchStatus.data?.mailboxes ?? [];
+  const acceptedByMailboxesLastHour = configuredMailboxes.reduce(
+    (sum, mailbox) => sum + mailbox.observed_throughput.accepted_last_hour,
+    0,
+  );
+  const mailboxHourlyEnvelope = configuredMailboxes.reduce(
+    (sum, mailbox) => sum + (mailbox.health === "blocked" ? 0 : mailbox.effective_hourly_cap),
+    0,
+  );
+  const effectiveHourlyEnvelope = dispatchStatus.data
+    ? Math.min(dispatchStatus.data.cap, mailboxHourlyEnvelope)
+    : 0;
 
   useEffect(() => {
     const previousLang = document.documentElement.lang;
@@ -222,12 +235,12 @@ export default function ConfengePage() {
         { id: "review", label: "Exceções para revisar", value: w.needs_review },
         { id: "sent", label: "Enviadas", value: s?.sent ?? 0 },
         { id: "replied", label: "Respondidas", value: s?.replied ?? 0 },
-        { id: "rate", label: "Envios na hora", value: dispatchStatus.data ? `${dispatchStatus.data.sent_last_hour}/${dispatchStatus.data.cap}` : "—" },
+        { id: "rate", label: "Aceitas / envelope", value: dispatchStatus.data ? `${acceptedByMailboxesLastHour}/${effectiveHourlyEnvelope}` : "—" },
       ];
     }
     if (!s) return core;
     return core;
-  }, [summary.data, workingOverview.data, dispatchStatus.data]);
+  }, [summary.data, workingOverview.data, dispatchStatus.data, acceptedByMailboxesLastHour, effectiveHourlyEnvelope]);
 
   const capacityLabel = useMemo(() => {
     const w = workingOverview.data;
@@ -350,7 +363,7 @@ export default function ConfengePage() {
               }
               data-testid="confenge-dispatch-quota"
             >
-              {dispatchStatus.data.sent_last_hour}/{dispatchStatus.data.cap} na última hora
+              {acceptedByMailboxesLastHour}/{effectiveHourlyEnvelope} aceitas / envelope por hora
             </span>
             {dispatchStatus.data.paused ? (
               <button
@@ -386,6 +399,8 @@ export default function ConfengePage() {
       </PageTopbar>
       <div className="flex flex-col gap-4 p-4 md:p-6 max-w-6xl mx-auto w-full">
         <DelegatedFirstTouchPanel status={firstTouchPolicy.data} loading={firstTouchPolicy.isLoading} />
+
+        {dispatchStatus.data && <MailboxCapacityPanel status={dispatchStatus.data} />}
 
         {firstTouchPolicy.data?.policy_active ? (
           <details className="rounded-md border border-slate-200 bg-white">
@@ -1196,6 +1211,157 @@ export default function ConfengePage() {
       </div>
     </Page>
   );
+}
+
+function MailboxCapacityPanel({ status }: { status: ConfengeDispatchStatus }) {
+  const mailboxes = status.mailboxes ?? [];
+  const forecast = status.forecast ?? {
+    slots_next_24h: 0,
+    slots_next_7d: 0,
+    potential_slots_next_24h: 0,
+    potential_slots_next_7d: 0,
+    delivery_promised: false,
+  };
+  const drain = status.queued_approved === 0
+    ? "Fila vazia"
+    : forecast.estimated_days_to_drain
+      ? `${forecast.estimated_days_to_drain} dias estimados`
+      : "Sem estimativa enquanto não há capacidade efetiva";
+
+  return (
+    <section data-testid="confenge-mailbox-capacity" className="rounded-md border border-slate-200 bg-white">
+      <div className="shrink-0 px-3 h-10 flex items-center justify-between gap-3 border-b border-slate-200">
+        <div>
+          <span className="text-[12.5px] font-medium text-slate-900">Capacidade real de transporte</span>
+          <span className="ml-2 text-[11px] text-slate-500">{mailboxes.length} {mailboxes.length === 1 ? "mailbox configurada" : "mailboxes configuradas"}</span>
+        </div>
+        <span className={`rounded-md px-2 py-1 text-[10px] uppercase tracking-[0.14em] ${status.paused ? "bg-amber-50 text-amber-800" : "bg-sky-50 text-sky-700"}`}>
+          {status.paused ? "Transporte pausado" : "Envelope ativo"}
+        </span>
+      </div>
+      <div className="grid gap-2 border-b border-slate-100 p-3 sm:grid-cols-4">
+        <ReadinessItem label="Slots em 24 h" value={String(forecast.slots_next_24h)} />
+        <ReadinessItem label="Slots em 7 dias" value={String(forecast.slots_next_7d)} />
+        <ReadinessItem label="Fila aprovada" value={String(status.queued_approved)} />
+        <ReadinessItem label="Prazo para drenar" value={drain} />
+      </div>
+      {status.paused && forecast.potential_slots_next_24h > 0 && (
+        <p className="border-b border-slate-100 px-3 py-2 text-[11.5px] text-amber-800">
+          A configuração comportaria {forecast.potential_slots_next_24h} slots nas próximas 24 horas, mas a pausa mantém a capacidade efetiva em zero.
+        </p>
+      )}
+      {(status.alerts?.length ?? 0) > 0 && (
+        <div className="border-b border-slate-100 bg-amber-50 px-3 py-2 text-[11.5px] text-amber-900">
+          {status.alerts!.map((alert) => (
+            <div key={`${alert.code}-${alert.email_account_id ?? "org"}`} className="flex items-start gap-1.5">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>{capacityReasonLabel(alert.code)}: {alert.reason}{alert.count && alert.count > 1 ? ` (${alert.count})` : ""}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="divide-y divide-slate-100">
+        {mailboxes.map((mailbox) => (
+          <div key={mailbox.email_account_id} className="grid gap-2 px-3 py-3 lg:grid-cols-[minmax(180px,1.2fr)_repeat(4,minmax(110px,1fr))]">
+            <div>
+              <div className="text-[12.5px] font-medium text-slate-900">{mailbox.email}</div>
+              <div className="mt-0.5 text-[11px] text-slate-500">
+                {mailbox.provider} · {mailbox.mailbox_age_days} dias cadastrada
+              </div>
+              <div className={`mt-1 text-[11px] ${mailbox.health === "blocked" ? "text-rose-700" : mailbox.health === "degraded" ? "text-amber-700" : "text-emerald-700"}`}>
+                {capacityHealthLabel(mailbox.health)} · {capacityReasonLabel(mailbox.health_reason)}
+              </div>
+            </div>
+            <div className="text-[11.5px] text-slate-600">
+              <div className="text-[10px] uppercase tracking-[0.14em] text-slate-400">Autenticação</div>
+              <div className="mt-1">{mailbox.auth_state === "passing" && mailbox.auth_spf && mailbox.auth_dkim && mailbox.auth_dmarc ? "SPF, DKIM e DMARC válidos" : capacityReasonLabel(mailbox.health_reason)}</div>
+              <div className="text-[11px] text-slate-400">Credencial {mailbox.credentials_ready ? "presente" : "ausente"} · worker {mailbox.worker_assigned ? "atribuído" : "ausente"}</div>
+            </div>
+            <div className="text-[11.5px] text-slate-600">
+              <div className="text-[10px] uppercase tracking-[0.14em] text-slate-400">Envelope configurado</div>
+              <div className="mt-1 tabular-nums">{mailbox.configured_daily_cap}/dia · {mailbox.effective_hourly_cap}/hora efetivos</div>
+              <div className="text-[11px] text-slate-400">Espera mínima {Math.round(mailbox.configured_min_wait_seconds / 60)} min</div>
+              <div className="text-[11px] text-slate-400">Provider: {mailbox.provider_daily_cap ? `${mailbox.provider_daily_cap}/dia` : "limite desconhecido"}</div>
+              {mailbox.latest.provider_rejection_at && <div className="text-[11px] text-amber-700">Última rejeição: {capacityReasonLabel(mailbox.latest.provider_error_class ?? "unknown")} · {formatCapacityTimestamp(mailbox.latest.provider_rejection_at, mailbox.business_window.timezone)}</div>}
+            </div>
+            <div className="text-[11.5px] text-slate-600">
+              <div className="text-[10px] uppercase tracking-[0.14em] text-slate-400">Observado</div>
+              <div className="mt-1 tabular-nums">{mailbox.observed_throughput.accepted_today} aceitas hoje</div>
+              <div className="text-[11px] text-slate-400">{mailbox.used_today}/{mailbox.effective_daily_cap} tentativas ou reservas consumidas</div>
+              <div className="text-[11px] text-slate-400">Warmup: {mailbox.warmup_age_days === undefined ? "sem evidência" : `${mailbox.warmup_age_days} dias`}</div>
+              <div className="text-[11px] text-slate-400">Última tentativa: {formatCapacityTimestamp(mailbox.latest.attempt_at, mailbox.business_window.timezone) ?? "desconhecida"}</div>
+              <div className="text-[11px] text-slate-400">Última aceitação: {formatCapacityTimestamp(mailbox.latest.accepted_at, mailbox.business_window.timezone) ?? "desconhecida"}</div>
+              {mailbox.latest.bounce_at && <div className="text-[11px] text-amber-700">Bounce: {formatCapacityTimestamp(mailbox.latest.bounce_at, mailbox.business_window.timezone)}</div>}
+              {mailbox.latest.complaint_at && <div className="text-[11px] text-rose-700">Complaint: {formatCapacityTimestamp(mailbox.latest.complaint_at, mailbox.business_window.timezone)}</div>}
+              {mailbox.latest.reply_at && <div className="text-[11px] text-emerald-700">Reply: {formatCapacityTimestamp(mailbox.latest.reply_at, mailbox.business_window.timezone)}</div>}
+            </div>
+            <div className="text-[11.5px] text-slate-600">
+              <div className="text-[10px] uppercase tracking-[0.14em] text-slate-400">Próximo slot</div>
+              <div className="mt-1 tabular-nums">{formatCapacityTimestamp(mailbox.next_eligible_slot, mailbox.business_window.timezone) ?? "Indisponível"}</div>
+              <div className="text-[11px] text-slate-400">{mailbox.business_window.start}–{mailbox.business_window.end} · {mailbox.business_window.timezone}</div>
+            </div>
+          </div>
+        ))}
+        {mailboxes.length === 0 && (
+          <div className="px-3 py-6 text-center text-[12.5px] text-slate-500">
+            Nenhuma mailbox realmente configurada e autorizada foi encontrada. A fila permanece aguardando.
+          </div>
+        )}
+      </div>
+      <p className="border-t border-slate-100 px-3 py-2 text-[11px] text-slate-400">
+        Slots são capacidade de tentativa, não promessa de entrega. Limites do provider aparecem como desconhecidos até existir uma fonte explícita.
+      </p>
+    </section>
+  );
+}
+
+function capacityHealthLabel(value: string): string {
+  if (value === "ready") return "Saudável";
+  if (value === "degraded") return "Degradada";
+  if (value === "blocked") return "Bloqueada";
+  return stateLabel(value);
+}
+
+function capacityReasonLabel(value: string): string {
+  const labels: Record<string, string> = {
+    ready: "Pronta para reservar slots",
+    mailbox_disabled: "Mailbox desabilitada",
+    credentials_missing: "Credenciais ausentes",
+    worker_missing: "Worker não atribuído",
+    dns_auth_unknown: "Autenticação DNS desconhecida",
+    dns_auth_not_passing: "SPF, DKIM ou DMARC não estão válidos",
+    mailbox_quarantined: "Mailbox em quarentena",
+    warmup_blocked: "Warmup bloqueado",
+    warmup_quarantined: "Warmup em quarentena",
+    warmup_watch: "Warmup em observação",
+    warmup_throttled: "Warmup limitado",
+    mailbox_rate_bounds_invalid: "Limites da mailbox inválidos",
+    auth_failure: "Falha de autenticação",
+    provider_interrupted: "Provider interrompido",
+    provider_block: "Bloqueio do provider",
+    rate_limit: "Rejeição por limite do provider",
+    provider_4xx: "Resposta 4xx do provider",
+    provider_5xx: "Resposta 5xx do provider",
+    hard_bounce_observed: "Hard bounce observado",
+    complaint_observed: "Complaint observada",
+    repeated_provider_4xx: "Respostas 4xx repetidas",
+    repeated_provider_5xx: "Respostas 5xx repetidas",
+    rate_limit_rejection: "Rejeição por rate limit",
+    complaint: "Complaint",
+    queue_runoff_without_capacity: "Fila sem capacidade efetiva",
+  };
+  return labels[value] ?? reasonLabel(value);
+}
+
+function formatCapacityTimestamp(value?: string, timezone?: string): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short",
+    timeZone: timezone || "America/Sao_Paulo",
+  }).format(date);
 }
 
 function DelegatedFirstTouchPanel({
