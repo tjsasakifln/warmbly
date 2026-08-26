@@ -209,6 +209,15 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 				executionStatus = "failed"
 				return errx.InternalError()
 			}
+			if !ready {
+				ready, readyErr = s.campaignRepo.HasPendingDelegatedFirstTouch(ctx, campaign.ID)
+				if readyErr != nil {
+					sentry.CaptureException(readyErr)
+					_ = s.taskRepo.UpdateTaskStatus(ctx, taskID, "pending")
+					executionStatus = "failed"
+					return errx.InternalError()
+				}
+			}
 			if ready {
 				_ = s.taskRepo.UpdateTaskStatus(ctx, taskID, "completed")
 				executionStatus = "completed"

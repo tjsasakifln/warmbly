@@ -75,6 +75,13 @@ func (s *tasksService) ReconcileCampaignSchedules(ctx context.Context, limit int
 				continue
 			}
 			if !ready {
+				ready, readyErr = s.campaignRepo.HasPendingDelegatedFirstTouch(ctx, id)
+				if readyErr != nil {
+					log.Warn().Err(readyErr).Str("campaign_id", id.String()).Msg("campaign reconcile: rolling backlog check failed; will retry")
+					continue
+				}
+			}
+			if !ready {
 				s.campaignRepo.UpdateStatus(ctx, id, "completed")
 			}
 		case errors.Is(cerr, scheduler.ErrCampaignEnded):

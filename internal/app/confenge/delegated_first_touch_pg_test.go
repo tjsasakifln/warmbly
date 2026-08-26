@@ -302,8 +302,29 @@ func TestCampaignReadyAcceptsReadBackDelegatedQueueWithoutContact(t *testing.T) 
 	if ready, err := campaignRepo.HasReadyDelegatedFirstTouch(f.ctx, f.campaignID); err != nil || ready {
 		t.Fatalf("ordinary empty campaign unexpectedly has delegated work: ready=%v err=%v", ready, err)
 	}
+	if pending, err := campaignRepo.HasPendingDelegatedFirstTouch(f.ctx, f.campaignID); err != nil || pending {
+		t.Fatalf("ordinary empty campaign unexpectedly has pending delegated work: pending=%v err=%v", pending, err)
+	}
 	if err := campaignRepo.ValidateCampaignReady(f.ctx, f.campaignID); err == nil || !strings.Contains(err.Error(), "at least one contact") {
 		t.Fatalf("ordinary empty campaign unexpectedly ready: %v", err)
+	}
+	entry := f.manifest.Entries[0]
+	account, err := f.repo.GetAccount(f.ctx, f.orgID, entry.AccountID)
+	if err != nil || account == nil {
+		t.Fatalf("account unavailable: account=%+v err=%v", account, err)
+	}
+	candidate, err := f.repo.GetCandidate(f.ctx, f.orgID, entry.ContactCandidateID)
+	if err != nil || candidate == nil {
+		t.Fatalf("candidate unavailable: candidate=%+v err=%v", candidate, err)
+	}
+	if _, _, err := f.svc.prepareDelegatedTouchpoint(f.ctx, f.orgID, account, candidate, f.manifest, entry); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := campaignRepo.HasPendingDelegatedFirstTouch(f.ctx, f.campaignID); err != nil || !pending {
+		t.Fatalf("current undecided backlog unavailable: pending=%v err=%v", pending, err)
+	}
+	if err := campaignRepo.ValidateCampaignReady(f.ctx, f.campaignID); err != nil {
+		t.Fatalf("current delegated backlog did not keep rolling campaign startable: %v", err)
 	}
 	report, xerr := f.svc.ApplyDelegatedFirstTouchManifest(f.ctx, f.orgID, f.manifest, false)
 	if xerr != nil || report == nil || report.Queued != 1 || len(report.Items) != 1 || report.Items[0].State != "QUEUED" {
@@ -318,6 +339,9 @@ func TestCampaignReadyAcceptsReadBackDelegatedQueueWithoutContact(t *testing.T) 
 	}
 	if ready, err := campaignRepo.HasReadyDelegatedFirstTouch(f.ctx, f.campaignID); err != nil || !ready {
 		t.Fatalf("read-back delegated work unavailable: ready=%v err=%v", ready, err)
+	}
+	if pending, err := campaignRepo.HasPendingDelegatedFirstTouch(f.ctx, f.campaignID); err != nil || pending {
+		t.Fatalf("decided delegated work remained pending: pending=%v err=%v", pending, err)
 	}
 	if err := campaignRepo.ValidateCampaignReady(f.ctx, f.campaignID); err != nil {
 		t.Fatalf("read-back delegated rolling queue did not make campaign startable: %v", err)
