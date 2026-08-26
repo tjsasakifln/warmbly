@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
+	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
 )
 
@@ -77,7 +78,8 @@ func (s *service) ProcessDispatchQueueOnce(ctx context.Context) (bool, error) {
 	if actor == uuid.Nil {
 		actor, _ = s.repo.GetOrgOwnerUserID(ctx, item.OrganizationID)
 	}
-	var xerr error
+	// Keep the concrete pointer type so a nil *errx.Error stays nil.
+	var xerr *errx.Error
 	if tp.Channel == models.OutreachChannelWhatsApp {
 		xerr = s.dispatchWhatsAppTouch(ctx, item.OrganizationID, actor, tp)
 	} else {
