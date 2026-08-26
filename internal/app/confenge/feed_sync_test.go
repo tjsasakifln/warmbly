@@ -107,6 +107,9 @@ func TestSyncFeedManifestIdempotentAndHashFailClosed(t *testing.T) {
 	if !res2.SkippedSame || res2.Status != "noop" {
 		t.Fatalf("expected noop, got %+v", res2)
 	}
+	if res2.Counts["imported"] != 1 || res2.Counts["held_exception"] != 1 || res2.Counts["chunks_total"] != 0 {
+		t.Fatalf("noop did not return only persisted stage counts: %+v", res2.Counts)
+	}
 
 	// A producer retry may assign a new run ID to identical snapshot content.
 	// No-op must retain the applied run ID or every account becomes non-current.
@@ -128,6 +131,41 @@ func TestSyncFeedManifestIdempotentAndHashFailClosed(t *testing.T) {
 	state, _ = r.GetFeedSyncState(ctx, org)
 	if state.LastRunID != "run-sync-1" {
 		t.Fatalf("same snapshot drifted authoritative run to %q", state.LastRunID)
+	}
+
+	// Reusing one run id for different content would stale its per-run INITIAL binding.
+	reusedRun := cloneManifestMap(t, man)
+	reusedRun["generated_at"] = "2026-08-09T11:00:00Z"
+	reusedRun["source"] = map[string]any{
+		"system": "extra-cli", "run_id": "run-sync-1", "snapshot_hash": "snap-reused-run",
+		"profile_id": "p", "profile_version": "1",
+	}
+	reusedRaw, _ := json.Marshal(reusedRun)
+	reusedPath := filepath.Join(dir, "manifest_reused_run.json")
+	if err := os.WriteFile(reusedPath, reusedRaw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, xerr := svc.SyncFeedManifest(ctx, org, &user, "file://"+reusedPath); xerr == nil {
+		t.Fatal("source run id reused for a different snapshot must be rejected")
+	}
+	state, _ = r.GetFeedSyncState(ctx, org)
+	if state.LastRunID != "run-sync-1" || state.LastSnapshotHash != "snap-sync-1" {
+		t.Fatalf("reused run displaced the current snapshot: %+v", state)
+	}
+
+	historicalCurrentAt := time.Date(2026, 8, 9, 10, 0, 0, 0, time.UTC)
+	if err := r.UpsertFeedSyncState(ctx, &models.OutreachFeedSyncState{
+		OrganizationID: org, LastSnapshotHash: "snap-current-2", LastRunID: "run-current-2",
+		LastStatus: "completed", SourceGeneratedAt: &historicalCurrentAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, xerr := svc.SyncFeedManifest(ctx, org, &user, "file://"+reusedPath); xerr == nil {
+		t.Fatal("historical source run id reused for a different snapshot must be rejected")
+	}
+	state, _ = r.GetFeedSyncState(ctx, org)
+	if state.LastRunID != "run-current-2" || state.LastSnapshotHash != "snap-current-2" {
+		t.Fatalf("historical run reuse displaced the current snapshot: %+v", state)
 	}
 
 	// A different snapshot with an older authoritative timestamp is a rollback,

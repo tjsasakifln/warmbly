@@ -2,11 +2,13 @@ package confenge
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
@@ -130,6 +132,7 @@ func newDelegatedPGFixture(t *testing.T) *delegatedPGFixture {
 	candidate := &models.OutreachContactCandidate{
 		ID: uuid.New(), OrganizationID: f.orgID, AccountID: account.ID, SourceContactID: "route-delegated",
 		Name: "Equipe", Role: "Atendimento", Email: "contato@empresa.example", SourceURL: "https://empresa.example/contato",
+		SourceDate:         &now,
 		VerificationStatus: models.OutreachVerifyOfficialSource, Confidence: "HIGH", Recommended: true,
 		EmailSendReady: true, OwnershipStatus: "COMPANY_OWNED", RecipientCommercialSuitability: "SUITABLE",
 		LastImportRunID: &importID, ChannelEpistemic: "OBSERVED", RouteFreshness: "FRESH",
@@ -386,23 +389,37 @@ func TestCampaignReadyAcceptsReadBackDelegatedQueueWithoutContact(t *testing.T) 
 	if err := campaignRepo.ValidateCampaignReady(f.ctx, f.campaignID); err == nil || !strings.Contains(err.Error(), "at least one contact") {
 		t.Fatalf("ordinary empty campaign unexpectedly ready: %v", err)
 	}
-	entry := f.manifest.Entries[0]
-	account, err := f.repo.GetAccount(f.ctx, f.orgID, entry.AccountID)
-	if err != nil || account == nil {
-		t.Fatalf("account unavailable: account=%+v err=%v", account, err)
-	}
-	candidate, err := f.repo.GetCandidate(f.ctx, f.orgID, entry.ContactCandidateID)
-	if err != nil || candidate == nil {
-		t.Fatalf("candidate unavailable: candidate=%+v err=%v", candidate, err)
-	}
-	if _, _, err := f.svc.prepareDelegatedTouchpoint(f.ctx, f.orgID, account, candidate, f.manifest, entry); err != nil {
+	if _, err := f.pool.Exec(f.ctx, `UPDATE outreach_contact_candidates SET route_freshness='STALE' WHERE organization_id=$1`, f.orgID); err != nil {
 		t.Fatal(err)
 	}
+	backlog, err := f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, f.manifest.SourceRunID)
+	if err != nil || backlog.InitialPrepared != 1 || backlog.DelegatedEligible != 0 || backlog.HeldException != 1 {
+		t.Fatalf("static delegated hold was not classified: counts=%+v err=%v", backlog, err)
+	}
+	if ready, err := campaignRepo.HasReadyDelegatedFirstTouch(f.ctx, f.campaignID); err != nil || ready {
+		t.Fatalf("held prepared backlog kept campaign ready: ready=%v err=%v", ready, err)
+	}
+	if pending, err := campaignRepo.HasPendingDelegatedFirstTouch(f.ctx, f.campaignID); err != nil || pending {
+		t.Fatalf("held prepared backlog remained pending: pending=%v err=%v", pending, err)
+	}
+	if _, _, _, err := f.svc.nextDelegatedFirstTouchCandidate(f.ctx, f.orgID); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("delegated worker selected held backlog: %v", err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `UPDATE outreach_contact_candidates SET route_freshness='FRESH' WHERE organization_id=$1`, f.orgID); err != nil {
+		t.Fatal(err)
+	}
+	backlog, err = f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, f.manifest.SourceRunID)
+	if err != nil || backlog.InitialPrepared != 1 || backlog.DelegatedEligible != 1 || backlog.HeldException != 0 {
+		t.Fatalf("prepared manifest backlog unavailable after correction: counts=%+v err=%v", backlog, err)
+	}
+	if ready, err := campaignRepo.HasReadyDelegatedFirstTouch(f.ctx, f.campaignID); err != nil || ready {
+		t.Fatalf("undecided JIT backlog appeared queue-ready: ready=%v err=%v", ready, err)
+	}
 	if pending, err := campaignRepo.HasPendingDelegatedFirstTouch(f.ctx, f.campaignID); err != nil || !pending {
-		t.Fatalf("current undecided backlog unavailable: pending=%v err=%v", pending, err)
+		t.Fatalf("prepared JIT backlog did not remain pending: pending=%v err=%v", pending, err)
 	}
 	if err := campaignRepo.ValidateCampaignReady(f.ctx, f.campaignID); err != nil {
-		t.Fatalf("current delegated backlog did not keep rolling campaign startable: %v", err)
+		t.Fatalf("prepared JIT backlog did not make campaign startable: %v", err)
 	}
 	report, xerr := f.svc.ApplyDelegatedFirstTouchManifest(f.ctx, f.orgID, f.manifest, false)
 	if xerr != nil || report == nil || report.Queued != 1 || len(report.Items) != 1 || report.Items[0].State != "QUEUED" {
@@ -429,6 +446,39 @@ func TestCampaignReadyAcceptsReadBackDelegatedQueueWithoutContact(t *testing.T) 
 	}
 	if ready, err := campaignRepo.HasReadyDelegatedFirstTouch(f.ctx, f.campaignID); err != nil || ready {
 		t.Fatalf("sent delegated work remained ready: ready=%v err=%v", ready, err)
+	}
+}
+
+func TestMaterializeCurrentInitialBacklogRetiresAccountOmittedFromNewRunPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	candidateID := f.manifest.Entries[0].ContactCandidateID
+	legacy := &models.OutreachTouchpoint{
+		OrganizationID: f.orgID, AccountID: f.manifest.Entries[0].AccountID, ContactCandidateID: &candidateID,
+		Ordinal: 1, CadenceStep: "INITIAL", Channel: models.OutreachChannelEmail,
+		Purpose: models.TouchpointPurposeInitial, DueAt: time.Now().UTC(), State: models.TouchpointDue,
+		IdempotencyKey: "legacy-initial-" + uuid.NewString(),
+	}
+	if err := f.repo.InsertTouchpoint(f.ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	first, err := f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, f.manifest.SourceRunID)
+	if err != nil || first.InitialPrepared != 1 || first.StaleRetired != 1 {
+		t.Fatalf("initial backlog unavailable: counts=%+v err=%v", first, err)
+	}
+	newRun := "run-omits-prior-account-" + uuid.NewString()
+	refreshed, err := f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, newRun)
+	if err != nil || refreshed.Imported != 0 || refreshed.StaleRetired != 1 {
+		t.Fatalf("omitted account backlog was not retired: counts=%+v err=%v", refreshed, err)
+	}
+	var state, reason string
+	if err := f.pool.QueryRow(f.ctx, `
+		SELECT state,stop_reason FROM outreach_touchpoints
+		WHERE organization_id=$1 AND account_id=$2 AND source_run_id=$3`,
+		f.orgID, f.manifest.Entries[0].AccountID, f.manifest.SourceRunID).Scan(&state, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if state != models.TouchpointCancelled || reason != "source_run_superseded" {
+		t.Fatalf("omitted stale touchpoint survived: state=%s reason=%s", state, reason)
 	}
 }
 
@@ -508,6 +558,9 @@ func TestDelegatedFirstTouchWorkerSkipsMismatchedDecisionBoundByCurrentIdempoten
 	}
 	if touchpointID != secondTouchpoint.ID || accountID != secondAccount.ID || candidateID != secondCandidate.ID {
 		t.Fatalf("historical key mismatch blocked rolling selection: touchpoint=%s account=%s candidate=%s", touchpointID, accountID, candidateID)
+	}
+	if _, _, _, err = f.svc.nextDelegatedFirstTouchCandidate(f.ctx, f.orgID); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("leased touchpoint was selected twice: %v", err)
 	}
 }
 

@@ -201,6 +201,8 @@ type ImportOptions struct {
 	// holds the organization feed lock. Public imports keep the original
 	// idempotent readback behavior and never reclaim an in-flight run.
 	resumeStaleRunningAfter time.Duration
+	// Manifest sync materializes the canonical backlog instead of a parallel human action queue.
+	skipCommercialPlanning bool
 }
 
 type ApprovalOptions struct {
@@ -387,7 +389,7 @@ func (s *service) ImportFromBytes(ctx context.Context, orgID uuid.UUID, userID *
 		}
 	}
 
-	counts, leadErrs, warns := s.applyFeed(ctx, orgID, run, feed, run.DryRun)
+	counts, leadErrs, warns := s.applyFeed(ctx, orgID, run, feed, run.DryRun, !opts.skipCommercialPlanning)
 	run.Counts = counts
 	applyOperatorSummary(&run.Counts, SummarizeOperatorProjection(feed))
 	run.Errors = leadErrs
@@ -453,7 +455,7 @@ func mustJSON(v any) []byte {
 	return b
 }
 
-func (s *service) applyFeed(ctx context.Context, orgID uuid.UUID, run *models.OutreachImportRun, feed *Feed, dryRun bool) (models.OutreachImportCounts, []models.OutreachImportError, []string) {
+func (s *service) applyFeed(ctx context.Context, orgID uuid.UUID, run *models.OutreachImportRun, feed *Feed, dryRun, planCommercialActions bool) (models.OutreachImportCounts, []models.OutreachImportError, []string) {
 	var counts models.OutreachImportCounts
 	var leadErrs []models.OutreachImportError
 	var warns []string
@@ -577,7 +579,9 @@ func (s *service) applyFeed(ctx context.Context, orgID uuid.UUID, run *models.Ou
 				counts.LeadsSkippedError++
 			}
 		}
-		s.planAndPersistAccount(ctx, orgID, acc)
+		if planCommercialActions {
+			s.planAndPersistAccount(ctx, orgID, acc)
+		}
 		counts.LeadsProcessed++
 	}
 	return counts, leadErrs, warns

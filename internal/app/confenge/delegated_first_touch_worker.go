@@ -17,6 +17,8 @@ import (
 const (
 	delegatedFirstTouchMaxBurst          = 100
 	delegatedFirstTouchIdempotencyPrefix = "delegated-first-touch:"
+	delegatedFirstTouchLease             = 5 * time.Minute
+	delegatedFirstTouchRetryDelay        = 15 * time.Minute
 )
 
 type delegatedFirstTouchProcessor interface {
@@ -45,10 +47,10 @@ func (w *DelegatedFirstTouchWorker) Run(ctx context.Context) {
 	for {
 		for i := 0; i < delegatedFirstTouchMaxBurst; i++ {
 			processed, err := w.processor.ProcessDelegatedFirstTouchOnce(ctx)
+			if err != nil {
+				log.Printf("confenge delegated first-touch autorun deferred: %v", err)
+			}
 			if !processed {
-				if err != nil {
-					log.Printf("confenge delegated first-touch autorun deferred: %v", err)
-				}
 				break
 			}
 			select {
@@ -66,7 +68,7 @@ func (w *DelegatedFirstTouchWorker) Run(ctx context.Context) {
 }
 
 // ProcessDelegatedFirstTouchOnce evaluates one prepared first touch under the active founder grant.
-func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (bool, error) {
+func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (processed bool, returnErr error) {
 	if s == nil || !s.cfg.DelegatedFirstTouchEnabled || !s.cfg.DelegatedFirstTouchAutorunEnabled ||
 		s.delegatedDB == nil || s.policyStore == nil || s.cfg.OperatorOrgID == uuid.Nil {
 		return false, nil
@@ -108,6 +110,12 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (bool, err
 		}
 		return false, err
 	}
+	deferred := true
+	defer func() {
+		if deferred {
+			s.deferDelegatedFirstTouch(ctx, orgID, touchpointID, returnErr)
+		}
+	}()
 
 	acc, err := s.repo.GetAccount(ctx, orgID, accountID)
 	if err != nil || acc == nil {
@@ -144,31 +152,65 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (bool, err
 	}
 	report, xerr := s.ApplyDelegatedFirstTouchManifest(ctx, orgID, manifest, false)
 	if xerr != nil {
-		return false, fmt.Errorf("delegated first-touch autorun: %s", xerr.Message)
+		return true, fmt.Errorf("delegated first-touch autorun: %s", xerr.Message)
 	}
+	deferred = false
+	_, _ = s.delegatedDB.Exec(ctx, `
+		UPDATE outreach_touchpoints
+		SET delegated_reserved_until=NULL,delegated_last_error='',updated_at=now()
+		WHERE organization_id=$1 AND id=$2`, orgID, touchpointID)
 	return report != nil && len(report.Items) == 1, nil
 }
 
 func (s *service) nextDelegatedFirstTouchCandidate(ctx context.Context, orgID uuid.UUID) (uuid.UUID, uuid.UUID, uuid.UUID, error) {
 	var touchpointID, accountID, candidateID uuid.UUID
+	now := time.Now().UTC()
 	err := s.delegatedDB.QueryRow(ctx, `
-		SELECT t.id,t.account_id,t.contact_candidate_id
-		FROM outreach_touchpoints t
-		JOIN outreach_accounts a ON a.organization_id=t.organization_id AND a.id=t.account_id
-		JOIN outreach_feed_sync_state feed ON feed.organization_id=t.organization_id
-		WHERE t.organization_id=$1
-		  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
-		  AND t.state='NEEDS_REVIEW' AND t.contact_candidate_id IS NOT NULL
-		  AND feed.last_status='completed' AND a.source_run_id=feed.last_run_id
-		  AND NOT EXISTS (
-		    SELECT 1 FROM confenge_delegated_first_touch_decisions d
-		    WHERE d.organization_id=t.organization_id AND d.account_id=t.account_id
-		      AND (d.evidence_source_run_id=a.source_run_id
-		        OR d.idempotency_key=$2 || a.source_run_id || ':' || a.id::text)
-		  )
-		ORDER BY t.due_at,t.created_at,t.id
-		LIMIT 1`, orgID, delegatedFirstTouchIdempotencyPrefix).Scan(&touchpointID, &accountID, &candidateID)
+		WITH next AS (
+			SELECT t.id
+			FROM outreach_touchpoints t
+			JOIN outreach_accounts a ON a.organization_id=t.organization_id AND a.id=t.account_id
+			JOIN outreach_contact_candidates c
+			  ON c.organization_id=t.organization_id AND c.id=t.contact_candidate_id
+			JOIN outreach_feed_sync_state feed ON feed.organization_id=t.organization_id
+			WHERE t.organization_id=$1
+			  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
+			  AND t.state IN ('DUE','NEEDS_REVIEW') AND t.contact_candidate_id IS NOT NULL
+			  AND feed.last_status='completed' AND a.source_run_id=feed.last_run_id
+			  AND (t.source_run_id='' OR t.source_run_id=feed.last_run_id)
+			  AND a.initial_backlog_reason_code=''
+			  AND a.last_import_run_id IS NOT NULL AND c.last_import_run_id=a.last_import_run_id
+			  AND t.delegated_retry_at <= $3
+			  AND (t.delegated_reserved_until IS NULL OR t.delegated_reserved_until <= $3)
+			  AND NOT EXISTS (
+			    SELECT 1 FROM confenge_delegated_first_touch_decisions d
+			    WHERE d.organization_id=t.organization_id AND d.account_id=t.account_id
+			      AND (d.evidence_source_run_id=a.source_run_id
+			        OR d.idempotency_key=$2 || a.source_run_id || ':' || a.id::text)
+			  )
+			ORDER BY t.delegated_retry_at,t.due_at,t.created_at,t.id
+			LIMIT 1 FOR UPDATE OF t SKIP LOCKED
+		)
+		UPDATE outreach_touchpoints t
+		SET delegated_reserved_until=$4,delegated_attempts=t.delegated_attempts+1,
+			delegated_last_error='',updated_at=$3
+		FROM next WHERE t.id=next.id
+		RETURNING t.id,t.account_id,t.contact_candidate_id`, orgID, delegatedFirstTouchIdempotencyPrefix,
+		now, now.Add(delegatedFirstTouchLease)).Scan(&touchpointID, &accountID, &candidateID)
 	return touchpointID, accountID, candidateID, err
+}
+
+func (s *service) deferDelegatedFirstTouch(ctx context.Context, orgID, touchpointID uuid.UUID, cause error) {
+	reason := "delegated first-touch processing failed"
+	if cause != nil {
+		reason = cause.Error()
+	}
+	_, _ = s.delegatedDB.Exec(ctx, `
+		UPDATE outreach_touchpoints
+		SET delegated_reserved_until=NULL,delegated_retry_at=$3,
+			delegated_last_error=LEFT($4,500),updated_at=now()
+		WHERE organization_id=$1 AND id=$2`, orgID, touchpointID,
+		time.Now().UTC().Add(delegatedFirstTouchRetryDelay), reason)
 }
 
 func delegatedEntryFromCurrentState(acc *models.OutreachAccount, cand *models.OutreachContactCandidate, touchpointID uuid.UUID, copy delegatedRoutingCopy) DelegatedFirstTouchEntry {

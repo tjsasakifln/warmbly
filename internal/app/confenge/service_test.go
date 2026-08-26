@@ -181,8 +181,99 @@ func (m *memRepo) GetImportRunByIdempotency(ctx context.Context, orgID uuid.UUID
 	return &cp, nil
 }
 
+func (m *memRepo) HasImportRunSnapshotConflict(_ context.Context, orgID uuid.UUID, sourceRunID, snapshotHash string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, run := range m.runs {
+		if run.OrganizationID == orgID && run.SourceRunID == sourceRunID && run.SnapshotHash != "" && run.SnapshotHash != snapshotHash {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (m *memRepo) ListImportRuns(ctx context.Context, orgID uuid.UUID, limit int) ([]models.OutreachImportRun, error) {
 	return nil, nil
+}
+
+func (m *memRepo) MaterializeCurrentInitialBacklog(_ context.Context, orgID uuid.UUID, sourceRunID string) (repository.OutreachInitialBacklogCounts, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out repository.OutreachInitialBacklogCounts
+	for _, tp := range m.touchpoints {
+		if tp.OrganizationID == orgID && tp.Ordinal == 1 && tp.Purpose == models.TouchpointPurposeInitial &&
+			tp.Channel == models.OutreachChannelEmail && tp.SourceRunID != sourceRunID && models.TouchpointOpenStates[tp.State] {
+			tp.State = models.TouchpointCancelled
+			tp.StopReason = "source_run_superseded"
+			out.StaleRetired++
+		}
+	}
+	for _, acc := range m.byID {
+		if acc.OrganizationID != orgID || acc.SourceRunID != sourceRunID {
+			continue
+		}
+		out.Imported++
+		supplier := acc.ContractorRoleStatus == ContractorRoleConfirmed && acc.TargetPartyRole == "SUPPLIER" && acc.ContractorRoleSourceRunID == sourceRunID
+		if supplier {
+			out.SupplierConfirmed++
+		}
+		preferred := make([]models.OutreachContactCandidate, 0, 1)
+		for i := range m.cands[acc.ID] {
+			cand := m.cands[acc.ID][i]
+			if cand.LastImportRunID != nil && acc.LastImportRunID != nil && *cand.LastImportRunID == *acc.LastImportRunID && CandidatePreferredInitial(&cand) {
+				preferred = append(preferred, cand)
+			}
+		}
+		attributed := len(preferred) == 1
+		if attributed {
+			out.CandidateAttributed++
+		}
+		candidateEligible := attributed && CandidateEnrollable(&preferred[0])
+		delegatedCandidate := candidateEligible && CandidateControlledEligible(&preferred[0]) && ControlledRouteAllowed(&preferred[0], nil)
+		prepared := candidateEligible && acc.TargetFitEligible && acc.TargetFitFresh && acc.TargetFitClass == TargetFitConfirmed && !acc.Blocked && !acc.DoNotContact
+		if prepared {
+			out.InitialPrepared++
+			key := "prepared-initial:" + sourceRunID + ":" + acc.ID.String()
+			found := false
+			for _, tp := range m.touchpoints {
+				if tp.OrganizationID == orgID && tp.IdempotencyKey == key {
+					found = true
+					break
+				}
+			}
+			if !found {
+				candidateID := preferred[0].ID
+				tp := &models.OutreachTouchpoint{
+					ID: uuid.New(), OrganizationID: orgID, AccountID: acc.ID, ContactCandidateID: &candidateID,
+					Ordinal: 1, CadenceStep: "INITIAL", Channel: models.OutreachChannelEmail,
+					Purpose: models.TouchpointPurposeInitial, DueAt: time.Now().UTC(), State: models.TouchpointDue,
+					Recipient: preferred[0].Email, IdempotencyKey: key, PolicyVersion: models.CadencePolicyVersionV1,
+					ServiceCode: acc.ServiceCode, FactUsed: acc.FactToMention, EvidenceIDs: acc.ContractorRoleEvidenceIDs,
+					GeneratedContextHash: acc.MessageContextHash, SourceRunID: sourceRunID,
+				}
+				m.touchpoints[tp.ID] = tp
+			}
+		}
+		if prepared && supplier && delegatedCandidate {
+			out.DelegatedEligible++
+			acc.InitialBacklogReasonCode = ""
+		} else {
+			switch {
+			case !attributed:
+				acc.InitialBacklogReasonCode = "preferred_current_recipient_missing"
+			case !candidateEligible:
+				acc.InitialBacklogReasonCode = "preferred_current_recipient_ineligible"
+			case !supplier:
+				acc.InitialBacklogReasonCode = "supplier_role_unknown"
+			case !delegatedCandidate:
+				acc.InitialBacklogReasonCode = "preferred_current_recipient_not_delegated"
+			default:
+				acc.InitialBacklogReasonCode = "target_fit_not_current_confirmed"
+			}
+		}
+	}
+	out.HeldException = out.Imported - out.DelegatedEligible
+	return out, nil
 }
 
 func (m *memRepo) GetAccountByCNPJ(ctx context.Context, orgID uuid.UUID, cnpj14 string) (*models.OutreachAccount, error) {

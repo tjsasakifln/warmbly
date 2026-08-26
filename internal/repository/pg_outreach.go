@@ -26,6 +26,7 @@ type OutreachRepository interface {
 	UpdateImportRun(ctx context.Context, run *models.OutreachImportRun) error
 	GetImportRun(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachImportRun, error)
 	GetImportRunByIdempotency(ctx context.Context, orgID uuid.UUID, key string) (*models.OutreachImportRun, error)
+	HasImportRunSnapshotConflict(ctx context.Context, orgID uuid.UUID, sourceRunID, snapshotHash string) (bool, error)
 	ListImportRuns(ctx context.Context, orgID uuid.UUID, limit int) ([]models.OutreachImportRun, error)
 
 	// Accounts
@@ -45,6 +46,7 @@ type OutreachRepository interface {
 	UpsertFeedSyncState(ctx context.Context, st *models.OutreachFeedSyncState) error
 	TryAdvisoryLock(ctx context.Context, key int64) (bool, error)
 	AdvisoryUnlock(ctx context.Context, key int64) error
+	MaterializeCurrentInitialBacklog(ctx context.Context, orgID uuid.UUID, sourceRunID string) (OutreachInitialBacklogCounts, error)
 	ListPilotMemberships(ctx context.Context, orgID uuid.UUID, cohortID string) ([]models.OutreachPilotMembership, error)
 	ClaimPilotOperation(ctx context.Context, orgID uuid.UUID, operationKey, requestHash string) error
 	ReservePilotSlot(ctx context.Context, orgID uuid.UUID, cohortID string, accountID uuid.UUID, cnpj14 string, capacity int) (int, error)
@@ -140,6 +142,22 @@ type TargetFitInvalidationCounts struct {
 	Drafts        int `json:"blocked_drafts"`
 	Enrollments   int `json:"detached_enrollments"`
 	DispatchItems int `json:"cancelled_dispatch_items"`
+}
+
+// OutreachInitialBacklogCounts is the current-run funnel published with a feed sync.
+type OutreachInitialBacklogCounts struct {
+	Imported            int
+	SupplierConfirmed   int
+	CandidateAttributed int
+	InitialPrepared     int
+	DelegatedEligible   int
+	HeldException       int
+	StaleRetired        int
+}
+
+// MaterializeCurrentInitialBacklog reconciles the canonical INITIAL backlog for one source run.
+func (r *outreachRepository) MaterializeCurrentInitialBacklog(ctx context.Context, orgID uuid.UUID, sourceRunID string) (OutreachInitialBacklogCounts, error) {
+	return r.materializeCurrentInitialBacklog(ctx, orgID, sourceRunID)
 }
 
 func (r *outreachRepository) InvalidateAccountApprovalsForContext(ctx context.Context, orgID, accountID uuid.UUID, currentContextHash string) error {
@@ -310,6 +328,16 @@ func (r *outreachRepository) GetImportRunByIdempotency(ctx context.Context, orgI
 	return run, err
 }
 
+func (r *outreachRepository) HasImportRunSnapshotConflict(ctx context.Context, orgID uuid.UUID, sourceRunID, snapshotHash string) (bool, error) {
+	var conflict bool
+	err := r.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM outreach_import_runs
+			WHERE organization_id=$1 AND source_run_id=$2 AND snapshot_hash<>'' AND snapshot_hash<>$3
+		)`, orgID, strings.TrimSpace(sourceRunID), strings.TrimSpace(snapshotHash)).Scan(&conflict)
+	return conflict, err
+}
+
 func (r *outreachRepository) ListImportRuns(ctx context.Context, orgID uuid.UUID, limit int) ([]models.OutreachImportRun, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
@@ -423,7 +451,7 @@ const outreachAccountSelect = `
 		contractor_role_evidence_ids, COALESCE(supplier_cnpj14,''), COALESCE(supplier_identity_ref,''),
 		COALESCE(buyer_cnpj14,''), COALESCE(buyer_identity_ref,''),
 		COALESCE(contractor_role_match_method,'NONE'), COALESCE(contractor_role_confidence,'UNKNOWN'),
-		contractor_role_reason_codes `
+		contractor_role_reason_codes, COALESCE(initial_backlog_reason_code,'') `
 
 func scanAccount(row scannable) (*models.OutreachAccount, error) {
 	var a models.OutreachAccount
@@ -453,7 +481,7 @@ func scanAccount(row scannable) (*models.OutreachAccount, error) {
 		&a.ContractorRoleSourceRunID, &a.ContractorRoleObservedAt, &a.ContractorRoleEvidenceHash,
 		&a.ContractorRoleEvidenceReference, &roleEvidence, &a.SupplierCNPJ14, &a.SupplierIdentityRef,
 		&a.BuyerCNPJ14, &a.BuyerIdentityRef, &a.ContractorRoleMatchMethod, &a.ContractorRoleConfidence,
-		&roleReasons,
+		&roleReasons, &a.InitialBacklogReasonCode,
 	)
 	if err != nil {
 		return nil, err
