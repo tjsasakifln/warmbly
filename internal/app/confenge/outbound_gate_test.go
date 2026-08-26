@@ -180,9 +180,28 @@ func TestObserveCampaignEmailAttemptIncludesNonCohortControlledTouch(t *testing.
 	account, _ := repo.GetAccount(ctx, orgID, accountID)
 	account.SourceRunID = "source-run-47"
 	_, _ = repo.UpsertAccount(ctx, account)
-	svc := &service{cfg: Config{Enabled: true}, repo: repo}
-	taskID, mailboxID := uuid.New(), uuid.New()
-	if err := svc.ObserveCampaignEmailAttempt(ctx, orgID, campaignID, contactID, uuid.New(), taskID, mailboxID, "smtp", time.Now().UTC()); err != nil {
+	taskID, mailboxID, sequenceID := uuid.New(), uuid.New(), uuid.New()
+	attemptedAt := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	store := dispatch.NewMemoryStore()
+	store.SetMailboxEnvelope(dispatch.MailboxEnvelope{
+		EmailAccountID: mailboxID, OrganizationID: orgID, DailyCap: 50, HourlyCap: 20,
+		Ready: true, Timezone: "UTC",
+	})
+	cfg := dispatch.DefaultConfig()
+	cfg.SendsPerHour, cfg.MinGap = 100, 0
+	cfg.WindowStart, cfg.WindowEnd, cfg.Timezone = "00:00", "23:59", "UTC"
+	cfg.BusinessDaysOnly = false
+	governor := dispatch.NewGovernor(cfg, store, &dispatch.FixedClock{T: attemptedAt})
+	messageKey := MessageKeyCampaignEmail(campaignID, contactID, sequenceID)
+	reserved, err := governor.TryReserve(ctx, dispatch.ReserveRequest{
+		OrganizationID: orgID, EmailAccountID: &mailboxID, TaskID: &taskID,
+		Channel: dispatch.ChannelEmail, MessageKey: messageKey,
+	})
+	if err != nil || !reserved.Allowed {
+		t.Fatalf("reserve provider attempt: result=%+v err=%v", reserved, err)
+	}
+	svc := &service{cfg: Config{Enabled: true}, repo: repo, governor: governor}
+	if err := svc.ObserveCampaignEmailAttempt(ctx, orgID, campaignID, contactID, sequenceID, taskID, mailboxID, "smtp", attemptedAt); err != nil {
 		t.Fatal(err)
 	}
 	events := svc.ObservedControlledEmailEvents()
