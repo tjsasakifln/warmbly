@@ -699,7 +699,7 @@ func (r *taskRepository) DeleteTask(ctx context.Context, taskID uuid.UUID) error
 }
 
 // CreateTaskWithLock creates a campaign task with a PostgreSQL advisory lock.
-// It returns false when the campaign already has a pending wakeup task.
+// It returns false while the campaign already has a live wakeup task.
 func (r *taskRepository) CreateTaskWithLock(ctx context.Context, task *Task, campaignTask *CampaignTask) (bool, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -720,7 +720,10 @@ func (r *taskRepository) CreateTaskWithLock(ctx context.Context, task *Task, cam
 			FROM tasks t
 			INNER JOIN campaign_tasks ct ON ct.task_id = t.id
 			WHERE ct.campaign_id = $1
-			  AND t.status = 'pending'
+			  AND (
+			    t.status = 'pending'
+			    OR (t.status = 'active' AND t.updated_at >= NOW() - INTERVAL '15 minutes')
+			  )
 			LIMIT 1
 		`, *campaignTask.CampaignID).Scan(&existing)
 		if err == nil {

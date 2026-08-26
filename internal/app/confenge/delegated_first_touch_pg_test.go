@@ -244,6 +244,26 @@ func TestDelegatedFirstTouchApprovesQueuesAuditsAndReplaysOncePostgres(t *testin
 	if xerr != nil || first.Queued != 1 || first.DelegatedApproved != 1 || len(first.Items) != 1 || first.Items[0].State != "QUEUED" {
 		t.Fatalf("first apply did not reach QUEUED: report=%+v err=%v", first, xerr)
 	}
+	enrollmentContactID := uuid.New()
+	if _, err := f.pool.Exec(f.ctx, `
+		INSERT INTO contacts(id,user_id,organization_id,first_name,last_name,email,company,phone,custom_fields)
+		VALUES($1,$2,$3,'Equipe','Alfa',$4,'Empresa Alfa','', '{}'::jsonb)`,
+		enrollmentContactID, f.actorID, f.orgID, "enrollment-"+enrollmentContactID.String()+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `
+		UPDATE outreach_drafts d
+		SET campaign_id=$2,enrollment_contact_id=$3
+		FROM outreach_touchpoints t
+		WHERE t.id=$1 AND t.draft_id=d.id AND t.organization_id=d.organization_id`,
+		first.Items[0].TouchpointID, f.campaignID, enrollmentContactID); err != nil {
+		t.Fatal(err)
+	}
+	enrolledTouchpoint, err := f.repo.GetTouchpointByEnrollment(f.ctx, f.orgID, f.campaignID, enrollmentContactID)
+	if err != nil || enrolledTouchpoint == nil || enrolledTouchpoint.ID != first.Items[0].TouchpointID {
+		t.Fatalf("enrollment did not resolve its exact touchpoint: campaign=%s contact=%s touchpoint=%+v err=%v",
+			f.campaignID, enrollmentContactID, enrolledTouchpoint, err)
+	}
 	if processed, err := f.svc.ProcessDispatchQueueOnce(f.ctx); err != nil || processed {
 		t.Fatalf("paused dispatch mutated transport: processed=%v err=%v", processed, err)
 	}
@@ -291,6 +311,61 @@ func TestDelegatedFirstTouchApprovesQueuesAuditsAndReplaysOncePostgres(t *testin
 		status.Items[0].ApprovalSource != DelegatedFirstTouchApprovalDecision {
 		t.Fatalf("control-center readback is incomplete: status=%+v err=%v", status, statusErr)
 	}
+}
+
+func TestCampaignWakeupDoesNotDuplicateRecentActiveTaskAndRecoversStaleTaskPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	if _, err := f.pool.Exec(f.ctx, `UPDATE campaigns SET status='active' WHERE id=$1`, f.campaignID); err != nil {
+		t.Fatal(err)
+	}
+	var mailboxID uuid.UUID
+	if err := f.pool.QueryRow(f.ctx, `SELECT id FROM email_accounts WHERE organization_id=$1 LIMIT 1`, f.orgID).Scan(&mailboxID); err != nil {
+		t.Fatal(err)
+	}
+
+	taskRepo := repository.NewTaskRepository(f.pool)
+	campaignRepo := repository.NewCampaignRepostory(&infrastructuredb.DB{Pool: f.pool})
+	activeID := uuid.New()
+	created, err := taskRepo.CreateTaskWithLock(f.ctx, &repository.Task{
+		ID: activeID, TaskType: "campaign", EmailAccountID: mailboxID, Status: "active",
+	}, &repository.CampaignTask{TaskID: activeID, CampaignID: &f.campaignID})
+	if err != nil || !created {
+		t.Fatalf("create active wakeup: created=%v err=%v", created, err)
+	}
+
+	duplicateID := uuid.New()
+	created, err = taskRepo.CreateTaskWithLock(f.ctx, &repository.Task{
+		ID: duplicateID, TaskType: "campaign", EmailAccountID: mailboxID, Status: "pending",
+	}, &repository.CampaignTask{TaskID: duplicateID, CampaignID: &f.campaignID})
+	if err != nil || created {
+		t.Fatalf("recent active wakeup must block duplicate: created=%v err=%v", created, err)
+	}
+	if ids, err := campaignRepo.ListCampaignScheduleCandidates(f.ctx, 100); err != nil || containsUUID(ids, f.campaignID) {
+		t.Fatalf("campaign with recent active wakeup became reconcile candidate: ids=%v err=%v", ids, err)
+	}
+
+	if _, err := f.pool.Exec(f.ctx, `UPDATE tasks SET updated_at=NOW()-INTERVAL '16 minutes' WHERE id=$1`, activeID); err != nil {
+		t.Fatal(err)
+	}
+	if ids, err := campaignRepo.ListCampaignScheduleCandidates(f.ctx, 100); err != nil || !containsUUID(ids, f.campaignID) {
+		t.Fatalf("campaign with stale active wakeup was not recoverable: ids=%v err=%v", ids, err)
+	}
+	recoveryID := uuid.New()
+	created, err = taskRepo.CreateTaskWithLock(f.ctx, &repository.Task{
+		ID: recoveryID, TaskType: "campaign", EmailAccountID: mailboxID, Status: "pending",
+	}, &repository.CampaignTask{TaskID: recoveryID, CampaignID: &f.campaignID})
+	if err != nil || !created {
+		t.Fatalf("stale active wakeup blocked recovery: created=%v err=%v", created, err)
+	}
+}
+
+func containsUUID(ids []uuid.UUID, target uuid.UUID) bool {
+	for _, id := range ids {
+		if id == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCampaignReadyAcceptsReadBackDelegatedQueueWithoutContact(t *testing.T) {

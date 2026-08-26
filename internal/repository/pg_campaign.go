@@ -54,9 +54,8 @@ type CampaignRepository interface {
 	HasPendingDelegatedFirstTouch(ctx context.Context, campaignID uuid.UUID) (bool, error)
 	UpdateVerificationStatus(ctx context.Context, campaignID uuid.UUID, status string, summary *models.CampaignVerificationSummary) error
 	GetPendingCampaignTasks(ctx context.Context, campaignID uuid.UUID) ([]Task, error)
-	// ListCampaignScheduleCandidates returns active campaigns that have NO pending
-	// task — their self-perpetuating chain died and needs re-seeding. Used by the
-	// campaign reconciler.
+	// ListCampaignScheduleCandidates returns active campaigns that have no live
+	// task. Their self-perpetuating chain died and needs re-seeding.
 	ListCampaignScheduleCandidates(ctx context.Context, limit int) ([]uuid.UUID, error)
 	CountActiveForOrganization(ctx context.Context, orgID uuid.UUID) (int, error)
 	AccountHasActiveCampaign(ctx context.Context, accountID uuid.UUID) (bool, error)
@@ -1566,10 +1565,11 @@ func (r *campaignRepository) GetPendingCampaignTasks(ctx context.Context, campai
 	return tasks, rows.Err()
 }
 
-// ListCampaignScheduleCandidates returns active campaigns with no pending task,
+// ListCampaignScheduleCandidates returns active campaigns with no live task,
 // i.e. chains that stalled (a swallowed enqueue or a crash between ticks left no
-// successor). The reconciler re-seeds each. createCampaignTask's advisory lock
-// makes a concurrent real-tick enqueue safe (one wins, the other no-ops).
+// successor). Recent active tasks are live; stale active tasks can be recovered.
+// The reconciler re-seeds each. createCampaignTask's advisory lock makes a
+// concurrent real-tick enqueue safe (one wins, the other no-ops).
 func (r *campaignRepository) ListCampaignScheduleCandidates(ctx context.Context, limit int) ([]uuid.UUID, error) {
 	query := `
 		SELECT c.id
@@ -1579,7 +1579,11 @@ func (r *campaignRepository) ListCampaignScheduleCandidates(ctx context.Context,
 		    SELECT 1
 		    FROM campaign_tasks ct
 		    JOIN tasks t ON t.id = ct.task_id
-		    WHERE ct.campaign_id = c.id AND t.status = 'pending'
+		    WHERE ct.campaign_id = c.id
+		      AND (
+		        t.status = 'pending'
+		        OR (t.status = 'active' AND t.updated_at >= NOW() - INTERVAL '15 minutes')
+		      )
 		  )
 		LIMIT $1`
 
