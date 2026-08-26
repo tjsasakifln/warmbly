@@ -217,7 +217,10 @@ func (s *service) ReconcileDelegatedFirstTouchLedger(ctx context.Context, orgID 
 			  AND d.state IN ('APPROVED','QUEUED','APPROVED_NOT_SCHEDULED')
 			  AND (
 				(d.state IN ('APPROVED','APPROVED_NOT_SCHEDULED') AND t.state <> 'APPROVED')
-				OR (d.state='QUEUED' AND (t.state <> 'QUEUED' OR q.status IS DISTINCT FROM 'queued'))
+				OR (d.state='QUEUED' AND (
+					t.state NOT IN ('QUEUED','SENT')
+					OR (t.state='QUEUED' AND (q.status IS NULL OR q.status NOT IN ('queued','reserved','sent')))
+				))
 			  )
 		)
 		UPDATE confenge_delegated_first_touch_decisions d

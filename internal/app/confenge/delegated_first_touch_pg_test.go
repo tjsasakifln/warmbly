@@ -650,6 +650,52 @@ func TestDelegatedFirstTouchLedgerReconciliationRepairsOlderQueueCancellationPos
 	}
 }
 
+func TestDelegatedFirstTouchLedgerReconciliationPreservesTransportTransitStatesPostgres(t *testing.T) {
+	tests := []struct {
+		name            string
+		queueState      string
+		touchpointState string
+	}{
+		{name: "waiting queue", queueState: "queued", touchpointState: models.TouchpointQueued},
+		{name: "claimed queue", queueState: "reserved", touchpointState: models.TouchpointQueued},
+		{name: "campaign handoff", queueState: "sent", touchpointState: models.TouchpointQueued},
+		{name: "provider completion projection", queueState: "sent", touchpointState: models.TouchpointSent},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newDelegatedPGFixture(t)
+			report, xerr := f.svc.ApplyDelegatedFirstTouchManifest(f.ctx, f.orgID, f.manifest, false)
+			if xerr != nil || report == nil || report.Queued != 1 {
+				t.Fatalf("fixture did not queue: report=%+v err=%v", report, xerr)
+			}
+			if _, err := f.pool.Exec(f.ctx, `
+				UPDATE confenge_dispatch_queue SET status=$2
+				WHERE organization_id=$1`, f.orgID, tt.queueState); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.pool.Exec(f.ctx, `
+				UPDATE outreach_touchpoints SET state=$2
+				WHERE organization_id=$1`, f.orgID, tt.touchpointState); err != nil {
+				t.Fatal(err)
+			}
+
+			reconciled, err := f.svc.ReconcileDelegatedFirstTouchLedger(f.ctx, f.orgID)
+			if err != nil || reconciled != 0 {
+				t.Fatalf("valid transport transit state was reconciled: count=%d err=%v", reconciled, err)
+			}
+			var state string
+			if err := f.pool.QueryRow(f.ctx, `
+				SELECT state FROM confenge_delegated_first_touch_decisions
+				WHERE organization_id=$1`, f.orgID).Scan(&state); err != nil {
+				t.Fatal(err)
+			}
+			if state != "QUEUED" {
+				t.Fatalf("valid transport transit state cancelled delegated decision: %s", state)
+			}
+		})
+	}
+}
+
 func TestDelegatedFirstTouchQueueAuditGapCancelsBeforeTransportPostgres(t *testing.T) {
 	f := newDelegatedPGFixture(t)
 	report, xerr := f.svc.ApplyDelegatedFirstTouchManifest(f.ctx, f.orgID, f.manifest, false)
