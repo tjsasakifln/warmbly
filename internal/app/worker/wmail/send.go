@@ -423,6 +423,8 @@ func DetermineErrorEventType(err *errx.MailError) models.JobEventType {
 
 	case errx.MailErrorCodeServerUnreachable, errx.MailErrorCodeConnectionLost:
 		return models.JobEventTypeEmailServerError
+	case errx.MailErrorCodeRecipientRejected, errx.MailErrorCodeRecipientTemporaryRejected, errx.MailErrorCodeDeliveryUnknown:
+		return models.JobEventTypeEmailFailed
 
 	default:
 		return models.JobEventTypeEmailFailed

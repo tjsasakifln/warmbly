@@ -51,3 +51,23 @@ func TestMaybeEmitBounceReturnsPublishFailure(t *testing.T) {
 		t.Fatal("publish failure was discarded")
 	}
 }
+
+func TestMaybeEmitBouncePublishesExplicitDeliveryDSN(t *testing.T) {
+	var got *models.JobEventInboundDelivery
+	w := &WMail{onEvent: func(kind models.JobEventType, body any) error {
+		if kind != models.JobEventTypeInboundDelivery {
+			t.Fatalf("kind=%s", kind)
+		}
+		got, _ = body.(*models.JobEventInboundDelivery)
+		return nil
+	}}
+	if err := w.maybeEmitBounce(&models.EmailMessageData{
+		From: []string{"Mailer-Daemon <mailer-daemon@example.com>"}, Subject: "Delivery status notification",
+		BodyPlain: "Final-Recipient: rfc822; delivered@example.com\nAction: delivered\nStatus: 2.0.0\nDiagnostic-Code: smtp; 250 queued\nMessage-ID: <delivered-message@example.com>\n",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.OriginalMessageID != "delivered-message@example.com" {
+		t.Fatalf("delivery DSN not emitted: %+v", got)
+	}
+}

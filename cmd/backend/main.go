@@ -1371,14 +1371,13 @@ func main() {
 		// notification (in-app + email per the user's channels).
 		tokenService.WireSignInAlerter(notification.NewSignInAlerter(notificationService))
 		advancedService.WireRealtime(streamingPublisher)
+		if hook, ok := confengeServiceForHandler.(advanced.ConfengeSuppressionHook); ok {
+			advancedService.WireConfengeSuppression(hook)
+		}
 		// Inbox agent (M10): the draft repo the review endpoints read, plus the
 		// agent wired onto the advanced service so any reply processed here also
 		// drafts. Paid + opt-in checked inside; nil provider leaves it inert.
 		aiDraftRepo = repository.NewAIDraftRepository(primaryDB.Pool)
-		// CONFENGE reply attribution (outbox + CRM) when outreach feature is on.
-		if confengeServiceForHandler != nil && confengeServiceForHandler.Enabled() {
-			advancedService.WireConfengeReply(confengeServiceForHandler)
-		}
 		advancedService.WireInboxAgent(inboxagent.NewService(
 			aiProvider, creditService, featureGateService,
 			organizationRepository, uniboxRepository, skillsService,

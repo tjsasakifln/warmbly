@@ -283,6 +283,8 @@ type CommercialReceipt struct {
 	ActorRef        string    `json:"actor_ref,omitempty"`
 	EmailRouteClass string    `json:"email_route_class,omitempty"`
 	Source          string    `json:"source,omitempty"`
+	SourceRunID     string    `json:"source_run_id,omitempty"`
+	MailboxID       string    `json:"mailbox_id,omitempty"`
 	ProviderName    string    `json:"provider_name,omitempty"`
 	CohortID        string    `json:"cohort_id,omitempty"`
 	PolicyVersion   string    `json:"policy_version,omitempty"`
@@ -295,6 +297,21 @@ type CommercialReceipt struct {
 	Diagnostic      string    `json:"diagnostic,omitempty"`
 }
 
+// EmailOutcomeState projects immutable transport facts monotonically.
+type EmailOutcomeState struct {
+	DeliveryStatus     string     `json:"delivery_status,omitempty"`
+	AttemptedAt        *time.Time `json:"attempted_at,omitempty"`
+	ProviderAcceptedAt *time.Time `json:"provider_accepted_at,omitempty"`
+	DeliveredAt        *time.Time `json:"delivered_at,omitempty"`
+	DeliveryUnknownAt  *time.Time `json:"delivery_unknown_at,omitempty"`
+	HardBouncedAt      *time.Time `json:"hard_bounced_at,omitempty"`
+	SoftBouncedAt      *time.Time `json:"soft_bounced_at,omitempty"`
+	RepliedAt          *time.Time `json:"replied_at,omitempty"`
+	ReplyClass         string     `json:"reply_class,omitempty"`
+	OptedOutAt         *time.Time `json:"opted_out_at,omitempty"`
+	ComplainedAt       *time.Time `json:"complained_at,omitempty"`
+}
+
 // CommercialState is derived canonical commercial state on the existing chain.
 type CommercialState struct {
 	Offer          OfferSnapshot          `json:"offer,omitempty"`
@@ -303,6 +320,7 @@ type CommercialState struct {
 	Payment        PaymentState           `json:"payment,omitempty"`
 	Subscription   SubscriptionState      `json:"subscription,omitempty"`
 	Delivery       DeliveryState          `json:"delivery,omitempty"`
+	Email          EmailOutcomeState      `json:"email,omitempty"`
 	Control        CommercialControlState `json:"control,omitempty"`
 	Gates          GateStates             `json:"gates,omitempty"`
 	Timeline       []CommercialReceipt    `json:"timeline,omitempty"`

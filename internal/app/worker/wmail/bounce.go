@@ -26,7 +26,7 @@ func (w *WMail) maybeEmitBounce(msg *models.EmailMessageData) error {
 	}
 
 	report := dsn.Parse(msg.BodyPlain + "\n" + msg.BodyHTML)
-	if !report.IsBounce {
+	if !report.IsBounce && !report.IsDelivery {
 		return nil
 	}
 
@@ -38,6 +38,13 @@ func (w *WMail) maybeEmitBounce(msg *models.EmailMessageData) error {
 	}
 	if originalID == "" {
 		return nil
+	}
+	if report.IsDelivery {
+		return w.onEvent(models.JobEventTypeInboundDelivery, &models.JobEventInboundDelivery{
+			UserID: w.UserID, EmailID: w.ID,
+			OriginalMessageID: strings.Trim(originalID, "<>"), Recipient: report.FailedRecipient,
+			EnhancedStatus: report.EnhancedStatus, SMTPStatus: report.SMTPStatus, Diagnostic: report.Diagnostic,
+		})
 	}
 
 	return w.onEvent(models.JobEventTypeInboundBounce, &models.JobEventInboundBounce{

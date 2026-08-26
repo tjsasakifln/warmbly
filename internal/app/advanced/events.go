@@ -104,6 +104,10 @@ func (s *service) WireConfengeReply(h ConfengeReplyHook) {
 	s.confengeReply = h
 }
 
+func (s *service) WireConfengeSuppression(h ConfengeSuppressionHook) {
+	s.confengeSuppression = h
+}
+
 // notify raises an in-app notification off the hot path. It detaches from the
 // request context (the ingest call may return first) and is best-effort.
 func (s *service) notify(userID uuid.UUID, orgID *uuid.UUID, category models.NotificationCategory, title, body, link string, meta map[string]any) {

@@ -84,6 +84,18 @@ Dominant stops: `DO_NOT_CONTACT`, opt-out, bounce, and human reply cancel open f
 
 Approval is also bounded in time, not only in scope. Frozen copy can be approved, authorized, queued and sent only while the composer that wrote it is the one the platform ships. Copy from an earlier composer becomes `LEGACY_SUPERSEDED`: readable for audit, refused by every operational path, and moved forward by recomposing the cohort into a new version. See [CONFENGE editorial lifecycle](/guides/confenge-editorial-lifecycle/).
 
+## Delivery and reply reconciliation
+
+The commercial chain is the authoritative record for outbound transport outcomes. An `attempted` fact is recorded at the worker transport boundary. A provider acceptance is recorded as `accepted`, not as delivery. `delivered` is recorded only when a provider or delivery-status notification reports it explicitly. If transport reaches an ambiguous final state, the chain preserves `delivery_unknown` as UNKNOWN until stronger evidence arrives.
+
+Hard bounces and complaints suppress the exact recipient address in the canonical suppression store. They cancel queued work for that address without invalidating the whole company or another mailbox at the same company. Soft bounces remain soft and do not become permanent suppression without later evidence. A missing reply is not evidence of a bad mailbox.
+
+Unsubscribe and opt-out events record their reason, source, and timestamp against the exact recipient scope. The final `AssertTransportable` database read checks that canonical suppression immediately before provider transport, including for an item that was approved and queued before the suppression arrived.
+
+A human reply marks the correlated touchpoint, stops incompatible future attempts for the account, and enters the existing human triage flow. It never triggers an automatic reply in the CONFENGE flow. Positive, routed, and ordinary replies remain distinct commercial facts. Duplicate or replayed provider events reuse stable receipts, while out-of-order or impossible transitions retain the observed fact and enter the existing exception queue for reconciliation.
+
+Operational outcome metrics contain only opaque dimensions: `route_class`, `source`, `source_run`, `cohort`, and sender `mailbox`. Recipient addresses and company names are not metric dimensions.
+
 ## Import
 
 `POST /api/v1/confenge/import` accepts:

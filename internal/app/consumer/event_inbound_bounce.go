@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/warmbly/warmbly/internal/app/confenge"
 	"github.com/warmbly/warmbly/internal/models"
@@ -31,6 +32,8 @@ func (s *JobsService) HandleInboundBounce(ctx context.Context, e *models.JobEven
 		}
 		if account != nil && account.OrganizationID != nil {
 			observation := confenge.BounceObservation{
+				EventID:   "dsn:" + e.BounceClass + ":" + e.OriginalMessageID,
+				MailboxID: e.EmailID.String(), OccurredAt: time.Now().UTC(),
 				Class: e.BounceClass, ProviderName: account.Provider, OriginalMessageID: e.OriginalMessageID,
 				EnhancedStatus: e.EnhancedStatus, SMTPStatus: e.SMTPStatus,
 				Diagnostic: e.Diagnostic, Reason: e.Reason,

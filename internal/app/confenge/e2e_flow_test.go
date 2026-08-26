@@ -199,8 +199,8 @@ func TestSoftBounceIsObservableWithoutSuppression(t *testing.T) {
 	if len(events) != 1 || events[0].Type != "soft_bounce" || events[0].BounceClass != "SOFT" {
 		t.Fatalf("soft bounce missing from commercial ledger: %+v", events)
 	}
-	if len(outcomes) != 1 || !strings.Contains(string(outcomes[0].Payload), `"enhanced_status":"4.4.1"`) {
-		t.Fatalf("soft provenance missing from outcome: %+v", outcomes)
+	if len(outcomes) != 0 {
+		t.Fatalf("soft bounce must not emit a permanent BOUNCED outcome: %+v", outcomes)
 	}
 }
 

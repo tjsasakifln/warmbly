@@ -300,6 +300,49 @@ func TestHumanGateApproveAfterSourceRunAdvancedStillRefusesLateSuppressionPostgr
 	}
 }
 
+func TestAssertTransportableSeesCanonicalSuppressionMinutesBeforeDuePostgres(t *testing.T) {
+	f := newSchedulingPGFixture(t)
+	cohort := f.review("APPROVE", "approve-before-canonical-suppression")
+	scheduling := cohort.Candidates[0].Scheduling
+	if scheduling == nil {
+		t.Fatal("approved candidate was not queued")
+	}
+	touchpoint, err := f.svc.repo.GetTouchpoint(f.ctx, f.org, scheduling.TouchpointID)
+	if err != nil || touchpoint == nil {
+		t.Fatalf("load touchpoint: %v", err)
+	}
+	dueAt := time.Now().UTC().Add(5 * time.Minute)
+	if _, err := f.pool.Exec(f.ctx, `UPDATE outreach_touchpoints SET due_at=$3 WHERE organization_id=$1 AND id=$2`, f.org, touchpoint.ID, dueAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `
+		INSERT INTO suppressed_recipients (organization_id,email,reason,source,metadata,created_at,updated_at)
+		VALUES ($1,$2,'one-click unsubscribe','unsubscribe','{}'::jsonb,$3,$3)
+		ON CONFLICT (organization_id,email) DO UPDATE SET reason=excluded.reason,source=excluded.source,updated_at=excluded.updated_at`,
+		f.org, touchpoint.Recipient, dueAt.Add(-2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(EnvKillSwitchPath, t.TempDir()+"/not-engaged")
+	if err := f.svc.AssertTransportable(f.ctx, f.org, touchpoint); err == nil {
+		t.Fatal("canonical suppression inserted before due_at must stop transport")
+	}
+	var touchpointState, queueState string
+	if err := f.pool.QueryRow(f.ctx, `SELECT t.state,q.status FROM outreach_touchpoints t
+		JOIN confenge_dispatch_queue q ON q.draft_id=t.draft_id WHERE t.id=$1`, touchpoint.ID).Scan(&touchpointState, &queueState); err != nil {
+		t.Fatal(err)
+	}
+	if touchpointState != models.TouchpointDNC || queueState != dispatch.QueueCancelled {
+		t.Fatalf("suppressed due item survived: touchpoint=%s queue=%s", touchpointState, queueState)
+	}
+	var accountBlocked, accountDNC bool
+	if err := f.pool.QueryRow(f.ctx, `SELECT blocked,do_not_contact FROM outreach_accounts WHERE organization_id=$1 AND id=$2`, f.org, touchpoint.AccountID).Scan(&accountBlocked, &accountDNC); err != nil {
+		t.Fatal(err)
+	}
+	if accountBlocked || accountDNC {
+		t.Fatal("exact mailbox suppression invalidated the company account")
+	}
+}
+
 func TestHumanGateHoldCancelsQueuedMessageAndLaterApproveGetsNewQueueKeyPostgres(t *testing.T) {
 	f := newSchedulingPGFixture(t)
 	f.review("APPROVE", "approve-before-hold")

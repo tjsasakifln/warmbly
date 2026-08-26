@@ -221,9 +221,13 @@ func TestProcessInboundHandoffDNCSticky(t *testing.T) {
 	if xerr != nil {
 		t.Fatal(xerr)
 	}
+	cand, _, _ := r.FindCandidateByEmail(context.Background(), org, "dnc@example.com")
+	if cand == nil || !cand.DoNotContact {
+		t.Fatalf("exact recipient DNC not set: %+v", cand)
+	}
 	acc, _ := r.GetAccount(context.Background(), org, accID)
-	if !acc.DoNotContact || acc.QueueState != models.OutreachQueueDoNotContact {
-		t.Fatalf("DNC not set: %+v", acc)
+	if acc.DoNotContact || acc.Blocked {
+		t.Fatalf("recipient DNC must not invalidate company: %+v", acc)
 	}
 	// Later positive reply must not clear sticky DNC.
 	_, xerr = svc.ProcessInboundHandoff(context.Background(), org, InboundHandoff{
@@ -233,9 +237,9 @@ func TestProcessInboundHandoffDNCSticky(t *testing.T) {
 	if xerr != nil {
 		t.Fatal(xerr)
 	}
-	acc, _ = r.GetAccount(context.Background(), org, accID)
-	if !acc.DoNotContact || acc.QueueState != models.OutreachQueueDoNotContact {
-		t.Fatalf("sticky DNC broken: %+v", acc)
+	cand, _, _ = r.FindCandidateByEmail(context.Background(), org, "dnc@example.com")
+	if cand == nil || !cand.DoNotContact {
+		t.Fatalf("sticky exact DNC broken: %+v", cand)
 	}
 }
 

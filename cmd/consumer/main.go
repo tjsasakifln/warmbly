@@ -368,7 +368,6 @@ func main() {
 		// email handoff path; without it s.crm is nil and handoff is a silent no-op
 		// for CRM side effects. Same rationale as WireNotifier / WireRealtime.
 		confengeSvc.WireCRM(crm.NewService(crmRepo))
-		advancedService.WireConfengeReply(confengeSvc)
 	}
 
 	advancedService.WireInboxAgent(inboxAgentServiceC)

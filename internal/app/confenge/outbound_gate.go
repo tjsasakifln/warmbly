@@ -296,7 +296,6 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 	if cohortAuthID != uuid.Nil && res.Reservation != nil {
 		_ = s.cohortStore.BindLeaseToken(ctx, cohortAuthID, cohortKey, res.Reservation.ID.String())
 	}
-	s.observeControlledEmail(ctx, orgID, intel.EventEmailAttempted, enrolledTouchpoint, cand, ControlledEmailContext{})
 	return CampaignGateResult{
 		Kind:          GateProceed,
 		ReservationID: res.Reservation.ID,
@@ -442,6 +441,31 @@ func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *
 			cand, _ = s.repo.GetCandidate(ctx, orgID, *draft.ContactCandidateID)
 		}
 	}
+	if tp.Channel != models.OutreachChannelWhatsApp {
+		if suppressions, ok := s.repo.(interface {
+			GetOutreachRecipientSuppression(context.Context, uuid.UUID, string) (*models.SuppressedRecipient, error)
+			CancelSuppressedOutreachRecipient(context.Context, uuid.UUID, string, string, string) (int, error)
+		}); ok {
+			suppression, suppressionErr := suppressions.GetOutreachRecipientSuppression(ctx, orgID, tp.Recipient)
+			if suppressionErr != nil {
+				return fmt.Errorf("recipient suppression lookup failed: %w", suppressionErr)
+			}
+			if suppression != nil {
+				terminal := models.TouchpointCancelled
+				switch suppression.Source {
+				case models.DeliverabilityEventBounce:
+					terminal = models.TouchpointBounced
+				case models.DeliverabilityEventUnsubscribe:
+					terminal = models.TouchpointDNC
+				}
+				reason := "recipient_suppressed:" + string(suppression.Source)
+				if _, cancelErr := suppressions.CancelSuppressedOutreachRecipient(ctx, orgID, tp.Recipient, terminal, reason); cancelErr != nil {
+					return fmt.Errorf("recipient suppression projection failed: %w", cancelErr)
+				}
+				return fmt.Errorf("recipient is suppressed: %s", suppression.Source)
+			}
+		}
+	}
 	linkedHumanGate, humanGateReason := s.humanGateDispatchInvalidation(ctx, orgID, tp)
 	if mode == AuthorizationModeCampaignPolicy {
 		if linkedHumanGate {
@@ -583,7 +607,7 @@ func (s *service) assertAuthoritativeFeedForTransport(ctx context.Context, orgID
 	return nil
 }
 
-func (s *service) CompleteCampaignEmail(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, providerMessageID string, acceptedAt time.Time) error {
+func (s *service) CompleteCampaignEmail(ctx context.Context, orgID, campaignID, contactID, sequenceID, taskID, mailboxID uuid.UUID, providerMessageID, provider string, acceptedAt time.Time) error {
 	touchpoint, err := s.repo.GetTouchpointByEnrollment(ctx, orgID, campaignID, contactID)
 	if err != nil {
 		return err
@@ -597,6 +621,16 @@ func (s *service) CompleteCampaignEmail(ctx context.Context, orgID, campaignID, 
 		}
 		return s.governor.CommitByMessageKey(ctx, MessageKeyCampaignEmail(campaignID, contactID, sequenceID))
 	}
+	observeAccepted := func() error {
+		var cand *models.OutreachContactCandidate
+		if touchpoint.ContactCandidateID != nil {
+			cand, _ = s.repo.GetCandidate(ctx, orgID, *touchpoint.ContactCandidateID)
+		}
+		return s.observeControlledEmail(ctx, orgID, intel.EventProviderAccepted, touchpoint, cand, ControlledEmailContext{
+			OccurredAt: acceptedAt, ProviderName: firstNonEmpty(provider, "smtp"),
+			MailboxID: opaqueUUID(mailboxID), StableEventRef: firstNonEmpty(opaqueUUID(taskID), providerMessageID),
+		})
+	}
 	if touchpoint.State == models.TouchpointSent {
 		if existing := strings.TrimSpace(touchpoint.ProviderMessageID); existing != "" &&
 			strings.TrimSpace(providerMessageID) != "" && existing != strings.TrimSpace(providerMessageID) {
@@ -608,7 +642,16 @@ func (s *service) CompleteCampaignEmail(ctx context.Context, orgID, campaignID, 
 		if err := s.markDelegatedFirstTouchSent(ctx, orgID, touchpoint.ID, firstNonZeroTime(touchpoint.SentAt, acceptedAt)); err != nil {
 			return err
 		}
+		if err := observeAccepted(); err != nil {
+			return err
+		}
 		return s.releaseNextTouch(ctx, orgID, touchpoint)
+	}
+	if models.TouchpointTerminalStates[touchpoint.State] {
+		if err := commitProviderSend(); err != nil {
+			return err
+		}
+		return observeAccepted()
 	}
 	now := acceptedAt.UTC()
 	if now.IsZero() {
@@ -626,6 +669,9 @@ func (s *service) CompleteCampaignEmail(ctx context.Context, orgID, campaignID, 
 	if err := commitProviderSend(); err != nil {
 		return err
 	}
+	if err := observeAccepted(); err != nil {
+		return err
+	}
 	return s.releaseNextTouch(ctx, orgID, touchpoint)
 }
 
@@ -641,7 +687,7 @@ func firstNonZeroTime(value *time.Time, fallback time.Time) time.Time {
 
 // ObserveCampaignEmailAttempt records that the worker reached the provider
 // transport call. It does not claim acceptance or delivery.
-func (s *service) ObserveCampaignEmailAttempt(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, attemptedAt time.Time) error {
+func (s *service) ObserveCampaignEmailAttempt(ctx context.Context, orgID, campaignID, contactID, sequenceID, taskID, mailboxID uuid.UUID, provider string, attemptedAt time.Time) error {
 	touchpoint, err := s.repo.GetTouchpointByEnrollment(ctx, orgID, campaignID, contactID)
 	if err != nil {
 		return err
@@ -649,21 +695,21 @@ func (s *service) ObserveCampaignEmailAttempt(ctx context.Context, orgID, campai
 	if touchpoint == nil {
 		return ErrCampaignTouchpointNotFound
 	}
-	if !isBoundedCohortTouch(touchpoint) {
-		return nil
-	}
 	var cand *models.OutreachContactCandidate
 	if touchpoint.ContactCandidateID != nil {
 		cand, _ = s.repo.GetCandidate(ctx, orgID, *touchpoint.ContactCandidateID)
 	}
-	messageKey := MessageKeyCampaignEmail(campaignID, contactID, sequenceID)
-	if err := s.assertBoundedCohortTransport(ctx, touchpoint, cand, messageKey); err != nil {
-		return err
-	}
-	s.observeControlledEmail(ctx, orgID, intel.EventEmailAttempted, touchpoint, cand, ControlledEmailContext{
-		OccurredAt: attemptedAt, ProviderName: "smtp",
+	return s.observeControlledEmail(ctx, orgID, intel.EventEmailAttempted, touchpoint, cand, ControlledEmailContext{
+		OccurredAt: attemptedAt, ProviderName: firstNonEmpty(provider, "smtp"),
+		MailboxID: opaqueUUID(mailboxID), StableEventRef: firstNonEmpty(opaqueUUID(taskID), MessageKeyCampaignEmail(campaignID, contactID, sequenceID)),
 	})
-	return nil
+}
+
+func opaqueUUID(id uuid.UUID) string {
+	if id == uuid.Nil {
+		return ""
+	}
+	return id.String()
 }
 
 func (s *service) transitionCompletedTouchpoint(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint, now time.Time, providerMessageID string) error {
@@ -690,9 +736,6 @@ func (s *service) transitionCompletedTouchpointKeyed(ctx context.Context, orgID 
 		if err := s.commitCohortSlot(ctx, tp, now, messageKey); err != nil {
 			return err
 		}
-		s.observeControlledEmail(ctx, orgID, intel.EventProviderAccepted, tp, cand, ControlledEmailContext{
-			OccurredAt: now, ProviderName: "smtp",
-		})
 		return nil
 	}
 	return TransitionToSent(tp, now, providerMessageID)

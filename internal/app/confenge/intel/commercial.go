@@ -354,12 +354,31 @@ func ApplyCommercialTransition(existing *Chain, ev CommercialEvent) TransitionRe
 		res.Held = true
 		res.Reason = "conflicting_external_reference"
 	}
+	if isEmailOutcomeType(typ) && typ != EventEmailAttempted && st.Email.AttemptedAt == nil {
+		add(ExceptionOutOfOrder, "email outcome arrived before attempted evidence", "review provider ordering; preserve the observed fact", false)
+	}
+	if st.Email.HardBouncedAt != nil && ev.OccurredAt.After(st.Email.HardBouncedAt.UTC()) &&
+		(typ == EventEmailAttempted || typ == EventProviderAccepted) {
+		add(ExceptionImpossibleCommercial, "transport evidence occurred after exact recipient hard-bounce suppression", "hold and verify the pre-send suppression gate", true)
+	}
 
 	st.Timeline = appendReceipt(st.Timeline, ev, canonical)
+	st.Email = reduceEmailOutcomeState(st.Email, ev, canonical)
 	st.Delivery.OnboardingDecision = decideOnboardingState(st, res.Held)
 	res.Facts.Commercial = st
 	copyCommercialKeys(&res.Facts, st)
 	return res
+}
+
+func isEmailOutcomeType(typ string) bool {
+	switch typ {
+	case EventEmailAttempted, EventProviderAccepted, EventDelivered, EventDeliveryUnknown,
+		EventHardBounce, EventSoftBounce, EventReply, EventOptOut,
+		EventSpamComplaint, EventNoReply:
+		return true
+	default:
+		return false
+	}
 }
 
 func stateFromEvent(ev CommercialEvent, existing *Chain) CommercialState {
@@ -972,6 +991,8 @@ func appendReceipt(tl []CommercialReceipt, ev CommercialEvent, typ string) []Com
 		ActorRef:        ev.ActorRef,
 		EmailRouteClass: ev.EmailRouteClass,
 		Source:          ev.Source,
+		SourceRunID:     ev.SourceRunID,
+		MailboxID:       ev.MailboxID,
 		ProviderName:    ev.ProviderName,
 		CohortID:        ev.CohortID,
 		PolicyVersion:   ev.PolicyVersion,
@@ -983,6 +1004,52 @@ func appendReceipt(tl []CommercialReceipt, ev CommercialEvent, typ string) []Com
 		EnhancedStatus:  ev.EnhancedStatus,
 		Diagnostic:      ev.Diagnostic,
 	})
+}
+
+func reduceEmailOutcomeState(st EmailOutcomeState, ev CommercialEvent, typ string) EmailOutcomeState {
+	setEarliest := func(dst **time.Time) {
+		t := ev.OccurredAt.UTC()
+		if *dst == nil || t.Before(**dst) {
+			*dst = &t
+		}
+	}
+	switch typ {
+	case EventEmailAttempted:
+		setEarliest(&st.AttemptedAt)
+	case EventProviderAccepted:
+		setEarliest(&st.ProviderAcceptedAt)
+	case EventDelivered:
+		setEarliest(&st.DeliveredAt)
+	case EventDeliveryUnknown:
+		setEarliest(&st.DeliveryUnknownAt)
+	case EventHardBounce:
+		setEarliest(&st.HardBouncedAt)
+	case EventSoftBounce:
+		setEarliest(&st.SoftBouncedAt)
+	case EventReply:
+		setEarliest(&st.RepliedAt)
+		if strings.TrimSpace(ev.ReplyClass) != "" {
+			st.ReplyClass = ev.ReplyClass
+		}
+	case EventOptOut:
+		setEarliest(&st.OptedOutAt)
+	case EventSpamComplaint:
+		setEarliest(&st.ComplainedAt)
+	}
+	// Terminal negative evidence dominates while stronger positive evidence resolves UNKNOWN.
+	switch {
+	case st.HardBouncedAt != nil:
+		st.DeliveryStatus = EventHardBounce
+	case st.DeliveredAt != nil:
+		st.DeliveryStatus = EventDelivered
+	case st.ProviderAcceptedAt != nil:
+		st.DeliveryStatus = EventProviderAccepted
+	case st.DeliveryUnknownAt != nil:
+		st.DeliveryStatus = EventDeliveryUnknown
+	case st.AttemptedAt != nil:
+		st.DeliveryStatus = EventEmailAttempted
+	}
+	return st
 }
 
 func evidenceRefs(ev CommercialEvent) []string {
@@ -1010,7 +1077,7 @@ func NormalizeEventType(t string) (canonical, raw string, unknown bool) {
 		EventWon, EventLost, EventUnknownState, EventRevenueEvidenced,
 		EventLearningCandidate, EventXRayCompleted, EventPageView,
 		EventCitation, EventCorrection,
-		EventEmailAttempted, EventProviderAccepted, EventDelivered,
+		EventEmailAttempted, EventProviderAccepted, EventDelivered, EventDeliveryUnknown,
 		EventHardBounce, EventSoftBounce, EventOptOut, EventSpamComplaint, EventNoReply,
 		EventOfferViewed, EventOfferSelected, EventEligibilitySubmitted,
 		EventCapacityApproved, EventCapacityRejected, EventCapacityWaitlisted,
@@ -1120,7 +1187,7 @@ func isCommercialEvent(t string) bool {
 		EventServiceEnded, EventRenewalDue, EventRenewed,
 		EventCommercialExceptionOpen, EventCommercialExceptionRes,
 		EventCommercialException, EventUnknownProvider,
-		EventEmailAttempted, EventProviderAccepted, EventDelivered,
+		EventEmailAttempted, EventProviderAccepted, EventDelivered, EventDeliveryUnknown,
 		EventHardBounce, EventSoftBounce, EventReply, EventOptOut,
 		EventSpamComplaint, EventNoReply:
 		return true

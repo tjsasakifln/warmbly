@@ -19,7 +19,7 @@ func TestClassifySMTPFailureRecordsOnlyPermanentRecipientFailures(t *testing.T) 
 	transient := classifySMTPFailure(&textproto.Error{Code: 450, Msg: "4.2.0 mailbox busy"}, true)
 
 	require.Equal(t, errx.MailErrorCodeRecipientRejected, permanent.Code)
-	require.Equal(t, errx.MailErrorCodeServerUnreachable, transient.Code)
+	require.Equal(t, errx.MailErrorCodeRecipientTemporaryRejected, transient.Code)
 }
 
 func TestClassifySMTPFailureDoesNotTreatSenderStageAsRecipientBounce(t *testing.T) {

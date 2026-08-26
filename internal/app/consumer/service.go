@@ -50,8 +50,8 @@ type JobsService struct {
 	// ConfengeOutcomes attributes reply/bounce/DNC back to staged leads (optional).
 	ConfengeOutcomes confenge.OutcomeSink
 	ConfengeSends    interface {
-		ObserveCampaignEmailAttempt(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, attemptedAt time.Time) error
-		CompleteCampaignEmail(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, providerMessageID string, acceptedAt time.Time) error
+		ObserveCampaignEmailAttempt(ctx context.Context, orgID, campaignID, contactID, sequenceID, taskID, mailboxID uuid.UUID, provider string, attemptedAt time.Time) error
+		CompleteCampaignEmail(ctx context.Context, orgID, campaignID, contactID, sequenceID, taskID, mailboxID uuid.UUID, providerMessageID, provider string, acceptedAt time.Time) error
 	}
 
 	// Cache for dead worker detection

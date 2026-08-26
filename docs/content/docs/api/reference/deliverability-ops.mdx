@@ -127,7 +127,7 @@ Auth: **Scope** `WRITE_CAMPAIGNS` · **Org permission** `manage_settings`
 
 `POST /deliverability/events`
 
-Posts a single deliverability signal (bounce, complaint, unsubscribe, open, click, or reply) into the platform. This is API-key callable so downstream pipelines (for example an SES bounce processor) can report events without a human in the loop. Depending on the org's bounce-pipeline settings, a bounce, complaint, or unsubscribe may auto-suppress the recipient. Supply an `idempotency_key` to make retries safe.
+Posts a single deliverability signal into the platform. This is API-key callable so downstream pipelines (for example an SES bounce processor) can report events without a human in the loop. A `bounce` is a hard or permanent bounce and may suppress the recipient according to the organization's settings. A `soft_bounce` stays transient and is never promoted to permanent suppression by this endpoint. `delivered` requires an explicit provider delivery fact. Supply an `idempotency_key` to make retries safe.
 
 Auth: **Scope** `WRITE_CAMPAIGNS` · **Org permission** `send_campaigns`
 
@@ -135,7 +135,7 @@ Auth: **Scope** `WRITE_CAMPAIGNS` · **Org permission** `send_campaigns`
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `event_type` | string | Yes | One of `bounce`, `complaint`, `unsubscribe`, `open`, `click`, `reply`. |
+| `event_type` | string | Yes | One of `bounce`, `soft_bounce`, `delivered`, `complaint`, `unsubscribe`, `open`, `click`, `reply`. |
 | `recipient_email` | string | Yes | The recipient address the event is about. |
 | `campaign_id` | uuid | No | Campaign the event is attributed to. |
 | `task_id` | uuid | No | Send task the event is attributed to. |

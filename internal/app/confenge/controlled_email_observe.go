@@ -2,7 +2,9 @@ package confenge
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +23,9 @@ type ControlledEmailContext struct {
 	PolicyVersion  string
 	ProviderName   string
 	Source         string
+	SourceRunID    string
+	MailboxID      string
+	StableEventRef string
 	BounceClass    string
 	ReplyClass     string
 	AccountRef     string
@@ -41,6 +46,9 @@ func SnapshotControlledEmailContext(tp *models.OutreachTouchpoint, cand *models.
 	if cand != nil {
 		if class := CandidateRouteClass(cand); class != "" {
 			ctx.RouteClass = class
+		}
+		if cand.AccountID != uuid.Nil {
+			ctx.AccountRef = cand.AccountID.String()
 		}
 	}
 	if auth != nil {
@@ -86,6 +94,12 @@ func applyControlledEmailContext(ev *intel.CommercialEvent, c ControlledEmailCon
 	}
 	if ev.Source == "" {
 		ev.Source = c.Source
+	}
+	if ev.SourceRunID == "" {
+		ev.SourceRunID = c.SourceRunID
+	}
+	if ev.MailboxID == "" {
+		ev.MailboxID = c.MailboxID
 	}
 	if ev.BounceClass == "" {
 		ev.BounceClass = c.BounceClass
@@ -137,6 +151,22 @@ func (s *service) liveControlledEmailContext(ctx context.Context, orgID uuid.UUI
 		auth, _ = s.cohortStore.GetGrant(ctx, *tp.CampaignPolicyAuthorizationID)
 	}
 	result := SnapshotControlledEmailContext(tp, cand, auth, provider)
+	if s != nil && s.repo != nil {
+		var accountID uuid.UUID
+		if tp != nil {
+			accountID = tp.AccountID
+		} else if cand != nil {
+			accountID = cand.AccountID
+		}
+		if accountID != uuid.Nil {
+			if account, err := s.repo.GetAccount(ctx, orgID, accountID); err == nil && account != nil {
+				result.SourceRunID = strings.TrimSpace(account.SourceRunID)
+				if result.Source == "" || result.Source == intel.Unknown {
+					result.Source = firstNonEmpty(strings.TrimSpace(account.SourceSystem), intel.Unknown)
+				}
+			}
+		}
+	}
 	if result.ProviderName == "" || result.ProviderName == intel.Unknown {
 		result.ProviderName = s.observedControlledProvider(orgID, result.AccountRef, result.TouchpointID)
 	}
@@ -173,9 +203,9 @@ func (s *service) observedControlledProvider(orgID uuid.UUID, accountRef, touchp
 	return firstNonEmpty(provider, intel.Unknown)
 }
 
-func (s *service) observeControlledEmail(ctx context.Context, orgID uuid.UUID, typ string, tp *models.OutreachTouchpoint, cand *models.OutreachContactCandidate, extra ControlledEmailContext) {
+func (s *service) observeControlledEmail(ctx context.Context, orgID uuid.UUID, typ string, tp *models.OutreachTouchpoint, cand *models.OutreachContactCandidate, extra ControlledEmailContext) error {
 	if s == nil {
-		return
+		return nil
 	}
 	now := extra.OccurredAt.UTC()
 	if now.IsZero() {
@@ -191,17 +221,25 @@ func (s *service) observeControlledEmail(ctx context.Context, orgID uuid.UUID, t
 	if extra.Source != "" && (c.Source == "" || c.Source == intel.Unknown) {
 		c.Source = extra.Source
 	}
+	if extra.SourceRunID != "" {
+		c.SourceRunID = extra.SourceRunID
+	}
+	if extra.MailboxID != "" {
+		c.MailboxID = extra.MailboxID
+	}
 	c.SMTPStatus = extra.SMTPStatus
 	c.EnhancedStatus = extra.EnhancedStatus
 	c.Diagnostic = extra.Diagnostic
+	stableRef := firstNonEmpty(strings.TrimSpace(extra.StableEventRef), c.TouchpointID, c.AccountRef)
+	stableID := controlledEmailEventID(typ, orgID.String(), stableRef)
 	ev := intel.CommercialEvent{
-		EventID:        uuid.NewString(),
+		EventID:        stableID,
 		Version:        intel.EventSchemaV1,
 		Type:           typ,
 		OccurredAt:     now,
 		IngestedAt:     now,
 		OrganizationID: orgID.String(),
-		IdempotencyKey: typ + ":" + orgID.String() + ":" + c.TouchpointID + ":" + c.AccountRef,
+		IdempotencyKey: "controlled-email:" + stableID,
 		// This path is invoked by real cohort transport/IMAP/DSN handling.
 		// Fixtures and canaries set Synthetic at their own construction sites.
 		Synthetic: false,
@@ -212,8 +250,17 @@ func (s *service) observeControlledEmail(ctx context.Context, orgID uuid.UUID, t
 	}
 	recordObservedControlledEmail(s, ev)
 	if s.intel != nil || s.intelStore() != nil {
-		_ = intel.IngestEvent(s.intelStore(), ev)
+		res := intel.IngestEvent(s.intelStore(), ev)
+		if intel.JoinUnavailable(res) {
+			return fmt.Errorf("controlled email ledger unavailable for %s", typ)
+		}
 	}
+	return nil
+}
+
+func controlledEmailEventID(parts ...string) string {
+	h := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return fmt.Sprintf("email-%x", h[:16])
 }
 
 var observedMu sync.Mutex
@@ -246,6 +293,9 @@ func mergeOutcomeControlledEmail(meta map[string]any, c ControlledEmailContext) 
 	putIfMissing(meta, "cohort_id", c.CohortID)
 	putIfMissing(meta, "policy_version", c.PolicyVersion)
 	putIfMissing(meta, "provider_name", c.ProviderName)
+	putIfMissing(meta, "source", c.Source)
+	putIfMissing(meta, "source_run_id", c.SourceRunID)
+	putIfMissing(meta, "mailbox_id", c.MailboxID)
 	putIfMissing(meta, "bounce_class", c.BounceClass)
 	putIfMissing(meta, "reply_class", c.ReplyClass)
 }
@@ -273,6 +323,8 @@ func CommercialEventFromOutcome(ev models.OutreachOutcome) intel.CommercialEvent
 		EnhancedStatus:  metaString(meta, "enhanced_status"),
 		Diagnostic:      metaString(meta, "diagnostic"),
 		Source:          metaString(meta, "source"),
+		SourceRunID:     metaString(meta, "source_run_id"),
+		MailboxID:       metaString(meta, "mailbox_id"),
 	}
 	if out.EmailRouteClass == "" {
 		out.EmailRouteClass = intel.Unknown

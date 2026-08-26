@@ -39,6 +39,22 @@ func (s *JobsService) HandleEmailSent(ctx context.Context, event *models.SendEma
 	if campaign == nil || campaign.OrganizationID == nil {
 		return nil
 	}
+	task, err := s.TaskRepo.GetTask(ctx, event.TaskID)
+	if err != nil {
+		return fmt.Errorf("load send task: %w", err)
+	}
+	var mailboxID uuid.UUID
+	provider := "smtp"
+	if task != nil {
+		mailboxID = task.EmailAccountID
+		if s.EmailRepository != nil {
+			if mailbox, xerr := s.EmailRepository.GetByID(ctx, mailboxID); xerr != nil {
+				return fmt.Errorf("load sender mailbox: %w", xerr)
+			} else if mailbox != nil {
+				provider = mailbox.Provider
+			}
+		}
+	}
 
 	providerMessageID := strings.TrimSpace(event.ProviderMsgID)
 	if providerMessageID == "" {
@@ -50,7 +66,10 @@ func (s *JobsService) HandleEmailSent(ctx context.Context, event *models.SendEma
 		*campaignTask.CampaignID,
 		*campaignTask.ContactID,
 		valueOrNilUUID(campaignTask.SequenceID),
+		event.TaskID,
+		mailboxID,
 		providerMessageID,
+		provider,
 		event.SentAt,
 	)
 	if errors.Is(completionErr, confenge.ErrCampaignTouchpointNotFound) && !confenge.IsConfengeCampaign(campaign.Name) {

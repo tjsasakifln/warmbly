@@ -106,8 +106,8 @@ type Service interface {
 	DispatchStatus(ctx context.Context, orgID uuid.UUID) (dispatch.Status, *errx.Error)
 	PauseDispatch(ctx context.Context, orgID, userID uuid.UUID, reason string) *errx.Error
 	ResumeDispatch(ctx context.Context, orgID, userID uuid.UUID) *errx.Error
-	CompleteCampaignEmail(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, providerMessageID string, acceptedAt time.Time) error
-	ObserveCampaignEmailAttempt(ctx context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, attemptedAt time.Time) error
+	CompleteCampaignEmail(ctx context.Context, orgID, campaignID, contactID, sequenceID, taskID, mailboxID uuid.UUID, providerMessageID, provider string, acceptedAt time.Time) error
+	ObserveCampaignEmailAttempt(ctx context.Context, orgID, campaignID, contactID, sequenceID, taskID, mailboxID uuid.UUID, provider string, attemptedAt time.Time) error
 	ProcessDispatchQueueOnce(ctx context.Context) (bool, error)
 	ProcessEditorialRecoveryOnce(ctx context.Context) (bool, error)
 	ProcessDraftGenerationOnce(ctx context.Context) (bool, error)

@@ -40,4 +40,5 @@ func TestInboundDeliverabilityHandlersRejectMissingPayloads(t *testing.T) {
 
 	require.Error(t, svc.HandleInboundBounce(context.Background(), nil))
 	require.Error(t, svc.HandleInboundComplaint(context.Background(), nil))
+	require.Error(t, svc.HandleInboundDelivery(context.Background(), nil))
 }

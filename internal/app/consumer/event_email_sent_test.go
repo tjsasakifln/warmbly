@@ -22,6 +22,10 @@ func (r emailSentTaskRepo) GetCampaignTask(context.Context, uuid.UUID) (*reposit
 	return r.task, nil
 }
 
+func (r emailSentTaskRepo) GetTask(_ context.Context, id uuid.UUID) (*repository.Task, error) {
+	return &repository.Task{ID: id}, nil
+}
+
 type emailSentCampaignRepo struct {
 	repository.CampaignRepository
 	campaign *models.Campaign
@@ -42,7 +46,7 @@ type emailSentCompletion struct {
 	err        error
 }
 
-func (c *emailSentCompletion) ObserveCampaignEmailAttempt(_ context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, _ time.Time) error {
+func (c *emailSentCompletion) ObserveCampaignEmailAttempt(_ context.Context, orgID, campaignID, contactID, sequenceID, _, _ uuid.UUID, _ string, _ time.Time) error {
 	c.attempted++
 	c.orgID = orgID
 	c.campaignID = campaignID
@@ -51,7 +55,7 @@ func (c *emailSentCompletion) ObserveCampaignEmailAttempt(_ context.Context, org
 	return c.err
 }
 
-func (c *emailSentCompletion) CompleteCampaignEmail(_ context.Context, orgID, campaignID, contactID, sequenceID uuid.UUID, providerMessageID string, _ time.Time) error {
+func (c *emailSentCompletion) CompleteCampaignEmail(_ context.Context, orgID, campaignID, contactID, sequenceID, _, _ uuid.UUID, providerMessageID, _ string, _ time.Time) error {
 	c.called++
 	c.orgID = orgID
 	c.campaignID = campaignID

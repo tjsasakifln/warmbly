@@ -124,6 +124,7 @@ type Service interface {
 	// WireConfengeReply attributes classified replies to CONFENGE staging
 	// (outcome outbox + CRM tasks/deals). Best-effort; nil = feature off.
 	WireConfengeReply(h ConfengeReplyHook)
+	WireConfengeSuppression(h ConfengeSuppressionHook)
 
 	// EmitCampaignEvent dispatches a campaign event (e.g. from a sequence
 	// "notify" action node) to customer webhooks and wired integrations.
@@ -167,6 +168,7 @@ type service struct {
 	automationRunner     AutomationRunner
 	inboxAgent           InboxAgent
 	confengeReply        ConfengeReplyHook
+	confengeSuppression  ConfengeSuppressionHook
 }
 
 // ConfengeReplyHook is implemented by the CONFENGE outreach service. Kept as a
@@ -175,6 +177,16 @@ type service struct {
 // and CRM tasks run on the real email path (not only PreClass).
 type ConfengeReplyHook interface {
 	OnClassifiedReply(ctx context.Context, orgID uuid.UUID, contactEmail, replyClass string, contactID *uuid.UUID, subject, bodyText string, actorID uuid.UUID) error
+}
+
+// ConfengeSuppressionHook projects canonical suppression into CONFENGE.
+type ConfengeSuppressionHook interface {
+	OnRecipientSuppressed(ctx context.Context, orgID uuid.UUID, email, reason, source string, campaignID *uuid.UUID, occurredAt time.Time) error
+}
+
+// ConfengeDeliverabilityHook reconciles provider facts through the existing CONFENGE ledger.
+type ConfengeDeliverabilityHook interface {
+	OnDeliverabilityEvent(context.Context, uuid.UUID, *models.IngestDeliverabilityEventRequest, string, string, uuid.UUID, time.Time) error
 }
 
 func NewService(
@@ -545,6 +557,12 @@ func (s *service) Unsubscribe(ctx context.Context, campaignID, contactID uuid.UU
 		CampaignID:     &campaignID,
 	}); err != nil {
 		return toErrx(err)
+	}
+	if s.confengeSuppression != nil {
+		if err := s.confengeSuppression.OnRecipientSuppressed(ctx, *campaign.OrganizationID, contact.Email,
+			"one-click unsubscribe", string(models.DeliverabilityEventUnsubscribe), &campaignID, time.Now().UTC()); err != nil {
+			return toErrx(err)
+		}
 	}
 
 	s.emit(ctx, *campaign.OrganizationID, models.WebhookEventCampaignUnsubscribed, map[string]any{
@@ -982,7 +1000,14 @@ func (s *service) ProcessIncomingReply(ctx context.Context, emailAccountID uuid.
 		// and exactly once per reply event via the instant_fired["reply"] gate. The
 		// just-classified reply_class and (human-only) replied_at have already been
 		// persisted above, so the matcher reads them off the loaded progress row.
-		s.fireInstantActions(ctx, cID, ctID, sID, "reply")
+		// CONFENGE replies enter human triage without launching instant follow-ups.
+		campaignName := ""
+		if campaign, campaignErr := s.campaignRepo.GetByID(ctx, cID); campaignErr == nil && campaign != nil {
+			campaignName = campaign.Name
+		}
+		if allowsInstantReplyActions(campaignName) {
+			s.fireInstantActions(ctx, cID, ctID, sID, "reply")
+		}
 	}
 
 	actionTaken := ""
@@ -1091,6 +1116,10 @@ func (s *service) ProcessIncomingReply(ctx context.Context, emailAccountID uuid.
 	return nil
 }
 
+func allowsInstantReplyActions(campaignName string) bool {
+	return !strings.HasPrefix(strings.ToUpper(strings.TrimSpace(campaignName)), "CONFENGE")
+}
+
 func ptrTime(t time.Time) *time.Time {
 	return &t
 }
@@ -1106,6 +1135,8 @@ func (s *service) IngestDeliverabilityEvent(ctx context.Context, organizationID 
 	eventType := req.EventType
 	switch eventType {
 	case models.DeliverabilityEventBounce,
+		models.DeliverabilityEventSoftBounce,
+		models.DeliverabilityEventDelivered,
 		models.DeliverabilityEventComplaint,
 		models.DeliverabilityEventUnsubscribe,
 		models.DeliverabilityEventOpen,
@@ -1124,6 +1155,7 @@ func (s *service) IngestDeliverabilityEvent(ctx context.Context, organizationID 
 	if provider == "" {
 		provider = "manual"
 	}
+	observedAt := time.Now().UTC()
 
 	settings, err := s.repo.GetOutreachSettings(ctx, organizationID)
 	if err != nil {
@@ -1165,6 +1197,25 @@ func (s *service) IngestDeliverabilityEvent(ctx context.Context, organizationID 
 
 	if req.CampaignID != nil && req.ContactID != nil {
 		if err := s.repo.MarkVariantEvent(ctx, *req.CampaignID, *req.ContactID, string(eventType)); err != nil {
+			return toErrx(err)
+		}
+	}
+
+	if hook, ok := s.confengeSuppression.(ConfengeDeliverabilityHook); ok {
+		mailboxID := uuid.Nil
+		if req.TaskID != nil && s.taskRepo != nil {
+			task, taskErr := s.taskRepo.GetTask(ctx, *req.TaskID)
+			if taskErr != nil {
+				return toErrx(taskErr)
+			}
+			if task != nil {
+				mailboxID = task.EmailAccountID
+			}
+		}
+		projection := *req
+		projection.Provider = provider
+		projection.IdempotencyKey = idempotencyKey
+		if err := hook.OnDeliverabilityEvent(ctx, organizationID, &projection, provider, idempotencyKey, mailboxID, observedAt); err != nil {
 			return toErrx(err)
 		}
 	}

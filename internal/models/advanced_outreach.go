@@ -92,6 +92,8 @@ type DeliverabilityEventType string
 
 const (
 	DeliverabilityEventBounce      DeliverabilityEventType = "bounce"
+	DeliverabilityEventSoftBounce  DeliverabilityEventType = "soft_bounce"
+	DeliverabilityEventDelivered   DeliverabilityEventType = "delivered"
 	DeliverabilityEventComplaint   DeliverabilityEventType = "complaint"
 	DeliverabilityEventUnsubscribe DeliverabilityEventType = "unsubscribe"
 	DeliverabilityEventOpen        DeliverabilityEventType = "open"

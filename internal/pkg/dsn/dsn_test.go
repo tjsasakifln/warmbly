@@ -67,7 +67,7 @@ func TestParseOrdinaryBody(t *testing.T) {
 
 func TestSuccessfulDSNIsNotMisreportedAsBounce(t *testing.T) {
 	r := Parse("Action: delivered\nStatus: 2.0.0\nDiagnostic-Code: smtp; 250 queued")
-	if r.IsBounce || r.Permanent || r.BounceClass != "UNKNOWN" {
+	if r.IsBounce || r.Permanent || !r.IsDelivery || r.BounceClass != "UNKNOWN" {
 		t.Fatalf("successful DSN must not become a bounce: %+v", r)
 	}
 }
