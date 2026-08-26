@@ -14,19 +14,19 @@ import (
 )
 
 const outreachTouchpointSelect = `
-	SELECT id, organization_id, account_id, contact_candidate_id,
-		ordinal, COALESCE(cadence_step,''), COALESCE(channel,'EMAIL'), COALESCE(purpose,''),
-		due_at, state, draft_id,
-		COALESCE(recipient,''), COALESCE(subject,''), COALESCE(body_text,''),
-		COALESCE(content_hash,''), COALESCE(approved_content_hash,''), approved_by, approved_at,
-		COALESCE(authorization_mode,''),
-		campaign_policy_authorization_id, COALESCE(authorization_policy_hash,''), authorization_at,
-		COALESCE(signature_version,''),
-		queued_at, sent_at, COALESCE(provider_message_id,''), COALESCE(stop_reason,''),
-		previous_touchpoint_id, COALESCE(idempotency_key,''),
-		COALESCE(policy_version,''), COALESCE(service_code,''), COALESCE(fact_used,''), evidence_ids,
-		COALESCE(generated_context_hash,''),
-		created_at, updated_at `
+	SELECT t.id, t.organization_id, t.account_id, t.contact_candidate_id,
+		t.ordinal, COALESCE(t.cadence_step,''), COALESCE(t.channel,'EMAIL'), COALESCE(t.purpose,''),
+		t.due_at, t.state, t.draft_id,
+		COALESCE(t.recipient,''), COALESCE(t.subject,''), COALESCE(t.body_text,''),
+		COALESCE(t.content_hash,''), COALESCE(t.approved_content_hash,''), t.approved_by, t.approved_at,
+		COALESCE(t.authorization_mode,''),
+		t.campaign_policy_authorization_id, COALESCE(t.authorization_policy_hash,''), t.authorization_at,
+		COALESCE(t.signature_version,''),
+		t.queued_at, t.sent_at, COALESCE(t.provider_message_id,''), COALESCE(t.stop_reason,''),
+		t.previous_touchpoint_id, COALESCE(t.idempotency_key,''),
+		COALESCE(t.policy_version,''), COALESCE(t.service_code,''), COALESCE(t.fact_used,''), t.evidence_ids,
+		COALESCE(t.generated_context_hash,''),
+		t.created_at, t.updated_at `
 
 func scanTouchpoint(row scannable) (*models.OutreachTouchpoint, error) {
 	var t models.OutreachTouchpoint
@@ -141,7 +141,7 @@ func (r *outreachRepository) UpdateTouchpoint(ctx context.Context, t *models.Out
 }
 
 func (r *outreachRepository) GetTouchpoint(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachTouchpoint, error) {
-	row := r.db.QueryRow(ctx, outreachTouchpointSelect+` FROM outreach_touchpoints WHERE organization_id=$1 AND id=$2`, orgID, id)
+	row := r.db.QueryRow(ctx, outreachTouchpointSelect+` FROM outreach_touchpoints t WHERE organization_id=$1 AND id=$2`, orgID, id)
 	t, err := scanTouchpoint(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -153,7 +153,7 @@ func (r *outreachRepository) GetTouchpointByIdempotency(ctx context.Context, org
 	if key == "" {
 		return nil, nil
 	}
-	row := r.db.QueryRow(ctx, outreachTouchpointSelect+` FROM outreach_touchpoints WHERE organization_id=$1 AND idempotency_key=$2`, orgID, key)
+	row := r.db.QueryRow(ctx, outreachTouchpointSelect+` FROM outreach_touchpoints t WHERE organization_id=$1 AND idempotency_key=$2`, orgID, key)
 	t, err := scanTouchpoint(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -162,7 +162,7 @@ func (r *outreachRepository) GetTouchpointByIdempotency(ctx context.Context, org
 }
 
 func (r *outreachRepository) GetTouchpointByDraft(ctx context.Context, orgID, draftID uuid.UUID) (*models.OutreachTouchpoint, error) {
-	row := r.db.QueryRow(ctx, outreachTouchpointSelect+` FROM outreach_touchpoints WHERE organization_id=$1 AND draft_id=$2 ORDER BY updated_at DESC LIMIT 1`, orgID, draftID)
+	row := r.db.QueryRow(ctx, outreachTouchpointSelect+` FROM outreach_touchpoints t WHERE organization_id=$1 AND draft_id=$2 ORDER BY updated_at DESC LIMIT 1`, orgID, draftID)
 	t, err := scanTouchpoint(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -179,7 +179,7 @@ func (r *outreachRepository) GetTouchpointByProviderMessageID(ctx context.Contex
 		return nil, nil
 	}
 	row := r.db.QueryRow(ctx, outreachTouchpointSelect+`
-		FROM outreach_touchpoints
+		FROM outreach_touchpoints t
 		WHERE organization_id=$1
 		  AND trim(both '<>' from provider_message_id)=$2
 		ORDER BY updated_at DESC
@@ -201,9 +201,9 @@ func (r *outreachRepository) ListTouchpoints(ctx context.Context, orgID, account
 	var rows pgx.Rows
 	var err error
 	if state != "" {
-		rows, err = r.db.Query(ctx, outreachTouchpointSelect+` FROM outreach_touchpoints WHERE organization_id=$1 AND account_id=$2 AND state=$3 ORDER BY ordinal ASC LIMIT $4 OFFSET $5`, orgID, accountID, state, limit, offset)
+		rows, err = r.db.Query(ctx, outreachTouchpointSelect+` FROM outreach_touchpoints t WHERE organization_id=$1 AND account_id=$2 AND state=$3 ORDER BY ordinal ASC LIMIT $4 OFFSET $5`, orgID, accountID, state, limit, offset)
 	} else {
-		rows, err = r.db.Query(ctx, outreachTouchpointSelect+` FROM outreach_touchpoints WHERE organization_id=$1 AND account_id=$2 ORDER BY ordinal ASC LIMIT $3 OFFSET $4`, orgID, accountID, limit, offset)
+		rows, err = r.db.Query(ctx, outreachTouchpointSelect+` FROM outreach_touchpoints t WHERE organization_id=$1 AND account_id=$2 ORDER BY ordinal ASC LIMIT $3 OFFSET $4`, orgID, accountID, limit, offset)
 	}
 	if err != nil {
 		return nil, err
@@ -521,7 +521,7 @@ func (r *outreachRepository) ListDuePlannedTouchpoints(ctx context.Context, orgI
 		limit = 200
 	}
 	rows, err := r.db.Query(ctx, outreachTouchpointSelect+`
-		FROM outreach_touchpoints
+		FROM outreach_touchpoints t
 		WHERE organization_id=$1
 		  AND state = 'PLANNED'
 		  AND due_at <= $2
