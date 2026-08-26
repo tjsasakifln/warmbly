@@ -264,6 +264,14 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 			return result, errx.New(errx.ServiceUnavailable, "feed deactivations failed; snapshot not committed")
 		}
 		result.Deactivations = n
+		delegatedRetired, delegatedErr := s.retireStaleDelegatedFirstTouches(ctx, orgID, man.Source.RunID, man.Source.SnapshotHash)
+		if delegatedErr != nil {
+			result.Status = "partial"
+			result.Errors = append(result.Errors, "stale delegated first-touch retirement: "+delegatedErr.Error())
+			s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "partial", result, false, nil)
+			return result, errx.New(errx.ServiceUnavailable, "feed stale delegated first-touch retirement failed; snapshot not committed")
+		}
+		result.Counts["stale_delegated_first_touches_retired"] = delegatedRetired
 		retired, requeued, staleErr := s.retireStaleReviewBacklog(ctx, orgID)
 		if staleErr != nil {
 			result.Status = "partial"

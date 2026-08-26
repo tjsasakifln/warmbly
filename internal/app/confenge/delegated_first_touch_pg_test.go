@@ -409,6 +409,71 @@ func TestDelegatedFirstTouchWorkerSkipsMismatchedDecisionBoundByCurrentIdempoten
 	}
 }
 
+func TestDelegatedFirstTouchFeedRefreshRetiresStaleQueuePostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	report, xerr := f.svc.ApplyDelegatedFirstTouchManifest(f.ctx, f.orgID, f.manifest, false)
+	if xerr != nil || report == nil || report.Queued != 1 {
+		t.Fatalf("fixture did not queue: report=%+v err=%v", report, xerr)
+	}
+
+	newRun := "run-refreshed-" + uuid.NewString()
+	newSnapshot := strings.Repeat("f", 64)
+	if _, err := f.pool.Exec(f.ctx, `UPDATE outreach_accounts SET source_run_id=$3 WHERE organization_id=$1 AND id=$2`,
+		f.orgID, f.manifest.Entries[0].AccountID, newRun); err != nil {
+		t.Fatal(err)
+	}
+	retired, err := f.svc.retireStaleDelegatedFirstTouches(f.ctx, f.orgID, newRun, newSnapshot)
+	if err != nil || retired != 1 {
+		t.Fatalf("stale delegated queue retirement: retired=%d err=%v", retired, err)
+	}
+
+	var decisionState, touchpointState, draftState, queueState, reason string
+	if err := f.pool.QueryRow(f.ctx, `
+		SELECT d.state,t.state,dr.status,q.status,q.cancel_reason
+		FROM confenge_delegated_first_touch_decisions d
+		JOIN outreach_touchpoints t ON t.organization_id=d.organization_id AND t.id=d.touchpoint_id
+		JOIN outreach_drafts dr ON dr.organization_id=d.organization_id AND dr.id=d.draft_id
+		JOIN confenge_dispatch_queue q ON q.organization_id=d.organization_id AND q.message_key=d.queue_message_key
+		WHERE d.organization_id=$1 AND d.touchpoint_id=$2`, f.orgID, report.Items[0].TouchpointID).
+		Scan(&decisionState, &touchpointState, &draftState, &queueState, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if decisionState != "CANCELLED" || touchpointState != models.TouchpointNeedsReview ||
+		draftState != models.OutreachDraftNeedsReview || queueState != "cancelled" || reason != delegatedBindingRefreshReason {
+		t.Fatalf("stale delegated state survived refresh: decision=%s touchpoint=%s draft=%s queue=%s reason=%s",
+			decisionState, touchpointState, draftState, queueState, reason)
+	}
+	if retired, err = f.svc.retireStaleDelegatedFirstTouches(f.ctx, f.orgID, newRun, newSnapshot); err != nil || retired != 0 {
+		t.Fatalf("retirement retry was not idempotent: retired=%d err=%v", retired, err)
+	}
+}
+
+func TestDelegatedFirstTouchRuntimeRefreshRetiresStaleQueuePostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	report, xerr := f.svc.ApplyDelegatedFirstTouchManifest(f.ctx, f.orgID, f.manifest, false)
+	if xerr != nil || report == nil || report.Queued != 1 {
+		t.Fatalf("fixture did not queue: report=%+v err=%v", report, xerr)
+	}
+
+	f.svc.cfg.RepositorySHA = "sha-next-runtime"
+	retired, err := f.svc.retireStaleDelegatedFirstTouches(f.ctx, f.orgID, f.manifest.SourceRunID, f.manifest.SourceSnapshotHash)
+	if err != nil || retired != 1 {
+		t.Fatalf("stale runtime retirement: retired=%d err=%v", retired, err)
+	}
+	var decisionState, queueState string
+	if err := f.pool.QueryRow(f.ctx, `
+		SELECT d.state,q.status
+		FROM confenge_delegated_first_touch_decisions d
+		JOIN confenge_dispatch_queue q ON q.organization_id=d.organization_id AND q.message_key=d.queue_message_key
+		WHERE d.organization_id=$1 AND d.touchpoint_id=$2`, f.orgID, report.Items[0].TouchpointID).
+		Scan(&decisionState, &queueState); err != nil {
+		t.Fatal(err)
+	}
+	if decisionState != "CANCELLED" || queueState != "cancelled" {
+		t.Fatalf("stale runtime survived refresh: decision=%s queue=%s", decisionState, queueState)
+	}
+}
+
 func TestDelegatedFirstTouchPartialBatchFailureDoesNotBlockEligibleItemPostgres(t *testing.T) {
 	f := newDelegatedPGFixture(t)
 	invalid := f.manifest.Entries[0]

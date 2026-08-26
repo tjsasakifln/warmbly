@@ -72,6 +72,16 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (bool, err
 		return false, nil
 	}
 	orgID := s.cfg.OperatorOrgID
+	feed, err := s.repo.GetFeedSyncState(ctx, orgID)
+	if err != nil || feed == nil {
+		return false, err
+	}
+	if feed.LastStatus != "completed" {
+		return false, nil
+	}
+	if _, err = s.retireStaleDelegatedFirstTouches(ctx, orgID, feed.LastRunID, feed.LastSnapshotHash); err != nil {
+		return false, err
+	}
 	var queued int
 	if err := s.delegatedDB.QueryRow(ctx, `
 		SELECT count(*) FROM confenge_dispatch_queue
@@ -107,11 +117,6 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (bool, err
 	if err != nil || cand == nil {
 		return false, err
 	}
-	feed, err := s.repo.GetFeedSyncState(ctx, orgID)
-	if err != nil || feed == nil {
-		return false, err
-	}
-
 	recent, err := s.repo.ListDrafts(ctx, orgID, "", 500, 0)
 	if err != nil {
 		return false, err
