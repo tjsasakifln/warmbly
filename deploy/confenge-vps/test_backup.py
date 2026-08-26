@@ -15,6 +15,9 @@ PACK = Path(__file__).resolve().parent
 ROOT = PACK.parent.parent
 ADAPTER = PACK / "asaas-adapter" / "adapter.py"
 LEGACY_FIXTURE = PACK / "asaas-adapter" / "testdata" / "legacy-stateless-v0.sql"
+LEGACY_PERSIST_FIRST_FIXTURE = (
+    PACK / "asaas-adapter" / "testdata" / "legacy-persist-first-v0.sql"
+)
 
 
 class BackupScriptTest(unittest.TestCase):
@@ -269,6 +272,37 @@ PUBLIC_CALLBACK_URL=https://example.invalid/callback?token=fixture-query-never-a
         self.assertIn("unsupported adapter queue schema version 2", result.stderr)
         self.assertFalse(self.docker_log.exists())
         self.assertEqual(database.read_bytes(), before)
+
+    def test_canonical_backup_accepts_live_legacy_persist_first_queue(self) -> None:
+        database = self.root / "live-legacy" / "events.sqlite3"
+        database.parent.mkdir()
+        connection = sqlite3.connect(database)
+        connection.executescript(
+            LEGACY_PERSIST_FIRST_FIXTURE.read_text(encoding="utf-8")
+        )
+        connection.close()
+        before = database.read_bytes()
+        backup_dir = self.root / "live-legacy-backups"
+
+        result = subprocess.run(
+            ["bash", str(PACK / "backup.sh")],
+            cwd=ROOT,
+            env=self.environment(database, backup_dir),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(database.read_bytes(), before)
+        archive = next(backup_dir.glob("warmbly-confenge-*.tar.gz"))
+        with tarfile.open(archive, "r:gz") as bundle:
+            manifest = json.load(bundle.extractfile("./MANIFEST.json"))
+        self.assertEqual(
+            manifest["components"]["asaas_queue"]["schema"],
+            "confenge.asaas-queue.legacy-persist-first-v0",
+        )
 
 
 if __name__ == "__main__":
