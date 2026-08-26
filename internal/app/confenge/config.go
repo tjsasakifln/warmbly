@@ -55,6 +55,8 @@ const (
 	EnvDelegatedFirstTouch = "CONFENGE_DELEGATED_FIRST_TOUCH_ENABLED"
 	// Delegated first-touch autorun evaluates the prepared rolling backlog.
 	EnvDelegatedFirstTouchAutorun = "CONFENGE_DELEGATED_FIRST_TOUCH_AUTORUN_ENABLED"
+	// EnvDelegatedFirstTouchRunwayDays sets a rolling capacity horizon; zero fails closed.
+	EnvDelegatedFirstTouchRunwayDays = "CONFENGE_DELEGATED_FIRST_TOUCH_RUNWAY_DAYS"
 	// Adaptive rate (single capacity authority with dispatch governor).
 	EnvRateMode                     = "CONFENGE_RATE_MODE"
 	EnvRateStartPerHour             = "CONFENGE_RATE_START_PER_HOUR"
@@ -82,12 +84,14 @@ const (
 // Default 200 allows adaptive peak 20/h × 9h (=180) plus margin so the daily
 // campaign cap is never the binding constraint ahead of the rolling-hour governor.
 const (
-	DefaultCampaignDailyLimit       = 200
-	DefaultMaxInitialWords          = 120
-	DefaultMaxPayloadBytes          = 32 << 20 // 32 MiB
-	DefaultCrossChannelHours        = 24
-	DefaultMaxWhatsAppWords         = 70
-	DefaultDraftReviewBacklogTarget = 100
+	DefaultCampaignDailyLimit            = 200
+	DefaultMaxInitialWords               = 120
+	DefaultMaxPayloadBytes               = 32 << 20 // 32 MiB
+	DefaultCrossChannelHours             = 24
+	DefaultMaxWhatsAppWords              = 70
+	DefaultDraftReviewBacklogTarget      = 100
+	DefaultDelegatedFirstTouchRunwayDays = 0
+	MaxDelegatedFirstTouchRunwayDays     = 90
 )
 
 // Config is runtime configuration for the confenge outreach feature.
@@ -129,6 +133,8 @@ type Config struct {
 	DelegatedFirstTouchEnabled bool
 	// DelegatedFirstTouchAutorunEnabled continuously evaluates that narrow path.
 	DelegatedFirstTouchAutorunEnabled bool
+	// DelegatedFirstTouchRunwayDays is converted to slots from live business capacity.
+	DelegatedFirstTouchRunwayDays int
 	// RateMode: "fixed" | "adaptive". Adaptive starts at RateStartPerHour and may climb to RateMaxPerHour.
 	RateMode         string
 	RateStartPerHour int
@@ -218,6 +224,7 @@ func LoadConfig() Config {
 		GreenAutorunEnabled:               envBool(EnvGreenAutorun, false),
 		DelegatedFirstTouchEnabled:        envBool(EnvDelegatedFirstTouch, false),
 		DelegatedFirstTouchAutorunEnabled: envBool(EnvDelegatedFirstTouchAutorun, false),
+		DelegatedFirstTouchRunwayDays:     envInt(EnvDelegatedFirstTouchRunwayDays, DefaultDelegatedFirstTouchRunwayDays),
 		RateMode:                          strings.ToLower(strings.TrimSpace(os.Getenv(EnvRateMode))),
 		RateStartPerHour:                  envInt(EnvRateStartPerHour, 10),
 		RateMaxPerHour:                    envInt(EnvRateMaxPerHour, 20),
@@ -315,6 +322,9 @@ func (c Config) ValidateStartup(appEnv string) error {
 	}
 	if c.DelegatedFirstTouchAutorunEnabled && (c.OperatorUserID == uuid.Nil || c.OperatorOrgID == uuid.Nil) {
 		return fmt.Errorf("%s requires valid operator user and organization IDs", EnvDelegatedFirstTouchAutorun)
+	}
+	if c.DelegatedFirstTouchAutorunEnabled && (c.DelegatedFirstTouchRunwayDays < 1 || c.DelegatedFirstTouchRunwayDays > MaxDelegatedFirstTouchRunwayDays) {
+		return fmt.Errorf("%s requires %s between 1 and %d", EnvDelegatedFirstTouchAutorun, EnvDelegatedFirstTouchRunwayDays, MaxDelegatedFirstTouchRunwayDays)
 	}
 	if c.OperatorMode {
 		if c.OperatorUserID == uuid.Nil {

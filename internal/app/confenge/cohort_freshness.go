@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/warmbly/warmbly/internal/models"
 )
 
 const AuthoritativeFreshnessContractV1 = "PNCP_CONTRACT_FRESHNESS/1.0"
@@ -64,6 +66,35 @@ func ValidateAuthoritativeSourceFreshness(f *FeedSourceFreshness, now time.Time)
 	}
 	if f.PagesExpected != nil && (f.PagesFetched == nil || *f.PagesFetched < *f.PagesExpected) {
 		return fmt.Errorf("authoritative PNCP freshness pagination incomplete")
+	}
+	return nil
+}
+
+func validateAuthoritativeFeedState(state *models.OutreachFeedSyncState, now time.Time, maxAge time.Duration, requireAttestation bool) error {
+	if state == nil || state.LastStatus != "completed" || state.SourceGeneratedAt == nil ||
+		strings.TrimSpace(state.LastSnapshotHash) == "" || strings.TrimSpace(state.LastRunID) == "" {
+		return fmt.Errorf("authoritative feed is not completely applied")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if maxAge <= 0 {
+		maxAge = 24 * time.Hour
+	}
+	if state.SourceGeneratedAt.After(now.UTC().Add(5*time.Minute)) || now.UTC().Sub(state.SourceGeneratedAt.UTC()) > maxAge {
+		return fmt.Errorf("authoritative feed is stale")
+	}
+	if !requireAttestation {
+		return nil
+	}
+	if state.SourceExpiresAt == nil || !validSHA256(state.SourceFreshnessHash) ||
+		!state.TargetMembershipComplete || !validSHA256(state.TargetMembershipHash) ||
+		state.TargetMembershipCount < 1 || state.SupplierConfirmedCount < 0 ||
+		state.SupplierConfirmedCount > state.TargetMembershipCount {
+		return fmt.Errorf("authoritative feed attestation is incomplete")
+	}
+	if !now.UTC().Before(state.SourceExpiresAt.UTC()) {
+		return fmt.Errorf("authoritative feed source attestation expired")
 	}
 	return nil
 }

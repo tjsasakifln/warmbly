@@ -83,6 +83,7 @@ All paths below are relative to the versioned base URL `https://api.warmbly.com/
 | POST | `/contacts/:id/research` | `AI_RESEARCH` |
 | GET | `/contacts/:id/research` | `AI_RESEARCH` |
 | POST | `/contacts/research/batch` | `AI_RESEARCH` |
+| POST | `/confenge/sync` | `WRITE_CONTACTS` |
 | POST | `/confenge/pilot/cohort/prepare` | `WRITE_CONTACTS` |
 | POST | `/confenge/drafts/invalidate-prior-composer` | `WRITE_CONTACTS` |
 | GET | `/confenge/cohorts` | `READ_CONTACTS` |
@@ -96,6 +97,10 @@ All paths below are relative to the versioned base URL `https://api.warmbly.com/
 | POST | `/confenge/review/drafts/:id/decision` | `WRITE_CONTACTS` |
 | POST | `/confenge/touchpoints/:id/approve` | `WRITE_CONTACTS` |
 | POST | `/confenge/touchpoints/:id/queue` | `WRITE_CONTACTS` |
+| GET | `/confenge/first-touch/status` | `READ_CONTACTS` |
+| GET | `/confenge/dispatch/status` | `READ_CONTACTS` |
+| POST | `/confenge/dispatch/pause` | `WRITE_CONTACTS` |
+| POST | `/confenge/dispatch/resume` | `WRITE_CONTACTS` |
 | GET | `/confenge/cockpit` | `READ_CONTACTS` |
 | GET | `/confenge/inbound` | `READ_CONTACTS` |
 | POST | `/confenge/inbound/:leadId/outcome` | `WRITE_CONTACTS` |
@@ -120,6 +125,12 @@ All paths below are relative to the versioned base URL `https://api.warmbly.com/
 | POST | `/confenge/manual-queue/:id/action` | `WRITE_CONTACTS` |
 
 `GET /contacts/custom-fields` lists the distinct custom-field keys used across your contacts (frequency-ranked), for building personalization pickers. It returns a flat string array under `data`, capped at 200 keys.
+
+`GET /confenge/status` reports authoritative feed age separately from sync time. For delegated first touch, `feed_authority_state` becomes `expired` when the producer-owned `feed_source_expires_at` passes even if the generic 24-hour age is still fresh. The readiness payload also exposes `target_membership_complete`, `target_membership_count`, and `supplier_confirmed_count`; incomplete authority remains fail-closed.
+
+`GET /confenge/dispatch/status` reports configured mailbox envelopes and observed transport facts separately. Every organization mailbox appears, including a mailbox with missing credentials, so absence cannot disappear from the capacity readback. Each mailbox includes enabled state, provider type, worker assignment, worker heartbeat health, SPF/DKIM/DMARC state, mailbox and warmup age when known, configured daily cap, minimum wait, derived hourly cap, business window, latest attempt/acceptance/bounce/complaint/reply/provider rejection, health reason, pause source, and next eligible slot. Provider ceilings and unobserved operational facts remain listed under `unknown` until an explicit source is stored. The aggregate forecast reports effective and potential slots for 24 hours and 7 days, plus estimated queue drain time when transport has effective capacity. While paused, effective next-slot fields are absent because resume time is unknown. A slot is capacity for an attempt, not a delivery promise. `POST /confenge/dispatch/pause` and `POST /confenge/dispatch/resume` are naturally idempotent state assignments and keep the file and durable kill controls authoritative.
+
+`POST /confenge/sync` validates and imports a complete `confenge.outreach.manifest.v1`, resumes stale chunk leases idempotently, and publishes a new current run only after the account denominator and prepared `INITIAL` backlog close. The response includes `imported`, `supplier_confirmed`, `candidate_attributed`, `initial_touchpoint_prepared`, `delegated_eligible`, `held_exception`, and `stale_initial_retired` under `data.counts`. A replay of the same snapshot is a `noop` with the stored counts.
 
 `GET /confenge/inbound` is the INBOUND NOW queue. Default `include_synthetic=0`. `POST /confenge/inbound/:leadId/acknowledge` records a human acknowledgement (actor required, idempotent). `POST /confenge/inbound/:leadId/resolve` records a no-action resolution with a reason code. Neither contacts the lead nor sets WON, LOST, pipeline, or revenue. `POST /confenge/inbound/:leadId/outcome` remains the first-action registrar.
 
@@ -150,6 +161,8 @@ The deployment edge exposes only `POST /api/v1/webhooks/asaas` and `GET /api/v1/
 Superseded copy is readable and never operational. `POST /confenge/cohorts/:id/candidates/:candidateId/review` refuses `decision=APPROVE` with `409` and code `composer_superseded` (`HOLD` and `REJECT` still work). `POST /confenge/cohorts/:id/recompose` is the way forward: it forks version N+1 with the current composer, requires `Idempotency-Key`, `reason`, `confirmation` and `expected_frozen_hash`, preserves every recipient and provenance fact byte-identical (drift is refused, not stored), and is born with no validation, no review, no approval and no scheduling.
 
 `GET /confenge/review/drafts` (and its alias `GET /confenge/touchpoints/review`) returns the same verdict per row as `editorial_state`, `editorial_actionable`, `editorial_reason_codes`, `editorial_notice`, `composer_version` and `prompt_version`, alongside the judging context `route_class`, `fact_source` and `target_fit`. Next to superseded copy `composer_version` is empty on purpose, because naming the current composer there would read as if it wrote the text. `POST /confenge/touchpoints/:id/approve`, `POST /confenge/touchpoints/:id/queue`, and `POST /confenge/review/drafts/:id/decision` when the decision approves return `409` on a draft an earlier composer wrote, and transport refuses the send grant by the same rule. See [CONFENGE editorial lifecycle](/guides/confenge-editorial-lifecycle/) and [error codes](/api/error-codes/).
+
+`GET /confenge/first-touch/status` returns `schema_version=warmbly.confenge.first-touch-control.v1`, delegated decision readback, and one aggregated `control` snapshot. The snapshot binds the current source run, snapshot, freshness expiry and complete membership to prepared, READY, delegated, human, queued and reserved counts. It also exposes the next and furthest `due_at`, provider attempts, provider acceptances, sent count, outcome counts, kill switch, dispatch pause, mailbox capacity, and one fail-closed blocker. Its `runway` section includes the capacity-derived target count and horizon, mailbox and daily capacity, recent fill rate, stale retirements, holds and no-candidate counts. A paused transport can retain a large prepared reservoir and bounded future runway. Queue depth is inventory, not send velocity.
 
 `POST /contacts/import/commit` statically classifies every mapped address before writing contacts. Successful responses include `quality` with invalid, disposable, role-based, risky-TLD, and combined bad-address counts. An import whose invalid plus disposable share is above `25%` is recorded for review and rejected with `422 contact_import_quality_blocked` before any contacts are written. The error response includes the same aggregate import result under `details` so clients can explain the block without parsing the message.
 

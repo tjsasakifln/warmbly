@@ -7,7 +7,7 @@ import "time"
 type AdaptiveHealth struct {
 	// Commits in the evaluation batch (successful sends).
 	Commits int
-	// HardBounceRate in [0,1] over the same window.
+	// HardBounceRate is factual telemetry only. Policy must set an explicit signal.
 	HardBounceRate float64
 	// AuthFailure / reputation / throttle signals.
 	AuthFailure            bool
@@ -62,10 +62,6 @@ func EvaluateAdaptiveRate(current, start, maxRate, batchSize int, h AdaptiveHeal
 	if h.SystemicRecipientIssue {
 		down := stepDown(current, start)
 		return AdaptiveDecision{NextSendsPerHour: down, NextMinGap: MinGapForRate(down), Action: "step_down", Reason: "systemic_recipient_issue"}
-	}
-	if h.HardBounceRate > 0.02 {
-		down := stepDown(current, start)
-		return AdaptiveDecision{NextSendsPerHour: down, NextMinGap: MinGapForRate(down), Action: "step_down", Reason: "hard_bounce_gt_2pct"}
 	}
 	// Need a full healthy batch before climbing.
 	if h.Commits < batchSize {

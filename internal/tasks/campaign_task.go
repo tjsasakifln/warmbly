@@ -627,14 +627,14 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 		Attachments:    attachmentRefs,
 	}
 
-	// CONFENGE global dispatch governor: final gate before worker/SMTP for
-	// CONFENGE-attributed campaigns (shared rolling-hour cap with WhatsApp).
-	// Switch only on GateKind — never treat infrastructure errors as DNC.
+	// CONFENGE applies the mailbox envelope and shared ceiling before worker/SMTP.
+	// Switch only on GateKind; never treat infrastructure errors as DNC.
 	var confengeLease uuid.UUID
 	if s.confengeGate != nil && campaign.OrganizationID != nil {
-		gate := s.confengeGate.GateCampaignEmail(
+		gate := s.confengeGate.GateCampaignEmailForTransport(
 			ctx, *campaign.OrganizationID, campaign.Name, contact.Email,
 			campaign.ID, contact.ID, sequence.ID,
+			confenge.CampaignTransportBinding{EmailAccountID: accountID, TaskID: taskID},
 		)
 		switch gate.Kind {
 		case confenge.GateHardBlock:

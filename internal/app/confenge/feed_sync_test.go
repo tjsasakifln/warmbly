@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,6 +107,9 @@ func TestSyncFeedManifestIdempotentAndHashFailClosed(t *testing.T) {
 	if !res2.SkippedSame || res2.Status != "noop" {
 		t.Fatalf("expected noop, got %+v", res2)
 	}
+	if res2.Counts["imported"] != 1 || res2.Counts["held_exception"] != 1 || res2.Counts["chunks_total"] != 0 {
+		t.Fatalf("noop did not return only persisted stage counts: %+v", res2.Counts)
+	}
 
 	// A producer retry may assign a new run ID to identical snapshot content.
 	// No-op must retain the applied run ID or every account becomes non-current.
@@ -127,6 +131,41 @@ func TestSyncFeedManifestIdempotentAndHashFailClosed(t *testing.T) {
 	state, _ = r.GetFeedSyncState(ctx, org)
 	if state.LastRunID != "run-sync-1" {
 		t.Fatalf("same snapshot drifted authoritative run to %q", state.LastRunID)
+	}
+
+	// Reusing one run id for different content would stale its per-run INITIAL binding.
+	reusedRun := cloneManifestMap(t, man)
+	reusedRun["generated_at"] = "2026-08-09T11:00:00Z"
+	reusedRun["source"] = map[string]any{
+		"system": "extra-cli", "run_id": "run-sync-1", "snapshot_hash": "snap-reused-run",
+		"profile_id": "p", "profile_version": "1",
+	}
+	reusedRaw, _ := json.Marshal(reusedRun)
+	reusedPath := filepath.Join(dir, "manifest_reused_run.json")
+	if err := os.WriteFile(reusedPath, reusedRaw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, xerr := svc.SyncFeedManifest(ctx, org, &user, "file://"+reusedPath); xerr == nil {
+		t.Fatal("source run id reused for a different snapshot must be rejected")
+	}
+	state, _ = r.GetFeedSyncState(ctx, org)
+	if state.LastRunID != "run-sync-1" || state.LastSnapshotHash != "snap-sync-1" {
+		t.Fatalf("reused run displaced the current snapshot: %+v", state)
+	}
+
+	historicalCurrentAt := time.Date(2026, 8, 9, 10, 0, 0, 0, time.UTC)
+	if err := r.UpsertFeedSyncState(ctx, &models.OutreachFeedSyncState{
+		OrganizationID: org, LastSnapshotHash: "snap-current-2", LastRunID: "run-current-2",
+		LastStatus: "completed", SourceGeneratedAt: &historicalCurrentAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, xerr := svc.SyncFeedManifest(ctx, org, &user, "file://"+reusedPath); xerr == nil {
+		t.Fatal("historical source run id reused for a different snapshot must be rejected")
+	}
+	state, _ = r.GetFeedSyncState(ctx, org)
+	if state.LastRunID != "run-current-2" || state.LastSnapshotHash != "snap-current-2" {
+		t.Fatalf("historical run reuse displaced the current snapshot: %+v", state)
 	}
 
 	// A different snapshot with an older authoritative timestamp is a rollback,
@@ -266,6 +305,49 @@ func TestLastAppliedSnapshotNeverPromotesPartialChunkRun(t *testing.T) {
 	snapshot, runID := svc.lastAppliedSnapshot(context.Background(), orgID)
 	if snapshot != "last-complete-snapshot" || runID != "last-complete-run" {
 		t.Fatalf("partial attempt displaced last complete snapshot: snapshot=%q run=%q", snapshot, runID)
+	}
+}
+
+func TestPersistFeedSyncStoresAuthoritativeExpiryAndMembership(t *testing.T) {
+	orgID := uuid.New()
+	repo := newMemRepo()
+	svc := &service{repo: repo}
+	generatedAt := time.Now().UTC().Add(-time.Minute)
+	expiresAt := generatedAt.Add(6 * time.Hour)
+	result := &FeedSyncResult{Status: "completed", Counts: map[string]int{}, authority: &feedAuthority{
+		SourceExpiresAt: expiresAt, SourceFreshnessHash: strings.Repeat("a", 64),
+		TargetMembershipComplete: true, TargetMembershipHash: strings.Repeat("b", 64),
+		TargetMembershipCount: 8653, SupplierConfirmedCount: 7276,
+	}}
+	svc.persistFeedSync(context.Background(), orgID, "snapshot", "run", "file:///manifest.json", "completed", result, true, &generatedAt)
+	state, err := repo.GetFeedSyncState(context.Background(), orgID)
+	if err != nil || state == nil || state.SourceExpiresAt == nil || !state.SourceExpiresAt.Equal(expiresAt) ||
+		!state.TargetMembershipComplete || state.TargetMembershipCount != 8653 || state.SupplierConfirmedCount != 7276 {
+		t.Fatalf("authoritative feed attestation not persisted: state=%+v err=%v", state, err)
+	}
+}
+
+func TestValidateOutreachManifestAllowsOnlyExplicitDeactivationStates(t *testing.T) {
+	base := outreachManifest{
+		SchemaVersion: "confenge.outreach.manifest.v1",
+		LeadCount:     1, ChunkCount: 1,
+		Chunks: []manifestChunk{{File: "chunk.json", ContentHash: strings.Repeat("a", 64), LeadCount: 1}},
+	}
+	for _, state := range []string{ActivationWatch, ActivationResearchRequired, ActivationSuppressed} {
+		manifest := base
+		manifest.Deactivations = []map[string]any{{"cnpj14": "11222333000144", "to_state": state}}
+		manifest.DeactivationCnt = 1
+		if err := validateOutreachManifest(&manifest); err != nil {
+			t.Fatalf("allowed deactivation %s rejected: %v", state, err)
+		}
+	}
+	for _, state := range []string{ActivationActionableNow, "UNKNOWN_STATE", ""} {
+		manifest := base
+		manifest.Deactivations = []map[string]any{{"cnpj14": "11222333000144", "to_state": state}}
+		manifest.DeactivationCnt = 1
+		if err := validateOutreachManifest(&manifest); err == nil {
+			t.Fatalf("unsupported deactivation %q accepted", state)
+		}
 	}
 }
 

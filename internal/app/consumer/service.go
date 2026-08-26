@@ -52,6 +52,7 @@ type JobsService struct {
 	ConfengeSends    interface {
 		ObserveCampaignEmailAttempt(ctx context.Context, orgID, campaignID, contactID, sequenceID, taskID, mailboxID uuid.UUID, provider string, attemptedAt time.Time) error
 		CompleteCampaignEmail(ctx context.Context, orgID, campaignID, contactID, sequenceID, taskID, mailboxID uuid.UUID, providerMessageID, provider string, acceptedAt time.Time) error
+		RecordCampaignEmailFailure(ctx context.Context, taskID uuid.UUID, errorCode, errorText string, occurredAt time.Time) error
 	}
 
 	// Cache for dead worker detection

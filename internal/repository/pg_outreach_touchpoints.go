@@ -25,7 +25,7 @@ const outreachTouchpointSelect = `
 		t.queued_at, t.sent_at, COALESCE(t.provider_message_id,''), COALESCE(t.stop_reason,''),
 		t.previous_touchpoint_id, COALESCE(t.idempotency_key,''),
 		COALESCE(t.policy_version,''), COALESCE(t.service_code,''), COALESCE(t.fact_used,''), t.evidence_ids,
-		COALESCE(t.generated_context_hash,''),
+		COALESCE(t.generated_context_hash,''), COALESCE(t.source_run_id,''),
 		t.created_at, t.updated_at `
 
 func scanTouchpoint(row scannable) (*models.OutreachTouchpoint, error) {
@@ -43,7 +43,7 @@ func scanTouchpoint(row scannable) (*models.OutreachTouchpoint, error) {
 		&t.QueuedAt, &t.SentAt, &t.ProviderMessageID, &t.StopReason,
 		&t.PreviousTouchpointID, &t.IdempotencyKey,
 		&t.PolicyVersion, &t.ServiceCode, &t.FactUsed, &evid,
-		&t.GeneratedContextHash,
+		&t.GeneratedContextHash, &t.SourceRunID,
 		&t.CreatedAt, &t.UpdatedAt,
 	)
 	if err != nil {
@@ -86,10 +86,10 @@ func (r *outreachRepository) InsertTouchpoint(ctx context.Context, t *models.Out
 			queued_at, sent_at, provider_message_id, stop_reason,
 			previous_touchpoint_id, idempotency_key,
 			policy_version, service_code, fact_used, evidence_ids,
-			generated_context_hash,
+			generated_context_hash, source_run_id,
 			created_at, updated_at
 		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37
 		)`,
 		t.ID, t.OrganizationID, t.AccountID, t.ContactCandidateID,
 		t.Ordinal, t.CadenceStep, t.Channel, t.Purpose, t.DueAt, t.State, t.DraftID,
@@ -100,7 +100,7 @@ func (r *outreachRepository) InsertTouchpoint(ctx context.Context, t *models.Out
 		t.QueuedAt, t.SentAt, t.ProviderMessageID, t.StopReason,
 		t.PreviousTouchpointID, t.IdempotencyKey,
 		t.PolicyVersion, t.ServiceCode, t.FactUsed, evid,
-		t.GeneratedContextHash,
+		t.GeneratedContextHash, t.SourceRunID,
 		t.CreatedAt, t.UpdatedAt,
 	)
 	return err
@@ -120,7 +120,8 @@ func (r *outreachRepository) UpdateTouchpoint(ctx context.Context, t *models.Out
 			authorization_mode=$16,
 			campaign_policy_authorization_id=$17, authorization_policy_hash=$18, authorization_at=$19, signature_version=$20,
 			queued_at=$21, sent_at=$22, provider_message_id=$23, stop_reason=$24,
-			service_code=$25, fact_used=$26, evidence_ids=$27, generated_context_hash=$28, updated_at=$29
+			service_code=$25, fact_used=$26, evidence_ids=$27, generated_context_hash=$28,
+			source_run_id=$29, updated_at=$30
 		WHERE organization_id=$1 AND id=$2`,
 		t.OrganizationID, t.ID,
 		t.ContactCandidateID, t.Channel, t.Purpose, t.DueAt, t.State, t.DraftID,
@@ -129,7 +130,7 @@ func (r *outreachRepository) UpdateTouchpoint(ctx context.Context, t *models.Out
 		t.AuthorizationMode,
 		t.CampaignPolicyAuthorizationID, t.AuthorizationPolicyHash, t.AuthorizationAt, t.SignatureVersion,
 		t.QueuedAt, t.SentAt, t.ProviderMessageID, t.StopReason,
-		t.ServiceCode, t.FactUsed, evid, t.GeneratedContextHash, t.UpdatedAt,
+		t.ServiceCode, t.FactUsed, evid, t.GeneratedContextHash, t.SourceRunID, t.UpdatedAt,
 	)
 	if err != nil {
 		return err
@@ -236,6 +237,7 @@ func (r *outreachRepository) ListReviewTouchpoints(ctx context.Context, orgID uu
 			'DUE','DRAFTED','AI_REWRITE_PENDING','ENRICHMENT_PENDING',
 			'REJECTED_REWRITE_PENDING','NEEDS_REVIEW','APPROVED'
 		)
+		AND NOT (t.source_run_id<>'' AND t.idempotency_key LIKE 'prepared-initial:%')
 		ORDER BY t.due_at ASC, t.ordinal ASC
 		LIMIT $2 OFFSET $3`
 	rows, err := r.db.Query(ctx, q, orgID, limit, offset)
@@ -295,7 +297,7 @@ func collectTouchpoints(rows pgx.Rows) ([]models.OutreachTouchpoint, error) {
 func (r *outreachRepository) CASQueueTouchpoint(ctx context.Context, orgID, id uuid.UUID, expectedContentHash string) (*models.OutreachTouchpoint, error) {
 	now := time.Now().UTC()
 	// Must match outreachTouchpointSelect / scanTouchpoint field count.
-	const ret = `id, organization_id, account_id, contact_candidate_id, ordinal, COALESCE(cadence_step,''), COALESCE(channel,'EMAIL'), COALESCE(purpose,''), due_at, state, draft_id, COALESCE(recipient,''), COALESCE(subject,''), COALESCE(body_text,''), COALESCE(content_hash,''), COALESCE(approved_content_hash,''), approved_by, approved_at, COALESCE(authorization_mode,''), campaign_policy_authorization_id, COALESCE(authorization_policy_hash,''), authorization_at, COALESCE(signature_version,''), queued_at, sent_at, COALESCE(provider_message_id,''), COALESCE(stop_reason,''), previous_touchpoint_id, COALESCE(idempotency_key,''), COALESCE(policy_version,''), COALESCE(service_code,''), COALESCE(fact_used,''), evidence_ids, COALESCE(generated_context_hash,''), created_at, updated_at`
+	const ret = `id, organization_id, account_id, contact_candidate_id, ordinal, COALESCE(cadence_step,''), COALESCE(channel,'EMAIL'), COALESCE(purpose,''), due_at, state, draft_id, COALESCE(recipient,''), COALESCE(subject,''), COALESCE(body_text,''), COALESCE(content_hash,''), COALESCE(approved_content_hash,''), approved_by, approved_at, COALESCE(authorization_mode,''), campaign_policy_authorization_id, COALESCE(authorization_policy_hash,''), authorization_at, COALESCE(signature_version,''), queued_at, sent_at, COALESCE(provider_message_id,''), COALESCE(stop_reason,''), previous_touchpoint_id, COALESCE(idempotency_key,''), COALESCE(policy_version,''), COALESCE(service_code,''), COALESCE(fact_used,''), evidence_ids, COALESCE(generated_context_hash,''), COALESCE(source_run_id,''), created_at, updated_at`
 	// Human path: approved_by set. Policy path: authorization_mode=CAMPAIGN_POLICY and approved_by null.
 	row := r.db.QueryRow(ctx, `
 		UPDATE outreach_touchpoints
@@ -324,7 +326,7 @@ func (r *outreachRepository) CASScheduleTouchpoint(ctx context.Context, orgID, i
 		dueAt = time.Now().UTC()
 	}
 	now := time.Now().UTC()
-	const ret = `id, organization_id, account_id, contact_candidate_id, ordinal, COALESCE(cadence_step,''), COALESCE(channel,'EMAIL'), COALESCE(purpose,''), due_at, state, draft_id, COALESCE(recipient,''), COALESCE(subject,''), COALESCE(body_text,''), COALESCE(content_hash,''), COALESCE(approved_content_hash,''), approved_by, approved_at, COALESCE(authorization_mode,''), campaign_policy_authorization_id, COALESCE(authorization_policy_hash,''), authorization_at, COALESCE(signature_version,''), queued_at, sent_at, COALESCE(provider_message_id,''), COALESCE(stop_reason,''), previous_touchpoint_id, COALESCE(idempotency_key,''), COALESCE(policy_version,''), COALESCE(service_code,''), COALESCE(fact_used,''), evidence_ids, COALESCE(generated_context_hash,''), created_at, updated_at`
+	const ret = `id, organization_id, account_id, contact_candidate_id, ordinal, COALESCE(cadence_step,''), COALESCE(channel,'EMAIL'), COALESCE(purpose,''), due_at, state, draft_id, COALESCE(recipient,''), COALESCE(subject,''), COALESCE(body_text,''), COALESCE(content_hash,''), COALESCE(approved_content_hash,''), approved_by, approved_at, COALESCE(authorization_mode,''), campaign_policy_authorization_id, COALESCE(authorization_policy_hash,''), authorization_at, COALESCE(signature_version,''), queued_at, sent_at, COALESCE(provider_message_id,''), COALESCE(stop_reason,''), previous_touchpoint_id, COALESCE(idempotency_key,''), COALESCE(policy_version,''), COALESCE(service_code,''), COALESCE(fact_used,''), evidence_ids, COALESCE(generated_context_hash,''), COALESCE(source_run_id,''), created_at, updated_at`
 	row := tx.QueryRow(ctx, `
 		UPDATE outreach_touchpoints
 		SET state='QUEUED', queued_at=$4, due_at=$5, updated_at=$4
@@ -349,9 +351,30 @@ func (r *outreachRepository) CASScheduleTouchpoint(ctx context.Context, orgID, i
 		) VALUES ($1,$2,$3,$4,$5,$6,0,'queued',$7,$7)
 		ON CONFLICT (message_key) DO UPDATE SET
 			due_at=EXCLUDED.due_at, recipient_ref=EXCLUDED.recipient_ref,
-			status=CASE WHEN confenge_dispatch_queue.status IN ('sent','cancelled')
-				THEN confenge_dispatch_queue.status ELSE 'queued' END,
-			cancel_reason='', last_error='', reserved_until=NULL, updated_at=EXCLUDED.updated_at`,
+			status=CASE
+				WHEN confenge_dispatch_queue.status='cancelled'
+				  AND confenge_dispatch_queue.cancel_reason IN (
+					'delegated_authority_or_source_binding_advanced',
+					'source_run_superseded'
+				  ) THEN 'queued'
+				WHEN confenge_dispatch_queue.status IN ('sent','cancelled') THEN confenge_dispatch_queue.status
+				ELSE 'queued'
+			END,
+			cancel_reason=CASE
+				WHEN confenge_dispatch_queue.status='cancelled'
+				  AND confenge_dispatch_queue.cancel_reason NOT IN (
+					'delegated_authority_or_source_binding_advanced',
+					'source_run_superseded'
+				  )
+				  THEN confenge_dispatch_queue.cancel_reason ELSE '' END,
+			last_error=CASE
+				WHEN confenge_dispatch_queue.status='cancelled'
+				  AND confenge_dispatch_queue.cancel_reason NOT IN (
+					'delegated_authority_or_source_binding_advanced',
+					'source_run_superseded'
+				  )
+				  THEN confenge_dispatch_queue.last_error ELSE '' END,
+			reserved_until=NULL, updated_at=EXCLUDED.updated_at`,
 		orgID, tp.Channel, *tp.DraftID, messageKey, strings.ToLower(strings.TrimSpace(tp.Recipient)), dueAt.UTC(), now)
 	if err != nil {
 		return nil, err

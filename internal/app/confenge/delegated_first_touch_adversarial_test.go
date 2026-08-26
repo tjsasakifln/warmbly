@@ -31,9 +31,12 @@ func newDelegatedValidationFixture(t *testing.T, routeClass, email string) deleg
 	snapshot := strings.Repeat("b", 64)
 	evidenceHash := strings.Repeat("a", 64)
 	repo := newMemRepo()
+	expiresAt := now.Add(time.Hour)
 	repo.feedSync = map[uuid.UUID]*models.OutreachFeedSyncState{orgID: {
 		OrganizationID: orgID, LastRunID: runID, LastSnapshotHash: snapshot,
-		LastStatus: "completed", SourceGeneratedAt: &now,
+		LastStatus: "completed", SourceGeneratedAt: &now, SourceExpiresAt: &expiresAt,
+		SourceFreshnessHash: strings.Repeat("d", 64), TargetMembershipComplete: true,
+		TargetMembershipHash: strings.Repeat("e", 64), TargetMembershipCount: 1, SupplierConfirmedCount: 1,
 	}}
 	account := &models.OutreachAccount{
 		ID: accountID, OrganizationID: orgID, SourceLeadID: "lead-1", CNPJ14: "11222333000144", CNPJRoot: "11222333",
@@ -62,6 +65,17 @@ func newDelegatedValidationFixture(t *testing.T, routeClass, email string) deleg
 		RecipientCommercialSuitability: "SUITABLE", LastImportRunID: &importID, DiscoveryJSON: discovery,
 		ChannelEpistemic: "OBSERVED", RouteFreshness: "FRESH", RouteSuppression: "NONE", EmailDerivation: "OBSERVED",
 	}
+	if routeClass == RouteClassDirectPerson {
+		candidate.Name = "Ana Souza"
+		candidate.Role = "Gerente de Contratos"
+		candidate.MailboxPurpose = "PERSONAL_WORK"
+	} else if routeClass == RouteClassRoleOrDepartment {
+		candidate.Name = "Equipe"
+		candidate.Role = "Licitações"
+		candidate.MailboxPurpose = "LICITACOES"
+	} else {
+		candidate.MailboxPurpose = "GENERIC_CONTACT"
+	}
 	repo.accounts[accKey(orgID, account.CNPJ14)] = account
 	repo.byID[accountID] = account
 	repo.cands[accountID] = []models.OutreachContactCandidate{candidate}
@@ -71,22 +85,15 @@ func newDelegatedValidationFixture(t *testing.T, routeClass, email string) deleg
 		Synthesis: "Empresa Alfa figura como contratada.", ConsultedAt: &now, LastImportRunID: &importID,
 	}}
 	svc := NewService(Config{Enabled: true, FeedMaxAge: 24 * time.Hour, MaxInitialEmailWords: 120}, repo, nil).(*service)
-	body := "Olá, equipe da Empresa Alfa. Meu nome é Tiago Sasaki, da CONFENGE. A Empresa Alfa aparece como contratada em contratos públicos confirmados em fonte pública. Trabalhamos com organização técnica de rotinas ligadas à administração pública. Quem é a pessoa responsável por esse tema na empresa? Você poderia indicar o contato correto ou encaminhar esta mensagem, por favor? Obrigado, Tiago Sasaki, confenge.com.br."
-	entry := DelegatedFirstTouchEntry{
-		IdempotencyKey: "first-touch:lead-1:v1", CorrelationID: "corr-1", AccountID: accountID,
-		ContactCandidateID: candidateID, CNPJ14: account.CNPJ14, SupplierCNPJ14: account.SupplierCNPJ14,
-		BuyerCNPJ14: account.BuyerCNPJ14, ContractorRoleStatus: ContractorRoleConfirmed, TargetPartyRole: "SUPPLIER",
-		ContractRoleSource: account.ContractorRoleSource, ContractEvidenceIDs: account.ContractorRoleEvidenceIDs,
-		ContractEvidenceHash: evidenceHash, ContractEvidenceReference: account.ContractorRoleEvidenceReference,
-		SupplierIdentityRef: account.SupplierIdentityRef, BuyerIdentityRef: account.BuyerIdentityRef,
-		RoleMatchMethod: account.ContractorRoleMatchMethod, RoleConfidence: account.ContractorRoleConfidence,
-		ContractRoleReasonCodes: account.ContractorRoleReasonCodes, EvidenceObservedAt: now,
-		ReconciliationStatus: ReconciliationCorroborated,
-		WebSources:           []DelegatedWebSource{{URL: candidate.SourceURL, Kind: "OFFICIAL_COMPANY_PAGE", Supports: "COMPANY_IDENTITY_AND_MAILBOX", ObservedAt: now}},
-		RouteClass:           routeClass, Recipient: email, Subject: "Responsável por contratos públicos na Empresa Alfa", BodyText: body,
-		EvidenceIDs: []string{"contract-1"}, QA: DelegatedFirstTouchQA{Result: "PASS", Attempts: 1, IdentityPassed: true,
-			FactualPassed: true, CopyPassed: true, OperationalPassed: true, Reviewer: "agent:codex"},
-	}
+	copy := buildDelegatedRoutingCopy(account, &candidate, repo.evidence[accountID])
+	entry := delegatedEntryFromCurrentState(account, &candidate, uuid.New(), copy)
+	entry.IdempotencyKey = "first-touch:lead-1:v1"
+	entry.CorrelationID = "corr-1"
+	entry.ReconciliationStatus = ReconciliationCorroborated
+	entry.WebSources = []DelegatedWebSource{{URL: candidate.SourceURL, Kind: "OFFICIAL_COMPANY_PAGE", Supports: "COMPANY_IDENTITY_AND_MAILBOX", ObservedAt: now}}
+	entry.RouteClass = routeClass
+	entry.Recipient = email
+	entry.QA.Reviewer = "agent:codex"
 	entry.SubjectHash, entry.BodyHash = hashText(entry.Subject), hashText(entry.BodyText)
 	manifest := DelegatedFirstTouchManifest{
 		SchemaVersion: DelegatedFirstTouchManifestV1, BatchID: "batch-1", AgentID: "agent:codex",
@@ -127,6 +134,33 @@ func TestDelegatedFirstTouchAttributedFreemailPasses(t *testing.T) {
 	f := newDelegatedValidationFixture(t, RouteClassPublicCompanyFreemail, "empresa.alfa@gmail.com")
 	if blockers := f.validate(); len(blockers) != 0 {
 		t.Fatalf("attributed company freemail blocked: %v", blockers)
+	}
+}
+
+func TestDelegatedFirstTouchSupportedSpecificFactPassesAllDeterministicGates(t *testing.T) {
+	f := newDelegatedValidationFixture(t, RouteClassGenericCompany, "contato@empresa.example")
+	factID := "fact-pavimentacao"
+	f.account.FactToMention = "Contratação de empresa para pavimentação asfáltica na Avenida Ipê"
+	f.account.MomentEvidenceIDs = []string{factID}
+	now := time.Now().UTC().Truncate(time.Second)
+	f.repo.evidence[f.account.ID] = append(f.repo.evidence[f.account.ID], models.OutreachEvidence{
+		ID: uuid.New(), OrganizationID: f.orgID, AccountID: f.account.ID, SourceEvidenceID: factID,
+		EpistemicClass: models.OutreachEpistemicConfirmedFact, Reliability: "HIGH",
+		URL: "https://pncp.gov.br/contratos/2", Synthesis: f.account.FactToMention,
+		ConsultedAt: &now, LastImportRunID: &f.importID,
+	})
+	copy := buildDelegatedRoutingCopy(f.account, &f.candidate, f.repo.evidence[f.account.ID])
+	if len(copy.FactEvidenceIDs) != 1 {
+		t.Fatalf("specific fact was not bound to evidence: %+v", copy)
+	}
+	f.entry.Subject, f.entry.BodyText = copy.Subject, copy.Body
+	f.entry.CopyRulesVersion, f.entry.FactUsed = DelegatedFirstTouchCopyRulesV1, copy.FactUsed
+	f.entry.FactEvidenceIDs = append([]string{}, copy.FactEvidenceIDs...)
+	f.entry.Practice, f.entry.CTA, f.entry.SemanticSignature = copy.Practice, copy.CTA, copy.SemanticSignature
+	f.entry.EvidenceIDs = uniqueStrings(append(append([]string{}, f.entry.ContractEvidenceIDs...), copy.FactEvidenceIDs...))
+	f.entry.SubjectHash, f.entry.BodyHash = hashText(f.entry.Subject), hashText(f.entry.BodyText)
+	if blockers := f.validate(); len(blockers) != 0 {
+		t.Fatalf("supported specific fact blocked: %v", blockers)
 	}
 }
 
@@ -195,13 +229,37 @@ func TestDelegatedFirstTouchFailsClosedOnRecipientComplianceAndSourceDrift(t *te
 			f.entry.BodyText += " Espero que este e-mail o encontre bem."
 			f.entry.BodyHash = hashText(f.entry.BodyText)
 		}, "deterministic_qa:banned_phrase_espero_que_este_e_mail_o_encontre_bem"},
+		{"empty_subject", func(f *delegatedValidationFixture) {
+			f.entry.Subject = ""
+			f.entry.SubjectHash = hashText(f.entry.Subject)
+		}, "subject_empty"},
+		{"empty_body", func(f *delegatedValidationFixture) {
+			f.entry.BodyText = ""
+			f.entry.BodyHash = hashText(f.entry.BodyText)
+		}, "body_empty"},
+		{"hallucinated_person", func(f *delegatedValidationFixture) {
+			f.entry.BodyText = strings.Replace(f.entry.BodyText, "Olá,", "Olá, Roberto,", 1)
+			f.entry.BodyHash = hashText(f.entry.BodyText)
+		}, "hallucinated_person"},
+		{"internal_metadata", func(f *delegatedValidationFixture) {
+			f.entry.BodyText += " route_class=GENERIC_COMPANY"
+			f.entry.BodyHash = hashText(f.entry.BodyText)
+		}, "internal_metadata_leak"},
+		{"offensive_or_manipulative", func(f *delegatedValidationFixture) {
+			f.entry.BodyText += " Você precisa responder agora."
+			f.entry.BodyHash = hashText(f.entry.BodyText)
+		}, "offensive_or_manipulative_language"},
+		{"route_cta_mismatch", func(f *delegatedValidationFixture) {
+			f.entry.BodyText = strings.Replace(f.entry.BodyText, f.entry.CTA, "Faz sentido marcarmos uma reunião?", 1)
+			f.entry.BodyHash = hashText(f.entry.BodyText)
+		}, "route_cta_mismatch"},
 		{"fact_evidence_mismatch", func(f *delegatedValidationFixture) { f.entry.EvidenceIDs = []string{"other"} }, "fact_evidence_binding_mismatch"},
 		{"buyer_claim_in_copy", func(f *delegatedValidationFixture) {
 			f.entry.BodyText = strings.Replace(f.entry.BodyText, "aparece como contratada", "aparece como contratante", 1)
 			f.entry.BodyHash = hashText(f.entry.BodyText)
 		}, "target_role_claim_mismatch"},
 		{"unsupported_numeric_fact", func(f *delegatedValidationFixture) {
-			f.entry.BodyText = strings.Replace(f.entry.BodyText, "contratos públicos confirmados", "3 contratos públicos confirmados", 1)
+			f.entry.BodyText += " Há 3 contratos."
 			f.entry.BodyHash = hashText(f.entry.BodyText)
 		}, "unsupported_specific_fact"},
 		{"unsupported_qualitative_fact", func(f *delegatedValidationFixture) {
@@ -220,10 +278,23 @@ func TestDelegatedFirstTouchFailsClosedOnRecipientComplianceAndSourceDrift(t *te
 	}
 }
 
+func TestDelegatedFirstTouchRejectsExactContentReuse(t *testing.T) {
+	f := newDelegatedValidationFixture(t, RouteClassGenericCompany, "contato@empresa.example")
+	_, _, blockers := f.service.validateDelegatedEntry(
+		context.Background(), f.orgID, f.manifest, f.entry, map[string]bool{},
+		[]delegatedRecentBody{{AccountID: uuid.New(), Body: f.entry.BodyText}}, true,
+	)
+	if !delegatedTestContains(blockers, "corpus_exact_content_limit") {
+		t.Fatalf("identical reader-facing content passed: %v", blockers)
+	}
+}
+
 func TestDelegatedFirstTouchCanonicalTransportStateFailsClosed(t *testing.T) {
+	authCheckedAt := time.Now().UTC()
 	valid := delegatedTransportAuthority{
 		CampaignStatus: "paused", MailboxStatus: "active", MailboxRiskBand: "clean",
-		WorkerAssigned: true, CredentialsPresent: true, SenderSelected: true,
+		WorkerAssigned: true, WorkerHealthy: true, CredentialsPresent: true, SenderSelected: true,
+		AuthState: "passing", AuthSPF: true, AuthDKIM: true, AuthDMARC: true, AuthCheckedAt: &authCheckedAt,
 		CampaignLimit: 50, MinWaitTime: 600,
 	}
 	if blockers := validateDelegatedTransportState(valid); len(blockers) != 0 {
@@ -244,7 +315,9 @@ func TestDelegatedFirstTouchCanonicalTransportStateFailsClosed(t *testing.T) {
 		"inactive_mailbox":    func(s *delegatedTransportAuthority) { s.MailboxStatus = "inactive" },
 		"quarantined_mailbox": func(s *delegatedTransportAuthority) { s.MailboxRiskBand = "quarantine" },
 		"missing_worker":      func(s *delegatedTransportAuthority) { s.WorkerAssigned = false },
+		"unhealthy_worker":    func(s *delegatedTransportAuthority) { s.WorkerHealthy = false },
 		"missing_credentials": func(s *delegatedTransportAuthority) { s.CredentialsPresent = false },
+		"dns_auth_unknown":    func(s *delegatedTransportAuthority) { s.AuthState = "unknown" },
 		"outside_sender_pool": func(s *delegatedTransportAuthority) { s.SenderSelected = false },
 		"invalid_rate_bounds": func(s *delegatedTransportAuthority) { s.MinWaitTime = 0 },
 	} {

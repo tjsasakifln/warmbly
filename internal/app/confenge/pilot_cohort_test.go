@@ -333,6 +333,22 @@ func TestPilotReadinessUsesOneFreshnessThreshold(t *testing.T) {
 	}
 }
 
+func TestDelegatedReadinessReportsExpiredProducerAuthority(t *testing.T) {
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	generatedAt, expiresAt := now.Add(-time.Hour), now.Add(-time.Second)
+	cfg := Config{Enabled: true, DelegatedFirstTouchEnabled: true, FeedMaxAge: 24 * time.Hour}
+	readiness := BuildReadiness(cfg, ReadinessInputs{
+		Now: now, LastImportAt: &generatedAt, SourceExpiresAt: &expiresAt,
+		SourceFreshnessHash: strings.Repeat("a", 64), TargetMembershipComplete: true,
+		TargetMembershipHash: strings.Repeat("b", 64), TargetMembershipCount: 8653,
+		SupplierConfirmedCount: 7276, FeedSnapshot: "snapshot",
+	})
+	if readiness.FeedState != "stale" || readiness.FeedAuthorityState != "expired" ||
+		readiness.TargetMembershipCount != 8653 || readiness.SupplierConfirmedCount != 7276 {
+		t.Fatalf("producer expiry remained false-green: %+v", readiness)
+	}
+}
+
 func TestReadinessDoesNotFallbackWhenAuthoritativeStateReadFails(t *testing.T) {
 	now := time.Now().UTC()
 	repo := &feedStateFailureRepo{memRepo: newMemRepo(), run: models.OutreachImportRun{

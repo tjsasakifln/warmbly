@@ -55,6 +55,10 @@ func (c *emailSentCompletion) ObserveCampaignEmailAttempt(_ context.Context, org
 	return c.err
 }
 
+func (c *emailSentCompletion) RecordCampaignEmailFailure(_ context.Context, _ uuid.UUID, _, _ string, _ time.Time) error {
+	return nil
+}
+
 func (c *emailSentCompletion) CompleteCampaignEmail(_ context.Context, orgID, campaignID, contactID, sequenceID, _, _ uuid.UUID, providerMessageID, _ string, _ time.Time) error {
 	c.called++
 	c.orgID = orgID

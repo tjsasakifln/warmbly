@@ -156,6 +156,7 @@ func TestHumanGatePostgresCreatesOneHundredDisjointSupplierMessages(t *testing.T
 
 	unknown := true
 	confidence := 0.99
+	serviceCodes := []string{"REAJUSTE_14133", "MONITORAMENTO_CONTRATUAL", "DIAGNOSTICO", "BACKOFFICE"}
 	for i := 0; i < 120; i++ {
 		root := fmt.Sprintf("%08d", 70000000+i)
 		acc := &models.OutreachAccount{
@@ -170,7 +171,7 @@ func TestHumanGatePostgresCreatesOneHundredDisjointSupplierMessages(t *testing.T
 			MomentCode:               "CONTRACT_EXTENSION",
 			MomentSummary:            "Prorrogação contratual publicada",
 			MomentObservedAt:         &now,
-			ServiceCode:              "ADDITIVE_REVIEW",
+			ServiceCode:              serviceCodes[i%len(serviceCodes)],
 			ServiceName:              "Revisão de aditivos",
 			FactToMention:            "Prorrogação contratual publicada no portal oficial",
 			QuestionToAsk:            "Faz sentido revisar os controles?",
@@ -210,7 +211,7 @@ func TestHumanGatePostgresCreatesOneHundredDisjointSupplierMessages(t *testing.T
 			Recommended:                    true,
 			EmailSendReady:                 false,
 			MailboxPurpose:                 "GENERIC_CONTACT",
-			MailboxPurposeSendBlocked:      true,
+			MailboxPurposeSendBlocked:      false,
 			OwnershipStatus:                "COMPANY_OWNED",
 			RecipientCommercialSuitability: "SUITABLE",
 			DiscoveryJSON:                  eligibleDisc(t, RouteClassGenericCompany, true, controlledDiscovery{PersonUnknown: &unknown}),

@@ -12,25 +12,51 @@ import (
 
 // MemoryStore is a multi-goroutine-safe in-memory Store for unit tests.
 type MemoryStore struct {
-	mu           sync.Mutex
-	control      ControlState
-	reservations map[string]*Reservation
-	byResID      map[uuid.UUID]*Reservation
-	sends        map[string]time.Time
-	sendTimes    []time.Time
-	queue        map[string]*QueueItem
-	queueByID    map[uuid.UUID]*QueueItem
-	failures     []FailureRecord
+	mu            sync.Mutex
+	control       ControlState
+	reservations  map[string]*Reservation
+	byResID       map[uuid.UUID]*Reservation
+	sends         map[string]time.Time
+	sendMailboxes map[string]uuid.UUID
+	sendTimes     []time.Time
+	queue         map[string]*QueueItem
+	queueByID     map[uuid.UUID]*QueueItem
+	failures      []FailureRecord
+	mailboxes     map[uuid.UUID]MailboxEnvelope
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		reservations: map[string]*Reservation{},
-		byResID:      map[uuid.UUID]*Reservation{},
-		sends:        map[string]time.Time{},
-		queue:        map[string]*QueueItem{},
-		queueByID:    map[uuid.UUID]*QueueItem{},
+		reservations:  map[string]*Reservation{},
+		byResID:       map[uuid.UUID]*Reservation{},
+		sends:         map[string]time.Time{},
+		sendMailboxes: map[string]uuid.UUID{},
+		queue:         map[string]*QueueItem{},
+		queueByID:     map[uuid.UUID]*QueueItem{},
+		mailboxes:     map[uuid.UUID]MailboxEnvelope{},
 	}
+}
+
+// SetMailboxEnvelope configures a factual mailbox budget for tests.
+func (m *MemoryStore) SetMailboxEnvelope(envelope MailboxEnvelope) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mailboxes[envelope.EmailAccountID] = envelope
+}
+
+func (m *MemoryStore) GetMailboxEnvelope(_ context.Context, orgID, emailAccountID uuid.UUID, _ time.Time) (MailboxEnvelope, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if envelope, ok := m.mailboxes[emailAccountID]; ok {
+		return envelope, nil
+	}
+	// Existing unit tests exercise the global governor without a database. Keep
+	// that fixture lane permissive; production PGStore has no such fallback.
+	return MailboxEnvelope{
+		EmailAccountID: emailAccountID, OrganizationID: orgID,
+		DailyCap: 1000000, HourlyCap: 1000000, Ready: true,
+		Timezone: "UTC", ProviderCapSource: "unknown",
+	}, nil
 }
 
 func (m *MemoryStore) GetControl(ctx context.Context) (ControlState, error) {
@@ -115,6 +141,14 @@ func (m *MemoryStore) TryReserveAtomic(ctx context.Context, in AtomicReserveInpu
 
 	if existing := m.reservations[in.Req.MessageKey]; existing != nil &&
 		existing.State == StateReserved && existing.LeaseUntil.After(now) {
+		mailboxConflict := in.Req.Channel == ChannelEmail && in.Req.EmailAccountID != nil &&
+			(existing.EmailAccountID == nil || *existing.EmailAccountID != *in.Req.EmailAccountID)
+		taskConflict := in.Req.TaskID != nil && (existing.TaskID == nil || *existing.TaskID != *in.Req.TaskID)
+		if mailboxConflict || taskConflict {
+			out.Reason = "message_binding_conflict"
+			out.NextSlot = existing.LeaseUntil
+			return out, nil
+		}
 		existing.LeaseUntil = now.Add(in.LeaseTTL)
 		cp := *existing
 		out.Allowed = true
@@ -122,6 +156,64 @@ func (m *MemoryStore) TryReserveAtomic(ctx context.Context, in AtomicReserveInpu
 		out.Reason = "existing_lease"
 		out.SentLastHour = countTimes(m.sendTimes, now.Add(-window), now)
 		return out, nil
+	}
+
+	if in.Req.Channel == ChannelEmail && in.Mailbox != nil {
+		var mailboxTimes []time.Time
+		var mailboxLast time.Time
+		for key, sentAt := range m.sends {
+			if m.sendMailboxes[key] == in.Mailbox.EmailAccountID && !sentAt.Before(now.Add(-window)) && !sentAt.After(now) {
+				mailboxTimes = append(mailboxTimes, sentAt)
+				if sentAt.After(mailboxLast) {
+					mailboxLast = sentAt
+				}
+			}
+		}
+		for _, reservation := range m.reservations {
+			if reservation.EmailAccountID == nil || *reservation.EmailAccountID != in.Mailbox.EmailAccountID ||
+				reservation.State != StateReserved || !reservation.LeaseUntil.After(now) {
+				continue
+			}
+			observed := reservation.ReservedAt
+			if reservation.AttemptedAt != nil {
+				observed = *reservation.AttemptedAt
+			}
+			if !observed.Before(now.Add(-window)) && !observed.After(now) {
+				mailboxTimes = append(mailboxTimes, observed)
+				if observed.After(mailboxLast) {
+					mailboxLast = observed
+				}
+			}
+		}
+		mailboxCap := in.Mailbox.HourlyCap
+		if in.Req.CapOverride > 0 {
+			mailboxCap = minPositive(mailboxCap, in.Req.CapOverride)
+		}
+		mailboxSnapshot := WindowSnapshot{
+			OccupiedAt: mailboxTimes, LastOccupied: mailboxLast,
+			Cap: mailboxCap, MinGap: in.Mailbox.MinGap, Window: window, Now: now,
+		}
+		if ok, reason, next := mailboxSnapshot.CanGrant(); !ok {
+			out.Reason, out.NextSlot = "mailbox_"+reason, next
+			return out, nil
+		}
+		usedToday := 0
+		date := localDateKey(now, in.Mailbox.Timezone)
+		for _, reservation := range m.reservations {
+			if reservation.EmailAccountID == nil || *reservation.EmailAccountID != in.Mailbox.EmailAccountID {
+				continue
+			}
+			reservedToday := localDateKey(reservation.ReservedAt, in.Mailbox.Timezone) == date &&
+				(reservation.State == StateReserved || reservation.State == StateCommitted)
+			attemptedToday := reservation.AttemptedAt != nil && localDateKey(*reservation.AttemptedAt, in.Mailbox.Timezone) == date
+			if reservedToday || attemptedToday {
+				usedToday++
+			}
+		}
+		if usedToday >= in.Mailbox.DailyCap {
+			out.Reason, out.NextSlot = "mailbox_daily_cap", nextLocalDay(now, in.Mailbox.Timezone)
+			return out, nil
+		}
 	}
 
 	occupied, last := m.occupiedLocked(now, window)
@@ -146,6 +238,8 @@ func (m *MemoryStore) TryReserveAtomic(ctx context.Context, in AtomicReserveInpu
 	res := &Reservation{
 		ID:             uuid.New(),
 		OrganizationID: in.Req.OrganizationID,
+		EmailAccountID: in.Req.EmailAccountID,
+		TaskID:         in.Req.TaskID,
 		Channel:        in.Req.Channel,
 		MessageKey:     in.Req.MessageKey,
 		DraftID:        in.Req.DraftID,
@@ -230,6 +324,9 @@ func (m *MemoryStore) CommitReservation(ctx context.Context, id uuid.UUID, sentA
 	t := sentAt
 	r.CommittedAt = &t
 	m.sends[r.MessageKey] = sentAt
+	if r.EmailAccountID != nil {
+		m.sendMailboxes[r.MessageKey] = *r.EmailAccountID
+	}
 	m.sendTimes = append(m.sendTimes, sentAt)
 	return nil
 }
@@ -249,6 +346,15 @@ func (m *MemoryStore) ReleaseReservation(ctx context.Context, id uuid.UUID, stat
 	}
 	r.State = state
 	r.LastError = errText
+	if errText != "" {
+		orgID := r.OrganizationID
+		m.failures = append(m.failures, FailureRecord{
+			ID: uuid.New(), OrganizationID: &orgID, EmailAccountID: r.EmailAccountID,
+			TaskID: r.TaskID, Channel: r.Channel, MessageKey: r.MessageKey,
+			DraftID: r.DraftID, ErrorClass: "unknown", ErrorText: errText,
+			OccurredAt: time.Now().UTC(),
+		})
+	}
 	return nil
 }
 
@@ -276,6 +382,9 @@ func (m *MemoryStore) Enqueue(ctx context.Context, item *QueueItem) error {
 		existing.DueAt = item.DueAt
 		existing.Priority = item.Priority
 		existing.RecipientRef = item.RecipientRef
+		if item.EmailAccountID != nil {
+			existing.EmailAccountID = item.EmailAccountID
+		}
 		existing.Status = QueueQueued
 		return nil
 	}
@@ -453,4 +562,143 @@ func (m *MemoryStore) CountSendsSince(ctx context.Context, since time.Time) (int
 		}
 	}
 	return n, nil
+}
+
+func (m *MemoryStore) MarkAttempt(_ context.Context, messageKey string, attemptedAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	reservation := m.reservations[messageKey]
+	if reservation == nil {
+		return fmt.Errorf("dispatch reservation not found for provider attempt")
+	}
+	value := attemptedAt.UTC()
+	reservation.AttemptedAt = &value
+	return nil
+}
+
+func (m *MemoryStore) RecordProviderFailure(_ context.Context, taskID uuid.UUID, errorCode, errorText string, occurredAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, reservation := range m.reservations {
+		if reservation.TaskID == nil || *reservation.TaskID != taskID {
+			continue
+		}
+		reservation.State = StateFailed
+		reservation.LastError = errorText
+		at := occurredAt.UTC()
+		reservation.AttemptedAt = &at
+		orgID := reservation.OrganizationID
+		m.failures = append(m.failures, FailureRecord{
+			ID: uuid.New(), OrganizationID: &orgID, EmailAccountID: reservation.EmailAccountID,
+			TaskID: &taskID, Channel: reservation.Channel, MessageKey: reservation.MessageKey,
+			DraftID: reservation.DraftID, ErrorCode: errorCode,
+			ErrorClass: ClassifyProviderError(errorCode, errorText), ErrorText: errorText, OccurredAt: at,
+		})
+		return nil
+	}
+	return nil
+}
+
+func (m *MemoryStore) MailboxCapacitySnapshot(_ context.Context, orgID uuid.UUID, now time.Time, cfg Config) (MailboxCapacitySnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := MailboxCapacitySnapshot{}
+	for _, envelope := range m.mailboxes {
+		if envelope.OrganizationID != uuid.Nil && envelope.OrganizationID != orgID {
+			continue
+		}
+		mailbox := MailboxCapacity{
+			EmailAccountID: envelope.EmailAccountID, Enabled: envelope.Ready,
+			Status: "active", CredentialsReady: true, WorkerAssigned: true,
+			AuthState: "passing", AuthSPF: true, AuthDKIM: true, AuthDMARC: true,
+			ConfiguredDailyCap:   envelope.DailyCap,
+			ConfiguredMinWaitSec: int(envelope.MinGap / time.Second),
+			DerivedHourlyCap:     envelope.HourlyCap,
+			EffectiveDailyCap:    envelope.DailyCap,
+			EffectiveHourlyCap:   minPositive(envelope.HourlyCap, cfg.SendsPerHour),
+			ProviderCapSource:    "unknown",
+			BusinessWindow: MailboxBusinessWindow{
+				Timezone: cfg.Timezone, Start: cfg.WindowStart, End: cfg.WindowEnd,
+				BusinessDaysOnly: cfg.BusinessDaysOnly,
+			},
+			Health: "ready", HealthReason: "ready",
+			Unknown: []string{"provider_daily_cap", "provider_hourly_cap", "warmup_age"},
+		}
+		if !envelope.Ready {
+			mailbox.Health, mailbox.HealthReason = "blocked", envelope.HealthReason
+		}
+		day := localDateKey(now, envelope.Timezone)
+		for key, sentAt := range m.sends {
+			if m.sendMailboxes[key] != envelope.EmailAccountID {
+				continue
+			}
+			if mailbox.Latest.AcceptedAt == nil || sentAt.After(*mailbox.Latest.AcceptedAt) {
+				value := sentAt
+				mailbox.Latest.AcceptedAt = &value
+			}
+			if !sentAt.Before(now.Add(-time.Hour)) {
+				mailbox.Throughput.AcceptedLastHour++
+				mailbox.occupiedAt = append(mailbox.occupiedAt, sentAt)
+			}
+			if localDateKey(sentAt, envelope.Timezone) == day {
+				mailbox.Throughput.AcceptedToday++
+			}
+			if !sentAt.Before(now.Add(-7 * 24 * time.Hour)) {
+				mailbox.Throughput.AcceptedLast7d++
+			}
+		}
+		for _, reservation := range m.reservations {
+			if reservation.EmailAccountID == nil || *reservation.EmailAccountID != envelope.EmailAccountID {
+				continue
+			}
+			if reservation.AttemptedAt != nil {
+				if mailbox.Latest.AttemptAt == nil || reservation.AttemptedAt.After(*mailbox.Latest.AttemptAt) {
+					value := *reservation.AttemptedAt
+					mailbox.Latest.AttemptAt = &value
+				}
+				if !reservation.AttemptedAt.Before(now.Add(-time.Hour)) && reservation.State != StateCommitted {
+					mailbox.occupiedAt = append(mailbox.occupiedAt, *reservation.AttemptedAt)
+				}
+			}
+			reservedToday := localDateKey(reservation.ReservedAt, envelope.Timezone) == day &&
+				(reservation.State == StateReserved || reservation.State == StateCommitted)
+			attemptedToday := reservation.AttemptedAt != nil && localDateKey(*reservation.AttemptedAt, envelope.Timezone) == day
+			if reservedToday || attemptedToday {
+				mailbox.UsedToday++
+			}
+			if reservation.State == StateReserved && reservation.AttemptedAt == nil && reservation.LeaseUntil.After(now) &&
+				!reservation.ReservedAt.Before(now.Add(-time.Hour)) {
+				mailbox.occupiedAt = append(mailbox.occupiedAt, reservation.ReservedAt)
+			}
+		}
+		for _, failure := range m.failures {
+			if failure.EmailAccountID == nil || *failure.EmailAccountID != envelope.EmailAccountID {
+				continue
+			}
+			if failure.ErrorClass == "" || failure.ErrorClass == "unknown" {
+				continue
+			}
+			if mailbox.Latest.ProviderRejectionAt == nil || failure.OccurredAt.After(*mailbox.Latest.ProviderRejectionAt) {
+				value := failure.OccurredAt
+				mailbox.Latest.ProviderRejectionAt = &value
+				mailbox.Latest.ProviderErrorClass = failure.ErrorClass
+			}
+		}
+		candidate := nextRollingSlot(now, mailbox.occupiedAt, mailbox.EffectiveHourlyCap, envelope.MinGap, RollingWindow)
+		if mailbox.UsedToday >= mailbox.EffectiveDailyCap {
+			candidate = nextLocalDay(now, envelope.Timezone)
+		}
+		candidate = NextEligibleSlot(candidate, cfg.Timezone, cfg.WindowStart, cfg.WindowEnd, cfg.BusinessDaysOnly)
+		if envelope.Ready {
+			mailbox.NextEligibleSlot = &candidate
+		}
+		out.Mailboxes = append(out.Mailboxes, mailbox)
+	}
+	for _, item := range m.queue {
+		if item.OrganizationID == orgID && item.Channel == ChannelEmail &&
+			(item.Status == QueueQueued || item.Status == QueueReserved) {
+			out.QueuedMessages++
+		}
+	}
+	return out, nil
 }

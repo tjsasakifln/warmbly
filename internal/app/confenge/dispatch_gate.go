@@ -14,7 +14,7 @@ import (
 	"github.com/warmbly/warmbly/internal/models"
 )
 
-// WireDispatch attaches the global outbound governor (email + WhatsApp share one cap).
+// WireDispatch attaches mailbox-first email pacing and the shared outbound ceiling.
 // Safe to call with nil db (uses memory store for tests) or with pool for production.
 func (s *service) WireDispatch(db *pgxpool.Pool) {
 	cfg := dispatch.LoadConfig()
@@ -98,7 +98,6 @@ func (s *service) releaseOutbound(ctx context.Context, res *dispatch.Reservation
 		return
 	}
 	_ = s.governor.Release(ctx, res.ID, errText)
-	_ = s.governor.RecordFailure(ctx, res.OrganizationID, res.Channel, res.MessageKey, res.DraftID, errText)
 }
 
 // DispatchStatus returns observability for GET /confenge/dispatch/status.
@@ -113,7 +112,40 @@ func (s *service) DispatchStatus(ctx context.Context, orgID uuid.UUID) (dispatch
 	if err != nil {
 		return dispatch.Status{}, errx.New(errx.Internal, err.Error())
 	}
+	fileKillSwitch := FileKillSwitchActive()
+	if fileKillSwitch || s.cfg.SendingPaused {
+		st.Paused = true
+		st.PauseReason = "confenge_sending_paused"
+		st.PauseSource = "configuration"
+		if fileKillSwitch {
+			st.PauseReason = "kill_switch_engaged"
+			st.PauseSource = "file_kill_switch"
+		}
+		st.Forecast.SlotsNext24h = 0
+		st.Forecast.SlotsNext7d = 0
+		st.Forecast.EstimatedDaysToDrain = nil
+		st.NextSlotAt = nil
+		for i := range st.Mailboxes {
+			st.Mailboxes[i].PauseSource = st.PauseSource
+			st.Mailboxes[i].NextEligibleSlot = nil
+		}
+		if st.QueuedApproved > 0 && !hasCapacityAlert(st.Alerts, dispatch.AlertQueueRunoff) {
+			st.Alerts = append(st.Alerts, dispatch.CapacityAlert{
+				Code: dispatch.AlertQueueRunoff, Severity: "critical", Count: st.QueuedApproved,
+				Reason: "approved queue has no effective mailbox capacity while transport is paused",
+			})
+		}
+	}
 	return st, nil
+}
+
+func hasCapacityAlert(alerts []dispatch.CapacityAlert, code string) bool {
+	for _, alert := range alerts {
+		if alert.Code == code {
+			return true
+		}
+	}
+	return false
 }
 
 // PauseDispatch sets the durable kill switch.

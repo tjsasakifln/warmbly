@@ -347,12 +347,8 @@ func remainingSendMinutes(c *AccountCandidate, at time.Time, sw models.ScheduleW
 	return dayEnd - max(currentMinutes, dayStart), true
 }
 
-// campaignRampCeiling returns the day's effective ramp ceiling. When ramp is
-// disabled it returns the campaign ceiling unchanged (the caller still min()s
-// against the per-mailbox cap). When enabled it returns the already-advanced
-// level clamped into [start, ceiling]. The scheduler applies this ONLY via
-// min() against the per-mailbox cold cap, so it can only LOWER volume.
-func campaignRampCeiling(enabled bool, start, increment, ceiling, level int) int {
+// CampaignRampCeiling returns the campaign scheduler's read-only daily ramp clamp.
+func CampaignRampCeiling(enabled bool, start, increment, ceiling, level int) int {
 	_ = increment // the increment is applied by AdvanceRampLevel; level is already advanced
 	if !enabled {
 		return ceiling
@@ -365,6 +361,10 @@ func campaignRampCeiling(enabled bool, start, increment, ceiling, level int) int
 		v = ceiling
 	}
 	return v
+}
+
+func campaignRampCeiling(enabled bool, start, increment, ceiling, level int) int {
+	return CampaignRampCeiling(enabled, start, increment, ceiling, level)
 }
 
 // providerForEmailDomain maps a recipient email address to a coarse ESP bucket

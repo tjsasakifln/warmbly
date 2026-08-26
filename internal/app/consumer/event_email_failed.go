@@ -16,12 +16,18 @@ func (s *JobsService) HandleEmailFailed(ctx context.Context, event *models.SendE
 	if event == nil || event.TaskID == uuid.Nil {
 		return fmt.Errorf("invalid EMAIL_FAILED result")
 	}
+	errorCode, errorText := "", strings.TrimSpace(event.LegacyErrorMsg)
+	if event.Error != nil {
+		errorCode = strings.TrimSpace(event.Error.Code)
+		errorText = strings.TrimSpace(event.Error.Message)
+	}
+	observedErr := s.recordConfengeMailboxFailure(ctx, event.TaskID, errorCode, errorText, event.SentAt)
 	if event.Error == nil {
-		return nil
+		return observedErr
 	}
 	code := errx.MailErrorCode(strings.ToUpper(strings.TrimSpace(event.Error.Code)))
 	if code != errx.MailErrorCodeRecipientRejected && code != errx.MailErrorCodeRecipientTemporaryRejected && code != errx.MailErrorCodeDeliveryUnknown {
-		return nil
+		return observedErr
 	}
 	if code == errx.MailErrorCodeRecipientRejected {
 		if s.AdvancedService == nil {
@@ -32,28 +38,28 @@ func (s *JobsService) HandleEmailFailed(ctx context.Context, event *models.SendE
 		}
 	}
 	if s.ConfengeOutcomes == nil || !s.ConfengeOutcomes.Enabled() || s.TaskRepo == nil || s.EmailRepository == nil {
-		return nil
+		return observedErr
 	}
 	task, err := s.TaskRepo.GetTask(ctx, event.TaskID)
 	if err != nil {
 		return fmt.Errorf("load failed send task: %w", err)
 	}
 	if task == nil {
-		return nil
+		return observedErr
 	}
 	mailbox, xerr := s.EmailRepository.GetByID(ctx, task.EmailAccountID)
 	if xerr != nil {
 		return fmt.Errorf("load failed send mailbox: %w", xerr)
 	}
 	if mailbox == nil || mailbox.OrganizationID == nil {
-		return nil
+		return observedErr
 	}
 	emailTask, err := s.TaskRepo.GetEmailTask(ctx, event.TaskID)
 	if err != nil {
 		return fmt.Errorf("load failed email task: %w", err)
 	}
 	if emailTask == nil || len(emailTask.To) == 0 {
-		return nil
+		return observedErr
 	}
 	bounceClass := "SOFT"
 	unknown := code == errx.MailErrorCodeDeliveryUnknown
@@ -72,5 +78,5 @@ func (s *JobsService) HandleEmailFailed(ctx context.Context, event *models.SendE
 			return fmt.Errorf("reconcile outbound SMTP outcome: %w", err)
 		}
 	}
-	return nil
+	return observedErr
 }

@@ -13,6 +13,7 @@ type AtomicReserveInput struct {
 	Now      time.Time
 	Cap      int
 	MinGap   time.Duration
+	Mailbox  *MailboxEnvelope
 	LeaseTTL time.Duration
 	Window   time.Duration
 }
@@ -63,4 +64,17 @@ type Store interface {
 
 	CountActiveLeases(ctx context.Context, now time.Time) (int, error)
 	CountSendsSince(ctx context.Context, since time.Time) (int, error)
+}
+
+// MailboxStore resolves real email envelopes; WhatsApp keeps the shared ceiling only.
+type MailboxStore interface {
+	GetMailboxEnvelope(ctx context.Context, orgID, emailAccountID uuid.UUID, now time.Time) (MailboxEnvelope, error)
+	MailboxCapacitySnapshot(ctx context.Context, orgID uuid.UUID, now time.Time, cfg Config) (MailboxCapacitySnapshot, error)
+	MarkAttempt(ctx context.Context, messageKey string, attemptedAt time.Time) error
+	RecordProviderFailure(ctx context.Context, taskID uuid.UUID, errorCode, errorText string, occurredAt time.Time) error
+}
+
+type MailboxCapacitySnapshot struct {
+	Mailboxes      []MailboxCapacity
+	QueuedMessages int
 }

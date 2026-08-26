@@ -49,8 +49,14 @@ type delegatedTransportAuthority struct {
 	MailboxStatus      string
 	MailboxRiskBand    string
 	WorkerAssigned     bool
+	WorkerHealthy      bool
 	CredentialsPresent bool
 	SenderSelected     bool
+	AuthState          string
+	AuthSPF            bool
+	AuthDKIM           bool
+	AuthDMARC          bool
+	AuthCheckedAt      *time.Time
 	CampaignLimit      int
 	MinWaitTime        int
 }
@@ -73,6 +79,7 @@ type DelegatedFirstTouchManifest struct {
 	PromptVersion         string                     `json:"prompt_version"`
 	GeneratedAt           time.Time                  `json:"generated_at"`
 	Entries               []DelegatedFirstTouchEntry `json:"entries"`
+	authority             *models.OutreachFeedSyncState
 }
 
 type DelegatedWebSource struct {
@@ -120,6 +127,12 @@ type DelegatedFirstTouchEntry struct {
 	Recipient                 string                `json:"recipient"`
 	Subject                   string                `json:"subject"`
 	BodyText                  string                `json:"body_text"`
+	CopyRulesVersion          string                `json:"copy_rules_version"`
+	FactUsed                  string                `json:"fact_used"`
+	FactEvidenceIDs           []string              `json:"fact_evidence_ids"`
+	Practice                  string                `json:"practice"`
+	CTA                       string                `json:"cta"`
+	SemanticSignature         string                `json:"semantic_signature"`
 	SubjectHash               string                `json:"subject_hash"`
 	BodyHash                  string                `json:"body_hash"`
 	EvidenceIDs               []string              `json:"evidence_ids"`
@@ -150,41 +163,88 @@ type DelegatedFirstTouchReport struct {
 }
 
 type DelegatedFirstTouchStatus struct {
-	BatchID              string                            `json:"batch_id,omitempty"`
-	PolicyID             string                            `json:"policy_id"`
-	PolicyVersion        string                            `json:"policy_version"`
-	PolicyHash           string                            `json:"policy_hash"`
-	PolicyActive         bool                              `json:"policy_active"`
-	Counts               map[string]int                    `json:"counts"`
-	HumanApproved        int                               `json:"human_approved"`
-	QueuedReadback       int                               `json:"queued_readback"`
-	DuplicateLiveAccount int                               `json:"duplicate_live_account"`
-	DuplicateLiveRoot    int                               `json:"duplicate_live_root"`
-	Items                []DelegatedFirstTouchDecisionView `json:"items"`
+	SchemaVersion        string                             `json:"schema_version"`
+	RuntimeReleaseSHA    string                             `json:"runtime_release_sha,omitempty"`
+	BatchID              string                             `json:"batch_id,omitempty"`
+	PolicyID             string                             `json:"policy_id"`
+	PolicyVersion        string                             `json:"policy_version"`
+	PolicyHash           string                             `json:"policy_hash"`
+	PolicyActive         bool                               `json:"policy_active"`
+	Counts               map[string]int                     `json:"counts"`
+	HumanApproved        int                                `json:"human_approved"`
+	QueuedReadback       int                                `json:"queued_readback"`
+	DuplicateLiveAccount int                                `json:"duplicate_live_account"`
+	DuplicateLiveRoot    int                                `json:"duplicate_live_root"`
+	Runway               DelegatedFirstTouchRunwayMetrics   `json:"runway"`
+	Control              DelegatedFirstTouchControlReadback `json:"control"`
+	Items                []DelegatedFirstTouchDecisionView  `json:"items"`
+}
+
+type DelegatedFirstTouchSourceReadback struct {
+	RunID                    string     `json:"run_id,omitempty"`
+	SnapshotHash             string     `json:"snapshot_hash,omitempty"`
+	FreshnessState           string     `json:"freshness_state"`
+	GeneratedAt              *time.Time `json:"generated_at,omitempty"`
+	ExpiresAt                *time.Time `json:"expires_at,omitempty"`
+	FreshnessHash            string     `json:"freshness_hash,omitempty"`
+	TargetMembershipComplete bool       `json:"target_membership_complete"`
+	TargetMembershipHash     string     `json:"target_membership_hash,omitempty"`
+	TargetMembershipCount    int        `json:"target_membership_count"`
+	SupplierConfirmedCount   int        `json:"supplier_confirmed_count"`
+}
+
+type DelegatedFirstTouchTransportReadback struct {
+	ProviderAttempts  int    `json:"provider_attempts"`
+	ProviderAccepted  int    `json:"provider_accepted"`
+	Sent              int    `json:"sent"`
+	KillSwitchEngaged bool   `json:"kill_switch_engaged"`
+	DispatchPaused    bool   `json:"dispatch_paused"`
+	PauseReason       string `json:"pause_reason,omitempty"`
+}
+
+type DelegatedFirstTouchControlReadback struct {
+	SchemaVersion     string                               `json:"schema_version"`
+	Source            DelegatedFirstTouchSourceReadback    `json:"source"`
+	Prepared          int                                  `json:"prepared"`
+	ReadyReservoir    int                                  `json:"ready_reservoir"`
+	DelegatedApproved int                                  `json:"delegated_approved"`
+	HumanApproved     int                                  `json:"human_approved"`
+	Queued            int                                  `json:"queued"`
+	Reserved          int                                  `json:"reserved"`
+	NextDueAt         *time.Time                           `json:"next_due_at,omitempty"`
+	FurthestDueAt     *time.Time                           `json:"furthest_due_at,omitempty"`
+	Transport         DelegatedFirstTouchTransportReadback `json:"transport"`
+	Outcomes          map[string]int                       `json:"outcomes"`
+	Capacity          *dispatch.Status                     `json:"capacity,omitempty"`
+	Blocker           string                               `json:"blocker,omitempty"`
 }
 
 type DelegatedFirstTouchDecisionView struct {
-	BatchID            string     `json:"batch_id"`
-	AccountID          *uuid.UUID `json:"account_id,omitempty"`
-	CNPJ14             string     `json:"cnpj14"`
-	SupplierCNPJ14     string     `json:"supplier_cnpj14"`
-	BuyerCNPJ14        string     `json:"buyer_cnpj14,omitempty"`
-	Recipient          string     `json:"recipient,omitempty"`
-	RouteClass         string     `json:"route_class"`
-	Decision           string     `json:"decision"`
-	ApprovalSource     string     `json:"approval_source"`
-	State              string     `json:"state"`
-	EvidenceReference  string     `json:"evidence_reference,omitempty"`
-	EvidenceHash       string     `json:"evidence_hash,omitempty"`
-	SourceRunID        string     `json:"source_run_id"`
-	SourceSnapshotHash string     `json:"source_snapshot_hash"`
-	ReasonCodes        []string   `json:"reason_codes,omitempty"`
-	BlockerCodes       []string   `json:"blocker_codes,omitempty"`
-	ContentHash        string     `json:"content_hash,omitempty"`
-	RuntimeReleaseSHA  string     `json:"runtime_release_sha,omitempty"`
-	DueAt              *time.Time `json:"due_at,omitempty"`
-	ReadbackAt         *time.Time `json:"readback_at,omitempty"`
-	DecidedAt          time.Time  `json:"decided_at"`
+	BatchID               string     `json:"batch_id"`
+	AccountID             *uuid.UUID `json:"account_id,omitempty"`
+	CNPJ14                string     `json:"cnpj14"`
+	SupplierCNPJ14        string     `json:"supplier_cnpj14"`
+	BuyerCNPJ14           string     `json:"buyer_cnpj14,omitempty"`
+	Recipient             string     `json:"recipient,omitempty"`
+	RouteClass            string     `json:"route_class"`
+	Decision              string     `json:"decision"`
+	ApprovalSource        string     `json:"approval_source"`
+	State                 string     `json:"state"`
+	EvidenceReference     string     `json:"evidence_reference,omitempty"`
+	EvidenceHash          string     `json:"evidence_hash,omitempty"`
+	SourceRunID           string     `json:"source_run_id"`
+	SourceSnapshotHash    string     `json:"source_snapshot_hash"`
+	SourceExpiresAt       *time.Time `json:"source_expires_at,omitempty"`
+	SourceFreshnessHash   string     `json:"source_freshness_hash,omitempty"`
+	TargetMembershipHash  string     `json:"target_membership_hash,omitempty"`
+	TargetMembershipCount int        `json:"target_membership_count"`
+	ReasonCodes           []string   `json:"reason_codes,omitempty"`
+	BlockerCodes          []string   `json:"blocker_codes,omitempty"`
+	ContentHash           string     `json:"content_hash,omitempty"`
+	RuntimeReleaseSHA     string     `json:"runtime_release_sha,omitempty"`
+	DueAt                 *time.Time `json:"due_at,omitempty"`
+	ReadbackAt            *time.Time `json:"readback_at,omitempty"`
+	DecidedAt             time.Time  `json:"decided_at"`
 }
 
 type delegatedRecentBody struct {
@@ -286,6 +346,10 @@ func digits(value string) string {
 }
 
 func (s *service) ApplyDelegatedFirstTouchManifest(ctx context.Context, orgID uuid.UUID, manifest DelegatedFirstTouchManifest, dryRun bool) (*DelegatedFirstTouchReport, *errx.Error) {
+	return s.applyDelegatedFirstTouchManifest(ctx, orgID, manifest, dryRun, nil)
+}
+
+func (s *service) applyDelegatedFirstTouchManifest(ctx context.Context, orgID uuid.UUID, manifest DelegatedFirstTouchManifest, dryRun bool, plannedDueAt *time.Time) (*DelegatedFirstTouchReport, *errx.Error) {
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, xerr
 	}
@@ -304,6 +368,19 @@ func (s *service) ApplyDelegatedFirstTouchManifest(ctx context.Context, orgID uu
 	if blockers := validateDelegatedManifestHeader(manifest); len(blockers) > 0 {
 		return nil, errx.New(errx.BadRequest, strings.Join(blockers, ","))
 	}
+	feedLockKey := feedSyncAdvisoryKey(orgID)
+	feedLocked, feedLockErr := s.repo.TryAdvisoryLock(ctx, feedLockKey)
+	if feedLockErr != nil {
+		return nil, errx.New(errx.ServiceUnavailable, "authoritative feed lock unavailable")
+	}
+	if !feedLocked {
+		return nil, errx.New(errx.Conflict, "authoritative feed refresh or delegated approval is already in progress")
+	}
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.repo.AdvisoryUnlock(unlockCtx, feedLockKey)
+	}()
 	auth, err := s.policyStore.GetCampaignPolicyByID(ctx, orgID, manifest.PolicyAuthorizationID)
 	if err != nil {
 		return nil, errx.New(errx.Internal, "load delegated policy: "+err.Error())
@@ -315,6 +392,15 @@ func (s *service) ApplyDelegatedFirstTouchManifest(ctx context.Context, orgID uu
 	if blockers := s.validateDelegatedTransportAuthority(ctx, orgID, auth); len(blockers) > 0 {
 		return nil, errx.New(errx.Forbidden, strings.Join(blockers, ","))
 	}
+	feedState, feedErr := s.repo.GetFeedSyncState(ctx, orgID)
+	now := time.Now().UTC()
+	if feedErr != nil || validateAuthoritativeFeedState(feedState, now, s.cfg.FeedMaxAge, true) != nil {
+		return nil, errx.New(errx.Forbidden, "authoritative_feed_attestation_invalid")
+	}
+	if feedState.LastRunID != manifest.SourceRunID || feedState.LastSnapshotHash != manifest.SourceSnapshotHash {
+		return nil, errx.New(errx.Forbidden, "stale_source_run")
+	}
+	manifest.authority = feedState
 	report := &DelegatedFirstTouchReport{
 		BatchID: manifest.BatchID, ManifestHash: manifestHash(manifest), DryRun: dryRun,
 		Items: []DelegatedFirstTouchItemResult{}, Generated: len(manifest.Entries),
@@ -347,7 +433,7 @@ func (s *service) ApplyDelegatedFirstTouchManifest(ctx context.Context, orgID uu
 				_ = s.persistDelegatedHold(ctx, orgID, manifest, entry, item.Blockers)
 			}
 		} else {
-			item, qaPass, repaired = s.applyDelegatedFirstTouchEntry(ctx, orgID, manifest, auth, entry, dryRun, duplicateRoots, recentBodies, corpusAvailable)
+			item, qaPass, repaired = s.applyDelegatedFirstTouchEntry(ctx, orgID, manifest, auth, entry, dryRun, duplicateRoots, recentBodies, corpusAvailable, plannedDueAt)
 			unlock()
 		}
 		report.Items = append(report.Items, item)
@@ -492,6 +578,10 @@ func (s *service) validateDelegatedTransportAuthority(ctx context.Context, orgID
 	err = s.delegatedDB.QueryRow(ctx, `
 		SELECT c.status::text,ea.status::text,ea.risk_band::text,
 		       ea.worker_id IS NOT NULL,
+		       EXISTS (
+		         SELECT 1 FROM workers w WHERE w.id=ea.worker_id AND w.active
+		           AND w.last_seen_at > now() - interval '10 minutes'
+		       ),
 		       CASE WHEN ea.provider='smtp_imap' THEN EXISTS (
 		           SELECT 1 FROM email_accounts_smtp_imap smtp WHERE smtp.email_account_id=ea.id
 		       ) ELSE EXISTS (
@@ -508,15 +598,17 @@ func (s *service) validateDelegatedTransportAuthority(ctx context.Context, orgID
 		           )
 		         ELSE true
 		       END,
-		       ea.campaign_limit,ea.min_wait_time
+		       ea.campaign_limit,ea.min_wait_time,
+		       ea.auth_state,ea.auth_spf,ea.auth_dkim,ea.auth_dmarc,ea.auth_checked_at
 		FROM campaigns c
 		JOIN email_accounts ea ON ea.user_id=c.user_id
 		WHERE c.id=$2 AND c.organization_id=$1
 		  AND ea.organization_id=$1 AND lower(ea.email)=lower($3)
 	`, orgID, auth.CampaignID, strings.TrimSpace(auth.SenderMailbox)).Scan(
 		&state.CampaignStatus, &state.MailboxStatus, &state.MailboxRiskBand,
-		&state.WorkerAssigned, &state.CredentialsPresent, &state.SenderSelected,
-		&state.CampaignLimit, &state.MinWaitTime,
+		&state.WorkerAssigned, &state.WorkerHealthy, &state.CredentialsPresent, &state.SenderSelected,
+		&state.CampaignLimit, &state.MinWaitTime, &state.AuthState, &state.AuthSPF,
+		&state.AuthDKIM, &state.AuthDMARC, &state.AuthCheckedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -549,11 +641,18 @@ func validateDelegatedTransportState(state delegatedTransportAuthority) []string
 	if !state.WorkerAssigned {
 		out = append(out, "canonical_sender_mailbox_worker_missing")
 	}
+	if state.WorkerAssigned && !state.WorkerHealthy {
+		out = append(out, "canonical_sender_mailbox_worker_unhealthy")
+	}
 	if !state.CredentialsPresent {
 		out = append(out, "canonical_sender_mailbox_credentials_missing")
 	}
 	if !state.SenderSelected {
 		out = append(out, "canonical_sender_mailbox_not_in_campaign_pool")
+	}
+	if state.AuthCheckedAt == nil || !strings.EqualFold(state.AuthState, "passing") ||
+		!state.AuthSPF || !state.AuthDKIM || !state.AuthDMARC {
+		out = append(out, "canonical_sender_mailbox_dns_auth_not_passing")
 	}
 	if state.CampaignLimit < 1 || state.MinWaitTime < 1 {
 		out = append(out, "canonical_sender_mailbox_rate_bounds_invalid")
@@ -597,6 +696,7 @@ func (s *service) applyDelegatedFirstTouchEntry(
 	duplicateRoots map[string]bool,
 	recentBodies []delegatedRecentBody,
 	corpusAvailable bool,
+	plannedDueAt *time.Time,
 ) (DelegatedFirstTouchItemResult, bool, bool) {
 	item := DelegatedFirstTouchItemResult{IdempotencyKey: entry.IdempotencyKey}
 	acc, cand, blockers := s.validateDelegatedEntry(ctx, orgID, manifest, entry, duplicateRoots, recentBodies, corpusAvailable)
@@ -631,7 +731,7 @@ func (s *service) applyDelegatedFirstTouchEntry(
 			return item, true, entry.QA.Repaired
 		}
 		if existing.TouchpointID != nil && (existing.State == "APPROVED" || existing.State == "APPROVED_NOT_SCHEDULED") {
-			queued, xerr := s.QueueTouchpoint(ctx, orgID, uuid.Nil, *existing.TouchpointID)
+			queued, xerr := s.queueTouchpointAt(ctx, orgID, uuid.Nil, *existing.TouchpointID, plannedDueAt)
 			if xerr != nil || queued == nil {
 				item.State = "APPROVED_NOT_SCHEDULED"
 				item.Blockers = []string{schedulingBlocker(xerr)}
@@ -697,7 +797,7 @@ func (s *service) applyDelegatedFirstTouchEntry(
 		return item, true, entry.QA.Repaired
 	}
 	item.State, item.TouchpointID = "APPROVED", tp.ID
-	queued, xerr := s.QueueTouchpoint(ctx, orgID, uuid.Nil, tp.ID)
+	queued, xerr := s.queueTouchpointAt(ctx, orgID, uuid.Nil, tp.ID, plannedDueAt)
 	if xerr != nil || queued == nil {
 		item.State = "APPROVED_NOT_SCHEDULED"
 		item.Blockers = []string{schedulingBlocker(xerr)}
@@ -814,16 +914,9 @@ func (s *service) validateDelegatedEntry(ctx context.Context, orgID uuid.UUID, m
 	if feedErr != nil || feedState == nil {
 		add("authoritative_feed_state_unavailable")
 	} else {
-		maxAge := s.cfg.FeedMaxAge
-		if maxAge <= 0 {
-			maxAge = 24 * time.Hour
-		}
 		now := time.Now().UTC()
-		if feedState.LastStatus != "completed" || feedState.SourceGeneratedAt == nil ||
-			strings.TrimSpace(feedState.LastRunID) == "" || strings.TrimSpace(feedState.LastSnapshotHash) == "" {
-			add("authoritative_feed_not_completely_applied")
-		} else if feedState.SourceGeneratedAt.After(now.Add(5*time.Minute)) || now.Sub(feedState.SourceGeneratedAt.UTC()) > maxAge {
-			add("authoritative_feed_stale")
+		if err := validateAuthoritativeFeedState(feedState, now, s.cfg.FeedMaxAge, true); err != nil {
+			add("authoritative_feed_attestation_invalid")
 		}
 		if manifest.SourceRunID != feedState.LastRunID || manifest.SourceSnapshotHash != feedState.LastSnapshotHash {
 			add("stale_source_run")
@@ -892,53 +985,59 @@ func (s *service) validateDelegatedDeterministicQA(ctx context.Context, orgID uu
 	if err != nil {
 		return []string{"evidence_bundle_unavailable"}
 	}
-	if len(entry.EvidenceIDs) == 0 || !stringSetContainsAll(entry.ContractEvidenceIDs, entry.EvidenceIDs) {
-		return []string{"fact_evidence_binding_mismatch"}
+	var blockers []string
+	add := func(code string) { blockers = appendUnique(blockers, code) }
+	if entry.CopyRulesVersion != DelegatedFirstTouchCopyRulesV1 {
+		add("copy_rules_version_mismatch")
+	}
+	expected := buildDelegatedRoutingCopy(acc, cand, evidence)
+	if expected.Subject == "" || expected.Body == "" {
+		add("deterministic_copy_unavailable")
+	} else {
+		if entry.Subject != expected.Subject || entry.BodyText != expected.Body ||
+			entry.FactUsed != expected.FactUsed || entry.Practice != expected.Practice ||
+			entry.CTA != expected.CTA || entry.SemanticSignature != expected.SemanticSignature {
+			add("deterministic_copy_projection_mismatch")
+		}
+		if canonicalStringSet(entry.FactEvidenceIDs) != canonicalStringSet(expected.FactEvidenceIDs) {
+			add("fact_evidence_binding_mismatch")
+		}
+	}
+	wantEvidence := uniqueStrings(append(append([]string{}, entry.ContractEvidenceIDs...), entry.FactEvidenceIDs...))
+	if len(entry.ContractEvidenceIDs) == 0 || canonicalStringSet(entry.EvidenceIDs) != canonicalStringSet(wantEvidence) {
+		add("fact_evidence_binding_mismatch")
 	}
 	if !delegatedEvidenceRowsCurrent(evidence, entry.EvidenceIDs, acc.LastImportRunID, time.Now().UTC()) {
-		return []string{"fact_evidence_not_current_confirmed"}
+		add("fact_evidence_not_current_confirmed")
 	}
 	out := &DraftOutput{
 		Channel: ChannelEmailInitial, Subject: entry.Subject, BodyText: entry.BodyText,
-		FactUsed: "Atuação como contratada em contrato público confirmada.", EvidenceIDs: entry.EvidenceIDs,
-		Claims:      []DraftClaim{{Phrase: "Atuação como contratada em contrato público confirmada.", EvidenceIDs: entry.EvidenceIDs}},
+		FactUsed: entry.FactUsed, EvidenceIDs: entry.EvidenceIDs,
+		Claims:      []DraftClaim{{Phrase: "Atuação como contratada no setor público confirmada.", EvidenceIDs: entry.ContractEvidenceIDs}},
 		ServiceCode: acc.ServiceCode, Question: "Quem é o responsável interno por contratos públicos?",
-		CTA: "Indicar o responsável ou encaminhar a mensagem.", Followups: []DraftFollowup{}, RiskFlags: []string{},
+		CTA: expected.CTA, Followups: []DraftFollowup{}, RiskFlags: []string{},
 	}
-	comparisonBodies := make([]string, 0, len(recentBodies))
+	if len(entry.FactEvidenceIDs) > 0 {
+		out.Claims = append(out.Claims, DraftClaim{Phrase: entry.FactUsed, EvidenceIDs: entry.FactEvidenceIDs})
+	}
 	for i := range recentBodies {
-		if recentBodies[i].AccountID != acc.ID {
-			comparisonBodies = append(comparisonBodies, recentBodies[i].Body)
+		if recentBodies[i].AccountID != acc.ID && normalizeForCorpus(recentBodies[i].Body) == normalizeForCorpus(entry.BodyText) {
+			add("corpus_exact_content_limit")
+			break
 		}
 	}
 	qa := ValidateDraft(out, acc, cand, ValidateOpts{
 		MaxWords: s.cfg.MaxInitialEmailWords, Evidence: evidence, Channel: ChannelEmailInitial,
-		RecentBodies: comparisonBodies, PromptVersion: PromptVersion,
+		PromptVersion: PromptVersion,
 	})
-	blockers := make([]string, 0, len(qa.Errors))
 	for _, item := range qa.Errors {
 		code := "deterministic_qa:" + reasonCode(item)
-		blockers = appendUnique(blockers, code)
+		add(code)
 	}
 	if risk, _ := ClassifyRisk(acc, cand, out, qa); risk != "GREEN" {
-		blockers = appendUnique(blockers, "deterministic_qa:risk_class_not_green")
+		add("deterministic_qa:risk_class_not_green")
 	}
 	return blockers
-}
-
-func stringSetContainsAll(superset, subset []string) bool {
-	seen := map[string]bool{}
-	for _, value := range superset {
-		if value = strings.TrimSpace(value); value != "" {
-			seen[value] = true
-		}
-	}
-	for _, value := range subset {
-		if !seen[strings.TrimSpace(value)] {
-			return false
-		}
-	}
-	return len(subset) > 0
 }
 
 func delegatedEvidenceRowsCurrent(evidence []models.OutreachEvidence, required []string, importID *uuid.UUID, now time.Time) bool {
@@ -1118,8 +1217,17 @@ func validateDelegatedCopy(entry DelegatedFirstTouchEntry, acc *models.OutreachA
 		add("copy_hash_mismatch")
 	}
 	words := len(strings.Fields(body))
-	if subject == "" || len([]rune(subject)) > 100 || words < 45 || words > 150 {
+	if subject == "" {
+		add("subject_empty")
+	}
+	if body == "" {
+		add("body_empty")
+	}
+	if len([]rune(subject)) > 100 || words < 45 || words > 150 {
 		add("copy_length_invalid")
+	}
+	if entry.CopyRulesVersion != DelegatedFirstTouchCopyRulesV1 {
+		add("copy_rules_version_mismatch")
 	}
 	low := strings.ToLower(subject + "\n" + body)
 	if !strings.Contains(low, "tiago sasaki") || !strings.Contains(low, "confenge") || !strings.Contains(low, "confenge.com.br") {
@@ -1132,8 +1240,27 @@ func validateDelegatedCopy(entry DelegatedFirstTouchEntry, acc *models.OutreachA
 		delegatedContainsAny(low, "como contratante", "figura como contratante", "aparece como contratante", "órgão contratante", "orgao contratante") {
 		add("target_role_claim_mismatch")
 	}
-	if !delegatedContainsAny(low, "responsável", "responsavel", "quem cuida") || !delegatedContainsAny(low, "indicar", "encaminhar", "direcionar") {
-		add("routing_cta_missing")
+	class := CandidateRouteClass(cand)
+	switch class {
+	case RouteClassDirectPerson:
+		if !delegatedContainsAny(low, "essa frente passa por você", "essa frente passa por voce") ||
+			delegatedContainsAny(low, "encaminhar esta mensagem", "indicar a pessoa", "indicar quem") {
+			add("route_cta_mismatch")
+		}
+	case RouteClassRoleOrDepartment:
+		if !delegatedContainsAny(low, "essa frente fica com a", "essa frente fica com a sua área", "essa frente fica com a sua area") ||
+			!delegatedContainsAny(low, "devo procurar outra", "devo procurar outra área", "devo procurar outra area") {
+			add("route_cta_mismatch")
+		}
+	case RouteClassGenericCompany, RouteClassPublicCompanyFreemail:
+		if !delegatedContainsAny(low, "encaminhar esta mensagem") || !delegatedContainsAny(low, "quem cuida dessa frente") {
+			add("route_cta_mismatch")
+		}
+	default:
+		add("route_cta_mismatch")
+	}
+	if !strings.Contains(low, strings.ToLower(delegatedContactExit)) {
+		add("contact_exit_missing")
 	}
 	if delegatedContainsAny(low, "marcar uma reunião", "agendar uma reunião", "agendar uma reuniao", "proposta comercial", "diagnóstico", "diagnostico", "r$", "contrato nº", "processo nº", "pregão nº", "pregao nº") {
 		add("copy_exceeds_first_touch_scope")
@@ -1142,28 +1269,43 @@ func validateDelegatedCopy(entry DelegatedFirstTouchEntry, acc *models.OutreachA
 		"grande volume", "alto volume", "muitos contratos", "diversos contratos", "vários contratos", "varios contratos",
 		"dezenas de", "centenas de", "milhares de", "ampla atuação", "ampla atuacao", "líder", "lider",
 		"faturamento", "receita", "lucro", "margem", "crédito", "credito", "dívida", "divida",
-		"reequilíbrio", "reequilibrio", "reajuste", "medição", "medicao", "pagamento em atraso",
-		"irregularidade", "ilegalidade", "litígio", "litigio", "condenação", "condenacao", "sanção", "sancao",
+		"pagamento em atraso", "irregularidade", "ilegalidade", "litígio", "litigio", "condenação", "condenacao", "sanção", "sancao",
 		"penalidade", "inadimplência", "inadimplencia", "rescisão", "rescisao") {
 		add("unsupported_factual_claim")
 	}
-	// v1 copy is intentionally routing-only. A numeric amount, date, quantity,
-	// process or contract identifier would require phrase-level fact extraction;
-	// hold it instead of trusting an agent's factual-PASS assertion.
+	// Numeric amounts, dates, quantities and identifiers require a separate
+	// typed projection. Hold them instead of trusting a factual-PASS assertion.
 	if delegatedDigitPattern.MatchString(subject + "\n" + body) {
 		add("unsupported_specific_fact")
 	}
 	if delegatedContainsAny(low, "soluções inovadoras", "solucoes inovadoras", "potencializar resultados", "sinergia", "transformar desafios") {
 		add("marketing_template_language")
 	}
+	if delegatedContainsAny(low,
+		"idiota", "incompetente", "burro", "preguiçoso", "preguicoso",
+		"responda agora", "última chance", "ultima chance", "não perca", "nao perca", "você precisa", "voce precisa") {
+		add("offensive_or_manipulative_language")
+	}
 	if strings.Contains(low, "—") || LooksLikeInternalReasoning(subject+"\n"+body) {
 		add("copy_artifact")
 	}
-	company := strings.ToLower(firstNonEmpty(acc.NomeFantasia, acc.RazaoSocial))
+	if looksLikeMetadataDump(subject+"\n"+body) || qaKeyValueRe.MatchString(subject+"\n"+body) ||
+		qaScoreRe.MatchString(subject+"\n"+body) || qaEnumRe.MatchString(subject+"\n"+body) {
+		add("internal_metadata_leak")
+	}
+	company := strings.ToLower(editorialCompanyName(acc))
 	if company != "" && !strings.Contains(low, company) {
 		add("company_name_missing")
 	}
-	class := CandidateRouteClass(cand)
+	personProven := class == RouteClassDirectPerson && composerMaySeePersonName(cand)
+	if personProven {
+		first := strings.ToLower(titleFirstName(firstName(cand.Name)))
+		if first == "" || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(body)), "olá, "+first) {
+			add("hallucinated_person")
+		}
+	} else if looksInventedPersonGreeting(strings.SplitN(body, "\n", 2)[0]) {
+		add("hallucinated_person")
+	}
 	if class != RouteClassDirectPerson && delegatedContainsAny(low, "como responsável", "como responsavel", "sei que você cuida", "sei que voce cuida", "seus contratos") {
 		add("generic_recipient_false_role")
 	}
@@ -1205,8 +1347,18 @@ func (s *service) prepareDelegatedTouchpoint(ctx context.Context, orgID uuid.UUI
 		return nil, nil, fmt.Errorf("first_touch_lookup_failed")
 	}
 	var tp *models.OutreachTouchpoint
+	var legacy *models.OutreachTouchpoint
 	for i := range all {
-		if all[i].Ordinal != 1 || all[i].Channel != models.OutreachChannelEmail {
+		if all[i].Ordinal != 1 || all[i].Purpose != models.TouchpointPurposeInitial ||
+			all[i].Channel != models.OutreachChannelEmail {
+			continue
+		}
+		if all[i].SourceRunID == "" {
+			row := all[i]
+			legacy = &row
+			continue
+		}
+		if all[i].SourceRunID != manifest.SourceRunID {
 			continue
 		}
 		if tp != nil {
@@ -1214,6 +1366,9 @@ func (s *service) prepareDelegatedTouchpoint(ctx context.Context, orgID uuid.UUI
 		}
 		row := all[i]
 		tp = &row
+	}
+	if tp == nil {
+		tp = legacy
 	}
 	if tp != nil {
 		switch tp.State {
@@ -1223,14 +1378,14 @@ func (s *service) prepareDelegatedTouchpoint(ctx context.Context, orgID uuid.UUI
 		}
 	} else {
 		tp = &models.OutreachTouchpoint{
-			ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte(DelegatedFirstTouchPolicyV1+"\x00touchpoint\x00"+orgID.String()+"\x00"+acc.ID.String())),
+			ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte(DelegatedFirstTouchPolicyV1+"\x00touchpoint\x00"+orgID.String()+"\x00"+manifest.SourceRunID+"\x00"+acc.ID.String())),
 			OrganizationID: orgID, AccountID: acc.ID, Ordinal: 1, CadenceStep: "INITIAL",
 			Channel: models.OutreachChannelEmail, Purpose: models.TouchpointPurposeInitial,
 			DueAt: time.Now().UTC(), State: models.TouchpointNeedsReview,
-			IdempotencyKey: "delegated-first-touch:" + acc.ID.String(),
+			IdempotencyKey: "delegated-first-touch:" + manifest.SourceRunID + ":" + acc.ID.String(),
 		}
 	}
-	draftID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(DelegatedFirstTouchPolicyV1+"\x00draft\x00"+orgID.String()+"\x00"+acc.ID.String()))
+	draftID := delegatedFirstTouchDraftID(orgID, manifest.SourceRunID, acc.ID)
 	if tp.DraftID != nil {
 		draftID = *tp.DraftID
 	}
@@ -1243,9 +1398,10 @@ func (s *service) prepareDelegatedTouchpoint(ctx context.Context, orgID uuid.UUI
 		tp.PolicyVersion = models.CadencePolicyVersionV1
 	}
 	tp.ServiceCode = acc.ServiceCode
-	tp.FactUsed = "Atuação como contratada em contrato público confirmada."
+	tp.FactUsed = entry.FactUsed
 	tp.EvidenceIDs = append([]string{}, entry.EvidenceIDs...)
 	tp.GeneratedContextHash = acc.MessageContextHash
+	tp.SourceRunID = manifest.SourceRunID
 	tp.StopReason = ""
 	ClearApproval(tp)
 	RecomputeContentHash(tp)
@@ -1265,8 +1421,8 @@ func (s *service) prepareDelegatedTouchpoint(ctx context.Context, orgID uuid.UUI
 		Subject: tp.Subject, BodyText: tp.BodyText, FollowupsJSON: []byte("[]"),
 		ServiceCode: acc.ServiceCode, StrategyCode: "FIRST_TOUCH_ROUTING",
 		FactUsed: tp.FactUsed, EvidenceIDs: tp.EvidenceIDs,
-		Question: "Quem é o responsável interno por contratos públicos?",
-		CTA:      "Indicar o responsável ou encaminhar a mensagem.",
+		Question: entry.CTA,
+		CTA:      entry.CTA,
 		Provider: "agent_cli", Model: manifest.AgentID, PromptVersion: PromptVersion,
 		Generation: entry.QA.Attempts, ValidationJSON: qaJSON, ValidationOK: &ok,
 		RiskClass: "GREEN", RiskFlags: []string{}, RedTeamResult: "PASS",
@@ -1287,6 +1443,12 @@ func (s *service) prepareDelegatedTouchpoint(ctx context.Context, orgID uuid.UUI
 		return nil, nil, fmt.Errorf("delegated_touchpoint_store_failed")
 	}
 	return tp, draft, nil
+}
+
+func delegatedFirstTouchDraftID(orgID uuid.UUID, sourceRunID string, accountID uuid.UUID) uuid.UUID {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(
+		DelegatedFirstTouchPolicyV1+"\x00draft\x00"+orgID.String()+"\x00"+sourceRunID+"\x00"+accountID.String(),
+	))
 }
 
 type delegatedDecisionRow struct {
@@ -1318,17 +1480,24 @@ func (s *service) loadDelegatedDecision(ctx context.Context, orgID uuid.UUID, ke
 }
 
 func (s *service) reserveDelegatedBatch(ctx context.Context, orgID uuid.UUID, manifest DelegatedFirstTouchManifest, hash string) error {
+	authority, err := delegatedManifestAuthority(manifest)
+	if err != nil {
+		return err
+	}
 	ct, err := s.delegatedDB.Exec(ctx, `
 		INSERT INTO confenge_delegated_first_touch_batches (
 			organization_id,batch_id,agent_id,policy_version,policy_authorization_id,
 			source_run_id,evidence_version,policy_hash,authority_reference,source_snapshot_hash,
+			source_expires_at,source_freshness_hash,target_membership_hash,target_membership_count,
 			composer_version,template_version,prompt_version,runtime_release_sha,
 			manifest_hash,status,generated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'RESERVED',$16)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,'RESERVED',$20)
 		ON CONFLICT (organization_id,batch_id) DO NOTHING`,
 		orgID, manifest.BatchID, manifest.AgentID, manifest.PolicyVersion, manifest.PolicyAuthorizationID,
 		manifest.SourceRunID, manifest.EvidenceVersion, manifest.PolicyHash, manifest.AuthorityReference,
-		manifest.SourceSnapshotHash, manifest.ComposerVersion, manifest.TemplateVersion, manifest.PromptVersion,
+		manifest.SourceSnapshotHash, authority.SourceExpiresAt, authority.SourceFreshnessHash,
+		authority.TargetMembershipHash, authority.TargetMembershipCount,
+		manifest.ComposerVersion, manifest.TemplateVersion, manifest.PromptVersion,
 		s.cfg.RepositorySHA, hash, manifest.GeneratedAt.UTC())
 	if err != nil {
 		return err
@@ -1336,14 +1505,36 @@ func (s *service) reserveDelegatedBatch(ctx context.Context, orgID uuid.UUID, ma
 	if ct.RowsAffected() > 0 {
 		return nil
 	}
-	var stored string
-	if err := s.delegatedDB.QueryRow(ctx, `SELECT manifest_hash FROM confenge_delegated_first_touch_batches WHERE organization_id=$1 AND batch_id=$2`, orgID, manifest.BatchID).Scan(&stored); err != nil {
+	var stored, sourceFreshnessHash, targetMembershipHash string
+	var sourceExpiresAt *time.Time
+	var targetMembershipCount int
+	if err := s.delegatedDB.QueryRow(ctx, `
+		SELECT manifest_hash,source_expires_at,source_freshness_hash,target_membership_hash,target_membership_count
+		FROM confenge_delegated_first_touch_batches
+		WHERE organization_id=$1 AND batch_id=$2`, orgID, manifest.BatchID).
+		Scan(&stored, &sourceExpiresAt, &sourceFreshnessHash, &targetMembershipHash, &targetMembershipCount); err != nil {
 		return err
 	}
 	if stored != hash {
 		return fmt.Errorf("batch_id_reused_with_different_manifest")
 	}
+	if sourceExpiresAt == nil || !sourceExpiresAt.Equal(authority.SourceExpiresAt.UTC()) ||
+		sourceFreshnessHash != authority.SourceFreshnessHash || targetMembershipHash != authority.TargetMembershipHash ||
+		targetMembershipCount != authority.TargetMembershipCount {
+		return fmt.Errorf("batch_id_reused_with_different_authority")
+	}
 	return nil
+}
+
+func delegatedManifestAuthority(manifest DelegatedFirstTouchManifest) (*models.OutreachFeedSyncState, error) {
+	authority := manifest.authority
+	if authority == nil || authority.SourceExpiresAt == nil ||
+		!validSHA256(authority.SourceFreshnessHash) || !authority.TargetMembershipComplete ||
+		!validSHA256(authority.TargetMembershipHash) || authority.TargetMembershipCount < 1 ||
+		authority.LastRunID != manifest.SourceRunID || authority.LastSnapshotHash != manifest.SourceSnapshotHash {
+		return nil, fmt.Errorf("delegated_authority_binding_unavailable")
+	}
+	return authority, nil
 }
 
 func (s *service) persistDelegatedHold(ctx context.Context, orgID uuid.UUID, manifest DelegatedFirstTouchManifest, entry DelegatedFirstTouchEntry, blockers []string) error {
@@ -1357,6 +1548,10 @@ func (s *service) persistDelegatedApproval(ctx context.Context, orgID uuid.UUID,
 func (s *service) persistDelegatedDecision(ctx context.Context, orgID uuid.UUID, manifest DelegatedFirstTouchManifest, entry DelegatedFirstTouchEntry, tp *models.OutreachTouchpoint, draft *models.OutreachDraft, decision, state string, blockers []string) error {
 	if len(digits(entry.CNPJ14)) != 14 || (decision != "HOLD" && len(digits(entry.SupplierCNPJ14)) != 14) {
 		return fmt.Errorf("cannot persist malformed party identity")
+	}
+	authority, err := delegatedManifestAuthority(manifest)
+	if err != nil {
+		return err
 	}
 	reasons, _ := json.Marshal(entry.QA.ReasonCodes)
 	blockerJSON, _ := json.Marshal(blockers)
@@ -1379,6 +1574,7 @@ func (s *service) persistDelegatedDecision(ctx context.Context, orgID uuid.UUID,
 			policy_authorization_id,policy_version,agent_id,authority,approved_by_type,decision,state,
 			cnpj14,cnpj_root,supplier_cnpj14,buyer_cnpj14,contractor_role_status,contract_role_source,contract_evidence_ids,
 			reconciliation_status,route_class,evidence_version,evidence_source_run_id,source_snapshot_hash,evidence_hash,evidence_reference,
+			source_expires_at,source_freshness_hash,target_membership_hash,target_membership_count,
 			evidence_observed_at,web_sources,subject_hash,body_hash,content_hash,recipient,target_party_role,
 			supplier_identity_ref,buyer_identity_ref,role_match_method,role_confidence,role_reason_codes,
 			policy_hash,authority_reference,composer_version,template_version,prompt_version,runtime_release_sha,material_binding_hash,qa_result,qa_attempts,
@@ -1388,6 +1584,7 @@ func (s *service) persistDelegatedDecision(ctx context.Context, orgID uuid.UUID,
 			@policy_authorization_id,@policy_version,@agent_id,@authority,'delegated_agent',@decision,@state,
 			@cnpj14,@cnpj_root,@supplier_cnpj14,@buyer_cnpj14,@contractor_role_status,@contract_role_source,@contract_evidence_ids,
 			@reconciliation_status,@route_class,@evidence_version,@evidence_source_run_id,@source_snapshot_hash,@evidence_hash,@evidence_reference,
+			@source_expires_at,@source_freshness_hash,@target_membership_hash,@target_membership_count,
 			@evidence_observed_at,@web_sources,@subject_hash,@body_hash,@content_hash,@recipient,@target_party_role,
 			@supplier_identity_ref,@buyer_identity_ref,@role_match_method,@role_confidence,@role_reason_codes,
 			@policy_hash,@authority_reference,@composer_version,@template_version,@prompt_version,@runtime_release_sha,@material_binding_hash,
@@ -1403,6 +1600,8 @@ func (s *service) persistDelegatedDecision(ctx context.Context, orgID uuid.UUID,
 		"contract_evidence_ids": contractEvidenceIDs, "reconciliation_status": normalizedReconciliation(entry.ReconciliationStatus),
 		"route_class": normalizedRoute(entry.RouteClass), "evidence_version": manifest.EvidenceVersion,
 		"evidence_source_run_id": manifest.SourceRunID, "source_snapshot_hash": manifest.SourceSnapshotHash,
+		"source_expires_at": authority.SourceExpiresAt, "source_freshness_hash": authority.SourceFreshnessHash,
+		"target_membership_hash": authority.TargetMembershipHash, "target_membership_count": authority.TargetMembershipCount,
 		"evidence_hash": entry.ContractEvidenceHash, "evidence_reference": entry.ContractEvidenceReference,
 		"evidence_observed_at": entry.EvidenceObservedAt.UTC(), "web_sources": web, "subject_hash": entry.SubjectHash,
 		"body_hash": entry.BodyHash, "content_hash": contentHash, "recipient": strings.ToLower(strings.TrimSpace(entry.Recipient)),
@@ -1451,14 +1650,47 @@ func delegatedMaterialBinding(manifest DelegatedFirstTouchManifest, entry Delega
 	material := struct {
 		PolicyVersion, PolicyHash, AuthorityReference, SourceRunID, SourceSnapshotHash string
 		EvidenceVersion, ComposerVersion, TemplateVersion, PromptVersion               string
+		SourceFreshnessHash, TargetMembershipHash                                      string
+		SourceExpiresAt                                                                *time.Time
+		TargetMembershipCount                                                          int
 		Entry                                                                          DelegatedFirstTouchEntry
 	}{
 		manifest.PolicyVersion, manifest.PolicyHash, manifest.AuthorityReference,
 		manifest.SourceRunID, manifest.SourceSnapshotHash, manifest.EvidenceVersion,
-		manifest.ComposerVersion, manifest.TemplateVersion, manifest.PromptVersion, entry,
+		manifest.ComposerVersion, manifest.TemplateVersion, manifest.PromptVersion,
+		authoritySourceFreshnessHash(manifest.authority), authorityTargetMembershipHash(manifest.authority),
+		authoritySourceExpiresAt(manifest.authority), authorityTargetMembershipCount(manifest.authority), entry,
 	}
 	raw, _ := json.Marshal(material)
 	return hashText(string(raw))
+}
+
+func authoritySourceFreshnessHash(state *models.OutreachFeedSyncState) string {
+	if state == nil {
+		return ""
+	}
+	return state.SourceFreshnessHash
+}
+
+func authorityTargetMembershipHash(state *models.OutreachFeedSyncState) string {
+	if state == nil {
+		return ""
+	}
+	return state.TargetMembershipHash
+}
+
+func authoritySourceExpiresAt(state *models.OutreachFeedSyncState) *time.Time {
+	if state == nil {
+		return nil
+	}
+	return state.SourceExpiresAt
+}
+
+func authorityTargetMembershipCount(state *models.OutreachFeedSyncState) int {
+	if state == nil {
+		return 0
+	}
+	return state.TargetMembershipCount
 }
 
 func nullUUID(id uuid.UUID) any {
@@ -1518,7 +1750,7 @@ func (s *service) delegatedQueueReadback(ctx context.Context, orgID uuid.UUID, t
 		JOIN confenge_dispatch_queue q ON q.organization_id=t.organization_id AND q.draft_id=t.draft_id
 		WHERE t.organization_id=$1 AND t.id=$2 AND q.message_key=$3`, orgID, tp.ID, key).
 		Scan(&touchState, &touchDue, &queueState, &queueDue, &queueKey)
-	if err != nil || touchState != models.TouchpointQueued || queueState != "queued" || queueKey != key || !touchDue.Equal(queueDue) {
+	if err != nil || touchState != models.TouchpointQueued || (queueState != "queued" && queueState != "reserved") || queueKey != key || !touchDue.Equal(queueDue) {
 		return &queueDue, key, false
 	}
 	return &queueDue, key, true
@@ -1573,6 +1805,7 @@ func (s *service) DelegatedFirstTouchStatus(ctx context.Context, orgID uuid.UUID
 		return nil, errx.New(errx.ServiceUnavailable, "delegated first-touch store is not wired")
 	}
 	out := &DelegatedFirstTouchStatus{
+		SchemaVersion: "warmbly.confenge.first-touch-control.v1", RuntimeReleaseSHA: s.cfg.RepositorySHA,
 		BatchID: batchID, PolicyID: DelegatedFirstTouchPolicyV1, PolicyVersion: DelegatedFirstTouchPolicyV1,
 		PolicyHash: DelegatedFirstTouchPolicyHashV1, Counts: map[string]int{}, Items: []DelegatedFirstTouchDecisionView{},
 	}
@@ -1608,7 +1841,7 @@ func (s *service) DelegatedFirstTouchStatus(ctx context.Context, orgID uuid.UUID
 		JOIN outreach_touchpoints t ON t.organization_id=d.organization_id AND t.id=d.touchpoint_id
 		JOIN confenge_dispatch_queue q ON q.organization_id=d.organization_id AND q.draft_id=d.draft_id AND q.message_key=d.queue_message_key
 		WHERE d.organization_id=$1 AND ($2='' OR d.batch_id=$2) AND d.state='QUEUED'
-		  AND d.readback_at IS NOT NULL AND t.state='QUEUED' AND q.status='queued' AND q.due_at=d.due_at`, orgID, batchID).Scan(&out.QueuedReadback); err != nil {
+		  AND d.readback_at IS NOT NULL AND t.state='QUEUED' AND q.status IN ('queued','reserved') AND q.due_at=d.due_at`, orgID, batchID).Scan(&out.QueuedReadback); err != nil {
 		return nil, errx.New(errx.Internal, err.Error())
 	}
 	if err := s.delegatedDB.QueryRow(ctx, `
@@ -1619,6 +1852,7 @@ func (s *service) DelegatedFirstTouchStatus(ctx context.Context, orgID uuid.UUID
 		) x`, orgID).Scan(&out.DuplicateLiveAccount); err != nil {
 		return nil, errx.New(errx.Internal, err.Error())
 	}
+	out.Runway = s.delegatedFirstTouchRunwayMetrics(ctx, orgID)
 	if err := s.delegatedDB.QueryRow(ctx, `
 		SELECT count(*)::int FROM (
 			SELECT cnpj_root FROM confenge_delegated_first_touch_decisions
@@ -1633,9 +1867,13 @@ func (s *service) DelegatedFirstTouchStatus(ctx context.Context, orgID uuid.UUID
 		  AND authorization_mode='HUMAN_TOUCHPOINT_APPROVAL' AND state IN ('APPROVED','QUEUED','SENT')`, orgID).Scan(&out.HumanApproved); err != nil {
 		return nil, errx.New(errx.Internal, err.Error())
 	}
+	if err := s.populateDelegatedFirstTouchControl(ctx, orgID, out); err != nil {
+		return nil, errx.New(errx.Internal, err.Error())
+	}
 	itemRows, itemErr := s.delegatedDB.Query(ctx, `
 		SELECT batch_id,account_id,cnpj14,supplier_cnpj14,buyer_cnpj14,recipient,route_class,decision,state,
 			evidence_reference,evidence_hash,evidence_source_run_id,source_snapshot_hash,reason_codes,blocker_codes,
+			source_expires_at,source_freshness_hash,target_membership_hash,target_membership_count,
 			content_hash,runtime_release_sha,due_at,readback_at,decided_at
 		FROM confenge_delegated_first_touch_decisions
 		WHERE organization_id=$1 AND ($2='' OR batch_id=$2)
@@ -1649,7 +1887,8 @@ func (s *service) DelegatedFirstTouchStatus(ctx context.Context, orgID uuid.UUID
 		var reasons, blockers []byte
 		if err := itemRows.Scan(&item.BatchID, &item.AccountID, &item.CNPJ14, &item.SupplierCNPJ14, &item.BuyerCNPJ14,
 			&item.Recipient, &item.RouteClass, &item.Decision, &item.State, &item.EvidenceReference, &item.EvidenceHash,
-			&item.SourceRunID, &item.SourceSnapshotHash, &reasons, &blockers, &item.ContentHash,
+			&item.SourceRunID, &item.SourceSnapshotHash, &reasons, &blockers,
+			&item.SourceExpiresAt, &item.SourceFreshnessHash, &item.TargetMembershipHash, &item.TargetMembershipCount, &item.ContentHash,
 			&item.RuntimeReleaseSHA, &item.DueAt, &item.ReadbackAt, &item.DecidedAt); err != nil {
 			return nil, errx.New(errx.Internal, err.Error())
 		}
@@ -1666,6 +1905,147 @@ func (s *service) DelegatedFirstTouchStatus(ctx context.Context, orgID uuid.UUID
 		return nil, errx.New(errx.Internal, err.Error())
 	}
 	return out, nil
+}
+
+func (s *service) populateDelegatedFirstTouchControl(ctx context.Context, orgID uuid.UUID, out *DelegatedFirstTouchStatus) error {
+	if out == nil {
+		return fmt.Errorf("delegated first-touch status is required")
+	}
+	now := time.Now().UTC()
+	control := DelegatedFirstTouchControlReadback{
+		SchemaVersion:  "warmbly.confenge.first-touch-control.v1",
+		ReadyReservoir: out.Runway.ReadyReservoirCount,
+		Queued:         out.Runway.QueuedCount,
+		Reserved:       out.Runway.ReservedCount,
+		FurthestDueAt:  out.Runway.FurthestDueAt,
+		Outcomes:       map[string]int{},
+		Transport: DelegatedFirstTouchTransportReadback{
+			KillSwitchEngaged: !s.cfg.SendingAllowed(),
+		},
+	}
+	feed, feedErr := s.repo.GetFeedSyncState(ctx, orgID)
+	if feedErr != nil {
+		return feedErr
+	}
+	sourceRunID := ""
+	if feed != nil {
+		sourceRunID = feed.LastRunID
+		control.Source = DelegatedFirstTouchSourceReadback{
+			RunID: feed.LastRunID, SnapshotHash: feed.LastSnapshotHash,
+			FreshnessState: delegatedSourceFreshnessState(feed, now, s.cfg.FeedMaxAge),
+			GeneratedAt:    feed.SourceGeneratedAt, ExpiresAt: feed.SourceExpiresAt,
+			FreshnessHash:            feed.SourceFreshnessHash,
+			TargetMembershipComplete: feed.TargetMembershipComplete,
+			TargetMembershipHash:     feed.TargetMembershipHash,
+			TargetMembershipCount:    feed.TargetMembershipCount,
+			SupplierConfirmedCount:   feed.SupplierConfirmedCount,
+		}
+	} else {
+		control.Source.FreshnessState = "missing"
+	}
+	if err := s.delegatedDB.QueryRow(ctx, `SELECT
+		(SELECT count(*)::int FROM outreach_touchpoints t
+		 WHERE t.organization_id=$1 AND t.source_run_id=$2
+		   AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'),
+		(SELECT count(*)::int FROM confenge_delegated_first_touch_decisions d
+		 WHERE d.organization_id=$1 AND d.evidence_source_run_id=$2
+		   AND d.decision='DELEGATED_POLICY_APPROVE'
+		   AND d.state IN ('APPROVED','APPROVED_NOT_SCHEDULED','QUEUED','SENT')),
+		(SELECT count(*)::int FROM outreach_touchpoints t
+		 WHERE t.organization_id=$1 AND t.source_run_id=$2 AND t.approved_by IS NOT NULL
+		   AND t.authorization_mode='HUMAN_TOUCHPOINT_APPROVAL'
+		   AND t.state IN ('APPROVED','QUEUED','SENT')),
+		(SELECT min(q.due_at) FROM confenge_dispatch_queue q
+		 JOIN outreach_touchpoints t ON t.organization_id=q.organization_id AND t.draft_id=q.draft_id
+		 WHERE q.organization_id=$1 AND t.source_run_id=$2 AND q.status IN ('queued','reserved'))`,
+		orgID, sourceRunID).Scan(&control.Prepared, &control.DelegatedApproved, &control.HumanApproved, &control.NextDueAt); err != nil {
+		return err
+	}
+	if err := s.delegatedDB.QueryRow(ctx, `SELECT
+		(SELECT count(*)::int FROM confenge_dispatch_reservations r
+		 JOIN outreach_touchpoints t ON t.organization_id=r.organization_id AND t.draft_id=r.draft_id
+		 WHERE r.organization_id=$1 AND t.source_run_id=$2 AND r.attempted_at IS NOT NULL),
+		(SELECT count(*)::int FROM confenge_dispatch_sends ds
+		 JOIN outreach_touchpoints t ON t.organization_id=ds.organization_id AND t.draft_id=ds.draft_id
+		 WHERE ds.organization_id=$1 AND t.source_run_id=$2),
+		(SELECT count(*)::int FROM outreach_touchpoints t
+		 WHERE t.organization_id=$1 AND t.source_run_id=$2
+		   AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL' AND t.state='SENT')`,
+		orgID, sourceRunID).Scan(&control.Transport.ProviderAttempts, &control.Transport.ProviderAccepted, &control.Transport.Sent); err != nil {
+		return err
+	}
+	rows, err := s.delegatedDB.Query(ctx, `
+		SELECT o.event_type,count(*)::int
+		FROM outreach_outcome_outbox o
+		WHERE o.organization_id=$1 AND EXISTS (
+			SELECT 1 FROM outreach_accounts a
+			WHERE a.organization_id=o.organization_id AND a.source_run_id=$2
+			  AND ((o.cnpj14<>'' AND a.cnpj14=o.cnpj14)
+			    OR (o.source_lead_id<>'' AND a.source_lead_id=o.source_lead_id))
+		)
+		GROUP BY o.event_type`, orgID, sourceRunID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var eventType string
+		var count int
+		if err := rows.Scan(&eventType, &count); err != nil {
+			rows.Close()
+			return err
+		}
+		control.Outcomes[eventType] = count
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if s.governor != nil {
+		capacity, err := s.governor.Status(ctx, &orgID)
+		if err != nil {
+			control.Blocker = "capacity_read_failed"
+		} else {
+			control.Capacity = &capacity
+			control.Transport.DispatchPaused = capacity.Paused
+			control.Transport.PauseReason = capacity.PauseReason
+		}
+	} else {
+		control.Blocker = "dispatch_governor_unavailable"
+	}
+	switch {
+	case control.Source.FreshnessState != "fresh":
+		control.Blocker = "authoritative_feed_" + control.Source.FreshnessState
+	case out.DuplicateLiveAccount > 0 || out.DuplicateLiveRoot > 0:
+		control.Blocker = "duplicate_live_first_touch"
+	case !out.PolicyActive:
+		control.Blocker = "delegated_policy_inactive"
+	case out.Runway.CapacityBlocked > 0:
+		control.Blocker = firstNonEmpty(out.Runway.CapacityBlocker, "runway_capacity_blocked")
+	case control.Transport.KillSwitchEngaged || control.Transport.DispatchPaused:
+		control.Blocker = "transport_paused_pre_go"
+	}
+	out.Control = control
+	return nil
+}
+
+func delegatedSourceFreshnessState(feed *models.OutreachFeedSyncState, now time.Time, maxAge time.Duration) string {
+	if feed == nil || feed.LastRunID == "" || feed.LastSnapshotHash == "" || feed.SourceGeneratedAt == nil {
+		return "missing"
+	}
+	if feed.SourceExpiresAt != nil && !now.Before(feed.SourceExpiresAt.UTC()) {
+		return "expired"
+	}
+	if maxAge <= 0 {
+		maxAge = 24 * time.Hour
+	}
+	if feed.SourceGeneratedAt.After(now.Add(5*time.Minute)) || now.Sub(feed.SourceGeneratedAt.UTC()) > maxAge {
+		return "stale"
+	}
+	if validateAuthoritativeFeedState(feed, now, maxAge, true) != nil {
+		return "invalid"
+	}
+	return "fresh"
 }
 
 func (s *service) assertDelegatedFirstTouchDecision(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint) error {
@@ -1685,14 +2065,18 @@ func (s *service) assertDelegatedFirstTouchDecision(ctx context.Context, orgID u
 		RoleStatus, TargetPartyRole, SupplierCNPJ14, BuyerCNPJ14                                string
 		SupplierIdentityRef, BuyerIdentityRef, RoleMatchMethod, RoleConfidence                  string
 		ComposerVersion, TemplateVersion, PromptVersion, RuntimeReleaseSHA                      string
+		SourceFreshnessHash, TargetMembershipHash                                               string
 		PolicyAuthorizationID, ContactCandidateID                                               uuid.UUID
 		EvidenceObservedAt                                                                      time.Time
+		SourceExpiresAt                                                                         *time.Time
+		TargetMembershipCount                                                                   int
 		ContractEvidenceIDs, RoleReasonCodes, WebSources                                        []byte
 	}
 	var got binding
 	err := s.delegatedDB.QueryRow(ctx, `
 		SELECT state,policy_version,policy_hash,authority_reference,content_hash,approved_by_type,authority,
 			evidence_source_run_id,source_snapshot_hash,evidence_version,evidence_hash,evidence_reference,evidence_observed_at,
+			source_expires_at,source_freshness_hash,target_membership_hash,target_membership_count,
 			contract_evidence_ids,role_reason_codes,web_sources,recipient,route_class,
 			contractor_role_status,target_party_role,supplier_cnpj14,buyer_cnpj14,supplier_identity_ref,
 			buyer_identity_ref,role_match_method,role_confidence,composer_version,template_version,prompt_version,
@@ -1703,7 +2087,8 @@ func (s *service) assertDelegatedFirstTouchDecision(ctx context.Context, orgID u
 		  AND state IN ('APPROVED','QUEUED','SENT','APPROVED_NOT_SCHEDULED')`, orgID, tp.ID).
 		Scan(&got.State, &got.PolicyVersion, &got.PolicyHash, &got.AuthorityReference, &got.ContentHash, &got.ActorType, &got.Authority,
 			&got.SourceRunID, &got.SourceSnapshotHash, &got.EvidenceVersion, &got.EvidenceHash, &got.EvidenceReference,
-			&got.EvidenceObservedAt, &got.ContractEvidenceIDs, &got.RoleReasonCodes, &got.WebSources, &got.Recipient, &got.RouteClass,
+			&got.EvidenceObservedAt, &got.SourceExpiresAt, &got.SourceFreshnessHash, &got.TargetMembershipHash,
+			&got.TargetMembershipCount, &got.ContractEvidenceIDs, &got.RoleReasonCodes, &got.WebSources, &got.Recipient, &got.RouteClass,
 			&got.RoleStatus, &got.TargetPartyRole, &got.SupplierCNPJ14, &got.BuyerCNPJ14, &got.SupplierIdentityRef,
 			&got.BuyerIdentityRef, &got.RoleMatchMethod, &got.RoleConfidence, &got.ComposerVersion, &got.TemplateVersion,
 			&got.PromptVersion, &got.RuntimeReleaseSHA, &got.PolicyAuthorizationID, &got.ContactCandidateID)
@@ -1790,16 +2175,18 @@ func (s *service) assertDelegatedFirstTouchDecision(ctx context.Context, orgID u
 		return fail("recipient_import_run_drift")
 	}
 	feedState, feedErr := s.repo.GetFeedSyncState(ctx, orgID)
-	if feedErr != nil || feedState == nil || feedState.LastStatus != "completed" || feedState.SourceGeneratedAt == nil ||
-		feedState.LastRunID != got.SourceRunID || feedState.LastSnapshotHash != got.SourceSnapshotHash || acc.SourceRunID != got.SourceRunID {
+	if feedErr != nil || feedState == nil || feedState.LastRunID != got.SourceRunID ||
+		feedState.LastSnapshotHash != got.SourceSnapshotHash || acc.SourceRunID != got.SourceRunID {
 		return fail("source_run_or_snapshot_drift")
 	}
-	maxAge := s.cfg.FeedMaxAge
-	if maxAge <= 0 {
-		maxAge = 24 * time.Hour
-	}
-	if feedState.SourceGeneratedAt.After(now.Add(5*time.Minute)) || now.Sub(feedState.SourceGeneratedAt.UTC()) > maxAge {
+	if err := validateAuthoritativeFeedState(feedState, now, s.cfg.FeedMaxAge, true); err != nil {
 		return fail("source_freshness_drift")
+	}
+	if got.SourceExpiresAt == nil || !got.SourceExpiresAt.Equal(feedState.SourceExpiresAt.UTC()) ||
+		got.SourceFreshnessHash != feedState.SourceFreshnessHash ||
+		got.TargetMembershipHash != feedState.TargetMembershipHash ||
+		got.TargetMembershipCount != feedState.TargetMembershipCount {
+		return fail("source_authority_binding_drift")
 	}
 	var evidenceIDs, roleReasons []string
 	if json.Unmarshal(got.ContractEvidenceIDs, &evidenceIDs) != nil || json.Unmarshal(got.RoleReasonCodes, &roleReasons) != nil {

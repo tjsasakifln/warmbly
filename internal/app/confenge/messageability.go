@@ -34,7 +34,12 @@ const (
 // the closing ask follows the route class. Two v5 messages to different services
 // were byte-identical below the fact; two v6 messages are not. A v5 grant must
 // not authorize v6 copy; release_manifest.go already fails closed on drift.
-const ComposerVersion = "confenge.composer.v6"
+// Bumped to v7 on 2026-08-26: delegated first touches no longer rotate a
+// combinatorial phrase bank. A typed deterministic brief uses only supplier
+// role, supported public fact, service, route and recipient purpose; it also
+// carries the corpus-rules stamp and a natural contact exit. Existing frozen
+// copy must be regenerated before delegated authorization.
+const ComposerVersion = "confenge.composer.v7"
 
 // Outbound hook classes from the service playbook.
 const (

@@ -17,13 +17,15 @@ import (
 const (
 	delegatedFirstTouchMaxBurst          = 100
 	delegatedFirstTouchIdempotencyPrefix = "delegated-first-touch:"
+	delegatedFirstTouchLease             = 5 * time.Minute
+	delegatedFirstTouchRetryDelay        = 15 * time.Minute
 )
 
 type delegatedFirstTouchProcessor interface {
 	ProcessDelegatedFirstTouchOnce(context.Context) (bool, error)
 }
 
-// DelegatedFirstTouchWorker keeps one canonical email queued from the prepared backlog.
+// DelegatedFirstTouchWorker maintains a rolling, capacity-derived queue runway.
 type DelegatedFirstTouchWorker struct {
 	processor delegatedFirstTouchProcessor
 	interval  time.Duration
@@ -45,10 +47,10 @@ func (w *DelegatedFirstTouchWorker) Run(ctx context.Context) {
 	for {
 		for i := 0; i < delegatedFirstTouchMaxBurst; i++ {
 			processed, err := w.processor.ProcessDelegatedFirstTouchOnce(ctx)
+			if err != nil {
+				log.Printf("confenge delegated first-touch autorun deferred: %v", err)
+			}
 			if !processed {
-				if err != nil {
-					log.Printf("confenge delegated first-touch autorun deferred: %v", err)
-				}
 				break
 			}
 			select {
@@ -65,13 +67,20 @@ func (w *DelegatedFirstTouchWorker) Run(ctx context.Context) {
 	}
 }
 
-// ProcessDelegatedFirstTouchOnce evaluates one prepared first touch under the active founder grant.
-func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (bool, error) {
+// ProcessDelegatedFirstTouchOnce evaluates one prepared first touch for the next capacity slot.
+func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (processed bool, returnErr error) {
 	if s == nil || !s.cfg.DelegatedFirstTouchEnabled || !s.cfg.DelegatedFirstTouchAutorunEnabled ||
-		s.delegatedDB == nil || s.policyStore == nil || s.cfg.OperatorOrgID == uuid.Nil {
+		s.cfg.DelegatedFirstTouchRunwayDays < 1 || s.delegatedDB == nil || s.policyStore == nil ||
+		s.cfg.OperatorOrgID == uuid.Nil {
 		return false, nil
 	}
 	orgID := s.cfg.OperatorOrgID
+	unlock, locked, err := s.lockDelegatedFirstTouchRunway(ctx, orgID)
+	if err != nil || !locked {
+		return false, err
+	}
+	defer unlock()
+
 	feed, err := s.repo.GetFeedSyncState(ctx, orgID)
 	if err != nil || feed == nil {
 		return false, err
@@ -79,35 +88,36 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (bool, err
 	if feed.LastStatus != "completed" {
 		return false, nil
 	}
-	if _, err = s.retireStaleDelegatedFirstTouches(ctx, orgID, feed.LastRunID, feed.LastSnapshotHash); err != nil {
-		return false, err
-	}
-	var queued int
-	if err := s.delegatedDB.QueryRow(ctx, `
-		SELECT count(*) FROM confenge_dispatch_queue
-		WHERE organization_id=$1 AND channel='EMAIL' AND status IN ('queued','reserved')`, orgID).Scan(&queued); err != nil {
-		return false, err
-	}
-	if queued > 0 {
-		return false, nil
-	}
-
 	settings, err := s.repo.GetOrgSettings(ctx, orgID)
 	if err != nil || settings == nil || settings.CampaignID == nil {
 		return false, err
 	}
 	auth, err := s.policyStore.GetActiveCampaignPolicy(ctx, orgID, *settings.CampaignID, time.Now().UTC())
 	if err != nil || auth == nil {
+		_, _ = s.retireStaleDelegatedFirstTouches(ctx, orgID, feed.LastRunID, feed.LastSnapshotHash, nil)
+		return false, err
+	}
+	if _, err = s.retireStaleDelegatedFirstTouches(ctx, orgID, feed.LastRunID, feed.LastSnapshotHash, &auth.ID); err != nil {
+		return false, err
+	}
+	plan, err := s.delegatedFirstTouchRunwayPlan(ctx, orgID, feed, auth, time.Now().UTC())
+	if err != nil || !plan.CapacityKnown || plan.TargetReached() {
 		return false, err
 	}
 
-	touchpointID, accountID, candidateID, err := s.nextDelegatedFirstTouchCandidate(ctx, orgID)
+	touchpointID, accountID, candidateID, err := s.nextDelegatedFirstTouchCandidate(ctx, orgID, feed, auth)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
 		}
 		return false, err
 	}
+	deferred := true
+	defer func() {
+		if deferred {
+			s.deferDelegatedFirstTouch(ctx, orgID, touchpointID, returnErr)
+		}
+	}()
 
 	acc, err := s.repo.GetAccount(ctx, orgID, accountID)
 	if err != nil || acc == nil {
@@ -117,18 +127,13 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (bool, err
 	if err != nil || cand == nil {
 		return false, err
 	}
-	recent, err := s.repo.ListDrafts(ctx, orgID, "", 500, 0)
+	evidence, err := s.repo.ListEvidence(ctx, orgID, acc.ID)
 	if err != nil {
 		return false, err
 	}
-	recentBodies := make([]string, 0, len(recent))
-	for i := range recent {
-		if recent[i].AccountID != accountID {
-			recentBodies = append(recentBodies, recent[i].BodyText)
-		}
-	}
-	subject, body := composeDelegatedRoutingCopy(acc, recentBodies)
-	entry := delegatedEntryFromCurrentState(acc, cand, touchpointID, subject, body)
+	copy := buildDelegatedRoutingCopy(acc, cand, evidence)
+	entry := delegatedEntryFromCurrentState(acc, cand, touchpointID, copy)
+	entry.IdempotencyKey = delegatedFirstTouchRunwayIdempotencyKey(feed, auth.ID, s.cfg.RepositorySHA, accountID)
 	sealed, err := SealDelegatedFirstTouchEntry(entry, cand)
 	if err != nil {
 		sealed = entry
@@ -148,36 +153,85 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (bool, err
 		TemplateVersion: DelegatedFirstTouchTemplateV1, PromptVersion: PromptVersion,
 		GeneratedAt: now, Entries: []DelegatedFirstTouchEntry{sealed},
 	}
-	report, xerr := s.ApplyDelegatedFirstTouchManifest(ctx, orgID, manifest, false)
+	nextDue := plan.NextDueAt()
+	report, xerr := s.applyDelegatedFirstTouchManifest(ctx, orgID, manifest, false, &nextDue)
 	if xerr != nil {
-		return false, fmt.Errorf("delegated first-touch autorun: %s", xerr.Message)
+		return true, fmt.Errorf("delegated first-touch autorun: %s", xerr.Message)
 	}
+	deferred = false
+	_, _ = s.delegatedDB.Exec(ctx, `
+		UPDATE outreach_touchpoints
+		SET delegated_reserved_until=NULL,delegated_last_error='',updated_at=now()
+		WHERE organization_id=$1 AND id=$2`, orgID, touchpointID)
+	// A terminal HOLD consumed this candidate and the burst should keep filling from the reservoir.
 	return report != nil && len(report.Items) == 1, nil
 }
 
-func (s *service) nextDelegatedFirstTouchCandidate(ctx context.Context, orgID uuid.UUID) (uuid.UUID, uuid.UUID, uuid.UUID, error) {
+func (s *service) nextDelegatedFirstTouchCandidate(ctx context.Context, orgID uuid.UUID, feed *models.OutreachFeedSyncState, auth *models.CampaignPolicyAuthorization) (uuid.UUID, uuid.UUID, uuid.UUID, error) {
 	var touchpointID, accountID, candidateID uuid.UUID
+	if feed == nil || auth == nil {
+		return touchpointID, accountID, candidateID, pgx.ErrNoRows
+	}
+	now := time.Now().UTC()
 	err := s.delegatedDB.QueryRow(ctx, `
-		SELECT t.id,t.account_id,t.contact_candidate_id
-		FROM outreach_touchpoints t
-		JOIN outreach_accounts a ON a.organization_id=t.organization_id AND a.id=t.account_id
-		JOIN outreach_feed_sync_state feed ON feed.organization_id=t.organization_id
-		WHERE t.organization_id=$1
-		  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
-		  AND t.state='NEEDS_REVIEW' AND t.contact_candidate_id IS NOT NULL
-		  AND feed.last_status='completed' AND a.source_run_id=feed.last_run_id
-		  AND NOT EXISTS (
-		    SELECT 1 FROM confenge_delegated_first_touch_decisions d
-		    WHERE d.organization_id=t.organization_id AND d.account_id=t.account_id
-		      AND (d.evidence_source_run_id=a.source_run_id
-		        OR d.idempotency_key=$2 || a.source_run_id || ':' || a.id::text)
-		  )
-		ORDER BY t.due_at,t.created_at,t.id
-		LIMIT 1`, orgID, delegatedFirstTouchIdempotencyPrefix).Scan(&touchpointID, &accountID, &candidateID)
+		WITH next AS (
+			SELECT t.id
+			FROM outreach_touchpoints t
+			JOIN outreach_accounts a ON a.organization_id=t.organization_id AND a.id=t.account_id
+			JOIN outreach_contact_candidates c
+			  ON c.organization_id=t.organization_id AND c.id=t.contact_candidate_id
+			JOIN outreach_feed_sync_state feed ON feed.organization_id=t.organization_id
+			WHERE t.organization_id=$1
+			  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
+			  AND t.state IN ('DUE','NEEDS_REVIEW') AND t.contact_candidate_id IS NOT NULL
+			  AND feed.last_status='completed' AND a.source_run_id=feed.last_run_id
+			  AND t.source_run_id=feed.last_run_id
+			  AND a.initial_backlog_reason_code=''
+			  AND a.last_import_run_id IS NOT NULL AND c.last_import_run_id=a.last_import_run_id
+			  AND t.delegated_retry_at <= $6
+			  AND (t.delegated_reserved_until IS NULL OR t.delegated_reserved_until <= $6)
+			  AND NOT EXISTS (
+			    SELECT 1 FROM confenge_delegated_first_touch_decisions d
+			    WHERE d.organization_id=t.organization_id AND d.account_id=t.account_id
+			      AND (d.state='SENT' OR (d.state<>'CANCELLED'
+			        AND d.evidence_source_run_id=$2 AND d.source_snapshot_hash=$3
+			        AND d.runtime_release_sha=$4 AND d.policy_authorization_id=$5))
+			  )
+			ORDER BY t.delegated_retry_at,t.due_at,t.created_at,t.id
+			LIMIT 1 FOR UPDATE OF t SKIP LOCKED
+		)
+		UPDATE outreach_touchpoints t
+		SET delegated_reserved_until=$7,delegated_attempts=t.delegated_attempts+1,
+			delegated_last_error='',updated_at=$6
+		FROM next WHERE t.id=next.id
+		RETURNING t.id,t.account_id,t.contact_candidate_id`, orgID, feed.LastRunID, feed.LastSnapshotHash,
+		s.cfg.RepositorySHA, auth.ID, now, now.Add(delegatedFirstTouchLease)).Scan(&touchpointID, &accountID, &candidateID)
 	return touchpointID, accountID, candidateID, err
 }
 
-func delegatedEntryFromCurrentState(acc *models.OutreachAccount, cand *models.OutreachContactCandidate, touchpointID uuid.UUID, subject, body string) DelegatedFirstTouchEntry {
+func (s *service) deferDelegatedFirstTouch(ctx context.Context, orgID, touchpointID uuid.UUID, cause error) {
+	reason := "delegated first-touch processing failed"
+	if cause != nil {
+		reason = cause.Error()
+	}
+	_, _ = s.delegatedDB.Exec(ctx, `
+		UPDATE outreach_touchpoints
+		SET delegated_reserved_until=NULL,delegated_retry_at=$3,
+			delegated_last_error=LEFT($4,500),updated_at=now()
+		WHERE organization_id=$1 AND id=$2`, orgID, touchpointID,
+		time.Now().UTC().Add(delegatedFirstTouchRetryDelay), reason)
+}
+
+func delegatedFirstTouchRunwayIdempotencyKey(feed *models.OutreachFeedSyncState, policyAuthorizationID uuid.UUID, runtimeSHA string, accountID uuid.UUID) string {
+	binding := ""
+	if feed != nil {
+		binding = feed.LastRunID + "\x00" + feed.LastSnapshotHash
+	}
+	binding += "\x00" + runtimeSHA + "\x00" + policyAuthorizationID.String()
+	return delegatedFirstTouchIdempotencyPrefix + "runway-v1:" + hashText(binding) + ":" + accountID.String()
+}
+
+func delegatedEntryFromCurrentState(acc *models.OutreachAccount, cand *models.OutreachContactCandidate, touchpointID uuid.UUID, copy delegatedRoutingCopy) DelegatedFirstTouchEntry {
 	observedAt := time.Time{}
 	if acc.ContractorRoleObservedAt != nil {
 		observedAt = acc.ContractorRoleObservedAt.UTC()
@@ -203,65 +257,13 @@ func delegatedEntryFromCurrentState(acc *models.OutreachAccount, cand *models.Ou
 		ContractRoleReasonCodes: append([]string{}, acc.ContractorRoleReasonCodes...), EvidenceObservedAt: observedAt,
 		ReconciliationStatus: ReconciliationWebContact,
 		WebSources:           []DelegatedWebSource{{URL: cand.SourceURL, Kind: "PUBLIC_COMPANY_SOURCE", Supports: "COMPANY_MAILBOX", ObservedAt: webObservedAt}},
-		Subject:              subject, BodyText: body, EvidenceIDs: append([]string{}, acc.ContractorRoleEvidenceIDs...),
+		Subject:              copy.Subject, BodyText: copy.Body, CopyRulesVersion: DelegatedFirstTouchCopyRulesV1,
+		FactUsed: copy.FactUsed, FactEvidenceIDs: append([]string{}, copy.FactEvidenceIDs...),
+		Practice: copy.Practice, CTA: copy.CTA,
+		SemanticSignature: copy.SemanticSignature,
+		EvidenceIDs:       uniqueStrings(append(append([]string{}, acc.ContractorRoleEvidenceIDs...), copy.FactEvidenceIDs...)),
 		QA: DelegatedFirstTouchQA{Result: "PASS", Attempts: 1, IdentityPassed: true, FactualPassed: true,
 			CopyPassed: true, OperationalPassed: true, Reviewer: DelegatedFirstTouchValidatorV1,
-			ReasonCodes: []string{"deterministic_routing_copy", "current_supplier_evidence", "current_attributed_recipient"}},
+			ReasonCodes: []string{"deterministic_factual_copy", "current_supplier_evidence", "current_attributed_recipient"}},
 	}
-}
-
-func composeDelegatedRoutingCopy(acc *models.OutreachAccount, recent []string) (string, string) {
-	company := strings.TrimSpace(firstNonEmpty(acc.NomeFantasia, acc.RazaoSocial))
-	subjects := []string{
-		"Responsável por contratos públicos", "Contato sobre contratos públicos",
-		"Área responsável por licitações", "Encaminhamento sobre contratos públicos",
-		"Quem cuida de contratos públicos?", "Direcionamento para contratos públicos",
-		"Contato com a área de licitações", "Setor de contratos públicos",
-	}
-	openings := []string{
-		"Sou Tiago Sasaki, da CONFENGE. Em fonte pública, a %s consta como empresa contratada em contratos públicos.",
-		"Meu nome é Tiago Sasaki e falo pela CONFENGE. Uma fonte pública registra a %s como fornecedora em contratos públicos.",
-		"Aqui é Tiago Sasaki, da CONFENGE. Consultamos fonte pública que identifica a %s como contratada no setor público.",
-		"Tiago Sasaki falando, pela CONFENGE. A atuação da %s como empresa contratada aparece em fonte pública.",
-		"Sou o Tiago Sasaki, da CONFENGE. Encontramos em fonte pública a %s no papel de fornecedora em contrato público.",
-		"Meu nome é Tiago Sasaki, da CONFENGE. O registro público consultado mostra a %s como empresa contratada.",
-		"Falo em nome da CONFENGE, sou Tiago Sasaki. A %s foi identificada em fonte pública como fornecedora do setor público.",
-		"Sou Tiago Sasaki e escrevo pela CONFENGE. Há registro público da %s como contratada em contratos públicos.",
-	}
-	purposes := []string{
-		"Este contato inicial serve apenas para localizar a pessoa ou área que acompanha esse assunto dentro da empresa.",
-		"Escrevo somente para encontrar o setor interno que trata desse tema na empresa.",
-		"O objetivo desta primeira mensagem é chegar à equipe responsável por esse tema dentro da empresa.",
-		"Busco apenas direcionar este primeiro contato à área interna que acompanha contratos públicos.",
-		"Minha intenção neste contato inicial é identificar quem recebe assuntos ligados a contratos públicos.",
-		"Esta mensagem tem apenas o propósito de localizar a área adequada para tratar desse assunto.",
-		"Quero somente confirmar qual equipe interna acompanha contratos públicos e licitações.",
-		"O motivo deste contato é encontrar o canal correto para assuntos de contratos públicos na empresa.",
-	}
-	questions := []string{
-		"Você poderia indicar quem é responsável por contratos públicos e licitações, ou encaminhar esta mensagem ao setor correto?",
-		"Poderia indicar a pessoa responsável por contratos públicos, ou encaminhar o contato à área de licitações?",
-		"Quem é responsável por contratos públicos na empresa, e seria possível encaminhar esta mensagem a essa área?",
-		"Seria possível indicar quem cuida de contratos públicos e direcionar esta mensagem ao setor responsável?",
-		"Você poderia encaminhar esta mensagem à área responsável por licitações, ou indicar quem cuida desse tema?",
-		"Qual pessoa ou setor é responsável por contratos públicos, e você poderia indicar esse contato?",
-		"Poderia direcionar esta mensagem a quem cuida de licitações e contratos públicos dentro da empresa?",
-		"Você consegue indicar o responsável por contratos públicos ou encaminhar esta mensagem à equipe adequada?",
-	}
-	seed := int(acc.ID.ID())
-	for attempt := 0; attempt < len(subjects)*len(openings)*len(purposes)*len(questions); attempt++ {
-		n := seed + attempt
-		subject := subjects[n%len(subjects)]
-		n /= len(subjects)
-		opening := fmt.Sprintf(openings[n%len(openings)], company)
-		n /= len(openings)
-		purpose := purposes[n%len(purposes)]
-		n /= len(purposes)
-		question := questions[n%len(questions)]
-		body := strings.Join([]string{opening, purpose, question, "Atenciosamente,\nEng. Tiago Sasaki\nCONFENGE\ntiago.sasaki@confenge.com.br"}, "\n\n")
-		if _, duplicate := NearDuplicate(body, recent); !duplicate {
-			return subject, body
-		}
-	}
-	return subjects[seed%len(subjects)], ""
 }

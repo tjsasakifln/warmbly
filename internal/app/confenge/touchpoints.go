@@ -1079,6 +1079,11 @@ func (s *service) releaseNextTouch(ctx context.Context, orgID uuid.UUID, prior *
 }
 
 func (s *service) QueueTouchpoint(ctx context.Context, orgID, userID, id uuid.UUID) (*models.OutreachTouchpoint, *errx.Error) {
+	return s.queueTouchpointAt(ctx, orgID, userID, id, nil)
+}
+
+// queueTouchpointAt preserves canonical gates while accepting a capacity-planned slot.
+func (s *service) queueTouchpointAt(ctx context.Context, orgID, userID, id uuid.UUID, plannedDueAt *time.Time) (*models.OutreachTouchpoint, *errx.Error) {
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, xerr
 	}
@@ -1117,10 +1122,14 @@ func (s *service) QueueTouchpoint(ctx context.Context, orgID, userID, id uuid.UU
 		return nil, errx.New(errx.Conflict, err.Error())
 	}
 	_ = userID
-	return s.scheduleApprovedTouchpoint(ctx, orgID, tp)
+	return s.scheduleApprovedTouchpointAt(ctx, orgID, tp, plannedDueAt)
 }
 
 func (s *service) scheduleApprovedTouchpoint(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint) (*models.OutreachTouchpoint, *errx.Error) {
+	return s.scheduleApprovedTouchpointAt(ctx, orgID, tp, nil)
+}
+
+func (s *service) scheduleApprovedTouchpointAt(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint, plannedDueAt *time.Time) (*models.OutreachTouchpoint, *errx.Error) {
 	if s.governor == nil {
 		return nil, errx.New(errx.ServiceUnavailable, "dispatch governor not wired; approval was preserved")
 	}
@@ -1133,6 +1142,13 @@ func (s *service) scheduleApprovedTouchpoint(ctx context.Context, orgID uuid.UUI
 	cfg := s.governor.Config()
 	now := time.Now().UTC()
 	due := dispatch.NextEligibleSlot(now.Add(cfg.MinGap), cfg.Timezone, cfg.WindowStart, cfg.WindowEnd, cfg.BusinessDaysOnly)
+	if plannedDueAt != nil {
+		candidate := plannedDueAt.UTC()
+		if candidate.Before(now.Add(cfg.MinGap)) {
+			candidate = now.Add(cfg.MinGap)
+		}
+		due = dispatch.NextEligibleSlot(candidate, cfg.Timezone, cfg.WindowStart, cfg.WindowEnd, cfg.BusinessDaysOnly)
+	}
 	messageKey := dispatch.MessageKeyEmail(*tp.DraftID)
 	if tp.Channel == models.OutreachChannelWhatsApp {
 		messageKey = dispatch.MessageKeyWhatsApp(*tp.DraftID)

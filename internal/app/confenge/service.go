@@ -101,13 +101,14 @@ type Service interface {
 	SendApprovedWhatsApp(ctx context.Context, orgID, userID, draftID uuid.UUID) (*models.OutreachDraft, *errx.Error)
 	HandleWhatsAppInbound(ctx context.Context, orgID uuid.UUID, ev whatsapp.ChannelEvent) (whatsapp.InboundResult, error)
 
-	// Global dispatch governor (email + WhatsApp shared cap).
+	// Mailbox-first email pacing with a shared email and WhatsApp ceiling.
 	WireDispatch(db *pgxpool.Pool)
 	DispatchStatus(ctx context.Context, orgID uuid.UUID) (dispatch.Status, *errx.Error)
 	PauseDispatch(ctx context.Context, orgID, userID uuid.UUID, reason string) *errx.Error
 	ResumeDispatch(ctx context.Context, orgID, userID uuid.UUID) *errx.Error
 	CompleteCampaignEmail(ctx context.Context, orgID, campaignID, contactID, sequenceID, taskID, mailboxID uuid.UUID, providerMessageID, provider string, acceptedAt time.Time) error
 	ObserveCampaignEmailAttempt(ctx context.Context, orgID, campaignID, contactID, sequenceID, taskID, mailboxID uuid.UUID, provider string, attemptedAt time.Time) error
+	RecordCampaignEmailFailure(ctx context.Context, taskID uuid.UUID, errorCode, errorText string, occurredAt time.Time) error
 	ProcessDispatchQueueOnce(ctx context.Context) (bool, error)
 	ProcessEditorialRecoveryOnce(ctx context.Context) (bool, error)
 	ProcessDraftGenerationOnce(ctx context.Context) (bool, error)
@@ -200,6 +201,8 @@ type ImportOptions struct {
 	// holds the organization feed lock. Public imports keep the original
 	// idempotent readback behavior and never reclaim an in-flight run.
 	resumeStaleRunningAfter time.Duration
+	// Manifest sync materializes the canonical backlog instead of a parallel human action queue.
+	skipCommercialPlanning bool
 }
 
 type ApprovalOptions struct {
@@ -386,7 +389,7 @@ func (s *service) ImportFromBytes(ctx context.Context, orgID uuid.UUID, userID *
 		}
 	}
 
-	counts, leadErrs, warns := s.applyFeed(ctx, orgID, run, feed, run.DryRun)
+	counts, leadErrs, warns := s.applyFeed(ctx, orgID, run, feed, run.DryRun, !opts.skipCommercialPlanning)
 	run.Counts = counts
 	applyOperatorSummary(&run.Counts, SummarizeOperatorProjection(feed))
 	run.Errors = leadErrs
@@ -452,7 +455,7 @@ func mustJSON(v any) []byte {
 	return b
 }
 
-func (s *service) applyFeed(ctx context.Context, orgID uuid.UUID, run *models.OutreachImportRun, feed *Feed, dryRun bool) (models.OutreachImportCounts, []models.OutreachImportError, []string) {
+func (s *service) applyFeed(ctx context.Context, orgID uuid.UUID, run *models.OutreachImportRun, feed *Feed, dryRun, planCommercialActions bool) (models.OutreachImportCounts, []models.OutreachImportError, []string) {
 	var counts models.OutreachImportCounts
 	var leadErrs []models.OutreachImportError
 	var warns []string
@@ -576,7 +579,9 @@ func (s *service) applyFeed(ctx context.Context, orgID uuid.UUID, run *models.Ou
 				counts.LeadsSkippedError++
 			}
 		}
-		s.planAndPersistAccount(ctx, orgID, acc)
+		if planCommercialActions {
+			s.planAndPersistAccount(ctx, orgID, acc)
+		}
 		counts.LeadsProcessed++
 	}
 	return counts, leadErrs, warns

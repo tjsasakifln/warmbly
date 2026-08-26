@@ -21,10 +21,14 @@ func TestAdaptiveStepUp10to15to20(t *testing.T) {
 	}
 }
 
-func TestAdaptiveRetreatOnBounceAndAuth(t *testing.T) {
+func TestAdaptiveRetreatRequiresExplicitBouncePolicySignal(t *testing.T) {
 	d := EvaluateAdaptiveRate(20, 10, 20, 20, AdaptiveHealth{Commits: 20, HardBounceRate: 0.03})
+	if d.Action != "hold" || d.NextSendsPerHour != 20 {
+		t.Fatalf("observed bounce rate without policy signal got action=%s rate=%d", d.Action, d.NextSendsPerHour)
+	}
+	d = EvaluateAdaptiveRate(20, 10, 20, 20, AdaptiveHealth{Commits: 20, SystemicRecipientIssue: true})
 	if d.Action != "step_down" || d.NextSendsPerHour != 15 {
-		t.Fatalf("bounce retreat got action=%s rate=%d", d.Action, d.NextSendsPerHour)
+		t.Fatalf("explicit bounce policy signal got action=%s rate=%d", d.Action, d.NextSendsPerHour)
 	}
 	d = EvaluateAdaptiveRate(15, 10, 20, 20, AdaptiveHealth{Commits: 20, AuthFailure: true})
 	if d.Action != "step_down" || d.NextSendsPerHour != 10 {

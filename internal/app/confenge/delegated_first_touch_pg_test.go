@@ -2,14 +2,17 @@ package confenge
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
+	"github.com/warmbly/warmbly/internal/errx"
 	infrastructuredb "github.com/warmbly/warmbly/internal/infrastructure/db"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/repository"
@@ -28,8 +31,12 @@ type delegatedPGFixture struct {
 }
 
 func newDelegatedPGFixture(t *testing.T) *delegatedPGFixture {
+	return newDelegatedPGFixtureWithTimeout(t, 60*time.Second)
+}
+
+func newDelegatedPGFixtureWithTimeout(t *testing.T, timeout time.Duration) *delegatedPGFixture {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	t.Cleanup(cancel)
 	pool, err := pgxpool.New(ctx, testPostgresDSN(t))
 	if err != nil {
@@ -56,13 +63,14 @@ func newDelegatedPGFixture(t *testing.T) *delegatedPGFixture {
 	if _, err := pool.Exec(ctx, `INSERT INTO organizations(id,name,slug,owner_user_id) VALUES($1,'Delegated First Touch',$2,$3)`, f.orgID, "delegated-"+f.orgID.String(), f.actorID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO workers(id,name,ip_addr,active,worker_type,free_tier) VALUES($1,'delegated-test','127.0.0.1',true,'shared',false)`, f.workerID); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO workers(id,name,ip_addr,active,worker_type,free_tier,last_seen_at) VALUES($1,'delegated-test','127.0.0.1',true,'shared',false,now())`, f.workerID); err != nil {
 		t.Fatal(err)
 	}
 	mailboxID := uuid.New()
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO email_accounts(id,user_id,organization_id,worker_id,email,name,signature_plain,signature_html,provider,status,warmup_tag,campaign_limit,min_wait_time,risk_band)
-		VALUES($1,$2,$3,$4,$5,'CONFENGE','','','smtp_imap','active','delegated-test',50,600,'clean')`,
+		INSERT INTO email_accounts(id,user_id,organization_id,worker_id,email,name,signature_plain,signature_html,provider,status,warmup_tag,campaign_limit,min_wait_time,risk_band,
+			auth_state,auth_spf,auth_dkim,auth_dmarc,auth_checked_at)
+		VALUES($1,$2,$3,$4,$5,'CONFENGE','','','smtp_imap','active','delegated-test',50,600,'clean','passing',true,true,true,now())`,
 		mailboxID, f.actorID, f.orgID, f.workerID, sender); err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +94,7 @@ func newDelegatedPGFixture(t *testing.T) *delegatedPGFixture {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Truncate(time.Second)
+	sourceExpiresAt := now.Add(time.Hour)
 	runID, snapshot := "run-delegated-"+uuid.NewString(), strings.Repeat("b", 64)
 	importID := uuid.New()
 	run := &models.OutreachImportRun{
@@ -99,7 +108,9 @@ func newDelegatedPGFixture(t *testing.T) *delegatedPGFixture {
 	if err := f.repo.UpsertFeedSyncState(ctx, &models.OutreachFeedSyncState{
 		OrganizationID: f.orgID, LastSnapshotHash: snapshot, LastRunID: runID,
 		LastManifestURI: "file:///delegated-test.json", LastSuccessAt: &now, LastAttemptAt: &now,
-		LastStatus: "completed", SourceGeneratedAt: &now,
+		LastStatus: "completed", SourceGeneratedAt: &now, SourceExpiresAt: &sourceExpiresAt,
+		SourceFreshnessHash: strings.Repeat("c", 64), TargetMembershipComplete: true,
+		TargetMembershipHash: strings.Repeat("d", 64), TargetMembershipCount: 1, SupplierConfirmedCount: 1,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -127,6 +138,7 @@ func newDelegatedPGFixture(t *testing.T) *delegatedPGFixture {
 	candidate := &models.OutreachContactCandidate{
 		ID: uuid.New(), OrganizationID: f.orgID, AccountID: account.ID, SourceContactID: "route-delegated",
 		Name: "Equipe", Role: "Atendimento", Email: "contato@empresa.example", SourceURL: "https://empresa.example/contato",
+		SourceDate:         &now,
 		VerificationStatus: models.OutreachVerifyOfficialSource, Confidence: "HIGH", Recommended: true,
 		EmailSendReady: true, OwnershipStatus: "COMPANY_OWNED", RecipientCommercialSuitability: "SUITABLE",
 		LastImportRunID: &importID, ChannelEpistemic: "OBSERVED", RouteFreshness: "FRESH",
@@ -136,11 +148,12 @@ func newDelegatedPGFixture(t *testing.T) *delegatedPGFixture {
 	if _, err := f.repo.UpsertCandidate(ctx, candidate); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.repo.UpsertEvidence(ctx, &models.OutreachEvidence{
+	evidence := models.OutreachEvidence{
 		ID: uuid.New(), OrganizationID: f.orgID, AccountID: account.ID, SourceEvidenceID: "contract-1",
 		EvidenceType: "CONTRACT", URL: "https://pncp.gov.br/contratos/test", Synthesis: "Empresa Alfa figura como contratada.",
 		EpistemicClass: models.OutreachEpistemicConfirmedFact, Reliability: "HIGH", ConsultedAt: &now, LastImportRunID: &importID,
-	}); err != nil {
+	}
+	if _, err := f.repo.UpsertEvidence(ctx, &evidence); err != nil {
 		t.Fatal(err)
 	}
 
@@ -169,21 +182,18 @@ func newDelegatedPGFixture(t *testing.T) *delegatedPGFixture {
 		EnvPauseReason: "delegated zero-smtp canary",
 	}, dispatch.NewPGStore(pool), nil))
 
-	body := "Olá, equipe da Empresa Alfa. Meu nome é Tiago Sasaki, da CONFENGE. A Empresa Alfa aparece como contratada em contratos públicos confirmados em fonte pública. Trabalhamos com organização técnica de rotinas ligadas à administração pública. Quem é a pessoa responsável por esse tema na empresa? Você poderia indicar o contato correto ou encaminhar esta mensagem, por favor? Obrigado, Tiago Sasaki, confenge.com.br."
-	entry := DelegatedFirstTouchEntry{
-		IdempotencyKey: "first-touch:" + account.ID.String(), CorrelationID: "corr-delegated", AccountID: account.ID,
-		ContactCandidateID: candidate.ID, CNPJ14: account.CNPJ14, SupplierCNPJ14: account.SupplierCNPJ14, BuyerCNPJ14: account.BuyerCNPJ14,
-		ContractorRoleStatus: ContractorRoleConfirmed, TargetPartyRole: "SUPPLIER", ContractRoleSource: account.ContractorRoleSource,
-		ContractEvidenceIDs: account.ContractorRoleEvidenceIDs, ContractEvidenceHash: evidenceHash,
-		ContractEvidenceReference: account.ContractorRoleEvidenceReference, SupplierIdentityRef: account.SupplierIdentityRef,
-		BuyerIdentityRef: account.BuyerIdentityRef, RoleMatchMethod: account.ContractorRoleMatchMethod,
-		RoleConfidence: account.ContractorRoleConfidence, ContractRoleReasonCodes: account.ContractorRoleReasonCodes,
-		EvidenceObservedAt: now, ReconciliationStatus: ReconciliationCorroborated,
-		WebSources: []DelegatedWebSource{{URL: candidate.SourceURL, Kind: "OFFICIAL_COMPANY_PAGE", Supports: "COMPANY_IDENTITY_AND_MAILBOX", ObservedAt: now}},
-		RouteClass: RouteClassGenericCompany, Recipient: candidate.Email, Subject: "Responsável por contratos públicos na Empresa Alfa", BodyText: body,
-		EvidenceIDs: []string{"contract-1"}, QA: DelegatedFirstTouchQA{Result: "PASS", Attempts: 1, IdentityPassed: true,
-			FactualPassed: true, CopyPassed: true, OperationalPassed: true, Reviewer: "agent:test"},
-	}
+	copy := buildDelegatedRoutingCopy(account, candidate, []models.OutreachEvidence{evidence})
+	entry := delegatedEntryFromCurrentState(account, candidate, uuid.New(), copy)
+	entry.IdempotencyKey = "first-touch:" + account.ID.String()
+	entry.CorrelationID = "corr-delegated"
+	entry.ReconciliationStatus = ReconciliationCorroborated
+	entry.WebSources = []DelegatedWebSource{{
+		URL: candidate.SourceURL, Kind: "OFFICIAL_COMPANY_PAGE",
+		Supports: "COMPANY_IDENTITY_AND_MAILBOX", ObservedAt: now,
+	}}
+	entry.RouteClass = RouteClassGenericCompany
+	entry.Recipient = candidate.Email
+	entry.QA.Reviewer = "agent:test"
 	entry.SubjectHash, entry.BodyHash = hashText(entry.Subject), hashText(entry.BodyText)
 	f.manifest = DelegatedFirstTouchManifest{
 		SchemaVersion: DelegatedFirstTouchManifestV1, BatchID: "batch-" + uuid.NewString(), AgentID: "agent:test",
@@ -305,8 +315,27 @@ func TestDelegatedFirstTouchApprovesQueuesAuditsAndReplaysOncePostgres(t *testin
 	status, statusErr := restarted.DelegatedFirstTouchStatus(f.ctx, f.orgID, f.manifest.BatchID)
 	if statusErr != nil || status == nil || !status.PolicyActive || status.QueuedReadback != 1 ||
 		status.DuplicateLiveAccount != 0 || status.DuplicateLiveRoot != 0 || len(status.Items) != 1 ||
-		status.Items[0].ApprovalSource != DelegatedFirstTouchApprovalDecision {
+		status.Items[0].ApprovalSource != DelegatedFirstTouchApprovalDecision ||
+		status.SchemaVersion != "warmbly.confenge.first-touch-control.v1" ||
+		status.Control.Source.RunID != f.manifest.SourceRunID || status.Control.Source.FreshnessState != "fresh" ||
+		status.Control.Prepared != 1 || status.Control.DelegatedApproved != 1 ||
+		status.Control.Transport.ProviderAttempts != 0 || status.Control.Transport.ProviderAccepted != 0 ||
+		status.Control.Transport.Sent != 0 || status.Control.Capacity == nil {
 		t.Fatalf("control-center readback is incomplete: status=%+v err=%v", status, statusErr)
+	}
+}
+
+func TestDelegatedFirstTouchCannotRaceAuthoritativeFeedRefreshPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	key := feedSyncAdvisoryKey(f.orgID)
+	locked, err := f.repo.TryAdvisoryLock(f.ctx, key)
+	if err != nil || !locked {
+		t.Fatalf("reserve feed refresh lock: locked=%v err=%v", locked, err)
+	}
+	defer func() { _ = f.repo.AdvisoryUnlock(context.Background(), key) }()
+	report, xerr := f.svc.ApplyDelegatedFirstTouchManifest(f.ctx, f.orgID, f.manifest, false)
+	if xerr == nil || xerr.Code != errx.Conflict || report != nil {
+		t.Fatalf("approval raced feed refresh: report=%+v err=%+v", report, xerr)
 	}
 }
 
@@ -383,23 +412,45 @@ func TestCampaignReadyAcceptsReadBackDelegatedQueueWithoutContact(t *testing.T) 
 	if err := campaignRepo.ValidateCampaignReady(f.ctx, f.campaignID); err == nil || !strings.Contains(err.Error(), "at least one contact") {
 		t.Fatalf("ordinary empty campaign unexpectedly ready: %v", err)
 	}
-	entry := f.manifest.Entries[0]
-	account, err := f.repo.GetAccount(f.ctx, f.orgID, entry.AccountID)
-	if err != nil || account == nil {
-		t.Fatalf("account unavailable: account=%+v err=%v", account, err)
-	}
-	candidate, err := f.repo.GetCandidate(f.ctx, f.orgID, entry.ContactCandidateID)
-	if err != nil || candidate == nil {
-		t.Fatalf("candidate unavailable: candidate=%+v err=%v", candidate, err)
-	}
-	if _, _, err := f.svc.prepareDelegatedTouchpoint(f.ctx, f.orgID, account, candidate, f.manifest, entry); err != nil {
+	if _, err := f.pool.Exec(f.ctx, `UPDATE outreach_contact_candidates SET route_freshness='STALE' WHERE organization_id=$1`, f.orgID); err != nil {
 		t.Fatal(err)
 	}
+	backlog, err := f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, f.manifest.SourceRunID)
+	if err != nil || backlog.InitialPrepared != 1 || backlog.DelegatedEligible != 0 || backlog.HeldException != 1 {
+		t.Fatalf("static delegated hold was not classified: counts=%+v err=%v", backlog, err)
+	}
+	if ready, err := campaignRepo.HasReadyDelegatedFirstTouch(f.ctx, f.campaignID); err != nil || ready {
+		t.Fatalf("held prepared backlog kept campaign ready: ready=%v err=%v", ready, err)
+	}
+	if pending, err := campaignRepo.HasPendingDelegatedFirstTouch(f.ctx, f.campaignID); err != nil || pending {
+		t.Fatalf("held prepared backlog remained pending: pending=%v err=%v", pending, err)
+	}
+	heldFeed, err := f.repo.GetFeedSyncState(f.ctx, f.orgID)
+	if err != nil || heldFeed == nil {
+		t.Fatalf("feed unavailable: %+v %v", heldFeed, err)
+	}
+	heldAuth, err := f.svc.policyStore.GetCampaignPolicyByID(f.ctx, f.orgID, f.manifest.PolicyAuthorizationID)
+	if err != nil || heldAuth == nil {
+		t.Fatalf("policy unavailable: %+v %v", heldAuth, err)
+	}
+	if _, _, _, err := f.svc.nextDelegatedFirstTouchCandidate(f.ctx, f.orgID, heldFeed, heldAuth); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("delegated worker selected held backlog: %v", err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `UPDATE outreach_contact_candidates SET route_freshness='FRESH' WHERE organization_id=$1`, f.orgID); err != nil {
+		t.Fatal(err)
+	}
+	backlog, err = f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, f.manifest.SourceRunID)
+	if err != nil || backlog.InitialPrepared != 1 || backlog.DelegatedEligible != 1 || backlog.HeldException != 0 {
+		t.Fatalf("prepared manifest backlog unavailable after correction: counts=%+v err=%v", backlog, err)
+	}
+	if ready, err := campaignRepo.HasReadyDelegatedFirstTouch(f.ctx, f.campaignID); err != nil || ready {
+		t.Fatalf("undecided JIT backlog appeared queue-ready: ready=%v err=%v", ready, err)
+	}
 	if pending, err := campaignRepo.HasPendingDelegatedFirstTouch(f.ctx, f.campaignID); err != nil || !pending {
-		t.Fatalf("current undecided backlog unavailable: pending=%v err=%v", pending, err)
+		t.Fatalf("prepared JIT backlog did not remain pending: pending=%v err=%v", pending, err)
 	}
 	if err := campaignRepo.ValidateCampaignReady(f.ctx, f.campaignID); err != nil {
-		t.Fatalf("current delegated backlog did not keep rolling campaign startable: %v", err)
+		t.Fatalf("prepared JIT backlog did not make campaign startable: %v", err)
 	}
 	report, xerr := f.svc.ApplyDelegatedFirstTouchManifest(f.ctx, f.orgID, f.manifest, false)
 	if xerr != nil || report == nil || report.Queued != 1 || len(report.Items) != 1 || report.Items[0].State != "QUEUED" {
@@ -429,7 +480,40 @@ func TestCampaignReadyAcceptsReadBackDelegatedQueueWithoutContact(t *testing.T) 
 	}
 }
 
-func TestDelegatedFirstTouchWorkerSkipsMismatchedDecisionBoundByCurrentIdempotencyKey(t *testing.T) {
+func TestMaterializeCurrentInitialBacklogRetiresAccountOmittedFromNewRunPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	candidateID := f.manifest.Entries[0].ContactCandidateID
+	legacy := &models.OutreachTouchpoint{
+		OrganizationID: f.orgID, AccountID: f.manifest.Entries[0].AccountID, ContactCandidateID: &candidateID,
+		Ordinal: 1, CadenceStep: "INITIAL", Channel: models.OutreachChannelEmail,
+		Purpose: models.TouchpointPurposeInitial, DueAt: time.Now().UTC(), State: models.TouchpointDue,
+		IdempotencyKey: "legacy-initial-" + uuid.NewString(),
+	}
+	if err := f.repo.InsertTouchpoint(f.ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	first, err := f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, f.manifest.SourceRunID)
+	if err != nil || first.InitialPrepared != 1 || first.StaleRetired != 1 {
+		t.Fatalf("initial backlog unavailable: counts=%+v err=%v", first, err)
+	}
+	newRun := "run-omits-prior-account-" + uuid.NewString()
+	refreshed, err := f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, newRun)
+	if err != nil || refreshed.Imported != 0 || refreshed.StaleRetired != 1 {
+		t.Fatalf("omitted account backlog was not retired: counts=%+v err=%v", refreshed, err)
+	}
+	var state, reason string
+	if err := f.pool.QueryRow(f.ctx, `
+		SELECT state,stop_reason FROM outreach_touchpoints
+		WHERE organization_id=$1 AND account_id=$2 AND source_run_id=$3`,
+		f.orgID, f.manifest.Entries[0].AccountID, f.manifest.SourceRunID).Scan(&state, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if state != models.TouchpointCancelled || reason != "source_run_superseded" {
+		t.Fatalf("omitted stale touchpoint survived: state=%s reason=%s", state, reason)
+	}
+}
+
+func TestDelegatedFirstTouchWorkerIgnoresHistoricalLegacyKeyFromStaleBinding(t *testing.T) {
 	f := newDelegatedPGFixture(t)
 	entry := f.manifest.Entries[0]
 	firstAccount, err := f.repo.GetAccount(f.ctx, f.orgID, entry.AccountID)
@@ -455,6 +539,14 @@ func TestDelegatedFirstTouchWorkerSkipsMismatchedDecisionBoundByCurrentIdempoten
 	staleManifest.BatchID = "stale-key-" + uuid.NewString()
 	staleManifest.SourceRunID = "run-stale-evidence"
 	staleManifest.SourceSnapshotHash = strings.Repeat("e", 64)
+	feedAuthority, err := f.repo.GetFeedSyncState(f.ctx, f.orgID)
+	if err != nil || feedAuthority == nil {
+		t.Fatalf("feed authority unavailable: authority=%+v err=%v", feedAuthority, err)
+	}
+	staleAuthority := *feedAuthority
+	staleAuthority.LastRunID = staleManifest.SourceRunID
+	staleAuthority.LastSnapshotHash = staleManifest.SourceSnapshotHash
+	staleManifest.authority = &staleAuthority
 	staleEntry := entry
 	staleEntry.IdempotencyKey = delegatedFirstTouchIdempotencyPrefix + f.manifest.SourceRunID + ":" + firstAccount.ID.String()
 	if err := f.svc.reserveDelegatedBatch(f.ctx, f.orgID, staleManifest, manifestHash(staleManifest)); err != nil {
@@ -499,12 +591,27 @@ func TestDelegatedFirstTouchWorkerSkipsMismatchedDecisionBoundByCurrentIdempoten
 		t.Fatal(err)
 	}
 
-	touchpointID, accountID, candidateID, err := f.svc.nextDelegatedFirstTouchCandidate(f.ctx, f.orgID)
+	feed, err := f.repo.GetFeedSyncState(f.ctx, f.orgID)
+	if err != nil || feed == nil {
+		t.Fatalf("feed unavailable: %+v %v", feed, err)
+	}
+	auth, err := f.svc.policyStore.GetCampaignPolicyByID(f.ctx, f.orgID, f.manifest.PolicyAuthorizationID)
+	if err != nil || auth == nil {
+		t.Fatalf("policy unavailable: %+v %v", auth, err)
+	}
+	touchpointID, accountID, candidateID, err := f.svc.nextDelegatedFirstTouchCandidate(f.ctx, f.orgID, feed, auth)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if touchpointID != secondTouchpoint.ID || accountID != secondAccount.ID || candidateID != secondCandidate.ID {
-		t.Fatalf("historical key mismatch blocked rolling selection: touchpoint=%s account=%s candidate=%s", touchpointID, accountID, candidateID)
+	if touchpointID != firstTouchpoint.ID || accountID != firstAccount.ID || candidateID != firstCandidate.ID {
+		t.Fatalf("historical legacy key blocked current binding: touchpoint=%s account=%s candidate=%s", touchpointID, accountID, candidateID)
+	}
+	touchpointID, accountID, candidateID, err = f.svc.nextDelegatedFirstTouchCandidate(f.ctx, f.orgID, feed, auth)
+	if err != nil || touchpointID != secondTouchpoint.ID || accountID != secondAccount.ID || candidateID != secondCandidate.ID {
+		t.Fatalf("next current touchpoint unavailable: touchpoint=%s account=%s candidate=%s err=%v", touchpointID, accountID, candidateID, err)
+	}
+	if _, _, _, err = f.svc.nextDelegatedFirstTouchCandidate(f.ctx, f.orgID, feed, auth); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("leased touchpoint was selected twice: %v", err)
 	}
 }
 

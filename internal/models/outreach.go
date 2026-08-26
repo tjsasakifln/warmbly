@@ -213,6 +213,7 @@ type OutreachAccount struct {
 	TargetFitEligible          bool       `json:"target_fit_eligible"`
 	TargetFitSuppressionReason string     `json:"target_fit_suppression_reason,omitempty"`
 	TargetFitReconciledAt      *time.Time `json:"target_fit_reconciled_at,omitempty"`
+	InitialBacklogReasonCode   string     `json:"initial_backlog_reason_code,omitempty"`
 	// Company-level rollup of best-contact email_send_ready from extra-cli.
 	EmailSendReady bool `json:"email_send_ready,omitempty"`
 
@@ -505,17 +506,23 @@ type OutreachOutcome struct {
 
 // OutreachFeedSyncState is durable manifest sync progress per org.
 type OutreachFeedSyncState struct {
-	OrganizationID    uuid.UUID  `json:"organization_id"`
-	LastSnapshotHash  string     `json:"last_snapshot_hash"`
-	LastRunID         string     `json:"last_run_id"`
-	LastManifestURI   string     `json:"last_manifest_uri"`
-	LastSuccessAt     *time.Time `json:"last_success_at,omitempty"`
-	SourceGeneratedAt *time.Time `json:"source_generated_at,omitempty"`
-	LastAttemptAt     *time.Time `json:"last_attempt_at,omitempty"`
-	LastError         string     `json:"last_error,omitempty"`
-	LastStatus        string     `json:"last_status"`
-	CountsJSON        []byte     `json:"counts,omitempty"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	OrganizationID           uuid.UUID  `json:"organization_id"`
+	LastSnapshotHash         string     `json:"last_snapshot_hash"`
+	LastRunID                string     `json:"last_run_id"`
+	LastManifestURI          string     `json:"last_manifest_uri"`
+	LastSuccessAt            *time.Time `json:"last_success_at,omitempty"`
+	SourceGeneratedAt        *time.Time `json:"source_generated_at,omitempty"`
+	SourceExpiresAt          *time.Time `json:"source_expires_at,omitempty"`
+	SourceFreshnessHash      string     `json:"source_freshness_hash,omitempty"`
+	TargetMembershipComplete bool       `json:"target_membership_complete"`
+	TargetMembershipHash     string     `json:"target_membership_hash,omitempty"`
+	TargetMembershipCount    int        `json:"target_membership_count"`
+	SupplierConfirmedCount   int        `json:"supplier_confirmed_count"`
+	LastAttemptAt            *time.Time `json:"last_attempt_at,omitempty"`
+	LastError                string     `json:"last_error,omitempty"`
+	LastStatus               string     `json:"last_status"`
+	CountsJSON               []byte     `json:"counts,omitempty"`
+	UpdatedAt                time.Time  `json:"updated_at"`
 }
 
 // OutreachPilotMembership is the durable definition of one prepared pilot account.
@@ -655,6 +662,7 @@ type OutreachTouchpoint struct {
 	FactUsed             string           `json:"fact_used"`
 	EvidenceIDs          []string         `json:"evidence_ids,omitempty"`
 	GeneratedContextHash string           `json:"generated_context_hash,omitempty"`
+	SourceRunID          string           `json:"source_run_id,omitempty"`
 	CreatedAt            time.Time        `json:"created_at"`
 	UpdatedAt            time.Time        `json:"updated_at"`
 	Account              *OutreachAccount `json:"account,omitempty"`

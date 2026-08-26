@@ -61,6 +61,12 @@ type CampaignGateResult struct {
 	Err           error // only meaningful for GateTransient
 }
 
+// CampaignTransportBinding binds a reservation to the scheduler-selected mailbox and task.
+type CampaignTransportBinding struct {
+	EmailAccountID uuid.UUID
+	TaskID         uuid.UUID
+}
+
 // PermanentSuppress reports whether the campaign task may org-wide suppress / bounce-mark.
 // Only GateHardBlock is true; Transient/Deferred/Already/Proceed never permanent-suppress.
 func (r CampaignGateResult) PermanentSuppress() bool {
@@ -85,6 +91,24 @@ func MessageKeyCampaignEmail(campaignID, contactID, sequenceID uuid.UUID) string
 // CAMPAIGN_POLICY revalidation always runs for open transportable touchpoints on
 // the resolved account, independent of MessageContextHash presence.
 func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campaignName, recipientEmail string, campaignID, contactID, sequenceID uuid.UUID) CampaignGateResult {
+	return s.gateCampaignEmail(ctx, orgID, campaignName, recipientEmail, campaignID, contactID, sequenceID, CampaignTransportBinding{})
+}
+
+// GateCampaignEmailForTransport requires the scheduler-selected mailbox and task binding.
+func (s *service) GateCampaignEmailForTransport(ctx context.Context, orgID uuid.UUID, campaignName, recipientEmail string, campaignID, contactID, sequenceID uuid.UUID, binding CampaignTransportBinding) CampaignGateResult {
+	return s.gateCampaignEmail(ctx, orgID, campaignName, recipientEmail, campaignID, contactID, sequenceID, binding)
+}
+
+func (s *service) gateCampaignEmail(ctx context.Context, orgID uuid.UUID, campaignName, recipientEmail string, campaignID, contactID, sequenceID uuid.UUID, binding CampaignTransportBinding) CampaignGateResult {
+	var emailAccountID, taskID *uuid.UUID
+	if binding.EmailAccountID != uuid.Nil {
+		value := binding.EmailAccountID
+		emailAccountID = &value
+	}
+	if binding.TaskID != uuid.Nil {
+		value := binding.TaskID
+		taskID = &value
+	}
 	isConfenge := IsConfengeCampaign(campaignName)
 	var enrolledTouchpoint *models.OutreachTouchpoint
 	if s != nil && s.repo != nil && campaignID != uuid.Nil {
@@ -259,6 +283,8 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 	}
 	res, err := s.governor.TryReserve(ctx, dispatch.ReserveRequest{
 		OrganizationID: orgID,
+		EmailAccountID: emailAccountID,
+		TaskID:         taskID,
 		Channel:        dispatch.ChannelEmail,
 		MessageKey:     key,
 		CapOverride:    capOverride,
@@ -283,14 +309,7 @@ func (s *service) GateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 		if due.IsZero() {
 			due = time.Now().UTC().Add(s.governor.Config().MinGap)
 		}
-		_ = s.governor.Enqueue(ctx, dispatch.EnqueueRequest{
-			OrganizationID: orgID,
-			Channel:        dispatch.ChannelEmail,
-			DraftID:        uuid.Nil,
-			MessageKey:     key,
-			RecipientRef:   strings.TrimSpace(strings.ToLower(recipientEmail)),
-			DueAt:          due,
-		})
+		// The campaign task already provides durable retry; do not add a zero-draft queue row.
 		return CampaignGateResult{Kind: GateDeferred, NextSlot: due, Reason: res.Reason}
 	}
 	if cohortAuthID != uuid.Nil && res.Reservation != nil {
@@ -579,7 +598,7 @@ func (s *service) assertBoundedCohortTransport(ctx context.Context, tp *models.O
 	if auth == nil {
 		return fmt.Errorf("bounded cohort grant missing at transport")
 	}
-	return CanTransportCohort(tp, auth, s.liveCohortInput(ctx, tp, cand, messageKey))
+	return CanTransportCohort(tp, auth, s.liveCohortInput(ctx, tp, cand, boundedCohortMessageKey(tp, messageKey)))
 }
 
 func (s *service) assertAuthoritativeFeedForTransport(ctx context.Context, orgID uuid.UUID, acc *models.OutreachAccount) error {
@@ -590,16 +609,9 @@ func (s *service) assertAuthoritativeFeedForTransport(ctx context.Context, orgID
 	if err != nil || state == nil {
 		return fmt.Errorf("authoritative feed state unavailable")
 	}
-	if state.LastStatus != "completed" || state.SourceGeneratedAt == nil || state.LastSnapshotHash == "" || state.LastRunID == "" {
-		return fmt.Errorf("authoritative feed is not completely applied")
-	}
-	maxAge := s.cfg.FeedMaxAge
-	if maxAge <= 0 {
-		maxAge = 24 * time.Hour
-	}
 	now := time.Now().UTC()
-	if state.SourceGeneratedAt.After(now.Add(5*time.Minute)) || now.Sub(state.SourceGeneratedAt.UTC()) > maxAge {
-		return fmt.Errorf("authoritative feed is stale")
+	if err := validateAuthoritativeFeedState(state, now, s.cfg.FeedMaxAge, s.cfg.DelegatedFirstTouchEnabled); err != nil {
+		return err
 	}
 	if acc == nil || strings.TrimSpace(acc.SourceRunID) != strings.TrimSpace(state.LastRunID) {
 		return fmt.Errorf("account is not from the completely applied authoritative snapshot")
@@ -695,13 +707,25 @@ func (s *service) ObserveCampaignEmailAttempt(ctx context.Context, orgID, campai
 	if touchpoint == nil {
 		return ErrCampaignTouchpointNotFound
 	}
+	messageKey := MessageKeyCampaignEmail(campaignID, contactID, sequenceID)
+	if s.governor == nil {
+		return fmt.Errorf("dispatch governor unavailable for provider attempt")
+	}
+	if err := s.governor.MarkAttempt(ctx, messageKey, attemptedAt); err != nil {
+		return err
+	}
 	var cand *models.OutreachContactCandidate
 	if touchpoint.ContactCandidateID != nil {
 		cand, _ = s.repo.GetCandidate(ctx, orgID, *touchpoint.ContactCandidateID)
 	}
+	if isBoundedCohortTouch(touchpoint) {
+		if err := s.assertBoundedCohortTransport(ctx, touchpoint, cand, messageKey); err != nil {
+			return err
+		}
+	}
 	return s.observeControlledEmail(ctx, orgID, intel.EventEmailAttempted, touchpoint, cand, ControlledEmailContext{
 		OccurredAt: attemptedAt, ProviderName: firstNonEmpty(provider, "smtp"),
-		MailboxID: opaqueUUID(mailboxID), StableEventRef: firstNonEmpty(opaqueUUID(taskID), MessageKeyCampaignEmail(campaignID, contactID, sequenceID)),
+		MailboxID: opaqueUUID(mailboxID), StableEventRef: firstNonEmpty(opaqueUUID(taskID), messageKey),
 	})
 }
 
@@ -710,6 +734,14 @@ func opaqueUUID(id uuid.UUID) string {
 		return ""
 	}
 	return id.String()
+}
+
+// RecordCampaignEmailFailure persists a factual mailbox-bound rejection.
+func (s *service) RecordCampaignEmailFailure(ctx context.Context, taskID uuid.UUID, errorCode, errorText string, occurredAt time.Time) error {
+	if s == nil || s.governor == nil {
+		return fmt.Errorf("dispatch governor unavailable for provider failure")
+	}
+	return s.governor.RecordProviderFailure(ctx, taskID, errorCode, errorText, occurredAt)
 }
 
 func (s *service) transitionCompletedTouchpoint(ctx context.Context, orgID uuid.UUID, tp *models.OutreachTouchpoint, now time.Time, providerMessageID string) error {
@@ -729,7 +761,7 @@ func (s *service) transitionCompletedTouchpointKeyed(ctx context.Context, orgID 
 		if err != nil {
 			return fmt.Errorf("bounded cohort store unavailable: %w", err)
 		}
-		in := s.liveCohortInput(ctx, tp, cand, messageKey)
+		in := s.liveCohortInput(ctx, tp, cand, boundedCohortMessageKey(tp, messageKey))
 		if err := TransitionToSentCohort(tp, now, providerMessageID, auth, in); err != nil {
 			return err
 		}
@@ -785,17 +817,25 @@ func cohortMessageKey(authID, touchpointID uuid.UUID) string {
 	return fmt.Sprintf("cohort:%s:tp:%s", authID, touchpointID)
 }
 
+func boundedCohortMessageKey(tp *models.OutreachTouchpoint, fallback string) string {
+	if tp != nil && tp.ID != uuid.Nil && tp.CampaignPolicyAuthorizationID != nil {
+		return cohortMessageKey(*tp.CampaignPolicyAuthorizationID, tp.ID)
+	}
+	return fallback
+}
+
 func (s *service) commitCohortSlot(ctx context.Context, tp *models.OutreachTouchpoint, now time.Time, messageKey string) error {
 	if s == nil || s.cohortStore == nil || tp == nil || tp.CampaignPolicyAuthorizationID == nil {
 		return nil
 	}
-	if messageKey == "" {
-		if tp.ID == uuid.Nil {
-			s.cohortStore.RecordSent(*tp.CampaignPolicyAuthorizationID, now.UTC().Format("2006-01-02"))
-			return nil
+	if tp.ID == uuid.Nil {
+		if messageKey != "" {
+			return fmt.Errorf("bounded cohort touchpoint id missing")
 		}
-		messageKey = cohortMessageKey(*tp.CampaignPolicyAuthorizationID, tp.ID)
+		s.cohortStore.RecordSent(*tp.CampaignPolicyAuthorizationID, now.UTC().Format("2006-01-02"))
+		return nil
 	}
+	messageKey = boundedCohortMessageKey(tp, messageKey)
 	if err := s.cohortStore.CommitSlot(ctx, *tp.CampaignPolicyAuthorizationID, messageKey, now); err != nil {
 		if errors.Is(err, ErrCohortSlotNotHeld) {
 			if _, rerr := s.cohortStore.ReserveSlot(ctx, *tp.CampaignPolicyAuthorizationID, messageKey, now); rerr != nil {
@@ -816,7 +856,6 @@ func (s *service) ReleaseCampaignEmail(ctx context.Context, reservationID uuid.U
 	}
 	if s.governor != nil && reservationID != uuid.Nil {
 		_ = s.governor.Release(ctx, reservationID, errText)
-		_ = s.governor.RecordFailure(ctx, uuid.Nil, dispatch.ChannelEmail, "", nil, errText)
 	}
 	if s.cohortStore != nil && reservationID != uuid.Nil {
 		_ = s.cohortStore.ReleaseSlotByLease(ctx, reservationID.String(), errText)

@@ -8,8 +8,13 @@ export type ConfengeReadiness = {
     feed_snapshot_hash?: string;
     feed_last_success_at?: string | Date | null;
     feed_source_generated_at?: string | Date | null;
+    feed_source_expires_at?: string | Date | null;
     feed_synced_at?: string | Date | null;
     feed_max_age_seconds?: number;
+    feed_authority_state?: "fresh" | "expired" | "stale" | "missing" | "not_required";
+    target_membership_complete?: boolean;
+    target_membership_count?: number;
+    supplier_confirmed_count?: number;
     outcome_loop: string;
     ai: string;
     governor_cap: number;
@@ -559,6 +564,10 @@ export type ConfengeDelegatedFirstTouchItem = {
     evidence_hash?: string;
     source_run_id: string;
     source_snapshot_hash: string;
+    source_expires_at?: string | null;
+    source_freshness_hash?: string;
+    target_membership_hash?: string;
+    target_membership_count: number;
     reason_codes?: string[];
     blocker_codes?: string[];
     content_hash?: string;
@@ -569,6 +578,8 @@ export type ConfengeDelegatedFirstTouchItem = {
 };
 
 export type ConfengeDelegatedFirstTouchStatus = {
+    schema_version: "warmbly.confenge.first-touch-control.v1";
+    runtime_release_sha?: string;
     batch_id?: string;
     policy_id: string;
     policy_version: string;
@@ -579,6 +590,63 @@ export type ConfengeDelegatedFirstTouchStatus = {
     queued_readback: number;
     duplicate_live_account: number;
     duplicate_live_root: number;
+    runway: {
+        policy_version: string;
+        target_days: number;
+        min_ready_reservoir: number;
+        ready_reservoir_count: number;
+        current_scheduled_count: number;
+        target_scheduled_count: number;
+        queued_count: number;
+        reserved_count: number;
+        runway_hours: number;
+        runway_days: number;
+        current_runway_until?: string | null;
+        target_runway_until?: string | null;
+        furthest_due_at?: string | null;
+        mailbox_count: number;
+        daily_capacity: number;
+        fill_rate: number;
+        stale_retired: number;
+        held: number;
+        no_candidate: number;
+        capacity_blocked: number;
+        capacity_blocker?: string;
+    };
+    control: {
+        schema_version: "warmbly.confenge.first-touch-control.v1";
+        source: {
+            run_id?: string;
+            snapshot_hash?: string;
+            freshness_state: "fresh" | "expired" | "stale" | "invalid" | "missing";
+            generated_at?: string | null;
+            expires_at?: string | null;
+            freshness_hash?: string;
+            target_membership_complete: boolean;
+            target_membership_hash?: string;
+            target_membership_count: number;
+            supplier_confirmed_count: number;
+        };
+        prepared: number;
+        ready_reservoir: number;
+        delegated_approved: number;
+        human_approved: number;
+        queued: number;
+        reserved: number;
+        next_due_at?: string | null;
+        furthest_due_at?: string | null;
+        transport: {
+            provider_attempts: number;
+            provider_accepted: number;
+            sent: number;
+            kill_switch_engaged: boolean;
+            dispatch_paused: boolean;
+            pause_reason?: string;
+        };
+        outcomes: Record<string, number>;
+        capacity?: ConfengeDispatchStatus;
+        blocker?: string;
+    };
     items: ConfengeDelegatedFirstTouchItem[];
 };
 
@@ -833,11 +901,82 @@ export type ConfengeTouchpoint = {
 export type ConfengeDispatchFailure = {
     id: string;
     organization_id?: string;
+    email_account_id?: string;
+    task_id?: string;
     channel: string;
     message_key: string;
     draft_id?: string;
+    error_code?: string;
+    error_class: string;
     error_text: string;
     occurred_at: string;
+};
+
+export type ConfengeMailboxCapacity = {
+    email_account_id: string;
+    email: string;
+    enabled: boolean;
+    status: string;
+    provider: string;
+    credentials_ready: boolean;
+    worker_assigned: boolean;
+    worker_healthy: boolean;
+    worker_last_seen_at?: string;
+    auth_state: string;
+    auth_spf: boolean;
+    auth_dkim: boolean;
+    auth_dmarc: boolean;
+    auth_dmarc_policy?: string;
+    auth_checked_at?: string;
+    mailbox_age_days: number;
+    warmup_started_at?: string;
+    warmup_age_days?: number;
+    warmup_days_observed: number;
+    cold_ramp_started_at?: string;
+    configured_daily_cap: number;
+    configured_min_wait_seconds: number;
+    derived_hourly_cap: number;
+    effective_daily_cap: number;
+    effective_hourly_cap: number;
+    provider_daily_cap?: number;
+    provider_hourly_cap?: number;
+    provider_cap_source: string;
+    business_window: {
+        timezone: string;
+        start: string;
+        end: string;
+        business_days_only: boolean;
+    };
+    observed_throughput: {
+        accepted_last_hour: number;
+        accepted_today: number;
+        accepted_last_7d: number;
+    };
+    latest: {
+        attempt_at?: string;
+        accepted_at?: string;
+        bounce_at?: string;
+        complaint_at?: string;
+        reply_at?: string;
+        provider_rejection_at?: string;
+        provider_error_class?: string;
+    };
+    pause_source?: string;
+    health: string;
+    health_reason: string;
+    health_signals?: string[];
+    unknown?: string[];
+    used_today: number;
+    next_eligible_slot?: string;
+};
+
+export type ConfengeCapacityAlert = {
+    code: string;
+    severity: string;
+    email_account_id?: string;
+    count?: number;
+    occurred_at?: string;
+    reason: string;
 };
 
 export type ConfengeDispatchStatus = {
@@ -854,4 +993,16 @@ export type ConfengeDispatchStatus = {
     window_end: string;
     active_leases: number;
     recent_failures?: ConfengeDispatchFailure[];
+    pause_source?: string;
+    capacity_source: string;
+    mailboxes: ConfengeMailboxCapacity[];
+    forecast: {
+        slots_next_24h: number;
+        slots_next_7d: number;
+        potential_slots_next_24h: number;
+        potential_slots_next_7d: number;
+        estimated_days_to_drain?: number;
+        delivery_promised: boolean;
+    };
+    alerts?: ConfengeCapacityAlert[];
 };

@@ -26,6 +26,7 @@ type OutreachRepository interface {
 	UpdateImportRun(ctx context.Context, run *models.OutreachImportRun) error
 	GetImportRun(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachImportRun, error)
 	GetImportRunByIdempotency(ctx context.Context, orgID uuid.UUID, key string) (*models.OutreachImportRun, error)
+	HasImportRunSnapshotConflict(ctx context.Context, orgID uuid.UUID, sourceRunID, snapshotHash string) (bool, error)
 	ListImportRuns(ctx context.Context, orgID uuid.UUID, limit int) ([]models.OutreachImportRun, error)
 
 	// Accounts
@@ -45,6 +46,7 @@ type OutreachRepository interface {
 	UpsertFeedSyncState(ctx context.Context, st *models.OutreachFeedSyncState) error
 	TryAdvisoryLock(ctx context.Context, key int64) (bool, error)
 	AdvisoryUnlock(ctx context.Context, key int64) error
+	MaterializeCurrentInitialBacklog(ctx context.Context, orgID uuid.UUID, sourceRunID string) (OutreachInitialBacklogCounts, error)
 	ListPilotMemberships(ctx context.Context, orgID uuid.UUID, cohortID string) ([]models.OutreachPilotMembership, error)
 	ClaimPilotOperation(ctx context.Context, orgID uuid.UUID, operationKey, requestHash string) error
 	ReservePilotSlot(ctx context.Context, orgID uuid.UUID, cohortID string, accountID uuid.UUID, cnpj14 string, capacity int) (int, error)
@@ -140,6 +142,22 @@ type TargetFitInvalidationCounts struct {
 	Drafts        int `json:"blocked_drafts"`
 	Enrollments   int `json:"detached_enrollments"`
 	DispatchItems int `json:"cancelled_dispatch_items"`
+}
+
+// OutreachInitialBacklogCounts is the current-run funnel published with a feed sync.
+type OutreachInitialBacklogCounts struct {
+	Imported            int
+	SupplierConfirmed   int
+	CandidateAttributed int
+	InitialPrepared     int
+	DelegatedEligible   int
+	HeldException       int
+	StaleRetired        int
+}
+
+// MaterializeCurrentInitialBacklog reconciles the canonical INITIAL backlog for one source run.
+func (r *outreachRepository) MaterializeCurrentInitialBacklog(ctx context.Context, orgID uuid.UUID, sourceRunID string) (OutreachInitialBacklogCounts, error) {
+	return r.materializeCurrentInitialBacklog(ctx, orgID, sourceRunID)
 }
 
 func (r *outreachRepository) InvalidateAccountApprovalsForContext(ctx context.Context, orgID, accountID uuid.UUID, currentContextHash string) error {
@@ -310,6 +328,16 @@ func (r *outreachRepository) GetImportRunByIdempotency(ctx context.Context, orgI
 	return run, err
 }
 
+func (r *outreachRepository) HasImportRunSnapshotConflict(ctx context.Context, orgID uuid.UUID, sourceRunID, snapshotHash string) (bool, error) {
+	var conflict bool
+	err := r.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM outreach_import_runs
+			WHERE organization_id=$1 AND source_run_id=$2 AND snapshot_hash<>'' AND snapshot_hash<>$3
+		)`, orgID, strings.TrimSpace(sourceRunID), strings.TrimSpace(snapshotHash)).Scan(&conflict)
+	return conflict, err
+}
+
 func (r *outreachRepository) ListImportRuns(ctx context.Context, orgID uuid.UUID, limit int) ([]models.OutreachImportRun, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
@@ -423,7 +451,7 @@ const outreachAccountSelect = `
 		contractor_role_evidence_ids, COALESCE(supplier_cnpj14,''), COALESCE(supplier_identity_ref,''),
 		COALESCE(buyer_cnpj14,''), COALESCE(buyer_identity_ref,''),
 		COALESCE(contractor_role_match_method,'NONE'), COALESCE(contractor_role_confidence,'UNKNOWN'),
-		contractor_role_reason_codes `
+		contractor_role_reason_codes, COALESCE(initial_backlog_reason_code,'') `
 
 func scanAccount(row scannable) (*models.OutreachAccount, error) {
 	var a models.OutreachAccount
@@ -453,7 +481,7 @@ func scanAccount(row scannable) (*models.OutreachAccount, error) {
 		&a.ContractorRoleSourceRunID, &a.ContractorRoleObservedAt, &a.ContractorRoleEvidenceHash,
 		&a.ContractorRoleEvidenceReference, &roleEvidence, &a.SupplierCNPJ14, &a.SupplierIdentityRef,
 		&a.BuyerCNPJ14, &a.BuyerIdentityRef, &a.ContractorRoleMatchMethod, &a.ContractorRoleConfidence,
-		&roleReasons,
+		&roleReasons, &a.InitialBacklogReasonCode,
 	)
 	if err != nil {
 		return nil, err
@@ -932,7 +960,9 @@ func (r *outreachRepository) GetFeedSyncState(ctx context.Context, orgID uuid.UU
 		SELECT organization_id, COALESCE(last_snapshot_hash,''), COALESCE(last_run_id,''),
 			COALESCE(last_manifest_uri,''), last_success_at, last_attempt_at,
 			COALESCE(last_error,''), COALESCE(last_status,'idle'), counts, updated_at,
-			source_generated_at
+			source_generated_at, source_expires_at, COALESCE(source_freshness_hash,''),
+			target_membership_complete, COALESCE(target_membership_hash,''),
+			target_membership_count, supplier_confirmed_count
 		FROM outreach_feed_sync_state WHERE organization_id=$1`, orgID)
 	var st models.OutreachFeedSyncState
 	var counts []byte
@@ -940,6 +970,8 @@ func (r *outreachRepository) GetFeedSyncState(ctx context.Context, orgID uuid.UU
 		&st.OrganizationID, &st.LastSnapshotHash, &st.LastRunID,
 		&st.LastManifestURI, &st.LastSuccessAt, &st.LastAttemptAt,
 		&st.LastError, &st.LastStatus, &counts, &st.UpdatedAt, &st.SourceGeneratedAt,
+		&st.SourceExpiresAt, &st.SourceFreshnessHash, &st.TargetMembershipComplete,
+		&st.TargetMembershipHash, &st.TargetMembershipCount, &st.SupplierConfirmedCount,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -965,8 +997,10 @@ func (r *outreachRepository) UpsertFeedSyncState(ctx context.Context, st *models
 		INSERT INTO outreach_feed_sync_state (
 			organization_id, last_snapshot_hash, last_run_id, last_manifest_uri,
 			last_success_at, last_attempt_at, last_error, last_status, counts, updated_at,
-			source_generated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+			source_generated_at, source_expires_at, source_freshness_hash,
+			target_membership_complete, target_membership_hash, target_membership_count,
+			supplier_confirmed_count
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 		ON CONFLICT (organization_id) DO UPDATE SET
 			last_snapshot_hash = EXCLUDED.last_snapshot_hash,
 			last_run_id = EXCLUDED.last_run_id,
@@ -977,10 +1011,24 @@ func (r *outreachRepository) UpsertFeedSyncState(ctx context.Context, st *models
 			last_status = EXCLUDED.last_status,
 			counts = EXCLUDED.counts,
 			source_generated_at = COALESCE(EXCLUDED.source_generated_at, outreach_feed_sync_state.source_generated_at),
+			source_expires_at = CASE WHEN EXCLUDED.last_success_at IS NULL
+				THEN outreach_feed_sync_state.source_expires_at ELSE EXCLUDED.source_expires_at END,
+			source_freshness_hash = CASE WHEN EXCLUDED.last_success_at IS NULL
+				THEN outreach_feed_sync_state.source_freshness_hash ELSE EXCLUDED.source_freshness_hash END,
+			target_membership_complete = CASE WHEN EXCLUDED.last_success_at IS NULL
+				THEN outreach_feed_sync_state.target_membership_complete ELSE EXCLUDED.target_membership_complete END,
+			target_membership_hash = CASE WHEN EXCLUDED.last_success_at IS NULL
+				THEN outreach_feed_sync_state.target_membership_hash ELSE EXCLUDED.target_membership_hash END,
+			target_membership_count = CASE WHEN EXCLUDED.last_success_at IS NULL
+				THEN outreach_feed_sync_state.target_membership_count ELSE EXCLUDED.target_membership_count END,
+			supplier_confirmed_count = CASE WHEN EXCLUDED.last_success_at IS NULL
+				THEN outreach_feed_sync_state.supplier_confirmed_count ELSE EXCLUDED.supplier_confirmed_count END,
 			updated_at = EXCLUDED.updated_at`,
 		st.OrganizationID, st.LastSnapshotHash, st.LastRunID, st.LastManifestURI,
 		st.LastSuccessAt, st.LastAttemptAt, st.LastError, st.LastStatus, counts, st.UpdatedAt,
-		st.SourceGeneratedAt,
+		st.SourceGeneratedAt, st.SourceExpiresAt, st.SourceFreshnessHash,
+		st.TargetMembershipComplete, st.TargetMembershipHash, st.TargetMembershipCount,
+		st.SupplierConfirmedCount,
 	)
 	return err
 }

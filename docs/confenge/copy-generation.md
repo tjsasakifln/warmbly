@@ -151,6 +151,8 @@ the separate first-touch CLI uses its own versioned adversarial QA and policy.
 | `CONFENGE_AUTO_SEND_ENABLED` | false | Fail-closed |
 | `CONFENGE_DELEGATED_FIRST_TOUCH_ENABLED` | false | Enables only `CFG-FIRST-TOUCH-ROUTING-v1` |
 | `CONFENGE_DELEGATED_FIRST_TOUCH_AUTORUN_ENABLED` | false | Maintains the rolling canonical queue under that policy |
+| `CONFENGE_DELEGATED_FIRST_TOUCH_RUNWAY_DAYS` | 0 | Required `1..90` for autorun; converted to slots from live capacity |
+| `CONFENGE_DRAFT_REVIEW_BACKLOG_TARGET` | 100 | Minimum prepared reservoir target and ceiling; grants no send authority |
 | `CONFENGE_MAX_INITIAL_EMAIL_WORDS` | 120 | Hard word cap |
 | `CONFENGE_WHATSAPP_ENABLED` | false | WA generate/send |
 | `CONFENGE_MAX_WHATSAPP_WORDS` | 70 | WA word cap |

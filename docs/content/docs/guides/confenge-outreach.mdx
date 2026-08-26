@@ -19,13 +19,37 @@ CONFENGE_OUTREACH_ENABLED=true
 
 The CONFENGE first-touch campaign has one narrow exception. `CONFENGE_DELEGATED_FIRST_TOUCH_ENABLED=true` permits only `CFG-FIRST-TOUCH-ROUTING-v1` after proving the company is the private supplier, reconciling a published mailbox, running adversarial QA, and binding the exact evidence and content hashes. The decision is recorded as `DELEGATED_POLICY_APPROVE`, `approved_by` remains empty, and the canonical scheduler performs a database readback before the item counts as queued. Suppression, opt-out, bounce, reply, kill switch, mailbox limits, business windows, and the live policy grant remain final gates. The flag defaults to `false`.
 
-`CONFENGE_DELEGATED_FIRST_TOUCH_AUTORUN_ENABLED=true` starts the rolling evaluator for that same narrow policy. It keeps at most one first touch in the canonical dispatch queue, converts ordinary QA failures into exceptions, and replenishes the next eligible item after dispatch. It does not enable legacy auto-send or GREEN autorun, create another queue, or bypass any send-time gate. The flag defaults to `false`.
+`CONFENGE_DELEGATED_FIRST_TOUCH_AUTORUN_ENABLED=true` starts the rolling evaluator for that same narrow policy. It requires `CONFENGE_DELEGATED_FIRST_TOUCH_RUNWAY_DAYS` between 1 and 90. The default horizon is 0, so autorun fails closed until an operator configures it. The evaluator converts the horizon into future business-window slots from the selected mailboxes' live cold ramp, campaign limits, minimum wait, campaign ramp, policy rate and global governor. Unknown capacity schedules nothing. It fills the existing canonical queue in bounded bursts and replenishes the horizon as due slots are consumed. It does not enable legacy auto-send or GREEN autorun, create another queue, or bypass any send-time gate.
+
+The prepared reservoir reuses `CONFENGE_DRAFT_REVIEW_BACKLOG_TARGET`; no second reservoir setting exists. The application default is 100 and the dedicated CONFENGE VPS profile uses 1,000. This setting grants no approval, queue or transport authority. Feed, runtime or active-policy advance retires stale approvals and lets the worker reapprove the same first touch with the new binding. Mailbox or campaign pause, stale feed, suppression, risk controls and kill switches stop filling. Follow-ups never enter this policy.
 
 The canonical campaign remains active while the current completed feed has prepared first touches that the delegated worker has not decided. This covers the short interval after a feed refresh cancels a stale queue and before the worker writes the replacement queue. Only a current `NEEDS_REVIEW` first touch under the active founder policy keeps the campaign alive. An exhausted ordinary campaign still completes, and pending work still needs the full delegated checks before it can become `QUEUED` or transportable.
 
 An upstream controlled route never overrides mailbox-purpose suppression. Addresses classified as blocked for sending or as an unsuitable mailbox stay out of delegated approval even when their route class is otherwise allowed.
 
 For a manual batch, the agent first writes a research manifest containing candidate IDs, public evidence and copy, but no mailbox address. `confenge first-touch seal` reads the selected mailbox from the operational database, derives its route class, binds the subject and body hashes, and creates a new mode `0600` manifest without printing the address. `confenge first-touch apply --dry-run` validates that sealed artifact before the confirmed write path records approval and canonical queue readback. Autorun constructs the same manifest from current persisted supplier, recipient, feed, and evidence records, then sends it through the same validator and apply path.
+
+Delegated copy uses `confenge.composer.v7` and the versioned
+`confenge.first-touch-copy-rules.v1` contract. It does not rotate synonyms or
+choose prose from a UUID. The deterministic brief may use only the company,
+confirmed supplier role, a public fact bound to current `CONFIRMED_FACT`
+evidence, service code, route class and recipient purpose. If a specific fact
+cannot be supported, the composer uses a short supplier-role message instead of
+inventing detail. `DIRECT_PERSON` uses a first name only when the selected route
+has person evidence. Role, generic and company-attributed freemail routes ask
+for the appropriate internal routing without pretending to reach a decision
+maker. Every message includes a plain request to say if further contact is not
+wanted.
+
+Corpus QA measures exact and semantic near duplicates, subject, opening,
+practice-line and CTA concentration, evidence support, metadata leakage,
+route-class fit and length. Exact content reuse, unsupported claims,
+buyer/supplier inversion, guessed people, empty copy, internal metadata,
+offensive or manipulative language and route-inappropriate CTAs fail closed.
+Concentration is attributed to its factual dimension instead of compared with
+a hidden percentage. A repeated practice line is valid when it follows the
+actual `service_code` distribution; the composer never creates cosmetic
+variants to disguise it.
 
 Optional feed source:
 
@@ -110,6 +134,21 @@ Use `?dry_run=true` for counts only (`creates`, `updates`, `unchanged`, `missing
 
 Companies with eligible current target-fit but no enrollable contact enter as `NEEDS_CONTACT`. They are not discarded and are not forced into the contacts table.
 
+### Manifest sync and prepared backlog
+
+`POST /api/v1/confenge/sync` validates the complete `confenge.outreach.manifest.v1` before publishing a new current run. It checks every chunk hash, source binding, declared count, pagination marker, and cross-chunk company and lead identity. Validated chunks are staged in a private temporary directory and imported with at most four chunks active, so a large manifest does not require every chunk payload to remain in memory or thousands of account writes to run serially. The safety ceilings are 100,000 leads, 1,000 chunks, and 1 GiB of staged payload. These ceilings protect the host without truncating the supported 1,000 to 10,000 account range.
+
+Each chunk uses a durable idempotency key. A retry reads back a completed chunk, and a `RUNNING` chunk with no activity for two minutes is reclaimed and replayed against the same import run. A `source_run_id` is immutable and cannot later identify another snapshot, including after it becomes historical. The manifest becomes current only after every chunk completes, deactivations apply, and the backlog denominator closes. A corrupt, incomplete, or partial attempt never replaces the last completed `source_run_id` in feed state.
+
+For every current account, the sync records one of these outcomes:
+
+- a canonical `DUE` touchpoint with `ordinal=1`, `purpose=INITIAL`, `channel=EMAIL`, the unique preferred current recipient, and the current `source_run_id`
+- a stable `initial_backlog_reason_code` such as missing, conflicting, ineligible, or non-delegated recipient, unknown or conflicting supplier role, stale supplier evidence, target-fit suppression, or account suppression
+
+Prepared manifest touchpoints are the delegated worker backlog. They do not appear in the human review queue or create a parallel commercial-action queue merely because the feed is large. Manual `POST /confenge/import` keeps its existing commercial-action planning behavior. The worker leases one due item at a time, records a durable retry after failure, and submits the item through the same delegated policy validator used by manual manifests. A refresh cancels open `INITIAL` work from the previous run with `source_run_superseded`; historical rows remain readable for audit.
+
+The sync response and persisted feed state expose the stage counts `imported`, `supplier_confirmed`, `candidate_attributed`, `initial_touchpoint_prepared`, `delegated_eligible`, `held_exception`, and `stale_initial_retired`. `delegated_eligible + held_exception` must equal `imported` before publication. An idempotent replay returns the stored stage counts and creates no new touchpoint.
+
 ## Target-fit authorization
 
 `extra-cli` is the sole authority for CONFENGE target-fit. Warmbly does not infer ICP membership from company names, industry text, public contracts, email availability, old scores, or prior `enrollable` values.
@@ -158,6 +197,9 @@ Target-fit is updated only by a current authoritative decision. A downgrade take
 | `GET /confenge/accounts` | Staged companies |
 | `GET /confenge/accounts/:id` | Company with candidates and evidence |
 | `POST /confenge/import` | Dry-run or apply feed |
+| `POST /confenge/sync` | Validate a complete manifest, resume chunks, and materialize the current-run `INITIAL` backlog |
+| `GET /confenge/first-touch/status` | Versioned source, reservoir, approval, runway, transport, outcome, capacity, and blocker readback |
+| `GET /confenge/dispatch/status` | Mailbox-specific capacity envelopes, observed transport facts, and pause state |
 | `GET /confenge/import-runs` | Import audit history |
 | `GET /confenge/touchpoints/review` | Human review queue, including recoverable editorial states |
 | `GET /confenge/review/drafts` | Control Center review alias with exact content hashes and the editorial verdict per row |
@@ -185,11 +227,11 @@ Permissions follow contacts: view for reads, manage for import, plan, review, an
 
 ## Dashboard
 
-The CONFENGE page is a PT-BR commercial operations center. Its first-touch policy panel separates `DELEGATED_POLICY_APPROVE`, human approvals, canonical queue readbacks, and HOLD/CANCELLED exceptions. It exposes the active policy version plus per-item supplier, recipient class, evidence reference, reason codes, due time, runtime SHA, and readback. Eligible first touches do not inflate the human review queue. `NEEDS_REVIEW` represents an exception or an explicitly human-operated flow. The release evaluator accepts either an exact human approval set or an exact `DELEGATED_POLICY_APPROVE` set bound to `CFG-FIRST-TOUCH-ROUTING-v1`; an absent count, policy drift, or decision-source drift remains `NO_GO`. The legacy controlled-pilot panel remains available for manual cohorts and a real SMTP GO/NO-GO; it is not a prerequisite for delegated approval to reach `QUEUED` while dispatch is paused. A blocked account does not roll back successful accounts, and retries reuse the exact touchpoint/draft/idempotency binding. No mailbox is relabeled as a named person. Human `APPROVE`, `EDIT`, `REJECT`, `RECIPIENT_CHANGE`, and `SKIP` persist as `HumanCorrection`. Rejection returns copy to a recoverable state; it does not discard the account. DNC, suppression, bounce, target-fit, source freshness, kill switch and dispatch pause remain dominant.
+The CONFENGE page is a PT-BR commercial operations center. Its first-touch policy panel separates `DELEGATED_POLICY_APPROVE`, human approvals, canonical queue readbacks, and HOLD/CANCELLED exceptions. It exposes the active policy version plus per-item supplier, recipient class, evidence reference, reason codes, due time, runtime SHA, and readback. The versioned `warmbly.confenge.first-touch-control.v1` snapshot joins the exact current source authority with prepared, READY, delegated, human, queued, reserved, provider-attempt, provider-acceptance, sent, outcome, capacity, pause, and blocker facts. Eligible first touches do not inflate the human review queue. `NEEDS_REVIEW` represents an exception or an explicitly human-operated flow. The release evaluator accepts either an exact human approval set or an exact `DELEGATED_POLICY_APPROVE` set bound to `CFG-FIRST-TOUCH-ROUTING-v1`; an absent count, policy drift, or decision-source drift remains `NO_GO`. The legacy controlled-pilot panel remains available for manual cohorts and a real SMTP GO/NO-GO; it is not a prerequisite for delegated approval to reach `QUEUED` while dispatch is paused. A blocked account does not roll back successful accounts, and retries reuse the exact source-run-bound touchpoint, draft, and idempotency binding. No mailbox is relabeled as a named person. Human `APPROVE`, `EDIT`, `REJECT`, `RECIPIENT_CHANGE`, and `SKIP` persist as `HumanCorrection`. Rejection returns copy to a recoverable state; it does not discard the account. DNC, suppression, bounce, target-fit, source freshness, kill switch and dispatch pause remain dominant.
 
 The versioned cohort gate can prepare larger review backlogs without widening any individual authorization. Each cohort remains capped at ten. The next-page action atomically claims a unique supplier CNPJ root and recipient hash, excludes every account with prior outreach history, and returns the cumulative claim count. Recovery re-reads prior cohort suppliers from the current feed, regenerates copy and hashes, and carries no old approval or scheduling. Supplier identity comes from the canonical fornecedor side of the extra-cli feed; contracting authorities are never lead candidates.
 
-Feed freshness uses the upstream manifest's durable `source_generated_at`, not the time at which Warmbly downloaded it. The API retains `feed_last_success_at` as a backward-compatible alias for that authoritative source time and exposes `feed_synced_at` separately for operational diagnostics. The dashboard, API and VPS status script use the same `CONFENGE_FEED_MAX_AGE` threshold, which defaults to 24 hours. Missing, stale, corrupt, or rolled-back feed state blocks cohort preparation.
+Feed freshness uses the upstream manifest's durable `source_generated_at`, not the time at which Warmbly downloaded it. For delegated first touch, the producer-owned `authoritative_source_freshness.expires_at` is a stricter limit and always takes precedence over the generic `CONFENGE_FEED_MAX_AGE` threshold. Warmbly also requires and persists the complete `TARGET_CONFIRMED` membership hash and its TARGET/SUPPLIER counts. The API exposes `feed_authority_state`, `feed_source_expires_at`, `target_membership_complete`, `target_membership_count`, and `supplier_confirmed_count` so an expired or incomplete authority cannot appear `fresh`. The API retains `feed_last_success_at` as a backward-compatible alias for the authoritative source time and exposes `feed_synced_at` separately for operational diagnostics. Missing, expired, stale, corrupt, incomplete, or rolled-back feed state blocks cohort preparation and transport.
 
 The page opens with **INBOUND NOW**: web-cfg leads that already have a durable receipt, recommended next action, owner or explicit UNKNOWN, and commercial-latency timestamps. Then **O que fazer agora**: only executable human work (calls, routed calls, first-touch exceptions, role mailboxes, WhatsApp, professional profiles, forms). Each card shows company, person or target role, route class, why now, offer, channel, reachability class, confidence, factual hook, evidence, warnings, channel-appropriate copy, last outcome, and next action, plus a Revisar / copiar control. Calls, WhatsApp, social, forms and anything outside the first-touch policy remain human-executed only. Inbound classification may recommend `SEND_EMAIL` in review. It never dispatches.
 
@@ -211,9 +253,15 @@ Execution state (`PLANNED`, `READY`, `IN_PROGRESS`, `COMPLETED`, `NEEDS_FOLLOWUP
 
 The extra-cli plug contract (additive fields the future producer can fill) is documented in `docs/confenge/commercial-actions.md`.
 
-## Global dispatch governor
+## Mailbox capacity and dispatch governor
 
-CONFENGE outbound email and WhatsApp share one local rolling-hour cap (default 10 sends/hour, min gap 360s, timezone America/Sao_Paulo). The governor is the final gate before provider send: approved items that exceed capacity re-compete for future slots and never burst after restart.
+CONFENGE email pacing is mailbox-first. The campaign scheduler selects an existing email account, and the final transport reservation is bound to that exact account and task. The mailbox's configured `campaign_limit`, `min_wait_time`, readiness, and factual provider state are checked inside the same transaction that reserves the slot. The shared governor remains an additional ceiling across email and WhatsApp. It cannot increase a mailbox envelope.
+
+Every organization mailbox is inventoried, including one with missing credentials. A mailbox is blocked when it is disabled, has no assigned worker, has no recent healthy worker heartbeat, lacks credentials, has unknown or failing SPF/DKIM/DMARC state, is quarantined by an existing health authority, or has an unresolved factual authentication, provider-block, rate-limit, or connectivity failure. Provider 4xx/5xx responses, hard bounces, complaints, replies, attempts, and acceptances remain separate observations. Facts that have not been observed remain `UNKNOWN`; absence is not converted into zero or success. A bounce or complaint rate does not create a new threshold here. Existing explicit campaign/provider policies remain authoritative.
+
+For each mailbox, the hourly cap is derived from the minimum wait and tightened by any explicit cap. The daily cap is the configured mailbox campaign limit. Attempts that reached the provider consume that daily envelope even when the provider later rejects them. A growing queue cannot raise either cap, and retries retain the same account/recipient/sequence idempotency key across mailboxes.
+
+The status forecast simulates the configured business window, business days, mailbox daily and rolling-hour limits, minimum wait, occupied reservations, observed attempts, provider acceptances, and the shared ceiling. It returns slots for the next 24 hours and 7 days and an estimated queue drain time only while effective capacity exists. During a pause, effective slots are zero and potential slots remain visible. These are possible attempt slots, not promised deliveries.
 
 | Env | Default |
 | --- | --- |
@@ -222,8 +270,12 @@ CONFENGE outbound email and WhatsApp share one local rolling-hour cap (default 1
 | `CONFENGE_SEND_TIMEZONE` | `America/Sao_Paulo` |
 | `CONFENGE_SEND_WINDOW_START` / `END` | `09:00` / `18:00` |
 | `CONFENGE_DISPATCH_PAUSED` | `false` |
+| `CONFENGE_DELEGATED_FIRST_TOUCH_RUNWAY_DAYS` | `0` |
+| `CONFENGE_DRAFT_REVIEW_BACKLOG_TARGET` | `100` |
 
 API: `GET /confenge/dispatch/status`, `POST /confenge/dispatch/pause`, `POST /confenge/dispatch/resume`.
+
+`GET /confenge/first-touch/status` includes a `runway` readback with prepared reservoir, queued/reserved depth, runway duration, furthest and target due times, mailbox and daily capacity, recent fill rate, stale retirement, hold, no-candidate and capacity-blocked metrics. It can fill capacity-bounded future slots while the transport kill switch and dispatch pause remain engaged. Queue depth is inventory, not send velocity. The governor and mailbox limits still decide when transport may occur after an explicit GO.
 
 ## Architecture notes
 

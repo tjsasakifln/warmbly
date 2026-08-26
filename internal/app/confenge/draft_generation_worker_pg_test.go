@@ -51,11 +51,15 @@ func TestDraftGenerationWorkerLeasesControlledRouteWithoutNamedPersonRollup(t *t
 	}
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
+	sourceExpiresAt := now.Add(time.Hour)
 	repo := repository.NewOutreachRepository(pool)
 	if err = repo.UpsertFeedSyncState(ctx, &models.OutreachFeedSyncState{
 		OrganizationID: orgID, LastSnapshotHash: "controlled-draft-current-snapshot",
 		LastRunID: "controlled-draft-current", LastManifestURI: "file:///controlled-draft-current.json",
 		LastStatus: "completed", LastSuccessAt: &now, LastAttemptAt: &now, SourceGeneratedAt: &now,
+		SourceExpiresAt: &sourceExpiresAt, SourceFreshnessHash: strings.Repeat("a", 64),
+		TargetMembershipComplete: true, TargetMembershipHash: strings.Repeat("b", 64),
+		TargetMembershipCount: 2, SupplierConfirmedCount: 2,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +101,7 @@ func TestDraftGenerationWorkerLeasesControlledRouteWithoutNamedPersonRollup(t *t
 		Recommended:                    true,
 		EmailSendReady:                 false,
 		MailboxPurpose:                 "GENERIC_CONTACT",
-		MailboxPurposeSendBlocked:      true,
+		MailboxPurposeSendBlocked:      false,
 		OwnershipStatus:                "COMPANY_OWNED",
 		RecipientCommercialSuitability: "SUITABLE_GENERIC",
 		LastImportRunID:                &currentRun,
@@ -130,9 +134,12 @@ func TestDraftGenerationWorkerLeasesControlledRouteWithoutNamedPersonRollup(t *t
 		t.Fatal(err)
 	}
 
-	svc := NewService(Config{Enabled: true, RequireHumanApproval: true}, repo, nil).(*service)
+	svc := NewService(Config{Enabled: true, RequireHumanApproval: true, OperatorOrgID: orgID}, repo, nil).(*service)
 	svc.WireHumanGate(pool)
-	processed, _ := svc.ProcessDraftGenerationOnce(ctx)
+	processed, err := svc.ProcessDraftGenerationOnce(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !processed {
 		t.Fatal("controlled route was not leased while account email_send_ready=false")
 	}
@@ -208,6 +215,10 @@ func TestDraftGenerationWorkerLeasesControlledRouteWithoutNamedPersonRollup(t *t
 		SourceRunID: account.SourceRunID, SourceSnapshotHash: "controlled-draft-current-snapshot",
 		EvidenceVersion: DelegatedFirstTouchEvidenceV1, ComposerVersion: ComposerVersion,
 		TemplateVersion: DelegatedFirstTouchTemplateV1, PromptVersion: PromptVersion, GeneratedAt: now,
+	}
+	manifest.authority, err = repo.GetFeedSyncState(ctx, orgID)
+	if err != nil || manifest.authority == nil {
+		t.Fatalf("feed authority unavailable: authority=%+v err=%v", manifest.authority, err)
 	}
 	svc.WireDelegatedFirstTouch(pool)
 	if err = svc.reserveDelegatedBatch(ctx, orgID, manifest, strings.Repeat("d", 64)); err != nil {
