@@ -74,7 +74,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run structural tests
-        run: python3 -m unittest deploy.confenge-vps.test_vps_pack
+        run: >-
+          python3 -m unittest
+          deploy.confenge-vps.test_vps_pack
+          deploy.confenge-vps.test_backup
+          deploy/confenge-vps/asaas-adapter/test_adapter.py
 
       - name: Validate deployment pack
         run: deploy/confenge-vps/validate.sh
