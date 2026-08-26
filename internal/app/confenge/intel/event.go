@@ -71,6 +71,8 @@ func validateCommercialIdentityFields(ev CommercialEvent) error {
 		{name: "provider_event_id", value: ev.ProviderEventID},
 		{name: "provider.provider_event_id", value: ev.Provider.ProviderEventID},
 		{name: "provider_external_reference", value: ev.Provider.ExternalRef},
+		{name: "source_run_id", value: ev.SourceRunID},
+		{name: "mailbox_id", value: ev.MailboxID},
 		{name: "deliverable_id", value: ev.DeliverableID},
 		{name: "responsible", value: ev.Responsible},
 	}
@@ -110,7 +112,7 @@ func knownEventType(t string) bool {
 		EventCitation, EventCorrection, EventSearchObservation,
 		EventOperatorAlertCreated, EventOperatorAlertEmitted, EventOperatorAlertFailed,
 		EventOperatorAlertAcknowledged, EventFirstHumanActionRecorded, EventInboundResolvedNoAction,
-		EventEmailAttempted, EventProviderAccepted, EventDelivered,
+		EventEmailAttempted, EventProviderAccepted, EventDelivered, EventDeliveryUnknown,
 		EventHardBounce, EventSoftBounce, EventOptOut, EventSpamComplaint, EventNoReply:
 		return true
 	default:

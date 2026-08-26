@@ -380,6 +380,139 @@ func (r *outreachRepository) CancelOpenTouchpoints(ctx context.Context, orgID, a
 	return int(ct.RowsAffected()), nil
 }
 
+// GetOutreachRecipientSuppression reads the platform's canonical suppression row.
+func (r *outreachRepository) GetOutreachRecipientSuppression(ctx context.Context, orgID uuid.UUID, email string) (*models.SuppressedRecipient, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return nil, nil
+	}
+	var out models.SuppressedRecipient
+	var metadata []byte
+	err := r.db.QueryRow(ctx, `
+		SELECT id, organization_id, email, reason, source, campaign_id,
+			expires_at, metadata, created_at, updated_at
+		FROM suppressed_recipients
+		WHERE organization_id=$1 AND lower(email)=$2
+		  AND (expires_at IS NULL OR expires_at > now())`, orgID, email).Scan(
+		&out.ID, &out.OrganizationID, &out.Email, &out.Reason, &out.Source,
+		&out.CampaignID, &out.ExpiresAt, &metadata, &out.CreatedAt, &out.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal(metadata, &out.Metadata)
+	return &out, nil
+}
+
+// UpsertOutreachRecipientSuppression writes the canonical recipient row idempotently.
+func (r *outreachRepository) UpsertOutreachRecipientSuppression(ctx context.Context, suppression *models.SuppressedRecipient) error {
+	if suppression == nil {
+		return errors.New("recipient suppression is required")
+	}
+	email := strings.ToLower(strings.TrimSpace(suppression.Email))
+	if suppression.OrganizationID == uuid.Nil || email == "" {
+		return errors.New("organization and recipient are required")
+	}
+	metadata, err := json.Marshal(suppression.Metadata)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.Exec(ctx, `
+		INSERT INTO suppressed_recipients (
+			organization_id, email, reason, source, campaign_id, expires_at,
+			metadata, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,now(),now())
+		ON CONFLICT (organization_id,email) DO UPDATE SET
+			reason=excluded.reason, source=excluded.source,
+			campaign_id=COALESCE(excluded.campaign_id,suppressed_recipients.campaign_id),
+			expires_at=excluded.expires_at, metadata=excluded.metadata, updated_at=now()`,
+		suppression.OrganizationID, email, suppression.Reason, suppression.Source,
+		suppression.CampaignID, suppression.ExpiresAt, metadata)
+	return err
+}
+
+// CancelSuppressedOutreachRecipient projects suppression into exact-recipient work.
+func (r *outreachRepository) CancelSuppressedOutreachRecipient(ctx context.Context, orgID uuid.UUID, email, terminalState, reason string) (int, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return 0, nil
+	}
+	if terminalState == "" {
+		terminalState = models.TouchpointCancelled
+	}
+	if reason == "" {
+		reason = "recipient_suppressed"
+	}
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	verification := ""
+	setBounced, setDNC, setBlocked := false, false, false
+	switch terminalState {
+	case models.TouchpointBounced:
+		verification, setBounced = models.OutreachVerifyBounced, true
+	case models.TouchpointDNC:
+		verification, setDNC = models.OutreachVerifyDoNotContact, true
+	default:
+		setBlocked = true
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE outreach_contact_candidates
+		SET bounced=bounced OR $3, do_not_contact=do_not_contact OR $4,
+			blocked=blocked OR $5, block_reason=CASE WHEN $3 OR $4 OR $5 THEN $6 ELSE block_reason END,
+			verification_status=CASE WHEN $7<>'' THEN $7 ELSE verification_status END,
+			updated_at=now()
+		WHERE organization_id=$1 AND lower(email)=$2`, orgID, email,
+		setBounced, setDNC, setBlocked, reason, verification); err != nil {
+		return 0, err
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE confenge_dispatch_queue q
+		SET status='cancelled', cancel_reason=$3, last_error=$3,
+			reserved_until=NULL, updated_at=now()
+		FROM outreach_touchpoints t
+		WHERE t.organization_id=$1 AND lower(t.recipient)=$2
+		  AND t.draft_id=q.draft_id AND q.organization_id=t.organization_id
+		  AND q.status IN ('queued','reserved')`, orgID, email, reason); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE confenge_delegated_first_touch_decisions d
+		SET state='CANCELLED',
+			blocker_codes=CASE WHEN d.blocker_codes @> to_jsonb(ARRAY[$3]::text[])
+				THEN d.blocker_codes ELSE d.blocker_codes || to_jsonb(ARRAY[$3]::text[]) END,
+			updated_at=now()
+		FROM outreach_touchpoints t
+		WHERE t.organization_id=$1 AND lower(t.recipient)=$2
+		  AND d.organization_id=t.organization_id AND d.touchpoint_id=t.id
+		  AND d.state IN ('APPROVED','QUEUED','APPROVED_NOT_SCHEDULED')`, orgID, email, reason); err != nil {
+		return 0, err
+	}
+	ct, err := tx.Exec(ctx, `
+		UPDATE outreach_touchpoints
+		SET state=$3, stop_reason=$4, approved_by=NULL, approved_at=NULL,
+			approved_content_hash='', authorization_mode='',
+			campaign_policy_authorization_id=NULL, authorization_policy_hash='',
+			authorization_at=NULL, updated_at=now()
+		WHERE organization_id=$1 AND lower(recipient)=$2
+		  AND state IN ('PLANNED','DUE','DRAFTED','AI_REWRITE_PENDING',
+			'ENRICHMENT_PENDING','REJECTED_REWRITE_PENDING','NEEDS_REVIEW',
+			'APPROVED','QUEUED')`, orgID, email, terminalState, reason)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return int(ct.RowsAffected()), nil
+}
+
 func (r *outreachRepository) ListDuePlannedTouchpoints(ctx context.Context, orgID uuid.UUID, now time.Time, limit int) ([]models.OutreachTouchpoint, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()

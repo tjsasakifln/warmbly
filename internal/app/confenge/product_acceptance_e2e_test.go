@@ -475,9 +475,12 @@ func TestProductAcceptanceMultichannelSum(t *testing.T) {
 			}
 		}
 	}
-	accDNC, _ := rf.GetAccount(context.Background(), org, acme.ID)
-	if !accDNC.DoNotContact {
-		t.Fatal("bullet16 account must be DNC after NoteDNC")
+	candDNC, accDNC, _ := rf.FindCandidateByEmail(context.Background(), org, draft1.RecipientEmail)
+	if candDNC == nil || !candDNC.DoNotContact {
+		t.Fatalf("bullet16 exact recipient must be DNC after NoteDNC: %+v", candDNC)
+	}
+	if accDNC == nil || accDNC.DoNotContact || accDNC.Blocked {
+		t.Fatalf("bullet16 recipient DNC must preserve company identity: %+v", accDNC)
 	}
 
 	// 18. reply draft not sent without new approval

@@ -128,8 +128,12 @@ func TestHandleClassifiedReplyDNC(t *testing.T) {
 		VerificationStatus: models.OutreachVerifyOfficialSource,
 	})
 	_ = svc.HandleClassifiedReply(context.Background(), org, uuid.Nil, "x@example.com", replyclassify.ClassUnsubscribe, nil)
+	cand, _, _ := r.FindCandidateByEmail(context.Background(), org, "x@example.com")
+	if cand == nil || !cand.DoNotContact {
+		t.Fatalf("exact recipient DNC not set: %+v", cand)
+	}
 	acc, _ := r.GetAccountByCNPJ(context.Background(), org, "11222333000181")
-	if acc == nil || !acc.DoNotContact {
-		t.Fatalf("DNC not set: %+v", acc)
+	if acc == nil || acc.DoNotContact || acc.Blocked {
+		t.Fatalf("recipient opt-out must preserve company identity: %+v", acc)
 	}
 }

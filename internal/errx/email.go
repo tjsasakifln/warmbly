@@ -45,11 +45,13 @@ const (
 	MailErrorCodeImapUnknown          MailErrorCode = "IMAP_UNKNOWN"
 
 	// Rate limiting and abuse detection
-	MailErrorCodeRateLimitExceeded MailErrorCode = "RATE_LIMIT_EXCEEDED"
-	MailErrorCodeSendingTooFast    MailErrorCode = "SENDING_TOO_FAST"
-	MailErrorCodeRecipientRejected MailErrorCode = "RECIPIENT_REJECTED"
-	MailErrorCodeQuotaExceeded     MailErrorCode = "QUOTA_EXCEEDED"
-	MailErrorCodeAccountSuspended  MailErrorCode = "ACCOUNT_SUSPENDED"
+	MailErrorCodeRateLimitExceeded          MailErrorCode = "RATE_LIMIT_EXCEEDED"
+	MailErrorCodeSendingTooFast             MailErrorCode = "SENDING_TOO_FAST"
+	MailErrorCodeRecipientRejected          MailErrorCode = "RECIPIENT_REJECTED"
+	MailErrorCodeRecipientTemporaryRejected MailErrorCode = "RECIPIENT_TEMPORARY_REJECTED"
+	MailErrorCodeDeliveryUnknown            MailErrorCode = "DELIVERY_UNKNOWN"
+	MailErrorCodeQuotaExceeded              MailErrorCode = "QUOTA_EXCEEDED"
+	MailErrorCodeAccountSuspended           MailErrorCode = "ACCOUNT_SUSPENDED"
 )
 
 var MailErrorCodeGoogleUnknown = func(code int) MailErrorCode {
@@ -155,6 +157,18 @@ var (
 		"The recipient email address was rejected by the mail server.",
 		MailErrorResolveMethodNone,
 	)
+	ErrMailRecipientTemporaryRejected = MError(
+		MailErrorWarning,
+		MailErrorCodeRecipientTemporaryRejected,
+		"The recipient mail server temporarily rejected the address.",
+		MailErrorResolveMethodRetry,
+	)
+	ErrMailDeliveryUnknown = MError(
+		MailErrorWarning,
+		MailErrorCodeDeliveryUnknown,
+		"The SMTP connection ended while the provider was finalizing delivery; acceptance is unknown.",
+		MailErrorResolveMethodNone,
+	)
 	ErrMailQuotaExceeded = MError(
 		MailErrorCritical,
 		MailErrorCodeQuotaExceeded,
@@ -205,9 +219,12 @@ func (e *MailError) GetUserErrorInfo() UserErrorInfo {
 	case MailErrorCodeAccountSuspended:
 		info.Title = "Account Suspended"
 		info.ActionRequired = "Contact your email provider to resolve this issue"
-	case MailErrorCodeRecipientRejected:
+	case MailErrorCodeRecipientRejected, MailErrorCodeRecipientTemporaryRejected:
 		info.Title = "Recipient Rejected"
 		info.ActionRequired = "The recipient address was not accepted"
+	case MailErrorCodeDeliveryUnknown:
+		info.Title = "Delivery Unknown"
+		info.ActionRequired = "Review provider evidence before retrying"
 	}
 
 	return info

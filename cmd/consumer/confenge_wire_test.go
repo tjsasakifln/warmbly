@@ -6,10 +6,7 @@ import (
 	"testing"
 )
 
-// TestConfengeReplyPathWiresCRM guards the production email handoff path:
-// ProcessIncomingReply runs in the consumer and calls OnClassifiedReply →
-// ProcessInboundHandoff → applyReplyCRM. Without WireCRM, CRM tasks/deals
-// never create on real inbound email.
+// TestConfengeReplyPathWiresCRM keeps one reconciler for each IMAP reply.
 func TestConfengeReplyPathWiresCRM(t *testing.T) {
 	b, err := os.ReadFile("main.go")
 	if err != nil {
@@ -19,26 +16,25 @@ func TestConfengeReplyPathWiresCRM(t *testing.T) {
 	newIdx := strings.Index(s, "confenge.NewService")
 	wireIntel := strings.Index(s, "WireIntel")
 	wireCRM := strings.Index(s, "WireCRM")
-	wireReply := strings.Index(s, "WireConfengeReply")
 	if newIdx < 0 {
 		t.Fatal("consumer must construct confenge.Service when enabled")
 	}
 	if wireCRM < 0 {
 		t.Fatal("consumer must WireCRM on confenge so email reply handoff creates CRM tasks/deals")
 	}
-	if wireIntel < 0 || !(newIdx < wireIntel && wireIntel < wireReply) {
-		t.Fatalf("consumer must WireIntel(Postgres) before reply/DSN handling; new=%d intel=%d reply=%d", newIdx, wireIntel, wireReply)
+	if wireIntel < 0 || !(newIdx < wireIntel && wireIntel < wireCRM) {
+		t.Fatalf("consumer must WireIntel(Postgres) before reply/DSN handling; new=%d intel=%d crm=%d", newIdx, wireIntel, wireCRM)
 	}
-	if wireReply < 0 {
-		t.Fatal("consumer must WireConfengeReply for email handoff")
+	if !(newIdx < wireCRM) {
+		t.Fatalf("WireCRM must follow confenge.NewService (at %d); WireCRM at %d", newIdx, wireCRM)
 	}
-	if !(newIdx < wireCRM && wireCRM < wireReply) {
-		t.Fatalf("WireCRM must sit between confenge.NewService (at %d) and WireConfengeReply (at %d); WireCRM at %d", newIdx, wireReply, wireCRM)
+	if strings.Contains(s, "advancedService.WireConfengeReply") {
+		t.Fatal("consumer must not wire a second CONFENGE reply reconciler")
 	}
 	// Reject the old "CRM not wired on consumer" posture if reintroduced near the wire site.
 	snippet := s
-	if wireReply > 0 && wireReply+200 < len(s) {
-		snippet = s[newIdx : wireReply+80]
+	if wireCRM > 0 && wireCRM+200 < len(s) {
+		snippet = s[newIdx : wireCRM+80]
 	}
 	if strings.Contains(snippet, "CRM not wired on consumer") {
 		t.Fatal("stale comment: CRM must be wired on consumer for reply handoff")

@@ -324,7 +324,7 @@ func (c *Client) sendRaw(ctx context.Context, from string, to []string, data []b
 		return classifySMTPFailure(err, false)
 	}
 	if err := w.Close(); err != nil {
-		return classifySMTPFailure(err, false)
+		return errx.ErrMailDeliveryUnknown
 	}
 
 	return nil
@@ -337,8 +337,13 @@ func classifySMTPFailure(err error, recipientStage bool) *errx.MailError {
 	}
 	if recipientStage {
 		var smtpErr *textproto.Error
-		if errors.As(err, &smtpErr) && smtpErr.Code >= 500 && smtpErr.Code < 600 {
-			return errx.ErrMailRecipientRejected
+		if errors.As(err, &smtpErr) {
+			if smtpErr.Code >= 500 && smtpErr.Code < 600 {
+				return errx.ErrMailRecipientRejected
+			}
+			if smtpErr.Code >= 400 && smtpErr.Code < 500 {
+				return errx.ErrMailRecipientTemporaryRejected
+			}
 		}
 	}
 	return errx.ErrMailServerUnreachable

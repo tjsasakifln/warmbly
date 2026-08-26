@@ -83,7 +83,10 @@ func (s *JobsService) HandleNewEmail(ctx context.Context, e *models.JobEventNewE
 			from := emailaddr.ExtractFirst(e.Message.FromAddr)
 			meta := map[string]any{
 				"subject":       e.Message.Subject,
+				"body_text":     e.Message.Snippet,
 				"message_id":    e.Message.ID.String(),
+				"mailbox_id":    e.Message.EmailID.String(),
+				"occurred_at":   time.Now().UTC().Format(time.RFC3339Nano),
 				"provider_name": account.Provider,
 				"reply_class": confenge.ClassifyControlledReply(
 					e.Message.Subject,
@@ -92,7 +95,9 @@ func (s *JobsService) HandleNewEmail(ctx context.Context, e *models.JobEventNewE
 				),
 			}
 			s.attachReplyCorrelation(ctx, e.Message, meta)
-			_ = s.ConfengeOutcomes.NoteReply(ctx, *account.OrganizationID, from, meta)
+			if err := s.ConfengeOutcomes.NoteReply(ctx, *account.OrganizationID, from, meta); err != nil {
+				return fmt.Errorf("reconcile CONFENGE reply: %w", err)
+			}
 		}
 	}
 

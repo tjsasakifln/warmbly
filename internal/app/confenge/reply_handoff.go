@@ -21,7 +21,7 @@ type InboundHandoff struct {
 	PreSource, IdempotencyKey, ExternalMessageID           string
 	OccurredAt                                             time.Time
 	WarmblyContactID                                       *uuid.UUID
-	ActorID, AccountID                                     uuid.UUID
+	ActorID, AccountID, TouchpointID, MailboxID            uuid.UUID
 }
 
 type HandoffResult struct {
@@ -87,22 +87,42 @@ func (s *service) ProcessInboundHandoff(ctx context.Context, orgID uuid.UUID, in
 		ooo := ExtractOOODate(in.Subject + "\n" + in.BodyText)
 		intent = CommercialIntent{Intent: IntentOutOfOffice, Confidence: 0.8, Source: "lexicon", OOOReturnDate: ooo, SuggestedAction: SuggestNextAction(IntentOutOfOffice, ooo, "")}
 	}
-	cancelled := s.cancelPendingOutbound(ctx, orgID, acc.ID)
+	if intent.Intent == IntentDoNotContact {
+		if err := s.noteDNC(ctx, orgID, email, "reply_class:opt_out", "imap"); err != nil {
+			return nil, errx.New(errx.Internal, "apply exact recipient opt-out: "+err.Error())
+		}
+		return &HandoffResult{AccountID: acc.ID, QueueState: acc.QueueState, Intent: intent, StoppedCadence: true, IdempotencyKey: idem}, nil
+	}
+	if cand != nil && cand.DoNotContact {
+		// Exact recipient opt-out is sticky without invalidating other company routes.
+		return &HandoffResult{AccountID: acc.ID, QueueState: acc.QueueState, Intent: intent, StoppedCadence: true, IdempotencyKey: idem}, nil
+	}
+	stopsCadence := intent.Intent != IntentOutOfOffice
+	cancelled := 0
+	if stopsCadence {
+		cancelled = s.cancelPendingOutbound(ctx, orgID, acc.ID)
+	}
 	queueState, blocked, dnc := queueStateForIntent(intent.Intent, acc)
 	reason := fmt.Sprintf("reply:%s:%s", channel, intent.Intent)
 	// Pause/cancel open touchpoint cadence (dominant with draft stop).
-	term, stop := models.TouchpointReplied, "REPLY"
-	if intent.Intent == IntentDoNotContact {
-		reason = "reply:DO_NOT_CONTACT"
-		term, stop = models.TouchpointDNC, "DNC"
-		if cand != nil {
-			cand.DoNotContact = true
-			cand.VerificationStatus = models.OutreachVerifyDoNotContact
-			_, _ = s.repo.UpsertCandidate(ctx, cand)
+	stop := "REPLY"
+	if stopsCadence {
+		nTP, cancelErr := s.repo.CancelOpenTouchpoints(ctx, orgID, acc.ID, models.TouchpointReplied, stop)
+		if cancelErr != nil {
+			return nil, errx.New(errx.Internal, "stop reply cadence: "+cancelErr.Error())
 		}
-	}
-	if nTP, err := s.repo.CancelOpenTouchpoints(ctx, orgID, acc.ID, term, stop); err == nil {
 		cancelled += nTP
+		if in.TouchpointID != uuid.Nil {
+			if replied, touchErr := s.repo.GetTouchpoint(ctx, orgID, in.TouchpointID); touchErr != nil {
+				return nil, errx.New(errx.Internal, "load replied touchpoint: "+touchErr.Error())
+			} else if replied != nil && replied.AccountID == acc.ID && replied.State == models.TouchpointSent {
+				replied.State = models.TouchpointReplied
+				replied.StopReason = stop
+				if touchErr := s.repo.UpdateTouchpoint(ctx, replied); touchErr != nil {
+					return nil, errx.New(errx.Internal, "mark replied touchpoint: "+touchErr.Error())
+				}
+			}
+		}
 	}
 	// Drop governor-queued outbound for this recipient (email + phone).
 	phoneRef := phone
@@ -112,21 +132,27 @@ func (s *service) ProcessInboundHandoff(ctx context.Context, orgID uuid.UUID, in
 			phoneRef = cand.Phone
 		}
 	}
-	s.cancelQueuedForRecipient(ctx, orgID, email, phoneRef, stop)
+	if stopsCadence {
+		s.cancelQueuedForRecipient(ctx, orgID, email, phoneRef, stop)
+	}
 	if intent.Intent == IntentOutOfOffice && queueState == "" {
 		queueState = acc.QueueState
 		if queueState == "" {
 			queueState = models.OutreachQueueSent
 		}
 	}
-	_ = s.repo.SetAccountHumanFlags(ctx, orgID, acc.ID, blocked, dnc, reason, queueState)
+	if err := s.repo.SetAccountHumanFlags(ctx, orgID, acc.ID, blocked, dnc, reason, queueState); err != nil {
+		return nil, errx.New(errx.Internal, "mark replied account: "+err.Error())
+	}
 	if fresh, gerr := s.repo.GetAccount(ctx, orgID, acc.ID); gerr == nil && fresh != nil {
 		fresh.CommercialState = intent.Intent
 		fresh.QueueState = queueState
 		fresh.Blocked = blocked
 		fresh.DoNotContact = dnc
 		fresh.BlockReason = reason
-		_, _ = s.repo.UpsertAccount(ctx, fresh)
+		if _, updateErr := s.repo.UpsertAccount(ctx, fresh); updateErr != nil {
+			return nil, errx.New(errx.Internal, "persist replied account: "+updateErr.Error())
+		}
 		acc = fresh
 	}
 	contactEmail := email
@@ -143,10 +169,14 @@ func (s *service) ProcessInboundHandoff(ctx context.Context, orgID uuid.UUID, in
 	}
 	controlledReply := controlledReplyClass(intent.Intent)
 	payload["reply_class"] = controlledReply
-	_ = s.EnqueueOutcome(ctx, orgID, models.OutreachOutcome{IdempotencyKey: idem, SourceLeadID: acc.SourceLeadID, CNPJ14: acc.CNPJ14, ContactEmail: contactEmail, EventType: eventType, OccurredAt: in.OccurredAt, Payload: mustJSON(payload)})
+	if xerr := s.EnqueueOutcome(ctx, orgID, models.OutreachOutcome{IdempotencyKey: idem, SourceLeadID: acc.SourceLeadID, CNPJ14: acc.CNPJ14, ContactEmail: contactEmail, EventType: eventType, OccurredAt: in.OccurredAt, Payload: mustJSON(payload)}); xerr != nil {
+		return nil, xerr
+	}
 	s.applyReplyCRM(ctx, orgID, in.ActorID, contactEmail, intentToCRMClass(intent.Intent), in.WarmblyContactID, cand, acc)
-	s.markAccountDraftsReplied(ctx, orgID, acc.ID)
-	return &HandoffResult{AccountID: acc.ID, QueueState: queueState, Intent: intent, CancelledDrafts: cancelled, StoppedCadence: true, IdempotencyKey: idem}, nil
+	if stopsCadence {
+		s.markAccountDraftsReplied(ctx, orgID, acc.ID)
+	}
+	return &HandoffResult{AccountID: acc.ID, QueueState: queueState, Intent: intent, CancelledDrafts: cancelled, StoppedCadence: stopsCadence, IdempotencyKey: idem}, nil
 }
 
 // ClassifyControlledReply is the offline, bounded projection used at IMAP

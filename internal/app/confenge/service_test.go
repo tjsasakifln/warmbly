@@ -44,6 +44,7 @@ type memRepo struct {
 	actionByIdem       map[string]*models.OutreachCommercialAction
 	inbound            map[string]*models.OutreachInboundLead
 	alerts             map[string]*models.OutreachOperatorAlert
+	suppressions       map[string]*models.SuppressedRecipient
 }
 
 func newMemRepo() *memRepo {
@@ -61,7 +62,74 @@ func newMemRepo() *memRepo {
 		actionByIdem:     map[string]*models.OutreachCommercialAction{},
 		inbound:          map[string]*models.OutreachInboundLead{},
 		alerts:           map[string]*models.OutreachOperatorAlert{},
+		suppressions:     map[string]*models.SuppressedRecipient{},
 	}
+}
+
+func suppressionKey(orgID uuid.UUID, email string) string {
+	return orgID.String() + "|" + strings.ToLower(strings.TrimSpace(email))
+}
+
+func (m *memRepo) GetOutreachRecipientSuppression(_ context.Context, orgID uuid.UUID, email string) (*models.SuppressedRecipient, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	value := m.suppressions[suppressionKey(orgID, email)]
+	if value == nil || (value.ExpiresAt != nil && !value.ExpiresAt.After(time.Now().UTC())) {
+		return nil, nil
+	}
+	copy := *value
+	return &copy, nil
+}
+
+func (m *memRepo) UpsertOutreachRecipientSuppression(_ context.Context, value *models.SuppressedRecipient) error {
+	if value == nil {
+		return fmt.Errorf("suppression required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	copy := *value
+	copy.Email = strings.ToLower(strings.TrimSpace(copy.Email))
+	if copy.CreatedAt.IsZero() {
+		copy.CreatedAt = time.Now().UTC()
+	}
+	copy.UpdatedAt = time.Now().UTC()
+	m.suppressions[suppressionKey(copy.OrganizationID, copy.Email)] = &copy
+	return nil
+}
+
+func (m *memRepo) CancelSuppressedOutreachRecipient(_ context.Context, orgID uuid.UUID, email, terminalState, reason string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	email = strings.ToLower(strings.TrimSpace(email))
+	n := 0
+	for _, touchpoint := range m.touchpoints {
+		if touchpoint.OrganizationID == orgID && strings.EqualFold(touchpoint.Recipient, email) && models.TouchpointOpenStates[touchpoint.State] {
+			touchpoint.State = terminalState
+			touchpoint.StopReason = reason
+			touchpoint.ApprovedBy = nil
+			touchpoint.ApprovedContentHash = ""
+			n++
+		}
+	}
+	for accountID, candidates := range m.cands {
+		for i := range candidates {
+			if candidates[i].OrganizationID != orgID || !strings.EqualFold(candidates[i].Email, email) {
+				continue
+			}
+			switch terminalState {
+			case models.TouchpointBounced:
+				candidates[i].Bounced = true
+				candidates[i].VerificationStatus = models.OutreachVerifyBounced
+			case models.TouchpointDNC:
+				candidates[i].DoNotContact = true
+				candidates[i].VerificationStatus = models.OutreachVerifyDoNotContact
+			default:
+				candidates[i].Blocked = true
+			}
+			m.cands[accountID] = candidates
+		}
+	}
+	return n, nil
 }
 
 func accKey(org uuid.UUID, cnpj string) string { return org.String() + "|" + cnpj }

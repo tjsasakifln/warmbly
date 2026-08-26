@@ -15,6 +15,9 @@ type Report struct {
 	// IsBounce is true when the message looks like a delivery-status report at
 	// all (worth acting on); false for ordinary mail.
 	IsBounce bool
+	// IsDelivery is true only for an explicit delivered action with 2.x proof.
+	IsDelivery bool
+	Action     string
 	// Permanent is true only when a 5.x.x status or an explicit permanent
 	// "Action: failed" was found. Transient (4.x.x / delayed) stays false.
 	Permanent bool
@@ -100,6 +103,7 @@ func Parse(body string) Report {
 		}
 	}
 	if a := reAction.FindStringSubmatch(body); a != nil {
+		r.Action = strings.ToLower(strings.TrimSpace(a[1]))
 		if strings.EqualFold(a[1], "failed") && r.hasNo4xx(body) {
 			// "failed" is permanent per RFC 3464, but a co-present 4.x.x status
 			// (retry-then-fail) means transient — defer to the status code.
@@ -109,6 +113,8 @@ func Parse(body string) Report {
 		} else if strings.EqualFold(a[1], "delayed") && r.BounceClass == "" {
 			r.BounceClass = "SOFT"
 			r.IsBounce = true
+		} else if strings.EqualFold(a[1], "delivered") && strings.HasPrefix(r.EnhancedStatus, "2") {
+			r.IsDelivery = true
 		}
 	}
 
@@ -120,7 +126,7 @@ func Parse(body string) Report {
 	if ids := reMessageID.FindAllStringSubmatch(body, -1); len(ids) > 0 {
 		r.OriginalMessageID = strings.TrimSpace(ids[len(ids)-1][1])
 	}
-	if r.BounceClass == "" {
+	if r.BounceClass == "" && !r.IsDelivery {
 		r.BounceClass = "UNKNOWN"
 	}
 

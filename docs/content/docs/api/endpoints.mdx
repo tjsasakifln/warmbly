@@ -280,6 +280,8 @@ Registering and managing the OAuth apps your workspace owns. The flow itself (au
 | PATCH | `/automations/:id/layout` | `INTEGRATIONS` |
 | GET/POST/PATCH/DELETE | `/warmup/routing[/:id]` | `WARMUP_ROUTING` |
 
+`POST /deliverability/events` accepts explicit `delivered` and `soft_bounce` facts in addition to hard `bounce`, complaint, unsubscribe, open, click, and reply events. Its permission scope is unchanged.
+
 ### Retry safety
 
 Mutating API requests may include an `Idempotency-Key` header. Warmbly stores the completed response for 24 hours per organization and key. Reusing the same key with the same method, route, query, and body replays the original response with `X-Idempotent-Replayed: true`; reusing the key with a different request returns `409 Conflict`.

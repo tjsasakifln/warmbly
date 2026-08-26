@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -82,6 +83,24 @@ type outboundContactRepo struct {
 	contact *models.Contact
 }
 
+type confengeDeliverabilityRecorder struct {
+	calls int
+	req   *models.IngestDeliverabilityEventRequest
+	idem  string
+}
+
+func (r *confengeDeliverabilityRecorder) OnRecipientSuppressed(context.Context, uuid.UUID, string, string, string, *uuid.UUID, time.Time) error {
+	return nil
+}
+
+func (r *confengeDeliverabilityRecorder) OnDeliverabilityEvent(_ context.Context, _ uuid.UUID, req *models.IngestDeliverabilityEventRequest, _, idem string, _ uuid.UUID, _ time.Time) error {
+	r.calls++
+	copy := *req
+	r.req = &copy
+	r.idem = idem
+	return nil
+}
+
 func (r outboundContactRepo) GetByID(context.Context, uuid.UUID) (*models.Contact, *errx.Error) {
 	return r.contact, nil
 }
@@ -140,4 +159,32 @@ func TestIngestDeliverabilityEventLoadsSettingsBeforeClaim(t *testing.T) {
 
 	require.NotNil(t, xerr)
 	require.Zero(t, repo.createCalls)
+}
+
+func TestIngestDeliverabilityEventReplaysProviderProjectionIdempotently(t *testing.T) {
+	repo := &outboundAdvancedRepo{autoSuppress: true}
+	hook := &confengeDeliverabilityRecorder{}
+	svc := &service{repo: repo, confengeSuppression: hook}
+	req := &models.IngestDeliverabilityEventRequest{
+		EventType: models.DeliverabilityEventDelivered, RecipientEmail: "lead@example.com",
+		Provider: "ses", IdempotencyKey: "ses:delivered:47",
+	}
+
+	orgID := uuid.New()
+	require.Nil(t, svc.IngestDeliverabilityEvent(context.Background(), orgID, req))
+	require.Nil(t, svc.IngestDeliverabilityEvent(context.Background(), orgID, req))
+	require.Equal(t, 2, hook.calls)
+	require.Equal(t, models.DeliverabilityEventDelivered, hook.req.EventType)
+	require.Equal(t, "ses:delivered:47", hook.idem)
+	require.Zero(t, repo.suppressCalls)
+}
+
+func TestIngestDeliverabilityEventNeverSuppressesSoftBounce(t *testing.T) {
+	repo := &outboundAdvancedRepo{autoSuppress: true}
+	svc := &service{repo: repo}
+	require.Nil(t, svc.IngestDeliverabilityEvent(context.Background(), uuid.New(), &models.IngestDeliverabilityEventRequest{
+		EventType: models.DeliverabilityEventSoftBounce, RecipientEmail: "lead@example.com",
+		IdempotencyKey: "ses:soft:47",
+	}))
+	require.Zero(t, repo.suppressCalls)
 }

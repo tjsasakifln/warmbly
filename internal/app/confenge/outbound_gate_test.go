@@ -120,6 +120,80 @@ func TestGateCampaignEmailHardBlockAccountDNC(t *testing.T) {
 	}
 }
 
+func TestAssertTransportableCancelsQueuedSendSuppressedMinutesBeforeDue(t *testing.T) {
+	allowConfengeSendingForTest(t)
+	ctx := context.Background()
+	repo := newMemRepoWithSettings()
+	orgID, accountID, candidateID := uuid.New(), uuid.New(), uuid.New()
+	_, _ = repo.UpsertAccount(ctx, &models.OutreachAccount{ID: accountID, OrganizationID: orgID, CNPJ14: "12345678000176"})
+	_, _ = repo.UpsertCandidate(ctx, &models.OutreachContactCandidate{
+		ID: candidateID, OrganizationID: orgID, AccountID: accountID, Email: "exact@example.com",
+	})
+	otherCandidateID := uuid.New()
+	_, _ = repo.UpsertCandidate(ctx, &models.OutreachContactCandidate{
+		ID: otherCandidateID, OrganizationID: orgID, AccountID: accountID, Email: "other@example.com",
+	})
+	campaignID, contactID := bindTransportableEnrollment(t, repo.memRepo, orgID, accountID, candidateID, "exact@example.com")
+	touchpoint, _ := repo.GetTouchpointByEnrollment(ctx, orgID, campaignID, contactID)
+	dueAt := time.Now().UTC().Add(5 * time.Minute)
+	touchpoint.DueAt = dueAt
+	if err := repo.UpdateTouchpoint(ctx, touchpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpsertOutreachRecipientSuppression(ctx, &models.SuppressedRecipient{
+		OrganizationID: orgID, Email: "exact@example.com", Reason: "one-click unsubscribe",
+		Source: models.DeliverabilityEventUnsubscribe, CreatedAt: dueAt.Add(-2 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := &service{cfg: Config{Enabled: true}, repo: repo}
+	if err := svc.AssertTransportable(ctx, orgID, touchpoint); err == nil {
+		t.Fatal("suppression inserted before due_at must cancel transport")
+	}
+	cancelled, _ := repo.GetTouchpoint(ctx, orgID, touchpoint.ID)
+	if cancelled.State != models.TouchpointDNC {
+		t.Fatalf("touchpoint state=%s want %s", cancelled.State, models.TouchpointDNC)
+	}
+	account, _ := repo.GetAccount(ctx, orgID, accountID)
+	if account.Blocked || account.DoNotContact {
+		t.Fatal("exact recipient suppression must not invalidate the company account")
+	}
+	other, _ := repo.GetCandidate(ctx, orgID, otherCandidateID)
+	if other.Blocked || other.Bounced || other.DoNotContact {
+		t.Fatal("exact recipient suppression must preserve another mailbox at the same company")
+	}
+}
+
+func TestObserveCampaignEmailAttemptIncludesNonCohortControlledTouch(t *testing.T) {
+	ctx := context.Background()
+	repo := newMemRepoWithSettings()
+	orgID, accountID, candidateID := uuid.New(), uuid.New(), uuid.New()
+	_, _ = repo.UpsertAccount(ctx, &models.OutreachAccount{
+		ID: accountID, OrganizationID: orgID, CNPJ14: "12345678000148",
+		SourceSystem: "extra-cli", SourceRunID: "source-run-47",
+	})
+	_, _ = repo.UpsertCandidate(ctx, &models.OutreachContactCandidate{
+		ID: candidateID, OrganizationID: orgID, AccountID: accountID, Email: "attempt@example.com",
+	})
+	campaignID, contactID := bindTransportableEnrollment(t, repo.memRepo, orgID, accountID, candidateID, "attempt@example.com")
+	account, _ := repo.GetAccount(ctx, orgID, accountID)
+	account.SourceRunID = "source-run-47"
+	_, _ = repo.UpsertAccount(ctx, account)
+	svc := &service{cfg: Config{Enabled: true}, repo: repo}
+	taskID, mailboxID := uuid.New(), uuid.New()
+	if err := svc.ObserveCampaignEmailAttempt(ctx, orgID, campaignID, contactID, uuid.New(), taskID, mailboxID, "smtp", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	events := svc.ObservedControlledEmailEvents()
+	if len(events) != 1 || events[0].Type != "email_attempted" {
+		t.Fatalf("attempt projection=%+v", events)
+	}
+	if events[0].SourceRunID != "source-run-47" || events[0].MailboxID != mailboxID.String() {
+		t.Fatalf("operational dimensions missing: %+v", events[0])
+	}
+}
+
 func TestGateCampaignEmailTransientOnGovernorError(t *testing.T) {
 	allowConfengeSendingForTest(t)
 	// errStore fails TryReserveAtomic (simulates DB blip).

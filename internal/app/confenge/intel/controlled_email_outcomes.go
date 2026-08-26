@@ -7,10 +7,12 @@ import (
 	"strings"
 )
 
-// ControlledEmailOutcomeSlice is one (route class, source, provider, cohort, policy) bucket.
+// ControlledEmailOutcomeSlice is one non-PII operational outcome bucket.
 type ControlledEmailOutcomeSlice struct {
 	RouteClass    string `json:"route_class"`
 	Source        string `json:"source"`
+	SourceRunID   string `json:"source_run_id"`
+	MailboxID     string `json:"mailbox_id"`
 	Provider      string `json:"provider"`
 	CohortID      string `json:"cohort_id"`
 	PolicyVersion string `json:"policy_version"`
@@ -19,6 +21,7 @@ type ControlledEmailOutcomeSlice struct {
 	Attempted         *int `json:"attempted"`
 	ProviderAccepted  *int `json:"provider_accepted"`
 	Delivered         *int `json:"delivered"`
+	DeliveryUnknown   *int `json:"delivery_unknown"`
 	HardBounce        *int `json:"hard_bounce"`
 	SoftBounce        *int `json:"soft_bounce"`
 	Reply             *int `json:"reply"`
@@ -61,6 +64,8 @@ func SliceControlledEmailOutcomes(events []CommercialEvent) []ControlledEmailOut
 		return strings.Join([]string{
 			orUnknown(ev.EmailRouteClass),
 			orUnknown(ev.Source),
+			orUnknown(ev.SourceRunID),
+			orUnknown(ev.MailboxID),
 			normalizeControlledProvider(ev.ProviderName),
 			orUnknown(ev.CohortID),
 			orUnknown(ev.PolicyVersion),
@@ -74,6 +79,8 @@ func SliceControlledEmailOutcomes(events []CommercialEvent) []ControlledEmailOut
 		out = append(out, ControlledEmailOutcomeSlice{
 			RouteClass:    orUnknown(ev.EmailRouteClass),
 			Source:        orUnknown(ev.Source),
+			SourceRunID:   orUnknown(ev.SourceRunID),
+			MailboxID:     orUnknown(ev.MailboxID),
 			Provider:      normalizeControlledProvider(ev.ProviderName),
 			CohortID:      orUnknown(ev.CohortID),
 			PolicyVersion: orUnknown(ev.PolicyVersion),
@@ -102,6 +109,8 @@ func SliceControlledEmailOutcomes(events []CommercialEvent) []ControlledEmailOut
 			incrementObserved(&row.ProviderAccepted)
 		case typ == "delivered":
 			incrementObserved(&row.Delivered)
+		case typ == EventDeliveryUnknown:
+			incrementObserved(&row.DeliveryUnknown)
 		case typ == "hard_bounce" || strings.EqualFold(ev.BounceClass, "HARD"):
 			incrementObserved(&row.HardBounce)
 		case typ == "soft_bounce" || strings.EqualFold(ev.BounceClass, "SOFT"):
@@ -234,6 +243,7 @@ func ControlledEmailEventsFromChains(chains []Chain, includeSynthetic bool) []Co
 				OccurredAt: receipt.OccurredAt, IngestedAt: receipt.IngestedAt,
 				OrganizationID: chain.Keys.OrganizationID, Synthetic: chain.Synthetic,
 				EmailRouteClass: receipt.EmailRouteClass, Source: receipt.Source,
+				SourceRunID: receipt.SourceRunID, MailboxID: receipt.MailboxID,
 				ProviderName: receipt.ProviderName, CohortID: receipt.CohortID,
 				PolicyVersion: receipt.PolicyVersion, BounceClass: receipt.BounceClass,
 				ReplyClass: receipt.ReplyClass, AccountPublicID: receipt.AccountPublicID,
@@ -247,7 +257,7 @@ func ControlledEmailEventsFromChains(chains []Chain, includeSynthetic bool) []Co
 
 func isControlledEmailReceipt(receipt CommercialReceipt) bool {
 	switch strings.ToLower(strings.TrimSpace(receipt.Type)) {
-	case EventEmailAttempted, EventProviderAccepted, EventDelivered, EventHardBounce,
+	case EventEmailAttempted, EventProviderAccepted, EventDelivered, EventDeliveryUnknown, EventHardBounce,
 		EventSoftBounce, EventReply, EventOptOut, EventSpamComplaint, EventNoReply:
 		return true
 	default:
@@ -257,12 +267,12 @@ func isControlledEmailReceipt(receipt CommercialReceipt) bool {
 
 func FormatControlledEmailReport(rep ControlledEmailExecutiveReport) string {
 	var b bytes.Buffer
-	fmt.Fprintf(&b, "route_class\tcohort_id\tattempted\tprovider_accepted\tdelivered\thard_bounce\tsoft_bounce\treply\tpositive_reply\trouted_or_forwarded\topt_out\tspam_complaint\tmeeting\tproposal\tqualified_pipeline\tobserved_revenue\tunknown\n")
+	fmt.Fprintf(&b, "route_class\tsource\tsource_run_id\tmailbox_id\tcohort_id\tattempted\tprovider_accepted\tdelivered\tdelivery_unknown\thard_bounce\tsoft_bounce\treply\tpositive_reply\trouted_or_forwarded\topt_out\tspam_complaint\tmeeting\tproposal\tqualified_pipeline\tobserved_revenue\tunknown\n")
 	rows := append([]ControlledEmailOutcomeSlice{}, rep.Rows...)
 	sort.Slice(rows, func(i, j int) bool { return rows[i].RouteClass < rows[j].RouteClass })
 	for _, r := range rows {
-		fmt.Fprintf(&b, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			orUnknown(r.RouteClass), orUnknown(r.CohortID), metric(r.Attempted), metric(r.ProviderAccepted), metric(r.Delivered),
+		fmt.Fprintf(&b, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			orUnknown(r.RouteClass), orUnknown(r.Source), orUnknown(r.SourceRunID), orUnknown(r.MailboxID), orUnknown(r.CohortID), metric(r.Attempted), metric(r.ProviderAccepted), metric(r.Delivered), metric(r.DeliveryUnknown),
 			metric(r.HardBounce), metric(r.SoftBounce), metric(r.Reply), metric(r.PositiveReply), metric(r.RoutedForwarded),
 			metric(r.OptOut), metric(r.SpamComplaint), metric(r.Meeting), metric(r.Proposal), metric(r.QualifiedPipeline), metric(r.ObservedRevenue), metric(r.Unknown))
 	}

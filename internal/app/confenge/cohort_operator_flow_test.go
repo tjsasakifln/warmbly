@@ -425,6 +425,11 @@ func TestObservePathPopulatesRouteClassWithoutHandBuiltEvent(t *testing.T) {
 	if err := svc.transitionCompletedTouchpoint(ctx, org, tp, now, "prov-1"); err != nil {
 		t.Fatal(err)
 	}
+	if err := svc.observeControlledEmail(ctx, org, intel.EventProviderAccepted, tp, cand, ControlledEmailContext{
+		OccurredAt: now, ProviderName: "smtp", StableEventRef: "prov-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	_ = repo.UpdateTouchpoint(ctx, tp)
 	if err := svc.NoteReply(ctx, org, cand.Email, map[string]any{"reply_class": "POSITIVE"}); err != nil {
 		t.Fatal(err)

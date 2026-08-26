@@ -94,6 +94,7 @@ const (
 	EventEmailAttempted            = "email_attempted"
 	EventProviderAccepted          = "provider_accepted"
 	EventDelivered                 = "delivered"
+	EventDeliveryUnknown           = "delivery_unknown"
 	EventHardBounce                = "hard_bounce"
 	EventSoftBounce                = "soft_bounce"
 	EventOptOut                    = "opt_out"
@@ -826,6 +827,8 @@ type CommercialEvent struct {
 
 	// Controlled email observability slices. UNKNOWN stays UNKNOWN.
 	EmailRouteClass string `json:"email_route_class,omitempty"`
+	SourceRunID     string `json:"source_run_id,omitempty"`
+	MailboxID       string `json:"mailbox_id,omitempty"`
 	CohortID        string `json:"cohort_id,omitempty"`
 	PolicyVersion   string `json:"policy_version,omitempty"`
 	ProviderName    string `json:"provider_name,omitempty"`
