@@ -55,6 +55,9 @@ const (
 	EnvDelegatedFirstTouch = "CONFENGE_DELEGATED_FIRST_TOUCH_ENABLED"
 	// Delegated first-touch autorun evaluates the prepared rolling backlog.
 	EnvDelegatedFirstTouchAutorun = "CONFENGE_DELEGATED_FIRST_TOUCH_AUTORUN_ENABLED"
+	// Delegated first-touch runway is a scheduling-only ceiling. It grants no
+	// transport authority and every entry remains subject to live final gates.
+	EnvDelegatedFirstTouchRunwayTarget = "CONFENGE_DELEGATED_FIRST_TOUCH_RUNWAY_TARGET"
 	// Adaptive rate (single capacity authority with dispatch governor).
 	EnvRateMode                     = "CONFENGE_RATE_MODE"
 	EnvRateStartPerHour             = "CONFENGE_RATE_START_PER_HOUR"
@@ -82,12 +85,13 @@ const (
 // Default 200 allows adaptive peak 20/h × 9h (=180) plus margin so the daily
 // campaign cap is never the binding constraint ahead of the rolling-hour governor.
 const (
-	DefaultCampaignDailyLimit       = 200
-	DefaultMaxInitialWords          = 120
-	DefaultMaxPayloadBytes          = 32 << 20 // 32 MiB
-	DefaultCrossChannelHours        = 24
-	DefaultMaxWhatsAppWords         = 70
-	DefaultDraftReviewBacklogTarget = 100
+	DefaultCampaignDailyLimit              = 200
+	DefaultMaxInitialWords                 = 120
+	DefaultMaxPayloadBytes                 = 32 << 20 // 32 MiB
+	DefaultCrossChannelHours               = 24
+	DefaultMaxWhatsAppWords                = 70
+	DefaultDraftReviewBacklogTarget        = 100
+	DefaultDelegatedFirstTouchRunwayTarget = 100
 )
 
 // Config is runtime configuration for the confenge outreach feature.
@@ -129,6 +133,9 @@ type Config struct {
 	DelegatedFirstTouchEnabled bool
 	// DelegatedFirstTouchAutorunEnabled continuously evaluates that narrow path.
 	DelegatedFirstTouchAutorunEnabled bool
+	// DelegatedFirstTouchRunwayTarget bounds queued+reserved EMAIL work per org.
+	// It fills the canonical dispatch queue only; it never invokes transport.
+	DelegatedFirstTouchRunwayTarget int
 	// RateMode: "fixed" | "adaptive". Adaptive starts at RateStartPerHour and may climb to RateMaxPerHour.
 	RateMode         string
 	RateStartPerHour int
@@ -218,6 +225,7 @@ func LoadConfig() Config {
 		GreenAutorunEnabled:               envBool(EnvGreenAutorun, false),
 		DelegatedFirstTouchEnabled:        envBool(EnvDelegatedFirstTouch, false),
 		DelegatedFirstTouchAutorunEnabled: envBool(EnvDelegatedFirstTouchAutorun, false),
+		DelegatedFirstTouchRunwayTarget:   envInt(EnvDelegatedFirstTouchRunwayTarget, DefaultDelegatedFirstTouchRunwayTarget),
 		RateMode:                          strings.ToLower(strings.TrimSpace(os.Getenv(EnvRateMode))),
 		RateStartPerHour:                  envInt(EnvRateStartPerHour, 10),
 		RateMaxPerHour:                    envInt(EnvRateMaxPerHour, 20),
@@ -260,6 +268,9 @@ func LoadConfig() Config {
 	}
 	if cfg.DraftReviewBacklogTarget < 1 {
 		cfg.DraftReviewBacklogTarget = DefaultDraftReviewBacklogTarget
+	}
+	if cfg.DelegatedFirstTouchRunwayTarget < 1 {
+		cfg.DelegatedFirstTouchRunwayTarget = DefaultDelegatedFirstTouchRunwayTarget
 	}
 
 	// Fall back to chunk feed URL for manifest if only FeedURL is set.

@@ -42,6 +42,7 @@ func TestLoadConfigDefaultsMatchCanonicalSemantics(t *testing.T) {
 	t.Setenv(dispatch.EnvSendWindowStart, "")
 	t.Setenv(dispatch.EnvSendWindowEnd, "")
 	t.Setenv(EnvDraftReviewBacklogTarget, "")
+	t.Setenv(EnvDelegatedFirstTouchRunwayTarget, "")
 
 	cfg := LoadConfig()
 	dcfg := dispatch.LoadConfig()
@@ -53,6 +54,9 @@ func TestLoadConfigDefaultsMatchCanonicalSemantics(t *testing.T) {
 	}
 	if cfg.DraftReviewBacklogTarget != 100 {
 		t.Fatalf("draft review backlog target want 100, got %d", cfg.DraftReviewBacklogTarget)
+	}
+	if cfg.DelegatedFirstTouchRunwayTarget != 100 {
+		t.Fatalf("delegated first-touch runway target want 100, got %d", cfg.DelegatedFirstTouchRunwayTarget)
 	}
 	if dispatch.DefaultSendsPerHour != 10 {
 		t.Fatalf("package DefaultSendsPerHour want 10, got %d", dispatch.DefaultSendsPerHour)

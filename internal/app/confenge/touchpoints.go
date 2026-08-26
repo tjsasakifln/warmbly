@@ -1132,7 +1132,29 @@ func (s *service) scheduleApprovedTouchpoint(ctx context.Context, orgID uuid.UUI
 	}
 	cfg := s.governor.Config()
 	now := time.Now().UTC()
-	due := dispatch.NextEligibleSlot(now.Add(cfg.MinGap), cfg.Timezone, cfg.WindowStart, cfg.WindowEnd, cfg.BusinessDaysOnly)
+	earliest := now.Add(cfg.MinGap)
+	if s.delegatedDB != nil {
+		lockKey := delegatedFirstTouchAdvisoryKey("schedule", orgID)
+		locked, err := s.repo.TryAdvisoryLock(ctx, lockKey)
+		if err != nil {
+			return nil, errx.New(errx.ServiceUnavailable, "queue scheduling lock unavailable")
+		}
+		if !locked {
+			return nil, errx.New(errx.Conflict, "queue scheduling already in progress")
+		}
+		defer s.releaseDelegatedFirstTouchAdvisoryLock(lockKey)
+
+		var latest *time.Time
+		if err := s.delegatedDB.QueryRow(ctx, `
+			SELECT max(due_at) FROM confenge_dispatch_queue
+			WHERE organization_id=$1 AND status IN ('queued','reserved')`, orgID).Scan(&latest); err != nil {
+			return nil, errx.New(errx.ServiceUnavailable, "queue runway readback unavailable")
+		}
+		if latest != nil && !latest.Before(now) {
+			earliest = latest.UTC().Add(cfg.MinGap)
+		}
+	}
+	due := dispatch.NextEligibleSlot(earliest, cfg.Timezone, cfg.WindowStart, cfg.WindowEnd, cfg.BusinessDaysOnly)
 	messageKey := dispatch.MessageKeyEmail(*tp.DraftID)
 	if tp.Channel == models.OutreachChannelWhatsApp {
 		messageKey = dispatch.MessageKeyWhatsApp(*tp.DraftID)

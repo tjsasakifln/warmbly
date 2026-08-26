@@ -2,6 +2,7 @@ package confenge
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log"
@@ -23,7 +24,7 @@ type delegatedFirstTouchProcessor interface {
 	ProcessDelegatedFirstTouchOnce(context.Context) (bool, error)
 }
 
-// DelegatedFirstTouchWorker keeps one canonical email queued from the prepared backlog.
+// DelegatedFirstTouchWorker fills a bounded runway in the canonical dispatch queue.
 type DelegatedFirstTouchWorker struct {
 	processor delegatedFirstTouchProcessor
 	interval  time.Duration
@@ -72,6 +73,15 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (bool, err
 		return false, nil
 	}
 	orgID := s.cfg.OperatorOrgID
+	workerLock := delegatedFirstTouchAdvisoryKey("worker", orgID)
+	locked, err := s.repo.TryAdvisoryLock(ctx, workerLock)
+	if err != nil {
+		return false, err
+	}
+	if !locked {
+		return false, nil
+	}
+	defer s.releaseDelegatedFirstTouchAdvisoryLock(workerLock)
 	feed, err := s.repo.GetFeedSyncState(ctx, orgID)
 	if err != nil || feed == nil {
 		return false, err
@@ -88,7 +98,7 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (bool, err
 		WHERE organization_id=$1 AND channel='EMAIL' AND status IN ('queued','reserved')`, orgID).Scan(&queued); err != nil {
 		return false, err
 	}
-	if queued > 0 {
+	if queued >= s.delegatedFirstTouchRunwayTarget() {
 		return false, nil
 	}
 
@@ -153,6 +163,21 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (bool, err
 		return false, fmt.Errorf("delegated first-touch autorun: %s", xerr.Message)
 	}
 	return report != nil && len(report.Items) == 1, nil
+}
+
+func delegatedFirstTouchAdvisoryKey(scope string, orgID uuid.UUID) int64 {
+	h := sha256.Sum256([]byte("confenge-delegated-first-touch:" + scope + ":" + orgID.String()))
+	var value uint64
+	for i := 0; i < 8; i++ {
+		value = (value << 8) | uint64(h[i])
+	}
+	return int64(value & 0x7fffffffffffffff)
+}
+
+func (s *service) releaseDelegatedFirstTouchAdvisoryLock(key int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = s.repo.AdvisoryUnlock(ctx, key)
 }
 
 func (s *service) nextDelegatedFirstTouchCandidate(ctx context.Context, orgID uuid.UUID) (uuid.UUID, uuid.UUID, uuid.UUID, error) {

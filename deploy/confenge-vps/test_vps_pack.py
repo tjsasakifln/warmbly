@@ -52,6 +52,7 @@ class TestConfengeVpsPack(unittest.TestCase):
         self.assertIn("CONFENGE_REQUIRE_HUMAN_APPROVAL=true", text)
         self.assertIn("CONFENGE_DELEGATED_FIRST_TOUCH_ENABLED=false", text)
         self.assertIn("CONFENGE_DELEGATED_FIRST_TOUCH_AUTORUN_ENABLED=false", text)
+        self.assertIn("CONFENGE_DELEGATED_FIRST_TOUCH_RUNWAY_TARGET=100", text)
         self.assertIn("CONFENGE_WHATSAPP_ENABLED=false", text)
         self.assertIn("CONFENGE_RATE_MAX_PER_HOUR=20", text)
         self.assertIn("HOSTINGER_PLAN_CLASS=BUSINESS_EMAIL_STARTER", text)

@@ -239,6 +239,13 @@ func (s *service) draftReviewBacklogTarget() int {
 	return s.cfg.DraftReviewBacklogTarget
 }
 
+func (s *service) delegatedFirstTouchRunwayTarget() int {
+	if s == nil || s.cfg.DelegatedFirstTouchRunwayTarget < 1 {
+		return DefaultDelegatedFirstTouchRunwayTarget
+	}
+	return s.cfg.DelegatedFirstTouchRunwayTarget
+}
+
 // NewService wires confenge outreach. When cfg.Enabled is false, mutators return 404-style disabled errors.
 func NewService(cfg Config, repo repository.OutreachRepository, audit AuditLogger) Service {
 	prod := strings.EqualFold(cfg.AppEnv, "prod") || strings.EqualFold(cfg.AppEnv, "production")
