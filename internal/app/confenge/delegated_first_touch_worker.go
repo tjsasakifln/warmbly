@@ -117,18 +117,12 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (bool, err
 	if err != nil || cand == nil {
 		return false, err
 	}
-	recent, err := s.repo.ListDrafts(ctx, orgID, "", 500, 0)
+	evidence, err := s.repo.ListEvidence(ctx, orgID, acc.ID)
 	if err != nil {
 		return false, err
 	}
-	recentBodies := make([]string, 0, len(recent))
-	for i := range recent {
-		if recent[i].AccountID != accountID {
-			recentBodies = append(recentBodies, recent[i].BodyText)
-		}
-	}
-	subject, body := composeDelegatedRoutingCopy(acc, recentBodies)
-	entry := delegatedEntryFromCurrentState(acc, cand, touchpointID, subject, body)
+	copy := buildDelegatedRoutingCopy(acc, cand, evidence)
+	entry := delegatedEntryFromCurrentState(acc, cand, touchpointID, copy)
 	sealed, err := SealDelegatedFirstTouchEntry(entry, cand)
 	if err != nil {
 		sealed = entry
@@ -177,7 +171,7 @@ func (s *service) nextDelegatedFirstTouchCandidate(ctx context.Context, orgID uu
 	return touchpointID, accountID, candidateID, err
 }
 
-func delegatedEntryFromCurrentState(acc *models.OutreachAccount, cand *models.OutreachContactCandidate, touchpointID uuid.UUID, subject, body string) DelegatedFirstTouchEntry {
+func delegatedEntryFromCurrentState(acc *models.OutreachAccount, cand *models.OutreachContactCandidate, touchpointID uuid.UUID, copy delegatedRoutingCopy) DelegatedFirstTouchEntry {
 	observedAt := time.Time{}
 	if acc.ContractorRoleObservedAt != nil {
 		observedAt = acc.ContractorRoleObservedAt.UTC()
@@ -203,65 +197,13 @@ func delegatedEntryFromCurrentState(acc *models.OutreachAccount, cand *models.Ou
 		ContractRoleReasonCodes: append([]string{}, acc.ContractorRoleReasonCodes...), EvidenceObservedAt: observedAt,
 		ReconciliationStatus: ReconciliationWebContact,
 		WebSources:           []DelegatedWebSource{{URL: cand.SourceURL, Kind: "PUBLIC_COMPANY_SOURCE", Supports: "COMPANY_MAILBOX", ObservedAt: webObservedAt}},
-		Subject:              subject, BodyText: body, EvidenceIDs: append([]string{}, acc.ContractorRoleEvidenceIDs...),
+		Subject:              copy.Subject, BodyText: copy.Body, CopyRulesVersion: DelegatedFirstTouchCopyRulesV1,
+		FactUsed: copy.FactUsed, FactEvidenceIDs: append([]string{}, copy.FactEvidenceIDs...),
+		Practice: copy.Practice, CTA: copy.CTA,
+		SemanticSignature: copy.SemanticSignature,
+		EvidenceIDs:       uniqueStrings(append(append([]string{}, acc.ContractorRoleEvidenceIDs...), copy.FactEvidenceIDs...)),
 		QA: DelegatedFirstTouchQA{Result: "PASS", Attempts: 1, IdentityPassed: true, FactualPassed: true,
 			CopyPassed: true, OperationalPassed: true, Reviewer: DelegatedFirstTouchValidatorV1,
-			ReasonCodes: []string{"deterministic_routing_copy", "current_supplier_evidence", "current_attributed_recipient"}},
+			ReasonCodes: []string{"deterministic_factual_copy", "current_supplier_evidence", "current_attributed_recipient"}},
 	}
-}
-
-func composeDelegatedRoutingCopy(acc *models.OutreachAccount, recent []string) (string, string) {
-	company := strings.TrimSpace(firstNonEmpty(acc.NomeFantasia, acc.RazaoSocial))
-	subjects := []string{
-		"Responsável por contratos públicos", "Contato sobre contratos públicos",
-		"Área responsável por licitações", "Encaminhamento sobre contratos públicos",
-		"Quem cuida de contratos públicos?", "Direcionamento para contratos públicos",
-		"Contato com a área de licitações", "Setor de contratos públicos",
-	}
-	openings := []string{
-		"Sou Tiago Sasaki, da CONFENGE. Em fonte pública, a %s consta como empresa contratada em contratos públicos.",
-		"Meu nome é Tiago Sasaki e falo pela CONFENGE. Uma fonte pública registra a %s como fornecedora em contratos públicos.",
-		"Aqui é Tiago Sasaki, da CONFENGE. Consultamos fonte pública que identifica a %s como contratada no setor público.",
-		"Tiago Sasaki falando, pela CONFENGE. A atuação da %s como empresa contratada aparece em fonte pública.",
-		"Sou o Tiago Sasaki, da CONFENGE. Encontramos em fonte pública a %s no papel de fornecedora em contrato público.",
-		"Meu nome é Tiago Sasaki, da CONFENGE. O registro público consultado mostra a %s como empresa contratada.",
-		"Falo em nome da CONFENGE, sou Tiago Sasaki. A %s foi identificada em fonte pública como fornecedora do setor público.",
-		"Sou Tiago Sasaki e escrevo pela CONFENGE. Há registro público da %s como contratada em contratos públicos.",
-	}
-	purposes := []string{
-		"Este contato inicial serve apenas para localizar a pessoa ou área que acompanha esse assunto dentro da empresa.",
-		"Escrevo somente para encontrar o setor interno que trata desse tema na empresa.",
-		"O objetivo desta primeira mensagem é chegar à equipe responsável por esse tema dentro da empresa.",
-		"Busco apenas direcionar este primeiro contato à área interna que acompanha contratos públicos.",
-		"Minha intenção neste contato inicial é identificar quem recebe assuntos ligados a contratos públicos.",
-		"Esta mensagem tem apenas o propósito de localizar a área adequada para tratar desse assunto.",
-		"Quero somente confirmar qual equipe interna acompanha contratos públicos e licitações.",
-		"O motivo deste contato é encontrar o canal correto para assuntos de contratos públicos na empresa.",
-	}
-	questions := []string{
-		"Você poderia indicar quem é responsável por contratos públicos e licitações, ou encaminhar esta mensagem ao setor correto?",
-		"Poderia indicar a pessoa responsável por contratos públicos, ou encaminhar o contato à área de licitações?",
-		"Quem é responsável por contratos públicos na empresa, e seria possível encaminhar esta mensagem a essa área?",
-		"Seria possível indicar quem cuida de contratos públicos e direcionar esta mensagem ao setor responsável?",
-		"Você poderia encaminhar esta mensagem à área responsável por licitações, ou indicar quem cuida desse tema?",
-		"Qual pessoa ou setor é responsável por contratos públicos, e você poderia indicar esse contato?",
-		"Poderia direcionar esta mensagem a quem cuida de licitações e contratos públicos dentro da empresa?",
-		"Você consegue indicar o responsável por contratos públicos ou encaminhar esta mensagem à equipe adequada?",
-	}
-	seed := int(acc.ID.ID())
-	for attempt := 0; attempt < len(subjects)*len(openings)*len(purposes)*len(questions); attempt++ {
-		n := seed + attempt
-		subject := subjects[n%len(subjects)]
-		n /= len(subjects)
-		opening := fmt.Sprintf(openings[n%len(openings)], company)
-		n /= len(openings)
-		purpose := purposes[n%len(purposes)]
-		n /= len(purposes)
-		question := questions[n%len(questions)]
-		body := strings.Join([]string{opening, purpose, question, "Atenciosamente,\nEng. Tiago Sasaki\nCONFENGE\ntiago.sasaki@confenge.com.br"}, "\n\n")
-		if _, duplicate := NearDuplicate(body, recent); !duplicate {
-			return subject, body
-		}
-	}
-	return subjects[seed%len(subjects)], ""
 }
