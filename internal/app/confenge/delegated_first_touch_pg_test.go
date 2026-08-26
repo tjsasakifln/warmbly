@@ -267,6 +267,9 @@ func TestCampaignReadyAcceptsReadBackDelegatedQueueWithoutContact(t *testing.T) 
 		t.Fatal(err)
 	}
 	campaignRepo := repository.NewCampaignRepostory(&infrastructuredb.DB{Pool: f.pool})
+	if ready, err := campaignRepo.HasReadyDelegatedFirstTouch(f.ctx, f.campaignID); err != nil || ready {
+		t.Fatalf("ordinary empty campaign unexpectedly has delegated work: ready=%v err=%v", ready, err)
+	}
 	if err := campaignRepo.ValidateCampaignReady(f.ctx, f.campaignID); err == nil || !strings.Contains(err.Error(), "at least one contact") {
 		t.Fatalf("ordinary empty campaign unexpectedly ready: %v", err)
 	}
@@ -281,8 +284,17 @@ func TestCampaignReadyAcceptsReadBackDelegatedQueueWithoutContact(t *testing.T) 
 	if contacts != 0 {
 		t.Fatalf("fixture already enrolled contacts: %d", contacts)
 	}
+	if ready, err := campaignRepo.HasReadyDelegatedFirstTouch(f.ctx, f.campaignID); err != nil || !ready {
+		t.Fatalf("read-back delegated work unavailable: ready=%v err=%v", ready, err)
+	}
 	if err := campaignRepo.ValidateCampaignReady(f.ctx, f.campaignID); err != nil {
 		t.Fatalf("read-back delegated rolling queue did not make campaign startable: %v", err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `UPDATE confenge_dispatch_queue SET status='sent' WHERE organization_id=$1`, f.orgID); err != nil {
+		t.Fatal(err)
+	}
+	if ready, err := campaignRepo.HasReadyDelegatedFirstTouch(f.ctx, f.campaignID); err != nil || ready {
+		t.Fatalf("sent delegated work remained ready: ready=%v err=%v", ready, err)
 	}
 }
 

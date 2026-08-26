@@ -68,8 +68,16 @@ func (s *tasksService) ReconcileCampaignSchedules(ctx context.Context, limit int
 		case errors.Is(cerr, scheduler.ErrNoEmailAccounts):
 			// No mailbox to send from — pause rather than spin every pass.
 			s.autoPauseCampaign(ctx, id, uuid.Nil)
-		case errors.Is(cerr, scheduler.ErrCampaignCompleted), errors.Is(cerr, scheduler.ErrCampaignEnded):
-			// Nothing left to send (or past its end date): close it out.
+		case errors.Is(cerr, scheduler.ErrCampaignCompleted):
+			ready, readyErr := s.campaignRepo.HasReadyDelegatedFirstTouch(ctx, id)
+			if readyErr != nil {
+				log.Warn().Err(readyErr).Str("campaign_id", id.String()).Msg("campaign reconcile: rolling queue check failed; will retry")
+				continue
+			}
+			if !ready {
+				s.campaignRepo.UpdateStatus(ctx, id, "completed")
+			}
+		case errors.Is(cerr, scheduler.ErrCampaignEnded):
 			s.campaignRepo.UpdateStatus(ctx, id, "completed")
 		default:
 			// Transient error (DB blip): leave it; the next pass retries.
