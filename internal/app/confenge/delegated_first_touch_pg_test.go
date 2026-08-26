@@ -653,6 +653,7 @@ func TestDelegatedFirstTouchLedgerReconciliationPreservesTransportTransitStatesP
 		queueState      string
 		touchpointState string
 	}{
+		{name: "waiting queue", queueState: "queued", touchpointState: models.TouchpointQueued},
 		{name: "claimed queue", queueState: "reserved", touchpointState: models.TouchpointQueued},
 		{name: "campaign handoff", queueState: "sent", touchpointState: models.TouchpointQueued},
 		{name: "provider completion projection", queueState: "sent", touchpointState: models.TouchpointSent},
