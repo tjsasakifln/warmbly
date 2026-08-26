@@ -31,7 +31,7 @@ func loadContactTierFeed(t *testing.T) *Feed {
 	return feed
 }
 
-func TestPublishedExhaustedTierDoesNotBlockExplicitControlledRoute(t *testing.T) {
+func TestPublishedExhaustedTierCannotOverrideMailboxPurposeSuppression(t *testing.T) {
 	controlled := true
 	purposeBlocked := true
 	provenanceValid := false
@@ -57,8 +57,11 @@ func TestPublishedExhaustedTierDoesNotBlockExplicitControlledRoute(t *testing.T)
 		RouteSuppression:               "NONE",
 		ContactTier:                    ContactTierE,
 	})
-	if c.Blocked || c.BlockReason != "" || !CandidateControlledEligible(c) || !CandidateEnrollable(c) {
-		t.Fatalf("explicit controlled route was collapsed into strict EXHAUSTED lane: %+v", c)
+	if c.Blocked || c.BlockReason != "" {
+		t.Fatalf("mailbox-purpose suppression became a sticky account block: %+v", c)
+	}
+	if CandidateControlledEligible(c) || CandidateEnrollable(c) {
+		t.Fatalf("explicit controlled route overrode mailbox-purpose suppression: %+v", c)
 	}
 	if !c.MailboxPurposeSendBlocked || c.EmailSendReady {
 		t.Fatalf("strict autorun guards were weakened: %+v", c)

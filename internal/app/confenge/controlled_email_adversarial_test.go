@@ -200,6 +200,31 @@ func TestLegacyControlledFallbackRemainsFailClosed(t *testing.T) {
 	}
 }
 
+func TestExplicitControlledRouteCannotOverrideMailboxPurposeSuppression(t *testing.T) {
+	eligible := true
+	base := models.OutreachContactCandidate{
+		Email: "contato@empresa.com.br", MailboxPurpose: "GENERIC_CONTACT",
+		VerificationStatus: models.OutreachVerifyOfficialSource,
+		OwnershipStatus:    "COMPANY_OWNED",
+		DiscoveryJSON: discoveryJSON(t, controlledDiscovery{
+			RouteClass: RouteClassGenericCompany, ControlledEmailEligible: &eligible,
+		}),
+	}
+
+	blockedPurpose := base
+	blockedPurpose.MailboxPurpose = "ORCAMENTO"
+	blockedPurpose.MailboxPurposeSendBlocked = true
+	if CandidateControlledEligible(&blockedPurpose) {
+		t.Fatal("explicit controlled route overrode mailbox purpose suppression")
+	}
+
+	unsuitableMailbox := base
+	unsuitableMailbox.RecipientCommercialSuitability = "UNSUITABLE_MAILBOX"
+	if CandidateControlledEligible(&unsuitableMailbox) {
+		t.Fatal("explicit controlled route overrode unsuitable mailbox classification")
+	}
+}
+
 func TestCopyQARejectsInventionAndGmailCorporateClaim(t *testing.T) {
 	c := &models.OutreachContactCandidate{Email: "contato@empresa.com.br"}
 	errs := ValidateCopyForRouteClass(RouteClassGenericCompany, "Olá, Ana, você é o gerente.", "Oi Ana", c)

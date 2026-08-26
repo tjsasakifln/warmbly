@@ -23,6 +23,8 @@ The CONFENGE first-touch campaign has one narrow exception. `CONFENGE_DELEGATED_
 
 The canonical campaign remains active while the current completed feed has prepared first touches that the delegated worker has not decided. This covers the short interval after a feed refresh cancels a stale queue and before the worker writes the replacement queue. Only a current `NEEDS_REVIEW` first touch under the active founder policy keeps the campaign alive. An exhausted ordinary campaign still completes, and pending work still needs the full delegated checks before it can become `QUEUED` or transportable.
 
+An upstream controlled route never overrides mailbox-purpose suppression. Addresses classified as blocked for sending or as an unsuitable mailbox stay out of delegated approval even when their route class is otherwise allowed.
+
 For a manual batch, the agent first writes a research manifest containing candidate IDs, public evidence and copy, but no mailbox address. `confenge first-touch seal` reads the selected mailbox from the operational database, derives its route class, binds the subject and body hashes, and creates a new mode `0600` manifest without printing the address. `confenge first-touch apply --dry-run` validates that sealed artifact before the confirmed write path records approval and canonical queue readback. Autorun constructs the same manifest from current persisted supplier, recipient, feed, and evidence records, then sends it through the same validator and apply path.
 
 Optional feed source:

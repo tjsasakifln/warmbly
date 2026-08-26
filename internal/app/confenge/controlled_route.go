@@ -116,7 +116,7 @@ func CandidateControlledEligible(c *models.OutreachContactCandidate) bool {
 	if c == nil {
 		return false
 	}
-	if c.DoNotContact || c.Bounced || c.Blocked {
+	if c.DoNotContact || c.Bounced || c.Blocked || candidateMailboxPurposeSuppressed(c) {
 		return false
 	}
 	d := parseControlledDiscovery(c)
@@ -179,6 +179,9 @@ func legacyControlledPublicRoute(c *models.OutreachContactCandidate, class strin
 // suppression, provenance and fixture guards still apply. Legacy nominal paths
 // keep using CanEnroll directly.
 func CandidateEnrollable(c *models.OutreachContactCandidate) bool {
+	if candidateMailboxPurposeSuppressed(c) {
+		return false
+	}
 	if c.CanEnroll() {
 		return true
 	}
@@ -186,6 +189,11 @@ func CandidateEnrollable(c *models.OutreachContactCandidate) bool {
 		return false
 	}
 	return c.EnrollableIgnoringVerification()
+}
+
+func candidateMailboxPurposeSuppressed(c *models.OutreachContactCandidate) bool {
+	return c == nil || c.MailboxPurposeSendBlocked ||
+		strings.EqualFold(strings.TrimSpace(c.RecipientCommercialSuitability), "UNSUITABLE_MAILBOX")
 }
 
 func CandidatePreferredInitial(c *models.OutreachContactCandidate) bool {
