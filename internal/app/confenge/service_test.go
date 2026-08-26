@@ -185,6 +185,81 @@ func (m *memRepo) ListImportRuns(ctx context.Context, orgID uuid.UUID, limit int
 	return nil, nil
 }
 
+func (m *memRepo) MaterializeCurrentInitialBacklog(ctx context.Context, orgID uuid.UUID, sourceRunID string) (repository.OutreachInitialBacklogCounts, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out repository.OutreachInitialBacklogCounts
+	for _, tp := range m.touchpoints {
+		if tp.OrganizationID == orgID && tp.Ordinal == 1 && tp.Purpose == models.TouchpointPurposeInitial &&
+			tp.Channel == models.OutreachChannelEmail && tp.SourceRunID != "" && tp.SourceRunID != sourceRunID &&
+			models.TouchpointOpenStates[tp.State] {
+			tp.State = models.TouchpointCancelled
+			tp.StopReason = "source_run_superseded"
+			ClearApproval(tp)
+			out.StaleRetired++
+		}
+	}
+	for _, account := range m.byID {
+		if account.OrganizationID != orgID || account.SourceRunID != sourceRunID {
+			continue
+		}
+		out.Imported++
+		supplierConfirmed := account.ContractorRoleStatus == ContractorRoleConfirmed &&
+			account.TargetPartyRole == "SUPPLIER" && account.ContractorRoleSourceRunID == sourceRunID &&
+			account.SupplierCNPJ14 == account.CNPJ14 && len(account.ContractorRoleEvidenceHash) == 64 &&
+			len(account.ContractorRoleEvidenceIDs) > 0
+		if supplierConfirmed {
+			out.SupplierConfirmed++
+		}
+		var preferred []*models.OutreachContactCandidate
+		for index := range m.cands[account.ID] {
+			candidate := &m.cands[account.ID][index]
+			if account.LastImportRunID == nil || candidate.LastImportRunID == nil ||
+				*account.LastImportRunID != *candidate.LastImportRunID {
+				continue
+			}
+			discovery := parseControlledDiscovery(candidate)
+			if discovery.PreferredInitial != nil && *discovery.PreferredInitial {
+				preferred = append(preferred, candidate)
+			}
+		}
+		candidateAttributed := len(preferred) == 1 && CandidateControlledEligible(preferred[0])
+		if candidateAttributed {
+			out.CandidateAttributed++
+		}
+		initialPrepared := account.TargetFitEligible && account.TargetFitFresh &&
+			account.TargetFitClass == TargetFitConfirmed && account.TargetFitVersion != "" &&
+			account.TargetFitSourceWatermark != "" && account.TargetFitObservedAt != nil &&
+			!account.Blocked && !account.DoNotContact && candidateAttributed
+		if initialPrepared {
+			out.InitialPrepared++
+			candidate := preferred[0]
+			id := uuid.NewSHA1(uuid.NameSpaceOID, []byte("prepared-initial\x00"+orgID.String()+"\x00"+sourceRunID+"\x00"+account.ID.String()))
+			if existing := m.touchpoints[id]; existing == nil {
+				now := time.Now().UTC()
+				candidateID := candidate.ID
+				m.touchpoints[id] = &models.OutreachTouchpoint{
+					ID: id, OrganizationID: orgID, AccountID: account.ID, ContactCandidateID: &candidateID,
+					Ordinal: 1, CadenceStep: "INITIAL", Channel: models.OutreachChannelEmail,
+					Purpose: models.TouchpointPurposeInitial, DueAt: now, State: models.TouchpointDue,
+					Recipient:      strings.ToLower(candidate.Email),
+					IdempotencyKey: "prepared-initial:" + sourceRunID + ":" + account.ID.String(),
+					PolicyVersion:  models.CadencePolicyVersionV1, ServiceCode: account.ServiceCode,
+					FactUsed: account.FactToMention, EvidenceIDs: append([]string{}, account.ContractorRoleEvidenceIDs...),
+					GeneratedContextHash: account.MessageContextHash, SourceRunID: sourceRunID,
+					CreatedAt: now, UpdatedAt: now,
+				}
+			}
+		}
+		if initialPrepared && supplierConfirmed {
+			out.DelegatedEligible++
+		} else {
+			out.HeldException++
+		}
+	}
+	return out, nil
+}
+
 func (m *memRepo) GetAccountByCNPJ(ctx context.Context, orgID uuid.UUID, cnpj14 string) (*models.OutreachAccount, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

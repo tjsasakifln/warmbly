@@ -144,6 +144,12 @@ func (s *service) ProcessDraftGenerationOnce(ctx context.Context) (bool, error) 
 					'NEEDS_REVIEW','APPROVED','QUEUED'
 				  )
 			  )
+			  AND NOT ($4 AND EXISTS (
+				SELECT 1 FROM outreach_touchpoints prepared
+				WHERE prepared.organization_id=a.organization_id AND prepared.account_id=a.id
+				  AND prepared.ordinal=1 AND prepared.purpose='INITIAL' AND prepared.channel='EMAIL'
+				  AND prepared.source_run_id=feed.last_run_id AND prepared.state='DUE'
+			  ))
 			ORDER BY a.draft_generation_retry_at, a.created_at, a.id
 			LIMIT 1
 			FOR UPDATE SKIP LOCKED
@@ -154,7 +160,8 @@ func (s *service) ProcessDraftGenerationOnce(ctx context.Context) (bool, error) 
 			updated_at = $1
 		FROM next
 		WHERE a.id = next.id
-		RETURNING a.organization_id, a.id, a.draft_generation_attempts`, now, now.Add(draftGenerationLease), s.draftReviewBacklogTarget()).Scan(&orgID, &accountID, &attempts)
+		RETURNING a.organization_id, a.id, a.draft_generation_attempts`, now, now.Add(draftGenerationLease),
+		s.draftReviewBacklogTarget(), s.cfg.DelegatedFirstTouchEnabled).Scan(&orgID, &accountID, &attempts)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil

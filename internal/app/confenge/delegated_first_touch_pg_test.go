@@ -28,8 +28,12 @@ type delegatedPGFixture struct {
 }
 
 func newDelegatedPGFixture(t *testing.T) *delegatedPGFixture {
+	return newDelegatedPGFixtureWithTimeout(t, 60*time.Second)
+}
+
+func newDelegatedPGFixtureWithTimeout(t *testing.T, timeout time.Duration) *delegatedPGFixture {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	t.Cleanup(cancel)
 	pool, err := pgxpool.New(ctx, testPostgresDSN(t))
 	if err != nil {
@@ -127,6 +131,7 @@ func newDelegatedPGFixture(t *testing.T) *delegatedPGFixture {
 	candidate := &models.OutreachContactCandidate{
 		ID: uuid.New(), OrganizationID: f.orgID, AccountID: account.ID, SourceContactID: "route-delegated",
 		Name: "Equipe", Role: "Atendimento", Email: "contato@empresa.example", SourceURL: "https://empresa.example/contato",
+		SourceDate:         &now,
 		VerificationStatus: models.OutreachVerifyOfficialSource, Confidence: "HIGH", Recommended: true,
 		EmailSendReady: true, OwnershipStatus: "COMPANY_OWNED", RecipientCommercialSuitability: "SUITABLE",
 		LastImportRunID: &importID, ChannelEpistemic: "OBSERVED", RouteFreshness: "FRESH",

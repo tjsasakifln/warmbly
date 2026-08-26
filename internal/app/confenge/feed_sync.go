@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +33,12 @@ type FeedSyncResult struct {
 }
 
 const feedChunkStaleImportRecoveryAfter = 2 * time.Minute
+
+const (
+	maxOutreachManifestLeads  = 100_000
+	maxOutreachManifestChunks = 1_000
+	maxOutreachStagedBytes    = int64(1 << 30)
+)
 
 // outreachManifest is confenge.outreach.manifest.v1 (extra-cli export).
 type outreachManifest struct {
@@ -182,13 +190,23 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 		result.Status = "noop"
 		result.SkippedSame = true
 		result.RunID = lastRun
+		restorePersistedFeedCounts(result.Counts, current)
 		s.persistFeedSync(ctx, orgID, man.Source.SnapshotHash, lastRun, uri, "completed", result, true, &generatedAt)
 		return result, nil
 	}
 
 	baseURI := manifestBaseURI(uri)
 	var partialErrs []string
-	chunkPayloads := make([][]byte, 0, len(man.Chunks))
+	stagingDir, stageErr := os.MkdirTemp("", "warmbly-confenge-feed-")
+	if stageErr != nil {
+		s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "failed", result, false, nil)
+		return result, errx.New(errx.ServiceUnavailable, "feed staging unavailable")
+	}
+	defer os.RemoveAll(stagingDir)
+	chunkPaths := make([]string, 0, len(man.Chunks))
+	seenCNPJ := make(map[string]struct{}, man.LeadCount)
+	seenLeadID := make(map[string]struct{}, man.LeadCount)
+	var stagedBytes int64
 	for _, ch := range man.Chunks {
 		if strings.TrimSpace(ch.File) == "" {
 			partialErrs = append(partialErrs, "chunk missing file name")
@@ -223,17 +241,49 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 			partialErrs = append(partialErrs, fmt.Sprintf("%s lead_count does not match payload", ch.File))
 			break
 		}
-		chunkPayloads = append(chunkPayloads, chunkRaw)
+		for _, lead := range chunkFeed.Leads {
+			cnpj := NormalizeCNPJ14(lead.Company.CNPJ14)
+			leadID := strings.TrimSpace(lead.SourceLeadID)
+			if _, exists := seenCNPJ[cnpj]; exists {
+				partialErrs = append(partialErrs, fmt.Sprintf("%s duplicate cnpj14 across manifest", ch.File))
+				break
+			}
+			if _, exists := seenLeadID[leadID]; exists {
+				partialErrs = append(partialErrs, fmt.Sprintf("%s duplicate source_lead_id across manifest", ch.File))
+				break
+			}
+			seenCNPJ[cnpj] = struct{}{}
+			seenLeadID[leadID] = struct{}{}
+		}
+		if len(partialErrs) != 0 {
+			break
+		}
+		stagedBytes += int64(len(chunkRaw))
+		if stagedBytes > maxOutreachStagedBytes {
+			partialErrs = append(partialErrs, "manifest staged payload exceeds limit")
+			break
+		}
+		stagedPath := filepath.Join(stagingDir, fmt.Sprintf("chunk-%06d.json", ch.ChunkIndex))
+		if err := os.WriteFile(stagedPath, chunkRaw, 0o600); err != nil {
+			partialErrs = append(partialErrs, fmt.Sprintf("%s staging: %v", ch.File, err))
+			break
+		}
+		chunkPaths = append(chunkPaths, stagedPath)
 	}
 
 	// Validate every remote object before the first database mutation. A corrupt,
 	// missing, or mismatched later chunk must leave the current snapshot untouched.
 	imported := 0
-	for index, chunkRaw := range chunkPayloads {
+	for index, stagedPath := range chunkPaths {
 		if len(partialErrs) != 0 {
 			break
 		}
 		ch := man.Chunks[index]
+		chunkRaw, readErr := os.ReadFile(stagedPath)
+		if readErr != nil {
+			partialErrs = append(partialErrs, fmt.Sprintf("%s staged read: %v", ch.File, readErr))
+			break
+		}
 		chunkURI := joinURI(baseURI, ch.File)
 		idem := fmt.Sprintf("sync:%s:%s:%d", orgID, man.Source.SnapshotHash, ch.ChunkIndex)
 		importRun, xerr := s.ImportFromBytes(ctx, orgID, userID, chunkRaw, ImportOptions{
@@ -281,6 +331,26 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 		}
 		result.Counts["stale_reviews_retired"] = retired
 		result.Counts["stale_review_accounts_requeued"] = requeued
+		backlog, backlogErr := s.repo.MaterializeCurrentInitialBacklog(ctx, orgID, man.Source.RunID)
+		if backlogErr != nil {
+			result.Status = "partial"
+			result.Errors = append(result.Errors, "current INITIAL backlog materialization: "+backlogErr.Error())
+			s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "partial", result, false, nil)
+			return result, errx.New(errx.ServiceUnavailable, "feed INITIAL backlog materialization failed; snapshot not committed")
+		}
+		result.Counts["imported"] = backlog.Imported
+		result.Counts["supplier_confirmed"] = backlog.SupplierConfirmed
+		result.Counts["candidate_attributed"] = backlog.CandidateAttributed
+		result.Counts["initial_touchpoint_prepared"] = backlog.InitialPrepared
+		result.Counts["delegated_eligible"] = backlog.DelegatedEligible
+		result.Counts["held_exception"] = backlog.HeldException
+		result.Counts["stale_initial_retired"] = backlog.StaleRetired
+		if backlog.Imported != man.LeadCount || backlog.DelegatedEligible+backlog.HeldException != man.LeadCount {
+			result.Status = "partial"
+			result.Errors = append(result.Errors, "current INITIAL backlog closure count mismatch")
+			s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "partial", result, false, nil)
+			return result, errx.New(errx.ServiceUnavailable, "feed INITIAL backlog closure failed; snapshot not committed")
+		}
 		woken, wakeErr := s.wakeEligibleEnrichmentRecovery(ctx, orgID)
 		if wakeErr != nil {
 			result.Status = "partial"
@@ -309,6 +379,12 @@ func validateOutreachManifest(manifest *outreachManifest) error {
 	}
 	if manifest.ChunkCount != len(manifest.Chunks) || manifest.ChunkCount < 1 {
 		return fmt.Errorf("manifest chunk_count does not match chunks")
+	}
+	if manifest.LeadCount < 1 || manifest.LeadCount > maxOutreachManifestLeads {
+		return fmt.Errorf("manifest lead_count is outside the supported limit")
+	}
+	if manifest.ChunkCount > maxOutreachManifestChunks {
+		return fmt.Errorf("manifest chunk_count exceeds the supported limit")
 	}
 	seenFiles := make(map[string]struct{}, len(manifest.Chunks))
 	totalLeads := 0
@@ -341,11 +417,29 @@ func validateOutreachManifest(manifest *outreachManifest) error {
 			return fmt.Errorf("manifest deactivation has invalid cnpj14")
 		}
 		toState, _ := deactivation["to_state"].(string)
-		if strings.EqualFold(strings.TrimSpace(toState), ActivationActionableNow) {
-			return fmt.Errorf("manifest deactivation cannot target ACTIONABLE_NOW")
+		switch strings.ToUpper(strings.TrimSpace(toState)) {
+		case ActivationWatch, ActivationResearchRequired, ActivationSuppressed:
+		default:
+			return fmt.Errorf("manifest deactivation has unsupported to_state")
 		}
 	}
 	return nil
+}
+
+func restorePersistedFeedCounts(dst map[string]int, state *models.OutreachFeedSyncState) {
+	if dst == nil || state == nil || len(state.CountsJSON) == 0 {
+		return
+	}
+	var persisted map[string]json.RawMessage
+	if json.Unmarshal(state.CountsJSON, &persisted) != nil {
+		return
+	}
+	for key, raw := range persisted {
+		var value int
+		if json.Unmarshal(raw, &value) == nil {
+			dst[key] = value
+		}
+	}
 }
 
 func manifestBaseURI(uri string) string {

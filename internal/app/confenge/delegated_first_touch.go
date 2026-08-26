@@ -1205,8 +1205,18 @@ func (s *service) prepareDelegatedTouchpoint(ctx context.Context, orgID uuid.UUI
 		return nil, nil, fmt.Errorf("first_touch_lookup_failed")
 	}
 	var tp *models.OutreachTouchpoint
+	var legacy *models.OutreachTouchpoint
 	for i := range all {
-		if all[i].Ordinal != 1 || all[i].Channel != models.OutreachChannelEmail {
+		if all[i].Ordinal != 1 || all[i].Purpose != models.TouchpointPurposeInitial ||
+			all[i].Channel != models.OutreachChannelEmail {
+			continue
+		}
+		if all[i].SourceRunID == "" {
+			row := all[i]
+			legacy = &row
+			continue
+		}
+		if all[i].SourceRunID != manifest.SourceRunID {
 			continue
 		}
 		if tp != nil {
@@ -1214,6 +1224,9 @@ func (s *service) prepareDelegatedTouchpoint(ctx context.Context, orgID uuid.UUI
 		}
 		row := all[i]
 		tp = &row
+	}
+	if tp == nil {
+		tp = legacy
 	}
 	if tp != nil {
 		switch tp.State {
@@ -1223,14 +1236,18 @@ func (s *service) prepareDelegatedTouchpoint(ctx context.Context, orgID uuid.UUI
 		}
 	} else {
 		tp = &models.OutreachTouchpoint{
-			ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte(DelegatedFirstTouchPolicyV1+"\x00touchpoint\x00"+orgID.String()+"\x00"+acc.ID.String())),
+			ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte(DelegatedFirstTouchPolicyV1+"\x00touchpoint\x00"+orgID.String()+"\x00"+manifest.SourceRunID+"\x00"+acc.ID.String())),
 			OrganizationID: orgID, AccountID: acc.ID, Ordinal: 1, CadenceStep: "INITIAL",
 			Channel: models.OutreachChannelEmail, Purpose: models.TouchpointPurposeInitial,
 			DueAt: time.Now().UTC(), State: models.TouchpointNeedsReview,
-			IdempotencyKey: "delegated-first-touch:" + acc.ID.String(),
+			IdempotencyKey: "delegated-first-touch:" + manifest.SourceRunID + ":" + acc.ID.String(),
 		}
 	}
-	draftID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(DelegatedFirstTouchPolicyV1+"\x00draft\x00"+orgID.String()+"\x00"+acc.ID.String()))
+	draftIdentity := DelegatedFirstTouchPolicyV1 + "\x00draft\x00" + orgID.String() + "\x00" + acc.ID.String()
+	if manifest.SourceRunID != "" {
+		draftIdentity = DelegatedFirstTouchPolicyV1 + "\x00draft\x00" + orgID.String() + "\x00" + manifest.SourceRunID + "\x00" + acc.ID.String()
+	}
+	draftID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(draftIdentity))
 	if tp.DraftID != nil {
 		draftID = *tp.DraftID
 	}
@@ -1246,6 +1263,7 @@ func (s *service) prepareDelegatedTouchpoint(ctx context.Context, orgID uuid.UUI
 	tp.FactUsed = "Atuação como contratada em contrato público confirmada."
 	tp.EvidenceIDs = append([]string{}, entry.EvidenceIDs...)
 	tp.GeneratedContextHash = acc.MessageContextHash
+	tp.SourceRunID = manifest.SourceRunID
 	tp.StopReason = ""
 	ClearApproval(tp)
 	RecomputeContentHash(tp)

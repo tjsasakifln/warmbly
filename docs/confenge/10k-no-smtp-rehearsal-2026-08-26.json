@@ -1,0 +1,100 @@
+{
+  "schema_version": "warmbly.confenge.no-smtp-scale-evidence.v1",
+  "date": "2026-08-26",
+  "status": "PASS",
+  "environment": {
+    "database": "isolated PostgreSQL 16 container",
+    "application_service_started": false,
+    "dispatch_worker_invoked": false,
+    "smtp_provider_configured": false
+  },
+  "source": {
+    "v1_run_id": "run-863b0abcbaa0e637",
+    "v1_snapshot_hash": "b8c9fb3cdad7c006e4d0ef634eea607cc01c370fda352ba68dbae3041a262a19",
+    "v2_run_id": "run-f48073c9f1d66736",
+    "v2_snapshot_hash": "06bc3e5d73960f633866c2115a46a146455f13437e0c2da713e3d57fad002e6a",
+    "membership_change_percent": 10,
+    "deactivations": 1000
+  },
+  "funnel_v1": {
+    "imported": 10000,
+    "supplier_confirmed": 9000,
+    "candidate_attributed": 6000,
+    "initial_touchpoint_prepared": 6000,
+    "delegated_eligible": 5000,
+    "held_exception": 5000
+  },
+  "funnel_v2": {
+    "imported": 10000,
+    "supplier_confirmed": 9000,
+    "candidate_attributed": 6000,
+    "initial_touchpoint_prepared": 5999,
+    "delegated_eligible": 4999,
+    "held_exception": 5001,
+    "stale_delegated_first_touches_retired": 8,
+    "stale_initial_retired": 5408
+  },
+  "final_rows": {
+    "current_accounts": 10000,
+    "current_candidates": 9000,
+    "current_evidence": 10000,
+    "current_initial_touchpoints": 5999,
+    "current_decisions": 125,
+    "queue_live": 100,
+    "queue_cancelled": 100,
+    "sent_touchpoints": 0
+  },
+  "fault_injection": {
+    "importer_killed_mid_chunk": "recovered",
+    "stale_running_import_retries": 1,
+    "worker_restarted_mid_fill": "converged",
+    "postgres_backend_terminated": "pool recovered",
+    "source_membership_advanced_10_percent": "converged",
+    "policy_hash_changed": "stale decision retired",
+    "mailbox_capacity_unknown": "transport gate blocked",
+    "suppression_before_due_at": "transport gate blocked",
+    "invalid_deactivation_state": "failed closed before snapshot commit",
+    "fixture_worker_missing": "failed closed before scheduling"
+  },
+  "reliability": {
+    "import_error_count": 0,
+    "duplicate_message_key_groups": 0,
+    "duplicate_initial_groups": 0,
+    "duplicate_live_account_groups": 0,
+    "orphan_without_reason_count": 0,
+    "stale_live_count": 0,
+    "stale_transportable_count": 0,
+    "deadlocks": 0,
+    "ungranted_locks_final": 0,
+    "two_x_idempotent": true,
+    "ten_x_idempotent": true,
+    "ten_x_full_runway_idle_seconds": 0.072119752
+  },
+  "scheduler": {
+    "runway_target": 100,
+    "decision_window_seconds": 607.000146,
+    "queue_fill_throughput_per_second": 0.164744605,
+    "interpretation": "shared-host preparation throughput; not a provider or send-rate measurement"
+  },
+  "resources": {
+    "postgres_observed_peak_memory_mib": 157.5,
+    "postgres_final_memory_mib": 131.3,
+    "postgres_cumulative_block_io": "124MB read / 1.6GB write",
+    "postgres_temp_files": 0,
+    "postgres_temp_bytes": 0,
+    "go_command_max_rss_kib": 709852,
+    "final_in_test_process_peak_rss_kib": 37936
+  },
+  "assertions": {
+    "ten_thousand_processable": true,
+    "zero_silent_loss": true,
+    "zero_duplicate_send_intent": true,
+    "zero_orphan_without_reason": true,
+    "restart_converged": true,
+    "feed_refresh_converged": true,
+    "runway_no_busy_loop": true,
+    "suppression_and_drift_win": true,
+    "no_smtp_no_sent": true
+  },
+  "interpretation_limit": "This proves synthetic ingest, materialization, scheduling and recovery headroom. It is not GO for dispatch, SMTP, mailbox provisioning, provider mutation, or a promised send rate."
+}

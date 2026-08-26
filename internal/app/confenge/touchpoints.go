@@ -60,6 +60,10 @@ func (s *service) PlanAccountCadence(ctx context.Context, orgID, userID, account
 		}
 		recoveryRevision = ":recovery:" + PromptVersion + ":" + revision
 	}
+	runRevision := ""
+	if strings.TrimSpace(acc.SourceRunID) != "" {
+		runRevision = ":run:" + strings.TrimSpace(acc.SourceRunID)
+	}
 	var cand *models.OutreachContactCandidate
 	if contactID != nil {
 		cand, err = s.repo.GetCandidate(ctx, orgID, *contactID)
@@ -121,13 +125,14 @@ func (s *service) PlanAccountCadence(ctx context.Context, orgID, userID, account
 		if i == 0 {
 			state = models.TouchpointDue
 		}
-		idem := fmt.Sprintf("tp:%s:%s:%d:%s%s", orgID, accountID, step.Ordinal, step.CadenceStep, recoveryRevision)
+		idem := fmt.Sprintf("tp:%s:%s:%d:%s%s%s", orgID, accountID, step.Ordinal, step.CadenceStep, runRevision, recoveryRevision)
 		tp := &models.OutreachTouchpoint{
 			OrganizationID: orgID, AccountID: accountID, Ordinal: step.Ordinal,
 			CadenceStep: step.CadenceStep, Channel: ch, Purpose: step.Purpose,
 			DueAt: due, State: state, Recipient: recipient, PreviousTouchpointID: prevID,
 			IdempotencyKey: idem, PolicyVersion: models.CadencePolicyVersionV1,
 			ServiceCode: acc.ServiceCode, FactUsed: acc.FactToMention, EvidenceIDs: acc.MomentEvidenceIDs,
+			SourceRunID: acc.SourceRunID,
 		}
 		if cand != nil {
 			tp.ContactCandidateID = &cand.ID

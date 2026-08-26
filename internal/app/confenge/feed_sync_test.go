@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -333,6 +334,22 @@ func TestSyncFeedManifestValidatesAllChunksBeforeMutation(t *testing.T) {
 	}
 	if account != nil {
 		t.Fatal("valid first chunk mutated state before corrupt second chunk was rejected")
+	}
+}
+
+func TestValidateOutreachManifestRejectsUnsupportedDeactivationState(t *testing.T) {
+	manifest := &outreachManifest{
+		SchemaVersion: "confenge.outreach.manifest.v1", LeadCount: 1, ChunkCount: 1,
+		Chunks:          []manifestChunk{{File: "chunk_0000.json", ChunkIndex: 0, ContentHash: strings.Repeat("a", 64), LeadCount: 1}},
+		Deactivations:   []map[string]any{{"cnpj14": "11222333000181", "to_state": "NOT_ACTIONABLE"}},
+		DeactivationCnt: 1,
+	}
+	if err := validateOutreachManifest(manifest); err == nil || !strings.Contains(err.Error(), "unsupported to_state") {
+		t.Fatalf("unsupported deactivation state passed preflight: %v", err)
+	}
+	manifest.Deactivations[0]["to_state"] = ActivationSuppressed
+	if err := validateOutreachManifest(manifest); err != nil {
+		t.Fatalf("canonical suppression state was rejected: %v", err)
 	}
 }
 

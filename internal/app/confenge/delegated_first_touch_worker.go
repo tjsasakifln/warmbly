@@ -186,11 +186,15 @@ func (s *service) nextDelegatedFirstTouchCandidate(ctx context.Context, orgID uu
 		SELECT t.id,t.account_id,t.contact_candidate_id
 		FROM outreach_touchpoints t
 		JOIN outreach_accounts a ON a.organization_id=t.organization_id AND a.id=t.account_id
+		JOIN outreach_contact_candidates c
+		  ON c.organization_id=t.organization_id AND c.id=t.contact_candidate_id
 		JOIN outreach_feed_sync_state feed ON feed.organization_id=t.organization_id
 		WHERE t.organization_id=$1
 		  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
-		  AND t.state='NEEDS_REVIEW' AND t.contact_candidate_id IS NOT NULL
+		  AND t.state IN ('DUE','NEEDS_REVIEW') AND t.contact_candidate_id IS NOT NULL
 		  AND feed.last_status='completed' AND a.source_run_id=feed.last_run_id
+		  AND (t.source_run_id='' OR t.source_run_id=feed.last_run_id)
+		  AND a.last_import_run_id IS NOT NULL AND c.last_import_run_id=a.last_import_run_id
 		  AND NOT EXISTS (
 		    SELECT 1 FROM confenge_delegated_first_touch_decisions d
 		    WHERE d.organization_id=t.organization_id AND d.account_id=t.account_id

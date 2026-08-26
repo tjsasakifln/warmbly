@@ -655,6 +655,7 @@ type OutreachTouchpoint struct {
 	FactUsed             string           `json:"fact_used"`
 	EvidenceIDs          []string         `json:"evidence_ids,omitempty"`
 	GeneratedContextHash string           `json:"generated_context_hash,omitempty"`
+	SourceRunID          string           `json:"source_run_id,omitempty"`
 	CreatedAt            time.Time        `json:"created_at"`
 	UpdatedAt            time.Time        `json:"updated_at"`
 	Account              *OutreachAccount `json:"account,omitempty"`

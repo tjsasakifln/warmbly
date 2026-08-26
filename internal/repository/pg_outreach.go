@@ -18,6 +18,18 @@ import (
 	"github.com/warmbly/warmbly/internal/models"
 )
 
+// OutreachInitialBacklogCounts closes every current-run account into either a
+// delegated-eligible INITIAL or an explicit held-exception reason.
+type OutreachInitialBacklogCounts struct {
+	Imported            int
+	SupplierConfirmed   int
+	CandidateAttributed int
+	InitialPrepared     int
+	DelegatedEligible   int
+	HeldException       int
+	StaleRetired        int
+}
+
 // OutreachRepository owns multi-tenant staging tables for intelligence feeds.
 // Every query requires organization_id.
 type OutreachRepository interface {
@@ -27,6 +39,7 @@ type OutreachRepository interface {
 	GetImportRun(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachImportRun, error)
 	GetImportRunByIdempotency(ctx context.Context, orgID uuid.UUID, key string) (*models.OutreachImportRun, error)
 	ListImportRuns(ctx context.Context, orgID uuid.UUID, limit int) ([]models.OutreachImportRun, error)
+	MaterializeCurrentInitialBacklog(ctx context.Context, orgID uuid.UUID, sourceRunID string) (OutreachInitialBacklogCounts, error)
 
 	// Accounts
 	GetAccountByCNPJ(ctx context.Context, orgID uuid.UUID, cnpj14 string) (*models.OutreachAccount, error)

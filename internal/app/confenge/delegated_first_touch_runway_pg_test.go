@@ -2,6 +2,7 @@ package confenge
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -154,5 +155,101 @@ func TestDelegatedFirstTouchWorkerFillsBoundedSpacedRunwayAndRestarts(t *testing
 	}
 	if live != target || duplicateKeys != 0 || sentTouches != 0 {
 		t.Fatalf("runway convergence drift: live=%d duplicates=%d sent_touchpoints=%d", live, duplicateKeys, sentTouches)
+	}
+}
+
+func TestCurrentRunInitialBacklogRefreshRetiresAndReplenishesPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	f.svc.cfg.DelegatedFirstTouchAutorunEnabled = true
+	f.svc.cfg.DelegatedFirstTouchRunwayTarget = 1
+
+	first, err := f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, f.manifest.SourceRunID)
+	if err != nil || first.Imported != 1 || first.InitialPrepared != 1 || first.DelegatedEligible != 1 || first.HeldException != 0 {
+		t.Fatalf("first materialization did not close the funnel: counts=%+v err=%v", first, err)
+	}
+	if processed, err := f.svc.ProcessDelegatedFirstTouchOnce(f.ctx); err != nil || !processed {
+		t.Fatalf("first source run did not fill runway: processed=%v err=%v", processed, err)
+	}
+
+	account, err := f.repo.GetAccount(f.ctx, f.orgID, f.manifest.Entries[0].AccountID)
+	if err != nil || account == nil {
+		t.Fatalf("current account unavailable: account=%+v err=%v", account, err)
+	}
+	candidate, err := f.repo.GetCandidate(f.ctx, f.orgID, f.manifest.Entries[0].ContactCandidateID)
+	if err != nil || candidate == nil {
+		t.Fatalf("current candidate unavailable: candidate=%+v err=%v", candidate, err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	newRunID := "run-refresh-" + uuid.NewString()
+	newSnapshot := strings.Repeat("d", 64)
+	newImportID := uuid.New()
+	if err := f.repo.CreateImportRun(f.ctx, &models.OutreachImportRun{
+		ID: newImportID, OrganizationID: f.orgID, SourceSystem: "extra-cli", SourceRunID: newRunID,
+		SchemaVersion: models.OutreachSchemaV1, SnapshotHash: newSnapshot, Status: models.OutreachImportCompleted,
+		StartedAt: now, FinishedAt: &now, IdempotencyKey: "refresh-" + newImportID.String(), SourceGeneratedAt: &now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	account.SourceRunID = newRunID
+	account.LastImportRunID = &newImportID
+	account.ContractorRoleSourceRunID = newRunID
+	account.ContractorRoleObservedAt = &now
+	if _, err := f.repo.UpsertAccount(f.ctx, account); err != nil {
+		t.Fatal(err)
+	}
+	candidate.LastImportRunID = &newImportID
+	candidate.SourceDate = &now
+	if _, err := f.repo.UpsertCandidate(f.ctx, candidate); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := f.repo.ListEvidence(f.ctx, f.orgID, account.ID)
+	if err != nil || len(evidence) == 0 {
+		t.Fatalf("current evidence unavailable: evidence=%+v err=%v", evidence, err)
+	}
+	for index := range evidence {
+		evidence[index].LastImportRunID = &newImportID
+		evidence[index].ConsultedAt = &now
+		if _, err := f.repo.UpsertEvidence(f.ctx, &evidence[index]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.repo.UpsertFeedSyncState(f.ctx, &models.OutreachFeedSyncState{
+		OrganizationID: f.orgID, LastSnapshotHash: newSnapshot, LastRunID: newRunID,
+		LastManifestURI: "file:///refresh-test.json", LastSuccessAt: &now, LastAttemptAt: &now,
+		LastStatus: "completed", SourceGeneratedAt: &now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	refresh, err := f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, newRunID)
+	if err != nil || refresh.StaleRetired != 1 || refresh.Imported != 1 || refresh.DelegatedEligible != 1 {
+		t.Fatalf("refresh did not retire and replenish: counts=%+v err=%v", refresh, err)
+	}
+	for replay := 0; replay < 10; replay++ {
+		counts, err := f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, newRunID)
+		if err != nil || counts.StaleRetired != 0 || counts.Imported != 1 || counts.DelegatedEligible != 1 {
+			t.Fatalf("materialization replay %d drifted: counts=%+v err=%v", replay, counts, err)
+		}
+	}
+	if processed, err := f.svc.ProcessDelegatedFirstTouchOnce(f.ctx); err != nil || !processed {
+		t.Fatalf("refreshed source run did not refill runway: processed=%v err=%v", processed, err)
+	}
+
+	var oldCancelled, currentLive, duplicateRunInitial, duplicateMessageKeys, sent int
+	var currentStates, decisionStates string
+	if err := f.pool.QueryRow(f.ctx, `SELECT
+		(SELECT count(*) FROM outreach_touchpoints WHERE organization_id=$1 AND source_run_id<>$2 AND state='CANCELLED' AND stop_reason='source_run_superseded'),
+		(SELECT count(*) FROM outreach_touchpoints WHERE organization_id=$1 AND source_run_id=$2 AND state='QUEUED'),
+		(SELECT count(*) FROM (SELECT account_id,source_run_id FROM outreach_touchpoints WHERE organization_id=$1 AND source_run_id<>'' AND ordinal=1 GROUP BY account_id,source_run_id HAVING count(*)>1) duplicate_initial),
+		(SELECT count(*) FROM (SELECT message_key FROM confenge_dispatch_queue WHERE organization_id=$1 GROUP BY message_key HAVING count(*)>1) duplicate_keys),
+		(SELECT count(*) FROM outreach_touchpoints WHERE organization_id=$1 AND state='SENT'),
+		COALESCE((SELECT string_agg(state || ':' || COALESCE(stop_reason,''), ',') FROM outreach_touchpoints WHERE organization_id=$1 AND source_run_id=$2),''),
+		COALESCE((SELECT string_agg(state || ':' || blocker_codes::text, ',') FROM confenge_delegated_first_touch_decisions WHERE organization_id=$1 AND evidence_source_run_id=$2),'')`, f.orgID, newRunID).
+		Scan(&oldCancelled, &currentLive, &duplicateRunInitial, &duplicateMessageKeys, &sent, &currentStates, &decisionStates); err != nil {
+		t.Fatal(err)
+	}
+	if oldCancelled != 1 || currentLive != 1 || duplicateRunInitial != 0 || duplicateMessageKeys != 0 || sent != 0 {
+		t.Fatalf("refresh convergence drift: old_cancelled=%d current_live=%d duplicate_initial=%d duplicate_message_keys=%d sent=%d current_states=%s decisions=%s",
+			oldCancelled, currentLive, duplicateRunInitial, duplicateMessageKeys, sent, currentStates, decisionStates)
 	}
 }
