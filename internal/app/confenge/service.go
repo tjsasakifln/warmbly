@@ -112,6 +112,7 @@ type Service interface {
 	ProcessEditorialRecoveryOnce(ctx context.Context) (bool, error)
 	ProcessDraftGenerationOnce(ctx context.Context) (bool, error)
 	ProcessDelegatedFirstTouchOnce(ctx context.Context) (bool, error)
+	ReconcileDelegatedFirstTouchLedger(ctx context.Context, orgID uuid.UUID) (int64, error)
 
 	// Per-touchpoint human approval cadence.
 	PreparePilotCohort(ctx context.Context, orgID, userID uuid.UUID, accountIDs []uuid.UUID, operation PilotOperation) (*PilotCohortResult, *errx.Error)

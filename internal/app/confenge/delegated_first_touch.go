@@ -196,6 +196,45 @@ func (s *service) WireDelegatedFirstTouch(db *pgxpool.Pool) { s.delegatedDB = db
 
 func (s *service) WireOrgRisk(risk OrgRiskPolicy) { s.orgRisk = risk }
 
+// ReconcileDelegatedFirstTouchLedger repairs an audit projection that can be
+// left behind if an older runtime cancels the canonical touchpoint/queue first.
+// It never creates approval or queue work; it only makes an already-safe
+// cancellation explicit and releases stale one-live-account/root bindings.
+func (s *service) ReconcileDelegatedFirstTouchLedger(ctx context.Context, orgID uuid.UUID) (int64, error) {
+	if s == nil || s.delegatedDB == nil || orgID == uuid.Nil {
+		return 0, fmt.Errorf("delegated first-touch store is not wired")
+	}
+	result, err := s.delegatedDB.Exec(ctx, `
+		WITH invalid AS (
+			SELECT d.id,
+				COALESCE(NULLIF(q.last_error,''),NULLIF(q.cancel_reason,''),'canonical_queue_state_drift') AS reason
+			FROM confenge_delegated_first_touch_decisions d
+			JOIN outreach_touchpoints t
+			  ON t.organization_id=d.organization_id AND t.id=d.touchpoint_id
+			LEFT JOIN confenge_dispatch_queue q
+			  ON q.organization_id=d.organization_id AND q.draft_id=d.draft_id AND q.message_key=d.queue_message_key
+			WHERE d.organization_id=$1
+			  AND d.state IN ('APPROVED','QUEUED','APPROVED_NOT_SCHEDULED')
+			  AND (
+				(d.state IN ('APPROVED','APPROVED_NOT_SCHEDULED') AND t.state <> 'APPROVED')
+				OR (d.state='QUEUED' AND (t.state <> 'QUEUED' OR q.status IS DISTINCT FROM 'queued'))
+			  )
+		)
+		UPDATE confenge_delegated_first_touch_decisions d
+		SET state='CANCELLED',
+			blocker_codes=CASE
+				WHEN d.blocker_codes @> jsonb_build_array(invalid.reason)
+					THEN d.blocker_codes
+				ELSE d.blocker_codes || jsonb_build_array(invalid.reason)
+			END,
+			updated_at=now()
+		FROM invalid WHERE d.id=invalid.id`, orgID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 func hashText(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
@@ -810,6 +849,15 @@ func (s *service) validateDelegatedEntry(ctx context.Context, orgID uuid.UUID, m
 	}
 	if !CandidateControlledEligible(cand) || !ControlledRouteAllowed(cand, nil) || !CandidateEnrollable(cand) {
 		add("recipient_not_controlled_eligible")
+	}
+	// Public application requires delegatedDB before entering this validator.
+	// The nil branch exists only for the pure deterministic gate unit tests.
+	if s.delegatedDB != nil {
+		if conflict, conflictErr := s.delegatedRecipientSharedAcrossCNPJIdentities(ctx, orgID, cand.Email); conflictErr != nil {
+			add("recipient_identity_conflict_check_unavailable")
+		} else if conflict {
+			add("recipient_shared_across_cnpj_identities")
+		}
 	}
 	if strings.EqualFold(strings.TrimSpace(cand.EmailDerivation), "INFERRED") ||
 		!strings.EqualFold(strings.TrimSpace(cand.ChannelEpistemic), "OBSERVED") ||
@@ -1720,6 +1768,11 @@ func (s *service) assertDelegatedFirstTouchDecision(ctx context.Context, orgID u
 	if !strings.EqualFold(cand.Email, got.Recipient) || CandidateRouteClass(cand) != got.RouteClass {
 		return fail("recipient_or_route_class_drift")
 	}
+	if conflict, conflictErr := s.delegatedRecipientSharedAcrossCNPJIdentities(ctx, orgID, cand.Email); conflictErr != nil {
+		return fail("recipient_identity_conflict_check_unavailable")
+	} else if conflict {
+		return fail("recipient_shared_across_cnpj_identities")
+	}
 	now := time.Now().UTC()
 	var webSources []DelegatedWebSource
 	if json.Unmarshal(got.WebSources, &webSources) != nil || !candidateSourceCorroborated(cand, webSources) {
@@ -1778,6 +1831,39 @@ func (s *service) assertDelegatedFirstTouchDecision(ctx context.Context, orgID u
 		return fail("fact_evidence_row_drift")
 	}
 	return nil
+}
+
+// delegatedRecipientSharedAcrossCNPJIdentities rejects a mailbox that the
+// current authoritative feed attributes to more than one legal identity. An
+// exact email/domain match is not evidence of a matrix/branch/group relation;
+// until the producer publishes such a typed relationship, delegated approval
+// must fail closed and leave the ambiguity for human reconciliation.
+func (s *service) delegatedRecipientSharedAcrossCNPJIdentities(ctx context.Context, orgID uuid.UUID, recipient string) (bool, error) {
+	if s == nil || s.delegatedDB == nil || !validExactEmail(recipient) {
+		return false, fmt.Errorf("delegated recipient identity store unavailable")
+	}
+	var identities int
+	err := s.delegatedDB.QueryRow(ctx, `
+		SELECT count(DISTINCT a.cnpj14)::int
+		FROM outreach_contact_candidates c
+		JOIN outreach_accounts a
+		  ON a.organization_id=c.organization_id AND a.id=c.account_id
+		JOIN outreach_import_runs r
+		  ON r.organization_id=c.organization_id AND r.id=c.last_import_run_id
+		JOIN outreach_feed_sync_state feed
+		  ON feed.organization_id=c.organization_id
+		WHERE c.organization_id=$1
+		  AND lower(btrim(c.email))=lower(btrim($2))
+		  AND a.cnpj14 <> ''
+		  AND a.source_run_id=feed.last_run_id
+		  AND r.source_run_id=feed.last_run_id AND r.status='completed'
+		  AND c.blocked=false AND c.do_not_contact=false AND c.bounced=false
+		  AND c.channel_epistemic_class='OBSERVED'
+		  AND c.ownership_status='COMPANY_OWNED'
+		  AND c.route_freshness='FRESH'
+		  AND (c.route_suppression='' OR c.route_suppression='NONE')
+		  AND c.discovery_json @> '{"mailbox_company_evidence":"OBSERVED"}'::jsonb`, orgID, strings.TrimSpace(recipient)).Scan(&identities)
+	return identities > 1, err
 }
 
 func (s *service) cancelDelegatedDecision(ctx context.Context, orgID, touchpointID uuid.UUID, reason string) error {
