@@ -17,6 +17,7 @@ type rollingCampaignRepo struct {
 	repository.CampaignRepository
 	campaign *models.Campaign
 	ready    bool
+	pending  bool
 	statuses []string
 }
 
@@ -30,6 +31,10 @@ func (r *rollingCampaignRepo) GetByID(context.Context, uuid.UUID) (*models.Campa
 
 func (r *rollingCampaignRepo) HasReadyDelegatedFirstTouch(context.Context, uuid.UUID) (bool, error) {
 	return r.ready, nil
+}
+
+func (r *rollingCampaignRepo) HasPendingDelegatedFirstTouch(context.Context, uuid.UUID) (bool, error) {
+	return r.pending, nil
 }
 
 func (r *rollingCampaignRepo) UpdateStatus(_ context.Context, _ uuid.UUID, status string) error {
@@ -90,8 +95,15 @@ func (rollingCompletedScheduler) CalculateNextEmailTime(context.Context, uuid.UU
 
 func TestCampaignReconcilerPreservesReadyRollingQueue(t *testing.T) {
 	campaign := &models.Campaign{ID: uuid.New(), Status: "active"}
-	for _, ready := range []bool{true, false} {
-		repo := &rollingCampaignRepo{campaign: campaign, ready: ready}
+	for _, tt := range []struct {
+		name, wantStatus string
+		ready, pending   bool
+	}{
+		{name: "read-back queue", ready: true},
+		{name: "current pending backlog", pending: true},
+		{name: "exhausted", wantStatus: "completed"},
+	} {
+		repo := &rollingCampaignRepo{campaign: campaign, ready: tt.ready, pending: tt.pending}
 		svc := &tasksService{
 			campaignRepo: repo,
 			taskRepo:     &rollingTaskRepo{},
@@ -100,19 +112,26 @@ func TestCampaignReconcilerPreservesReadyRollingQueue(t *testing.T) {
 		if _, err := svc.ReconcileCampaignSchedules(context.Background(), 1); err != nil {
 			t.Fatal(err)
 		}
-		if ready && len(repo.statuses) != 0 {
-			t.Fatalf("ready rolling campaign was completed: %v", repo.statuses)
+		if (tt.ready || tt.pending) && len(repo.statuses) != 0 {
+			t.Fatalf("rolling campaign with work was completed: %v", repo.statuses)
 		}
-		if !ready && (len(repo.statuses) != 1 || repo.statuses[0] != "completed") {
+		if tt.wantStatus != "" && (len(repo.statuses) != 1 || repo.statuses[0] != tt.wantStatus) {
 			t.Fatalf("ordinary exhausted campaign did not complete: %v", repo.statuses)
 		}
 	}
 }
 
 func TestCampaignTaskPreservesReadyRollingQueue(t *testing.T) {
-	for _, ready := range []bool{true, false} {
+	for _, tt := range []struct {
+		name, wantStatus string
+		ready, pending   bool
+	}{
+		{name: "read-back queue", ready: true},
+		{name: "current pending backlog", pending: true},
+		{name: "exhausted", wantStatus: "completed"},
+	} {
 		campaignID, taskID := uuid.New(), uuid.New()
-		repo := &rollingCampaignRepo{campaign: &models.Campaign{ID: campaignID, Status: "active"}, ready: ready}
+		repo := &rollingCampaignRepo{campaign: &models.Campaign{ID: campaignID, Status: "active"}, ready: tt.ready, pending: tt.pending}
 		tasks := &rollingTaskRepo{taskID: taskID, campaignID: campaignID}
 		svc := &tasksService{
 			campaignRepo:         repo,
@@ -123,10 +142,10 @@ func TestCampaignTaskPreservesReadyRollingQueue(t *testing.T) {
 		if xerr := svc.HandleCampaignTask(&proto.ProcessTask{TaskId: taskID.String()}); xerr != nil {
 			t.Fatalf("handler failed: %v", xerr)
 		}
-		if ready && len(repo.statuses) != 0 {
-			t.Fatalf("ready rolling campaign was completed: %v", repo.statuses)
+		if (tt.ready || tt.pending) && len(repo.statuses) != 0 {
+			t.Fatalf("rolling campaign with work was completed: %v", repo.statuses)
 		}
-		if !ready && (len(repo.statuses) != 1 || repo.statuses[0] != "completed") {
+		if tt.wantStatus != "" && (len(repo.statuses) != 1 || repo.statuses[0] != tt.wantStatus) {
 			t.Fatalf("ordinary exhausted campaign did not complete: %v", repo.statuses)
 		}
 		if got := tasks.statuses[len(tasks.statuses)-1]; got != "completed" {

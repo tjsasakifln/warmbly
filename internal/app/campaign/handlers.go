@@ -151,6 +151,19 @@ func (s *campaignService) StartCampaign(ctx context.Context, orgID uuid.UUID, ca
 	startable := map[string]bool{
 		"draft": true, "paused": true, "paused_no_accounts": true, "paused_guardrail": true,
 	}
+	if campaign.Status == "completed" {
+		ready, readyErr := s.campaignRepository.HasReadyDelegatedFirstTouch(ctx, cID)
+		if readyErr != nil {
+			return errx.InternalError()
+		}
+		if !ready {
+			ready, readyErr = s.campaignRepository.HasPendingDelegatedFirstTouch(ctx, cID)
+			if readyErr != nil {
+				return errx.InternalError()
+			}
+		}
+		startable[campaign.Status] = ready
+	}
 	if !startable[campaign.Status] {
 		return errx.New(errx.BadRequest, "campaign must be in draft, paused, paused_no_accounts, or paused_guardrail status to start")
 	}
@@ -293,6 +306,13 @@ func (s *campaignService) enqueueCampaignWakeup(ctx context.Context, campaignID 
 			if readyErr != nil {
 				sentry.CaptureException(readyErr)
 				return errx.InternalError()
+			}
+			if !ready {
+				ready, readyErr = s.campaignRepository.HasPendingDelegatedFirstTouch(ctx, campaignID)
+				if readyErr != nil {
+					sentry.CaptureException(readyErr)
+					return errx.InternalError()
+				}
 			}
 			if ready {
 				return nil

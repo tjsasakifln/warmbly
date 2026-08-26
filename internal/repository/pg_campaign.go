@@ -51,6 +51,7 @@ type CampaignRepository interface {
 	StopCampaign(ctx context.Context, campaignID uuid.UUID) error
 	ValidateCampaignReady(ctx context.Context, campaignID uuid.UUID) error
 	HasReadyDelegatedFirstTouch(ctx context.Context, campaignID uuid.UUID) (bool, error)
+	HasPendingDelegatedFirstTouch(ctx context.Context, campaignID uuid.UUID) (bool, error)
 	UpdateVerificationStatus(ctx context.Context, campaignID uuid.UUID, status string, summary *models.CampaignVerificationSummary) error
 	GetPendingCampaignTasks(ctx context.Context, campaignID uuid.UUID) ([]Task, error)
 	// ListCampaignScheduleCandidates returns active campaigns that have NO pending
@@ -1430,11 +1431,17 @@ func (r *campaignRepository) ValidateCampaignReady(ctx context.Context, campaign
 		return err
 	}
 	if contactCount == 0 {
-		delegatedQueued, err := r.HasReadyDelegatedFirstTouch(ctx, campaignID)
+		delegatedWork, err := r.HasReadyDelegatedFirstTouch(ctx, campaignID)
 		if err != nil {
 			return err
 		}
-		if !delegatedQueued {
+		if !delegatedWork {
+			delegatedWork, err = r.HasPendingDelegatedFirstTouch(ctx, campaignID)
+			if err != nil {
+				return err
+			}
+		}
+		if !delegatedWork {
 			return errx.New(errx.BadRequest, "campaign must have at least one contact")
 		}
 	}
@@ -1489,6 +1496,42 @@ func (r *campaignRepository) HasReadyDelegatedFirstTouch(ctx context.Context, ca
 			  AND d.readback_at IS NOT NULL AND d.due_at=q.due_at
 		)`, campaignID).Scan(&ready)
 	return ready, err
+}
+
+// HasPendingDelegatedFirstTouch keeps current undecided work alive without granting transport authority.
+func (r *campaignRepository) HasPendingDelegatedFirstTouch(ctx context.Context, campaignID uuid.UUID) (bool, error) {
+	var pending bool
+	err := r.DB.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM outreach_touchpoints t
+			JOIN outreach_accounts account
+			  ON account.organization_id=t.organization_id AND account.id=t.account_id
+			JOIN outreach_feed_sync_state feed
+			  ON feed.organization_id=t.organization_id
+			JOIN outreach_org_settings settings
+			  ON settings.organization_id=t.organization_id AND settings.campaign_id=$1
+			JOIN confenge_campaign_policy_authorizations auth
+			  ON auth.organization_id=t.organization_id AND auth.campaign_id=$1
+			WHERE t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
+			  AND t.state='NEEDS_REVIEW' AND t.contact_candidate_id IS NOT NULL
+			  AND feed.last_status='completed' AND account.source_run_id=feed.last_run_id
+			  AND auth.revoked_at IS NULL AND auth.effective_at <= now()
+			  AND auth.prompt_policy_version='CFG-FIRST-TOUCH-ROUTING-v1'
+			  AND auth.authorized_by_label='founder-approved-first-touch-policy'
+			  AND auth.channel='EMAIL'
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM confenge_delegated_first_touch_decisions decision
+				WHERE decision.organization_id=t.organization_id
+				  AND decision.account_id=t.account_id
+				  AND (
+					decision.evidence_source_run_id=account.source_run_id
+					OR decision.idempotency_key='delegated-first-touch:' || account.source_run_id || ':' || account.id::text
+				  )
+			  )
+		)`, campaignID).Scan(&pending)
+	return pending, err
 }
 
 // GetPendingCampaignTasks returns all pending tasks for a campaign
