@@ -201,9 +201,21 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 			executionStatus = "completed"
 			return nil
 		}
-		// Terminal: all emails sent, OR the campaign passed its end date. Both end
-		// the campaign at the "completed" status (the status enum has no separate
-		// "ended"); the reason differs in the activity log.
+		if errors.Is(err, scheduler.ErrCampaignCompleted) {
+			ready, readyErr := s.campaignRepo.HasReadyDelegatedFirstTouch(ctx, campaign.ID)
+			if readyErr != nil {
+				sentry.CaptureException(readyErr)
+				_ = s.taskRepo.UpdateTaskStatus(ctx, taskID, "pending")
+				executionStatus = "failed"
+				return errx.InternalError()
+			}
+			if ready {
+				_ = s.taskRepo.UpdateTaskStatus(ctx, taskID, "completed")
+				executionStatus = "completed"
+				return nil
+			}
+		}
+		// Terminal campaigns have no remaining rolling work or passed their end date.
 		if errors.Is(err, scheduler.ErrCampaignCompleted) || errors.Is(err, scheduler.ErrCampaignEnded) {
 			reason := "Campaign completed: all emails sent"
 			if errors.Is(err, scheduler.ErrCampaignEnded) {

@@ -50,6 +50,7 @@ type CampaignRepository interface {
 	StartCampaign(ctx context.Context, campaignID uuid.UUID) error
 	StopCampaign(ctx context.Context, campaignID uuid.UUID) error
 	ValidateCampaignReady(ctx context.Context, campaignID uuid.UUID) error
+	HasReadyDelegatedFirstTouch(ctx context.Context, campaignID uuid.UUID) (bool, error)
 	UpdateVerificationStatus(ctx context.Context, campaignID uuid.UUID, status string, summary *models.CampaignVerificationSummary) error
 	GetPendingCampaignTasks(ctx context.Context, campaignID uuid.UUID) ([]Task, error)
 	// ListCampaignScheduleCandidates returns active campaigns that have NO pending
@@ -1429,29 +1430,11 @@ func (r *campaignRepository) ValidateCampaignReady(ctx context.Context, campaign
 		return err
 	}
 	if contactCount == 0 {
-		// CONFENGE rolling campaigns enroll the exact approved draft just in time.
-		var delegatedQueued int
-		err = r.DB.QueryRow(ctx, `
-			SELECT COUNT(*)
-			FROM confenge_dispatch_queue q
-			JOIN outreach_touchpoints t
-			  ON t.organization_id=q.organization_id AND t.draft_id=q.draft_id
-			JOIN confenge_delegated_first_touch_decisions d
-			  ON d.organization_id=q.organization_id AND d.draft_id=q.draft_id
-			 AND d.queue_message_key=q.message_key
-			JOIN confenge_campaign_policy_authorizations a
-			  ON a.id=d.policy_authorization_id AND a.organization_id=d.organization_id
-			WHERE a.campaign_id=$1 AND a.revoked_at IS NULL AND a.effective_at <= now()
-			  AND q.channel='EMAIL' AND q.status IN ('queued','reserved')
-			  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL' AND t.state='QUEUED'
-			  AND t.content_hash <> '' AND t.approved_content_hash=t.content_hash
-			  AND d.decision='DELEGATED_POLICY_APPROVE' AND d.state='QUEUED'
-			  AND d.policy_version='CFG-FIRST-TOUCH-ROUTING-v1'
-			  AND d.readback_at IS NOT NULL AND d.due_at=q.due_at`, campaignID).Scan(&delegatedQueued)
+		delegatedQueued, err := r.HasReadyDelegatedFirstTouch(ctx, campaignID)
 		if err != nil {
 			return err
 		}
-		if delegatedQueued == 0 {
+		if !delegatedQueued {
 			return errx.New(errx.BadRequest, "campaign must have at least one contact")
 		}
 	}
@@ -1481,6 +1464,31 @@ func (r *campaignRepository) ValidateCampaignReady(ctx context.Context, campaign
 		return errx.New(errx.BadRequest, "campaign must have at least one active sending mailbox")
 	}
 	return nil
+}
+
+// HasReadyDelegatedFirstTouch reports exact rolling work waiting for just-in-time enrollment.
+func (r *campaignRepository) HasReadyDelegatedFirstTouch(ctx context.Context, campaignID uuid.UUID) (bool, error) {
+	var ready bool
+	err := r.DB.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM confenge_dispatch_queue q
+			JOIN outreach_touchpoints t
+			  ON t.organization_id=q.organization_id AND t.draft_id=q.draft_id
+			JOIN confenge_delegated_first_touch_decisions d
+			  ON d.organization_id=q.organization_id AND d.draft_id=q.draft_id
+			 AND d.queue_message_key=q.message_key
+			JOIN confenge_campaign_policy_authorizations a
+			  ON a.id=d.policy_authorization_id AND a.organization_id=d.organization_id
+			WHERE a.campaign_id=$1 AND a.revoked_at IS NULL AND a.effective_at <= now()
+			  AND q.channel='EMAIL' AND q.status IN ('queued','reserved')
+			  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL' AND t.state='QUEUED'
+			  AND t.content_hash <> '' AND t.approved_content_hash=t.content_hash
+			  AND d.decision='DELEGATED_POLICY_APPROVE' AND d.state='QUEUED'
+			  AND d.policy_version='CFG-FIRST-TOUCH-ROUTING-v1'
+			  AND d.readback_at IS NOT NULL AND d.due_at=q.due_at
+		)`, campaignID).Scan(&ready)
+	return ready, err
 }
 
 // GetPendingCampaignTasks returns all pending tasks for a campaign

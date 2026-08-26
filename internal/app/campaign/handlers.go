@@ -289,6 +289,14 @@ func (s *campaignService) enqueueCampaignWakeup(ctx context.Context, campaignID 
 			_ = s.campaignRepository.UpdateStatusWithLock(ctx, campaignID, "paused_no_accounts")
 			return errx.New(errx.BadRequest, "no active email accounts found for campaign's email tags")
 		case errors.Is(err, scheduler.ErrCampaignCompleted):
+			ready, readyErr := s.campaignRepository.HasReadyDelegatedFirstTouch(ctx, campaignID)
+			if readyErr != nil {
+				sentry.CaptureException(readyErr)
+				return errx.InternalError()
+			}
+			if ready {
+				return nil
+			}
 			_ = s.campaignRepository.UpdateStatusWithLock(ctx, campaignID, "completed")
 			return errx.New(errx.BadRequest, "campaign has no remaining contacts to send")
 		default:
