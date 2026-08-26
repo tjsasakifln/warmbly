@@ -1101,6 +1101,11 @@ func main() {
 			// CAMPAIGN_POLICY stays inert unless the narrow delegated manifest path is enabled.
 			confengeServiceForHandler.WirePolicyAuth(repository.NewConfengePolicyRepository(primaryDB.Pool))
 			confengeServiceForHandler.WireDelegatedFirstTouch(primaryDB.Pool)
+			if reconciled, err := confengeServiceForHandler.ReconcileDelegatedFirstTouchLedger(ctx, confengeCfg.OperatorOrgID); err != nil {
+				log.Printf("confenge delegated first-touch ledger reconciliation failed closed: %v", err)
+			} else if reconciled > 0 {
+				log.Printf("confenge delegated first-touch ledger reconciled cancelled=%d", reconciled)
+			}
 			confengeServiceForHandler.WireOrgRisk(orgRiskService)
 			if primaryDB == nil || primaryDB.Pool == nil {
 				log.Fatalf("confenge: postgres required for bounded cohort authority")

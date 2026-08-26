@@ -158,6 +158,26 @@ func (r *outreachRepository) InvalidateAccountApprovalsForContext(ctx context.Co
 		) AND status IN ('queued','reserved')`, orgID, accountID, currentContextHash); err != nil {
 		return err
 	}
+	// Keep the delegated decision ledger aligned with the canonical queue and
+	// touchpoint invalidation below. A QUEUED decision whose queue row is already
+	// cancelled is operationally safe but auditably false, and can also retain a
+	// stale one-live-account binding.
+	if _, err := tx.Exec(ctx, `
+		UPDATE confenge_delegated_first_touch_decisions d
+		SET state='CANCELLED',
+			blocker_codes=CASE
+				WHEN d.blocker_codes @> '["context_stale"]'::jsonb THEN d.blocker_codes
+				ELSE d.blocker_codes || '["context_stale"]'::jsonb
+			END,
+			updated_at=now()
+		FROM outreach_touchpoints t
+		WHERE d.organization_id=$1 AND d.account_id=$2
+		  AND t.organization_id=d.organization_id AND t.id=d.touchpoint_id
+		  AND t.generated_context_hash IS DISTINCT FROM $3
+		  AND t.state IN ('APPROVED','QUEUED')
+		  AND d.state IN ('APPROVED','QUEUED','APPROVED_NOT_SCHEDULED')`, orgID, accountID, currentContextHash); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM campaign_leads cl
 		USING outreach_drafts d, outreach_touchpoints t

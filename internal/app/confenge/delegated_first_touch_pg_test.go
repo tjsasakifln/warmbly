@@ -203,6 +203,38 @@ func newDelegatedPGFixture(t *testing.T) *delegatedPGFixture {
 	return f
 }
 
+func addSharedRecipientIdentityClaim(t *testing.T, f *delegatedPGFixture) {
+	t.Helper()
+	entry := f.manifest.Entries[0]
+	account, err := f.repo.GetAccount(f.ctx, f.orgID, entry.AccountID)
+	if err != nil || account == nil {
+		t.Fatalf("source account unavailable: account=%+v err=%v", account, err)
+	}
+	candidate, err := f.repo.GetCandidate(f.ctx, f.orgID, entry.ContactCandidateID)
+	if err != nil || candidate == nil {
+		t.Fatalf("source candidate unavailable: candidate=%+v err=%v", candidate, err)
+	}
+	sharedAccount := *account
+	sharedAccount.ID = uuid.New()
+	sharedAccount.SourceLeadID = "lead-shared-recipient-conflict"
+	sharedAccount.CNPJ14 = "22333444000155"
+	sharedAccount.CNPJRoot = "22333444"
+	sharedAccount.SupplierCNPJ14 = sharedAccount.CNPJ14
+	sharedAccount.SupplierIdentityRef = "cnpj:" + sharedAccount.CNPJ14
+	if _, err := f.repo.UpsertAccount(f.ctx, &sharedAccount); err != nil {
+		t.Fatal(err)
+	}
+	sharedCandidate := *candidate
+	sharedCandidate.ID = uuid.New()
+	sharedCandidate.AccountID = sharedAccount.ID
+	sharedCandidate.SourceContactID = "route-shared-recipient-conflict"
+	// The exact mailbox and source claim are intentionally copied to a second
+	// CNPJ. Without a typed group/branch relationship this must be ambiguous.
+	if _, err := f.repo.UpsertCandidate(f.ctx, &sharedCandidate); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDelegatedFirstTouchApprovesQueuesAuditsAndReplaysOncePostgres(t *testing.T) {
 	f := newDelegatedPGFixture(t)
 	first, xerr := f.svc.ApplyDelegatedFirstTouchManifest(f.ctx, f.orgID, f.manifest, false)
@@ -410,6 +442,119 @@ func TestDelegatedFirstTouchPartialBatchFailureDoesNotBlockEligibleItemPostgres(
 		if item.Decision == "HOLD" && item.ApprovalSource != "POLICY_EVALUATION_HOLD" {
 			t.Fatalf("HOLD was presented as an approval: %+v", item)
 		}
+	}
+}
+
+func TestDelegatedFirstTouchSharedRecipientAcrossCNPJIdentitiesHoldsPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	addSharedRecipientIdentityClaim(t, f)
+
+	report, xerr := f.svc.ApplyDelegatedFirstTouchManifest(f.ctx, f.orgID, f.manifest, false)
+	if xerr != nil || report == nil || report.Queued != 0 || report.Held != 1 || len(report.Items) != 1 {
+		t.Fatalf("shared recipient did not fail closed: report=%+v err=%v", report, xerr)
+	}
+	if !containsString(report.Items[0].Blockers, "recipient_shared_across_cnpj_identities") {
+		t.Fatalf("shared recipient blocker missing: %+v", report.Items[0])
+	}
+}
+
+func TestDelegatedFirstTouchSharedRecipientDriftCancelsQueuedDecisionPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	report, xerr := f.svc.ApplyDelegatedFirstTouchManifest(f.ctx, f.orgID, f.manifest, false)
+	if xerr != nil || report == nil || report.Queued != 1 {
+		t.Fatalf("fixture did not queue: report=%+v err=%v", report, xerr)
+	}
+	tp, err := f.repo.GetTouchpoint(f.ctx, f.orgID, report.Items[0].TouchpointID)
+	if err != nil || tp == nil {
+		t.Fatalf("queued touchpoint unavailable: tp=%+v err=%v", tp, err)
+	}
+	addSharedRecipientIdentityClaim(t, f)
+
+	if err := f.svc.AssertTransportable(f.ctx, f.orgID, tp); err == nil ||
+		!strings.Contains(err.Error(), "recipient_shared_across_cnpj_identities") {
+		t.Fatalf("shared recipient drift remained transportable: %v", err)
+	}
+	var decisionState, touchState, queueState, blockerCodes string
+	if err := f.pool.QueryRow(f.ctx, `
+		SELECT d.state,t.state,q.status,d.blocker_codes::text
+		FROM confenge_delegated_first_touch_decisions d
+		JOIN outreach_touchpoints t ON t.organization_id=d.organization_id AND t.id=d.touchpoint_id
+		JOIN confenge_dispatch_queue q ON q.organization_id=d.organization_id AND q.draft_id=d.draft_id
+		WHERE d.organization_id=$1 AND d.touchpoint_id=$2`, f.orgID, tp.ID).
+		Scan(&decisionState, &touchState, &queueState, &blockerCodes); err != nil {
+		t.Fatal(err)
+	}
+	if decisionState != "CANCELLED" || touchState != models.TouchpointNeedsReview || queueState != "cancelled" ||
+		!strings.Contains(blockerCodes, "recipient_shared_across_cnpj_identities") {
+		t.Fatalf("shared recipient drift was not cancelled: decision=%s touch=%s queue=%s blockers=%s",
+			decisionState, touchState, queueState, blockerCodes)
+	}
+}
+
+func TestDelegatedFirstTouchContextInvalidationCancelsDecisionLedgerPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	report, xerr := f.svc.ApplyDelegatedFirstTouchManifest(f.ctx, f.orgID, f.manifest, false)
+	if xerr != nil || report == nil || report.Queued != 1 {
+		t.Fatalf("fixture did not queue: report=%+v err=%v", report, xerr)
+	}
+	entry := f.manifest.Entries[0]
+	if err := f.repo.InvalidateAccountApprovalsForContext(
+		f.ctx, f.orgID, entry.AccountID, strings.Repeat("d", 64),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	var decisionState, touchState, queueState, blockerCodes string
+	if err := f.pool.QueryRow(f.ctx, `
+		SELECT d.state,t.state,q.status,d.blocker_codes::text
+		FROM confenge_delegated_first_touch_decisions d
+		JOIN outreach_touchpoints t ON t.organization_id=d.organization_id AND t.id=d.touchpoint_id
+		JOIN confenge_dispatch_queue q ON q.organization_id=d.organization_id AND q.draft_id=d.draft_id
+		WHERE d.organization_id=$1 AND d.touchpoint_id=$2`, f.orgID, report.Items[0].TouchpointID).
+		Scan(&decisionState, &touchState, &queueState, &blockerCodes); err != nil {
+		t.Fatal(err)
+	}
+	if decisionState != "CANCELLED" || touchState != models.TouchpointNeedsReview || queueState != "cancelled" ||
+		!strings.Contains(blockerCodes, "context_stale") {
+		t.Fatalf("context drift left a false delegated ledger: decision=%s touch=%s queue=%s blockers=%s",
+			decisionState, touchState, queueState, blockerCodes)
+	}
+}
+
+func TestDelegatedFirstTouchLedgerReconciliationRepairsOlderQueueCancellationPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	report, xerr := f.svc.ApplyDelegatedFirstTouchManifest(f.ctx, f.orgID, f.manifest, false)
+	if xerr != nil || report == nil || report.Queued != 1 {
+		t.Fatalf("fixture did not queue: report=%+v err=%v", report, xerr)
+	}
+	if _, err := f.pool.Exec(f.ctx, `
+		UPDATE confenge_dispatch_queue
+		SET status='cancelled',cancel_reason='context_stale',last_error='context_stale'
+		WHERE organization_id=$1`, f.orgID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `
+		UPDATE outreach_touchpoints SET state='NEEDS_REVIEW',stop_reason='context_stale'
+		WHERE organization_id=$1`, f.orgID); err != nil {
+		t.Fatal(err)
+	}
+
+	reconciled, err := f.svc.ReconcileDelegatedFirstTouchLedger(f.ctx, f.orgID)
+	if err != nil || reconciled != 1 {
+		t.Fatalf("older cancellation was not reconciled: count=%d err=%v", reconciled, err)
+	}
+	var state, blockers string
+	if err := f.pool.QueryRow(f.ctx, `
+		SELECT state,blocker_codes::text FROM confenge_delegated_first_touch_decisions
+		WHERE organization_id=$1`, f.orgID).Scan(&state, &blockers); err != nil {
+		t.Fatal(err)
+	}
+	if state != "CANCELLED" || !strings.Contains(blockers, "context_stale") {
+		t.Fatalf("delegated ledger remained false: state=%s blockers=%s", state, blockers)
+	}
+	reconciled, err = f.svc.ReconcileDelegatedFirstTouchLedger(f.ctx, f.orgID)
+	if err != nil || reconciled != 0 {
+		t.Fatalf("ledger reconciliation is not idempotent: count=%d err=%v", reconciled, err)
 	}
 }
 
