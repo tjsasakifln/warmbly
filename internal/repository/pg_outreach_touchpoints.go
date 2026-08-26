@@ -351,9 +351,21 @@ func (r *outreachRepository) CASScheduleTouchpoint(ctx context.Context, orgID, i
 		) VALUES ($1,$2,$3,$4,$5,$6,0,'queued',$7,$7)
 		ON CONFLICT (message_key) DO UPDATE SET
 			due_at=EXCLUDED.due_at, recipient_ref=EXCLUDED.recipient_ref,
-			status=CASE WHEN confenge_dispatch_queue.status IN ('sent','cancelled')
-				THEN confenge_dispatch_queue.status ELSE 'queued' END,
-			cancel_reason='', last_error='', reserved_until=NULL, updated_at=EXCLUDED.updated_at`,
+			status=CASE
+				WHEN confenge_dispatch_queue.status='cancelled'
+				  AND confenge_dispatch_queue.cancel_reason='delegated_authority_or_source_binding_advanced' THEN 'queued'
+				WHEN confenge_dispatch_queue.status IN ('sent','cancelled') THEN confenge_dispatch_queue.status
+				ELSE 'queued'
+			END,
+			cancel_reason=CASE
+				WHEN confenge_dispatch_queue.status='cancelled'
+				  AND confenge_dispatch_queue.cancel_reason<>'delegated_authority_or_source_binding_advanced'
+				  THEN confenge_dispatch_queue.cancel_reason ELSE '' END,
+			last_error=CASE
+				WHEN confenge_dispatch_queue.status='cancelled'
+				  AND confenge_dispatch_queue.cancel_reason<>'delegated_authority_or_source_binding_advanced'
+				  THEN confenge_dispatch_queue.last_error ELSE '' END,
+			reserved_until=NULL, updated_at=EXCLUDED.updated_at`,
 		orgID, tp.Channel, *tp.DraftID, messageKey, strings.ToLower(strings.TrimSpace(tp.Recipient)), dueAt.UTC(), now)
 	if err != nil {
 		return nil, err

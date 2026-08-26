@@ -38,14 +38,36 @@ The corrected path stores the complete extra-cli decision, rejects temporal regr
 | `CONFENGE_EXTRA_CLI_MANIFEST_URL` | empty | HTTPS or `file://` manifest |
 | `CONFENGE_FEED_SYNC_INTERVAL` | `15m` | Sync cadence |
 | `CONFENGE_DRAFT_REVIEW_BACKLOG_TARGET` | `100` | Prepared first-touch ceiling; eligible items may leave through delegated policy and exceptions remain in `NEEDS_REVIEW`; grants no authority |
+| `CONFENGE_DELEGATED_FIRST_TOUCH_RUNWAY_DAYS` | `0` | Fail-closed rolling horizon; autorun requires `1..90` and derives message count from live capacity |
 | `CONFENGE_EXTRA_CLI_FEED_TOKEN` | empty | Bearer for remote fetch |
 | `CONFENGE_EXTRA_CLI_ALLOWED_HOSTS` | empty | Required in prod with remote URL |
 
 Shadow mode: flag off still **imports** activation fields; queue order stays legacy `priority_rank`.
-The CONFENGE VPS overlay sets the prepared backlog target to `500`, also the
-maximum accepted by one bulk-review request. It is not a target of 500 human
+The CONFENGE VPS overlay sets the prepared backlog target to `1,000`. It is not
+a target of 1,000 human
 tasks: eligible first touches may be drained by the policy evaluator and only
 exceptions remain for review. The application default is `100` elsewhere.
+
+## Delegated first-touch runway
+
+The delegated worker does not interpret 30 days as a fixed message count. It
+reuses the canonical queue and `NextEligibleSlot`, then derives daily capacity
+from the selected active mailboxes, each mailbox cold ramp, campaign limit,
+`min_wait_time`, campaign ramp, policy hourly rate, global governor and business
+window. Unknown capacity schedules nothing.
+
+The worker fills at most 100 items per pass, sleeps between passes, and rolls the
+horizon forward as due slots are consumed. Feed, runtime or active-policy
+advance cancels the old queued binding and makes the same first touch eligible
+for a new approval. A mailbox pause, campaign pause, stale feed, suppression,
+risk block or kill switch stops filling. `AssertTransportable` still reloads
+every binding immediately before transport. Ordinals above 1 never enter this
+policy.
+
+`GET /confenge/first-touch/status` exposes `ready_reservoir_count`, queued and
+reserved counts, runway hours/days, furthest and target due times, mailbox and
+daily capacity, one-hour fill rate, stale retirements, holds, no-candidate and
+capacity-blocked signals under `runway`.
 
 ## Activation fields on `outreach_accounts`
 

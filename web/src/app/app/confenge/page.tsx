@@ -1372,6 +1372,7 @@ function DelegatedFirstTouchPanel({
   loading: boolean;
 }) {
   const counts = status?.counts ?? {};
+  const runway = status?.runway;
   const holds = (counts.HOLD ?? 0) + (counts.CANCELLED ?? 0);
   const delegated = (counts.APPROVED ?? 0) + (counts.APPROVED_NOT_SCHEDULED ?? 0) + (counts.QUEUED ?? 0) + (counts.SENT ?? 0);
   return (
@@ -1391,6 +1392,16 @@ function DelegatedFirstTouchPanel({
         <ReadinessItem label="Human-approved" value={String(status?.human_approved ?? 0)} />
         <ReadinessItem label="HOLD / exceções" value={String(holds)} />
         <ReadinessItem label="Duplicidades live" value={String((status?.duplicate_live_account ?? 0) + (status?.duplicate_live_root ?? 0))} />
+      </div>
+      <div className="grid grid-cols-2 gap-2 border-t border-slate-100 px-3 py-3 text-[11.5px] sm:grid-cols-4">
+        <ReadinessItem label="Reservoir READY" value={`${runway?.ready_reservoir_count ?? 0} / ${runway?.min_ready_reservoir ?? 0}`} />
+        <ReadinessItem label="Queued / reserved" value={`${runway?.queued_count ?? 0} / ${runway?.reserved_count ?? 0}`} />
+        <ReadinessItem label="Runway" value={`${(runway?.runway_days ?? 0).toFixed(1)} dias`} />
+        <ReadinessItem label="Capacidade real" value={`${runway?.daily_capacity ?? 0}/dia · ${runway?.mailbox_count ?? 0} mailbox`} />
+        <ReadinessItem label="Fill / última hora" value={String(runway?.fill_rate ?? 0)} />
+        <ReadinessItem label="Stale retired" value={String(runway?.stale_retired ?? 0)} />
+        <ReadinessItem label="HOLD / sem candidato" value={`${runway?.held ?? 0} / ${runway?.no_candidate ?? 0}`} />
+        <ReadinessItem label="Capacity blocker" value={runway?.capacity_blocked ? runway.capacity_blocker || "blocked" : "ok"} />
       </div>
       <p className="px-3 pb-2 text-[11.5px] text-slate-500">
         Itens elegíveis são aprovados por <code>DELEGATED_POLICY_APPROVE</code>. Revisão humana é reservada a HOLD, conflito, UNKNOWN, drift ou reprovação de gate.

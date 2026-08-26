@@ -582,7 +582,8 @@ func (s *schedulerService) CalculateNextCampaignTime(ctx context.Context, campai
 	return finalSlot(candidateTime), nextPair, account.ID, nil
 }
 
-func coldReadinessCeiling(account models.Email, now time.Time, placements, warmupSendsLastWeek int) int {
+// ColdReadinessCeiling returns the campaign scheduler's mailbox-first daily cold-send ceiling.
+func ColdReadinessCeiling(account models.Email, now time.Time, placements, warmupSendsLastWeek int) int {
 	initial := min(10, account.CampaignLimit)
 	if account.Warmup != nil && warmupSendsLastWeek > 0 {
 		recentDailyAverage := (warmupSendsLastWeek + 6) / 7
@@ -601,6 +602,10 @@ func coldReadinessCeiling(account models.Email, now time.Time, placements, warmu
 		ceiling = max(1, int(float64(ceiling)*0.75+0.5))
 	}
 	return ceiling
+}
+
+func coldReadinessCeiling(account models.Email, now time.Time, placements, warmupSendsLastWeek int) int {
+	return ColdReadinessCeiling(account, now, placements, warmupSendsLastWeek)
 }
 
 // deferToNextDay pushes a candidate time to the next valid campaign day within

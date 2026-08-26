@@ -584,6 +584,29 @@ export type ConfengeDelegatedFirstTouchStatus = {
     queued_readback: number;
     duplicate_live_account: number;
     duplicate_live_root: number;
+    runway: {
+        policy_version: string;
+        target_days: number;
+        min_ready_reservoir: number;
+        ready_reservoir_count: number;
+        current_scheduled_count: number;
+        target_scheduled_count: number;
+        queued_count: number;
+        reserved_count: number;
+        runway_hours: number;
+        runway_days: number;
+        current_runway_until?: string | null;
+        target_runway_until?: string | null;
+        furthest_due_at?: string | null;
+        mailbox_count: number;
+        daily_capacity: number;
+        fill_rate: number;
+        stale_retired: number;
+        held: number;
+        no_candidate: number;
+        capacity_blocked: number;
+        capacity_blocker?: string;
+    };
     items: ConfengeDelegatedFirstTouchItem[];
 };
 

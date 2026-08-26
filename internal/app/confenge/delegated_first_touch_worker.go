@@ -25,7 +25,7 @@ type delegatedFirstTouchProcessor interface {
 	ProcessDelegatedFirstTouchOnce(context.Context) (bool, error)
 }
 
-// DelegatedFirstTouchWorker keeps one canonical email queued from the prepared backlog.
+// DelegatedFirstTouchWorker maintains a rolling, capacity-derived queue runway.
 type DelegatedFirstTouchWorker struct {
 	processor delegatedFirstTouchProcessor
 	interval  time.Duration
@@ -67,13 +67,20 @@ func (w *DelegatedFirstTouchWorker) Run(ctx context.Context) {
 	}
 }
 
-// ProcessDelegatedFirstTouchOnce evaluates one prepared first touch under the active founder grant.
+// ProcessDelegatedFirstTouchOnce evaluates one prepared first touch for the next capacity slot.
 func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (processed bool, returnErr error) {
 	if s == nil || !s.cfg.DelegatedFirstTouchEnabled || !s.cfg.DelegatedFirstTouchAutorunEnabled ||
-		s.delegatedDB == nil || s.policyStore == nil || s.cfg.OperatorOrgID == uuid.Nil {
+		s.cfg.DelegatedFirstTouchRunwayDays < 1 || s.delegatedDB == nil || s.policyStore == nil ||
+		s.cfg.OperatorOrgID == uuid.Nil {
 		return false, nil
 	}
 	orgID := s.cfg.OperatorOrgID
+	unlock, locked, err := s.lockDelegatedFirstTouchRunway(ctx, orgID)
+	if err != nil || !locked {
+		return false, err
+	}
+	defer unlock()
+
 	feed, err := s.repo.GetFeedSyncState(ctx, orgID)
 	if err != nil || feed == nil {
 		return false, err
@@ -81,29 +88,24 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (processed
 	if feed.LastStatus != "completed" {
 		return false, nil
 	}
-	if _, err = s.retireStaleDelegatedFirstTouches(ctx, orgID, feed.LastRunID, feed.LastSnapshotHash); err != nil {
-		return false, err
-	}
-	var queued int
-	if err := s.delegatedDB.QueryRow(ctx, `
-		SELECT count(*) FROM confenge_dispatch_queue
-		WHERE organization_id=$1 AND channel='EMAIL' AND status IN ('queued','reserved')`, orgID).Scan(&queued); err != nil {
-		return false, err
-	}
-	if queued > 0 {
-		return false, nil
-	}
-
 	settings, err := s.repo.GetOrgSettings(ctx, orgID)
 	if err != nil || settings == nil || settings.CampaignID == nil {
 		return false, err
 	}
 	auth, err := s.policyStore.GetActiveCampaignPolicy(ctx, orgID, *settings.CampaignID, time.Now().UTC())
 	if err != nil || auth == nil {
+		_, _ = s.retireStaleDelegatedFirstTouches(ctx, orgID, feed.LastRunID, feed.LastSnapshotHash, nil)
+		return false, err
+	}
+	if _, err = s.retireStaleDelegatedFirstTouches(ctx, orgID, feed.LastRunID, feed.LastSnapshotHash, &auth.ID); err != nil {
+		return false, err
+	}
+	plan, err := s.delegatedFirstTouchRunwayPlan(ctx, orgID, feed, auth, time.Now().UTC())
+	if err != nil || !plan.CapacityKnown || plan.TargetReached() {
 		return false, err
 	}
 
-	touchpointID, accountID, candidateID, err := s.nextDelegatedFirstTouchCandidate(ctx, orgID)
+	touchpointID, accountID, candidateID, err := s.nextDelegatedFirstTouchCandidate(ctx, orgID, feed, auth)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
@@ -131,6 +133,7 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (processed
 	}
 	copy := buildDelegatedRoutingCopy(acc, cand, evidence)
 	entry := delegatedEntryFromCurrentState(acc, cand, touchpointID, copy)
+	entry.IdempotencyKey = delegatedFirstTouchRunwayIdempotencyKey(feed, auth.ID, s.cfg.RepositorySHA, accountID)
 	sealed, err := SealDelegatedFirstTouchEntry(entry, cand)
 	if err != nil {
 		sealed = entry
@@ -150,7 +153,8 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (processed
 		TemplateVersion: DelegatedFirstTouchTemplateV1, PromptVersion: PromptVersion,
 		GeneratedAt: now, Entries: []DelegatedFirstTouchEntry{sealed},
 	}
-	report, xerr := s.ApplyDelegatedFirstTouchManifest(ctx, orgID, manifest, false)
+	nextDue := plan.NextDueAt()
+	report, xerr := s.applyDelegatedFirstTouchManifest(ctx, orgID, manifest, false, &nextDue)
 	if xerr != nil {
 		return true, fmt.Errorf("delegated first-touch autorun: %s", xerr.Message)
 	}
@@ -159,11 +163,14 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (processed
 		UPDATE outreach_touchpoints
 		SET delegated_reserved_until=NULL,delegated_last_error='',updated_at=now()
 		WHERE organization_id=$1 AND id=$2`, orgID, touchpointID)
-	return report != nil && len(report.Items) == 1, nil
+	return report != nil && len(report.Items) == 1 && report.Items[0].State == "QUEUED", nil
 }
 
-func (s *service) nextDelegatedFirstTouchCandidate(ctx context.Context, orgID uuid.UUID) (uuid.UUID, uuid.UUID, uuid.UUID, error) {
+func (s *service) nextDelegatedFirstTouchCandidate(ctx context.Context, orgID uuid.UUID, feed *models.OutreachFeedSyncState, auth *models.CampaignPolicyAuthorization) (uuid.UUID, uuid.UUID, uuid.UUID, error) {
 	var touchpointID, accountID, candidateID uuid.UUID
+	if feed == nil || auth == nil {
+		return touchpointID, accountID, candidateID, pgx.ErrNoRows
+	}
 	now := time.Now().UTC()
 	err := s.delegatedDB.QueryRow(ctx, `
 		WITH next AS (
@@ -180,23 +187,24 @@ func (s *service) nextDelegatedFirstTouchCandidate(ctx context.Context, orgID uu
 			  AND (t.source_run_id='' OR t.source_run_id=feed.last_run_id)
 			  AND a.initial_backlog_reason_code=''
 			  AND a.last_import_run_id IS NOT NULL AND c.last_import_run_id=a.last_import_run_id
-			  AND t.delegated_retry_at <= $3
-			  AND (t.delegated_reserved_until IS NULL OR t.delegated_reserved_until <= $3)
+			  AND t.delegated_retry_at <= $6
+			  AND (t.delegated_reserved_until IS NULL OR t.delegated_reserved_until <= $6)
 			  AND NOT EXISTS (
 			    SELECT 1 FROM confenge_delegated_first_touch_decisions d
 			    WHERE d.organization_id=t.organization_id AND d.account_id=t.account_id
-			      AND (d.evidence_source_run_id=a.source_run_id
-			        OR d.idempotency_key=$2 || a.source_run_id || ':' || a.id::text)
+			      AND (d.state='SENT' OR (d.state<>'CANCELLED'
+			        AND d.evidence_source_run_id=$2 AND d.source_snapshot_hash=$3
+			        AND d.runtime_release_sha=$4 AND d.policy_authorization_id=$5))
 			  )
 			ORDER BY t.delegated_retry_at,t.due_at,t.created_at,t.id
 			LIMIT 1 FOR UPDATE OF t SKIP LOCKED
 		)
 		UPDATE outreach_touchpoints t
-		SET delegated_reserved_until=$4,delegated_attempts=t.delegated_attempts+1,
-			delegated_last_error='',updated_at=$3
+		SET delegated_reserved_until=$7,delegated_attempts=t.delegated_attempts+1,
+			delegated_last_error='',updated_at=$6
 		FROM next WHERE t.id=next.id
-		RETURNING t.id,t.account_id,t.contact_candidate_id`, orgID, delegatedFirstTouchIdempotencyPrefix,
-		now, now.Add(delegatedFirstTouchLease)).Scan(&touchpointID, &accountID, &candidateID)
+		RETURNING t.id,t.account_id,t.contact_candidate_id`, orgID, feed.LastRunID, feed.LastSnapshotHash,
+		s.cfg.RepositorySHA, auth.ID, now, now.Add(delegatedFirstTouchLease)).Scan(&touchpointID, &accountID, &candidateID)
 	return touchpointID, accountID, candidateID, err
 }
 
@@ -211,6 +219,15 @@ func (s *service) deferDelegatedFirstTouch(ctx context.Context, orgID, touchpoin
 			delegated_last_error=LEFT($4,500),updated_at=now()
 		WHERE organization_id=$1 AND id=$2`, orgID, touchpointID,
 		time.Now().UTC().Add(delegatedFirstTouchRetryDelay), reason)
+}
+
+func delegatedFirstTouchRunwayIdempotencyKey(feed *models.OutreachFeedSyncState, policyAuthorizationID uuid.UUID, runtimeSHA string, accountID uuid.UUID) string {
+	binding := ""
+	if feed != nil {
+		binding = feed.LastRunID + "\x00" + feed.LastSnapshotHash
+	}
+	binding += "\x00" + runtimeSHA + "\x00" + policyAuthorizationID.String()
+	return delegatedFirstTouchIdempotencyPrefix + "runway-v1:" + hashText(binding) + ":" + accountID.String()
 }
 
 func delegatedEntryFromCurrentState(acc *models.OutreachAccount, cand *models.OutreachContactCandidate, touchpointID uuid.UUID, copy delegatedRoutingCopy) DelegatedFirstTouchEntry {
