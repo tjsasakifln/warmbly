@@ -10,19 +10,21 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
+	infrastructuredb "github.com/warmbly/warmbly/internal/infrastructure/db"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/repository"
 )
 
 type delegatedPGFixture struct {
-	ctx      context.Context
-	pool     *pgxpool.Pool
-	repo     repository.OutreachRepository
-	svc      *service
-	orgID    uuid.UUID
-	actorID  uuid.UUID
-	workerID uuid.UUID
-	manifest DelegatedFirstTouchManifest
+	ctx        context.Context
+	pool       *pgxpool.Pool
+	repo       repository.OutreachRepository
+	svc        *service
+	orgID      uuid.UUID
+	actorID    uuid.UUID
+	workerID   uuid.UUID
+	campaignID uuid.UUID
+	manifest   DelegatedFirstTouchManifest
 }
 
 func newDelegatedPGFixture(t *testing.T) *delegatedPGFixture {
@@ -75,6 +77,7 @@ func newDelegatedPGFixture(t *testing.T) *delegatedPGFixture {
 		VALUES($1,$2,$3,'CONFENGE delegated test','policy canary','paused',62,now(),now())`, campaignID, f.actorID, f.orgID); err != nil {
 		t.Fatal(err)
 	}
+	f.campaignID = campaignID
 
 	f.repo = repository.NewOutreachRepository(pool)
 	if err := f.repo.UpsertOrgSettings(ctx, &models.OutreachOrgSettings{
@@ -252,6 +255,34 @@ func TestDelegatedFirstTouchApprovesQueuesAuditsAndReplaysOncePostgres(t *testin
 		status.DuplicateLiveAccount != 0 || status.DuplicateLiveRoot != 0 || len(status.Items) != 1 ||
 		status.Items[0].ApprovalSource != DelegatedFirstTouchApprovalDecision {
 		t.Fatalf("control-center readback is incomplete: status=%+v err=%v", status, statusErr)
+	}
+}
+
+func TestCampaignReadyAcceptsReadBackDelegatedQueueWithoutContact(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	if _, err := f.pool.Exec(f.ctx, `
+		INSERT INTO sequences (id,campaign_id,organization_id,name,subject,body_plain,body_html,wait_after,position,kind)
+		VALUES($1,$2,$3,'Step 1','Subject','Body','<p>Body</p>',0,0,'email')`,
+		uuid.New(), f.campaignID, f.orgID); err != nil {
+		t.Fatal(err)
+	}
+	campaignRepo := repository.NewCampaignRepostory(&infrastructuredb.DB{Pool: f.pool})
+	if err := campaignRepo.ValidateCampaignReady(f.ctx, f.campaignID); err == nil || !strings.Contains(err.Error(), "at least one contact") {
+		t.Fatalf("ordinary empty campaign unexpectedly ready: %v", err)
+	}
+	report, xerr := f.svc.ApplyDelegatedFirstTouchManifest(f.ctx, f.orgID, f.manifest, false)
+	if xerr != nil || report == nil || report.Queued != 1 || len(report.Items) != 1 || report.Items[0].State != "QUEUED" {
+		t.Fatalf("delegated queue unavailable: report=%+v err=%v", report, xerr)
+	}
+	var contacts int
+	if err := f.pool.QueryRow(f.ctx, `SELECT count(*) FROM campaign_leads WHERE campaign_id=$1`, f.campaignID).Scan(&contacts); err != nil {
+		t.Fatal(err)
+	}
+	if contacts != 0 {
+		t.Fatalf("fixture already enrolled contacts: %d", contacts)
+	}
+	if err := campaignRepo.ValidateCampaignReady(f.ctx, f.campaignID); err != nil {
+		t.Fatalf("read-back delegated rolling queue did not make campaign startable: %v", err)
 	}
 }
 
