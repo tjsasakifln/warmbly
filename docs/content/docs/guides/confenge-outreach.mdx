@@ -23,6 +23,28 @@ The CONFENGE first-touch campaign has one narrow exception. `CONFENGE_DELEGATED_
 
 For a manual batch, the agent first writes a research manifest containing candidate IDs, public evidence and copy, but no mailbox address. `confenge first-touch seal` reads the selected mailbox from the operational database, derives its route class, binds the subject and body hashes, and creates a new mode `0600` manifest without printing the address. `confenge first-touch apply --dry-run` validates that sealed artifact before the confirmed write path records approval and canonical queue readback. Autorun constructs the same manifest from current persisted supplier, recipient, feed, and evidence records, then sends it through the same validator and apply path.
 
+Delegated copy uses `confenge.composer.v7` and the versioned
+`confenge.first-touch-copy-rules.v1` contract. It does not rotate synonyms or
+choose prose from a UUID. The deterministic brief may use only the company,
+confirmed supplier role, a public fact bound to current `CONFIRMED_FACT`
+evidence, service code, route class and recipient purpose. If a specific fact
+cannot be supported, the composer uses a short supplier-role message instead of
+inventing detail. `DIRECT_PERSON` uses a first name only when the selected route
+has person evidence. Role, generic and company-attributed freemail routes ask
+for the appropriate internal routing without pretending to reach a decision
+maker. Every message includes a plain request to say if further contact is not
+wanted.
+
+Corpus QA measures exact and semantic near duplicates, subject, opening,
+practice-line and CTA concentration, evidence support, metadata leakage,
+route-class fit and length. Exact content reuse, unsupported claims,
+buyer/supplier inversion, guessed people, empty copy, internal metadata,
+offensive or manipulative language and route-inappropriate CTAs fail closed.
+Concentration is attributed to its factual dimension instead of compared with
+a hidden percentage. A repeated practice line is valid when it follows the
+actual `service_code` distribution; the composer never creates cosmetic
+variants to disguise it.
+
 Optional feed source:
 
 ```env

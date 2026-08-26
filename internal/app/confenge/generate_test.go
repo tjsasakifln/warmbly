@@ -386,13 +386,12 @@ func TestPromptVersionV6(t *testing.T) {
 	if OutreachDoctrineVersion != "confenge-outreach-v2" {
 		t.Fatalf("doctrine=%s", OutreachDoctrineVersion)
 	}
-	// v6 (2026-08-24) reads the sentence saying what the sender does from the
-	// lead's own service playbook instead of collapsing every lead to one
-	// string, and lets the closing ask follow the route class. Two v5 messages
-	// to different services were byte-identical below the fact; two v6 messages
-	// are not. The bump is deliberate: a v5 grant must not authorize v6 output.
+	// v7 (2026-08-26) keeps v6 service and route variation, then removes the
+	// delegated phrase bank. The delegated brief now varies only with bound fact,
+	// company, service, route and recipient purpose, and includes a contact exit.
+	// The bump is deliberate: a v6 grant must not authorize v7 output.
 	// Bump this pin only with that reasoning.
-	if ComposerVersion != "confenge.composer.v6" {
+	if ComposerVersion != "confenge.composer.v7" {
 		t.Fatalf("composer=%s", ComposerVersion)
 	}
 }

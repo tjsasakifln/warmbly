@@ -120,6 +120,12 @@ type DelegatedFirstTouchEntry struct {
 	Recipient                 string                `json:"recipient"`
 	Subject                   string                `json:"subject"`
 	BodyText                  string                `json:"body_text"`
+	CopyRulesVersion          string                `json:"copy_rules_version"`
+	FactUsed                  string                `json:"fact_used"`
+	FactEvidenceIDs           []string              `json:"fact_evidence_ids"`
+	Practice                  string                `json:"practice"`
+	CTA                       string                `json:"cta"`
+	SemanticSignature         string                `json:"semantic_signature"`
 	SubjectHash               string                `json:"subject_hash"`
 	BodyHash                  string                `json:"body_hash"`
 	EvidenceIDs               []string              `json:"evidence_ids"`
@@ -889,53 +895,59 @@ func (s *service) validateDelegatedDeterministicQA(ctx context.Context, orgID uu
 	if err != nil {
 		return []string{"evidence_bundle_unavailable"}
 	}
-	if len(entry.EvidenceIDs) == 0 || !stringSetContainsAll(entry.ContractEvidenceIDs, entry.EvidenceIDs) {
-		return []string{"fact_evidence_binding_mismatch"}
+	var blockers []string
+	add := func(code string) { blockers = appendUnique(blockers, code) }
+	if entry.CopyRulesVersion != DelegatedFirstTouchCopyRulesV1 {
+		add("copy_rules_version_mismatch")
+	}
+	expected := buildDelegatedRoutingCopy(acc, cand, evidence)
+	if expected.Subject == "" || expected.Body == "" {
+		add("deterministic_copy_unavailable")
+	} else {
+		if entry.Subject != expected.Subject || entry.BodyText != expected.Body ||
+			entry.FactUsed != expected.FactUsed || entry.Practice != expected.Practice ||
+			entry.CTA != expected.CTA || entry.SemanticSignature != expected.SemanticSignature {
+			add("deterministic_copy_projection_mismatch")
+		}
+		if canonicalStringSet(entry.FactEvidenceIDs) != canonicalStringSet(expected.FactEvidenceIDs) {
+			add("fact_evidence_binding_mismatch")
+		}
+	}
+	wantEvidence := uniqueStrings(append(append([]string{}, entry.ContractEvidenceIDs...), entry.FactEvidenceIDs...))
+	if len(entry.ContractEvidenceIDs) == 0 || canonicalStringSet(entry.EvidenceIDs) != canonicalStringSet(wantEvidence) {
+		add("fact_evidence_binding_mismatch")
 	}
 	if !delegatedEvidenceRowsCurrent(evidence, entry.EvidenceIDs, acc.LastImportRunID, time.Now().UTC()) {
-		return []string{"fact_evidence_not_current_confirmed"}
+		add("fact_evidence_not_current_confirmed")
 	}
 	out := &DraftOutput{
 		Channel: ChannelEmailInitial, Subject: entry.Subject, BodyText: entry.BodyText,
-		FactUsed: "Atuação como contratada em contrato público confirmada.", EvidenceIDs: entry.EvidenceIDs,
-		Claims:      []DraftClaim{{Phrase: "Atuação como contratada em contrato público confirmada.", EvidenceIDs: entry.EvidenceIDs}},
+		FactUsed: entry.FactUsed, EvidenceIDs: entry.EvidenceIDs,
+		Claims:      []DraftClaim{{Phrase: "Atuação como contratada no setor público confirmada.", EvidenceIDs: entry.ContractEvidenceIDs}},
 		ServiceCode: acc.ServiceCode, Question: "Quem é o responsável interno por contratos públicos?",
-		CTA: "Indicar o responsável ou encaminhar a mensagem.", Followups: []DraftFollowup{}, RiskFlags: []string{},
+		CTA: expected.CTA, Followups: []DraftFollowup{}, RiskFlags: []string{},
 	}
-	comparisonBodies := make([]string, 0, len(recentBodies))
+	if len(entry.FactEvidenceIDs) > 0 {
+		out.Claims = append(out.Claims, DraftClaim{Phrase: entry.FactUsed, EvidenceIDs: entry.FactEvidenceIDs})
+	}
 	for i := range recentBodies {
-		if recentBodies[i].AccountID != acc.ID {
-			comparisonBodies = append(comparisonBodies, recentBodies[i].Body)
+		if recentBodies[i].AccountID != acc.ID && normalizeForCorpus(recentBodies[i].Body) == normalizeForCorpus(entry.BodyText) {
+			add("corpus_exact_content_limit")
+			break
 		}
 	}
 	qa := ValidateDraft(out, acc, cand, ValidateOpts{
 		MaxWords: s.cfg.MaxInitialEmailWords, Evidence: evidence, Channel: ChannelEmailInitial,
-		RecentBodies: comparisonBodies, PromptVersion: PromptVersion,
+		PromptVersion: PromptVersion,
 	})
-	blockers := make([]string, 0, len(qa.Errors))
 	for _, item := range qa.Errors {
 		code := "deterministic_qa:" + reasonCode(item)
-		blockers = appendUnique(blockers, code)
+		add(code)
 	}
 	if risk, _ := ClassifyRisk(acc, cand, out, qa); risk != "GREEN" {
-		blockers = appendUnique(blockers, "deterministic_qa:risk_class_not_green")
+		add("deterministic_qa:risk_class_not_green")
 	}
 	return blockers
-}
-
-func stringSetContainsAll(superset, subset []string) bool {
-	seen := map[string]bool{}
-	for _, value := range superset {
-		if value = strings.TrimSpace(value); value != "" {
-			seen[value] = true
-		}
-	}
-	for _, value := range subset {
-		if !seen[strings.TrimSpace(value)] {
-			return false
-		}
-	}
-	return len(subset) > 0
 }
 
 func delegatedEvidenceRowsCurrent(evidence []models.OutreachEvidence, required []string, importID *uuid.UUID, now time.Time) bool {
@@ -1115,8 +1127,17 @@ func validateDelegatedCopy(entry DelegatedFirstTouchEntry, acc *models.OutreachA
 		add("copy_hash_mismatch")
 	}
 	words := len(strings.Fields(body))
-	if subject == "" || len([]rune(subject)) > 100 || words < 45 || words > 150 {
+	if subject == "" {
+		add("subject_empty")
+	}
+	if body == "" {
+		add("body_empty")
+	}
+	if len([]rune(subject)) > 100 || words < 45 || words > 150 {
 		add("copy_length_invalid")
+	}
+	if entry.CopyRulesVersion != DelegatedFirstTouchCopyRulesV1 {
+		add("copy_rules_version_mismatch")
 	}
 	low := strings.ToLower(subject + "\n" + body)
 	if !strings.Contains(low, "tiago sasaki") || !strings.Contains(low, "confenge") || !strings.Contains(low, "confenge.com.br") {
@@ -1129,8 +1150,27 @@ func validateDelegatedCopy(entry DelegatedFirstTouchEntry, acc *models.OutreachA
 		delegatedContainsAny(low, "como contratante", "figura como contratante", "aparece como contratante", "órgão contratante", "orgao contratante") {
 		add("target_role_claim_mismatch")
 	}
-	if !delegatedContainsAny(low, "responsável", "responsavel", "quem cuida") || !delegatedContainsAny(low, "indicar", "encaminhar", "direcionar") {
-		add("routing_cta_missing")
+	class := CandidateRouteClass(cand)
+	switch class {
+	case RouteClassDirectPerson:
+		if !delegatedContainsAny(low, "essa frente passa por você", "essa frente passa por voce") ||
+			delegatedContainsAny(low, "encaminhar esta mensagem", "indicar a pessoa", "indicar quem") {
+			add("route_cta_mismatch")
+		}
+	case RouteClassRoleOrDepartment:
+		if !delegatedContainsAny(low, "essa frente fica com a", "essa frente fica com a sua área", "essa frente fica com a sua area") ||
+			!delegatedContainsAny(low, "devo procurar outra", "devo procurar outra área", "devo procurar outra area") {
+			add("route_cta_mismatch")
+		}
+	case RouteClassGenericCompany, RouteClassPublicCompanyFreemail:
+		if !delegatedContainsAny(low, "encaminhar esta mensagem") || !delegatedContainsAny(low, "quem cuida dessa frente") {
+			add("route_cta_mismatch")
+		}
+	default:
+		add("route_cta_mismatch")
+	}
+	if !strings.Contains(low, strings.ToLower(delegatedContactExit)) {
+		add("contact_exit_missing")
 	}
 	if delegatedContainsAny(low, "marcar uma reunião", "agendar uma reunião", "agendar uma reuniao", "proposta comercial", "diagnóstico", "diagnostico", "r$", "contrato nº", "processo nº", "pregão nº", "pregao nº") {
 		add("copy_exceeds_first_touch_scope")
@@ -1139,28 +1179,43 @@ func validateDelegatedCopy(entry DelegatedFirstTouchEntry, acc *models.OutreachA
 		"grande volume", "alto volume", "muitos contratos", "diversos contratos", "vários contratos", "varios contratos",
 		"dezenas de", "centenas de", "milhares de", "ampla atuação", "ampla atuacao", "líder", "lider",
 		"faturamento", "receita", "lucro", "margem", "crédito", "credito", "dívida", "divida",
-		"reequilíbrio", "reequilibrio", "reajuste", "medição", "medicao", "pagamento em atraso",
-		"irregularidade", "ilegalidade", "litígio", "litigio", "condenação", "condenacao", "sanção", "sancao",
+		"pagamento em atraso", "irregularidade", "ilegalidade", "litígio", "litigio", "condenação", "condenacao", "sanção", "sancao",
 		"penalidade", "inadimplência", "inadimplencia", "rescisão", "rescisao") {
 		add("unsupported_factual_claim")
 	}
-	// v1 copy is intentionally routing-only. A numeric amount, date, quantity,
-	// process or contract identifier would require phrase-level fact extraction;
-	// hold it instead of trusting an agent's factual-PASS assertion.
+	// Numeric amounts, dates, quantities and identifiers require a separate
+	// typed projection. Hold them instead of trusting a factual-PASS assertion.
 	if delegatedDigitPattern.MatchString(subject + "\n" + body) {
 		add("unsupported_specific_fact")
 	}
 	if delegatedContainsAny(low, "soluções inovadoras", "solucoes inovadoras", "potencializar resultados", "sinergia", "transformar desafios") {
 		add("marketing_template_language")
 	}
+	if delegatedContainsAny(low,
+		"idiota", "incompetente", "burro", "preguiçoso", "preguicoso",
+		"responda agora", "última chance", "ultima chance", "não perca", "nao perca", "você precisa", "voce precisa") {
+		add("offensive_or_manipulative_language")
+	}
 	if strings.Contains(low, "—") || LooksLikeInternalReasoning(subject+"\n"+body) {
 		add("copy_artifact")
 	}
-	company := strings.ToLower(firstNonEmpty(acc.NomeFantasia, acc.RazaoSocial))
+	if looksLikeMetadataDump(subject+"\n"+body) || qaKeyValueRe.MatchString(subject+"\n"+body) ||
+		qaScoreRe.MatchString(subject+"\n"+body) || qaEnumRe.MatchString(subject+"\n"+body) {
+		add("internal_metadata_leak")
+	}
+	company := strings.ToLower(editorialCompanyName(acc))
 	if company != "" && !strings.Contains(low, company) {
 		add("company_name_missing")
 	}
-	class := CandidateRouteClass(cand)
+	personProven := class == RouteClassDirectPerson && composerMaySeePersonName(cand)
+	if personProven {
+		first := strings.ToLower(titleFirstName(firstName(cand.Name)))
+		if first == "" || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(body)), "olá, "+first) {
+			add("hallucinated_person")
+		}
+	} else if looksInventedPersonGreeting(strings.SplitN(body, "\n", 2)[0]) {
+		add("hallucinated_person")
+	}
 	if class != RouteClassDirectPerson && delegatedContainsAny(low, "como responsável", "como responsavel", "sei que você cuida", "sei que voce cuida", "seus contratos") {
 		add("generic_recipient_false_role")
 	}
@@ -1240,7 +1295,7 @@ func (s *service) prepareDelegatedTouchpoint(ctx context.Context, orgID uuid.UUI
 		tp.PolicyVersion = models.CadencePolicyVersionV1
 	}
 	tp.ServiceCode = acc.ServiceCode
-	tp.FactUsed = "Atuação como contratada em contrato público confirmada."
+	tp.FactUsed = entry.FactUsed
 	tp.EvidenceIDs = append([]string{}, entry.EvidenceIDs...)
 	tp.GeneratedContextHash = acc.MessageContextHash
 	tp.StopReason = ""
@@ -1262,8 +1317,8 @@ func (s *service) prepareDelegatedTouchpoint(ctx context.Context, orgID uuid.UUI
 		Subject: tp.Subject, BodyText: tp.BodyText, FollowupsJSON: []byte("[]"),
 		ServiceCode: acc.ServiceCode, StrategyCode: "FIRST_TOUCH_ROUTING",
 		FactUsed: tp.FactUsed, EvidenceIDs: tp.EvidenceIDs,
-		Question: "Quem é o responsável interno por contratos públicos?",
-		CTA:      "Indicar o responsável ou encaminhar a mensagem.",
+		Question: entry.CTA,
+		CTA:      entry.CTA,
 		Provider: "agent_cli", Model: manifest.AgentID, PromptVersion: PromptVersion,
 		Generation: entry.QA.Attempts, ValidationJSON: qaJSON, ValidationOK: &ok,
 		RiskClass: "GREEN", RiskFlags: []string{}, RedTeamResult: "PASS",
