@@ -2,6 +2,7 @@ package confenge
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,6 +23,47 @@ type TargetFitReconciliationReport struct {
 	BlockedDrafts        int            `json:"blocked_drafts"`
 	DetachedEnrollments  int            `json:"detached_enrollments"`
 	CancelledDispatch    int            `json:"cancelled_dispatch_items"`
+	CurrentSourceRunID   string         `json:"current_source_run_id,omitempty"`
+	SupersededRetired    int            `json:"superseded_rows_retired"`
+	SupersededRoots      int            `json:"superseded_roots"`
+}
+
+// SupersededByCurrentRunReason is recorded on rows retired because a newer
+// import already published a canonical member for the same company root.
+const SupersededByCurrentRunReason = "superseded_by_current_source_run"
+
+// supersededByCurrentRun returns the accounts that a newer import has replaced.
+//
+// Membership is one canonical member per cnpj_root8. Older imports leave their
+// rows behind, and while the transport gate already refuses them with
+// account_source_run_drift, they stay live and can still be counted by any
+// projection that does not repeat that check. Retirement here is evidence, not
+// heuristic: a row is superseded only when the current run publishes a row for
+// the very same root. A root the current run never mentions is left alone —
+// absence of evidence is not evidence of supersession — and nothing is deleted.
+func supersededByCurrentRun(accounts []models.OutreachAccount, currentRunID string) map[uuid.UUID]bool {
+	out := map[uuid.UUID]bool{}
+	if strings.TrimSpace(currentRunID) == "" {
+		return out
+	}
+	currentRoots := map[string]bool{}
+	for i := range accounts {
+		root := strings.TrimSpace(accounts[i].CNPJRoot)
+		if root != "" && accounts[i].SourceRunID == currentRunID {
+			currentRoots[root] = true
+		}
+	}
+	for i := range accounts {
+		acc := &accounts[i]
+		root := strings.TrimSpace(acc.CNPJRoot)
+		if root == "" || acc.SourceRunID == currentRunID || acc.SourceRunID == "" {
+			continue
+		}
+		if currentRoots[root] {
+			out[acc.ID] = true
+		}
+	}
+	return out
 }
 
 func (s *service) ReconcileTargetFit(ctx context.Context, orgID uuid.UUID, dryRun bool) (*TargetFitReconciliationReport, *errx.Error) {
@@ -40,6 +82,14 @@ func (s *service) ReconcileTargetFit(ctx context.Context, orgID uuid.UUID, dryRu
 			break
 		}
 	}
+	// The current feed run is the supersession evidence. Without it, no row is
+	// retired: an unreadable feed state must never look like "everything is old".
+	if feedState, feedErr := s.repo.GetFeedSyncState(ctx, orgID); feedErr == nil && feedState != nil {
+		report.CurrentSourceRunID = feedState.LastRunID
+	}
+	superseded := supersededByCurrentRun(accounts, report.CurrentSourceRunID)
+	supersededRoots := map[string]bool{}
+
 	for i := range accounts {
 		acc := &accounts[i]
 		report.AccountsScanned++
@@ -52,6 +102,13 @@ func (s *service) ReconcileTargetFit(ctx context.Context, orgID uuid.UUID, dryRu
 			report.BeforeOperational++
 		}
 		decision := EvaluateTargetFit(acc)
+		if superseded[acc.ID] {
+			decision = TargetFitAuthorization{Eligible: false, Reason: SupersededByCurrentRunReason}
+			report.SupersededRetired++
+			if root := strings.TrimSpace(acc.CNPJRoot); root != "" {
+				supersededRoots[root] = true
+			}
+		}
 		if decision.Eligible {
 			if contactReady {
 				report.AfterOperational++
@@ -101,5 +158,6 @@ func (s *service) ReconcileTargetFit(ctx context.Context, orgID uuid.UUID, dryRu
 			report.CancelledDispatch += counts.DispatchItems
 		}
 	}
+	report.SupersededRoots = len(supersededRoots)
 	return report, nil
 }
