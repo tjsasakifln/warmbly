@@ -376,7 +376,10 @@ func (m *MemoryStore) Enqueue(ctx context.Context, item *QueueItem) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if existing := m.queue[item.MessageKey]; existing != nil {
-		if existing.Status == QueueSent || existing.Status == QueueCancelled {
+		// 'attempted' is terminal for enqueue: the message is already with the
+		// transport and its acceptance is merely unobserved. Re-queueing it would
+		// dispatch the same message a second time.
+		if existing.Status == QueueAttempted || existing.Status == QueueSent || existing.Status == QueueCancelled {
 			return nil
 		}
 		existing.DueAt = item.DueAt
@@ -497,6 +500,25 @@ func (m *MemoryStore) UpdateQueueStatus(ctx context.Context, id uuid.UUID, statu
 		q.LastError = errText
 	}
 	return nil
+}
+
+func (m *MemoryStore) ListQueueByStatus(_ context.Context, status string, limit int) ([]QueueItem, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	var out []QueueItem
+	for _, q := range m.queue {
+		if q != nil && q.Status == status {
+			out = append(out, *q)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func (m *MemoryStore) RetryQueue(ctx context.Context, id uuid.UUID, dueAt time.Time, errText string) error {

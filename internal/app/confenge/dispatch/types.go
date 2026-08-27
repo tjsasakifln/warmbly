@@ -23,8 +23,13 @@ const (
 )
 
 const (
-	QueueQueued    = "queued"
-	QueueReserved  = "reserved"
+	QueueQueued   = "queued"
+	QueueReserved = "reserved"
+	// QueueAttempted is the terminal state of a hand-off: the message was given
+	// to the transport and nothing has confirmed what the provider did with it.
+	// It is deliberately not "sent". Promotion to QueueSent requires an observed
+	// provider fact; without one, acceptance stays UNKNOWN.
+	QueueAttempted = "attempted"
 	QueueSent      = "sent"
 	QueueCancelled = "cancelled"
 	QueueFailed    = "failed"

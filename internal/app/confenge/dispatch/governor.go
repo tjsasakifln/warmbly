@@ -373,6 +373,11 @@ func (g *Governor) CancelByRecipient(ctx context.Context, orgID uuid.UUID, recip
 	return g.store.CancelQueueByRecipient(ctx, orgID, recipientRef, reason)
 }
 
+// ListQueueByStatus exposes queue rows awaiting reconciliation.
+func (g *Governor) ListQueueByStatus(ctx context.Context, status string, limit int) ([]QueueItem, error) {
+	return g.store.ListQueueByStatus(ctx, status, limit)
+}
+
 func (g *Governor) MarkQueue(ctx context.Context, id uuid.UUID, status, errText string) error {
 	return g.store.UpdateQueueStatus(ctx, id, status, errText)
 }

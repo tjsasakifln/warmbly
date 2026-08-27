@@ -36,6 +36,12 @@ type OrgRiskPolicy interface {
 type Service interface {
 	Enabled() bool
 	Config() Config
+	// ResolveTransportState is the single answer to "may a message leave now?".
+	// Every reader must use it so no two projections can disagree.
+	ResolveTransportState(ctx context.Context, orgID *uuid.UUID) TransportState
+	// ReconcileAttemptedDispatches promotes a hand-off to sent only once a
+	// provider fact exists, and leaves unobserved acceptance UNKNOWN.
+	ReconcileAttemptedDispatches(ctx context.Context) (int, error)
 	// CollectReadiness aggregates operator panel signals for one org.
 	CollectReadiness(ctx context.Context, orgID uuid.UUID, emailReady bool) Readiness
 
