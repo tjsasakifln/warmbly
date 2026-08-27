@@ -1974,16 +1974,26 @@ func (s *service) populateDelegatedFirstTouchControl(ctx context.Context, orgID 
 		orgID, sourceRunID).Scan(&control.Transport.ProviderAttempts, &control.Transport.ProviderAccepted, &control.Transport.Sent); err != nil {
 		return err
 	}
+	// Separate identifier joins keep large control-center reads indexable.
 	rows, err := s.delegatedDB.Query(ctx, `
-		SELECT o.event_type,count(*)::int
-		FROM outreach_outcome_outbox o
-		WHERE o.organization_id=$1 AND EXISTS (
-			SELECT 1 FROM outreach_accounts a
-			WHERE a.organization_id=o.organization_id AND a.source_run_id=$2
-			  AND ((o.cnpj14<>'' AND a.cnpj14=o.cnpj14)
-			    OR (o.source_lead_id<>'' AND a.source_lead_id=o.source_lead_id))
+		WITH matched AS (
+			SELECT o.id,o.event_type
+			FROM outreach_outcome_outbox o
+			JOIN outreach_accounts a
+			  ON a.organization_id=o.organization_id AND a.source_run_id=$2
+			 AND o.cnpj14<>'' AND a.cnpj14=o.cnpj14
+			WHERE o.organization_id=$1
+			UNION
+			SELECT o.id,o.event_type
+			FROM outreach_outcome_outbox o
+			JOIN outreach_accounts a
+			  ON a.organization_id=o.organization_id AND a.source_run_id=$2
+			 AND o.source_lead_id<>'' AND a.source_lead_id=o.source_lead_id
+			WHERE o.organization_id=$1
 		)
-		GROUP BY o.event_type`, orgID, sourceRunID)
+		SELECT event_type,count(*)::int
+		FROM matched
+		GROUP BY event_type`, orgID, sourceRunID)
 	if err != nil {
 		return err
 	}
