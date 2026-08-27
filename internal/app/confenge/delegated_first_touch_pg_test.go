@@ -1031,3 +1031,94 @@ func TestDelegatedFirstTouchMaterialDriftInvalidatesApprovalPostgres(t *testing.
 		})
 	}
 }
+
+func TestDelegatedFirstTouchStatusKeepsCommercialWhenSourceStalePostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	var hasCol bool
+	if err := f.pool.QueryRow(f.ctx, `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_name='outreach_feed_sync_state' AND column_name='commercial_authority')`).Scan(&hasCol); err != nil || !hasCol {
+		t.Skip("outreach_feed_sync_state.commercial_authority missing")
+	}
+	now := time.Date(2026, 8, 27, 16, 0, 0, 0, time.UTC)
+	f.svc.nowFn = func() time.Time { return now }
+	stale := now.Add(-48 * time.Hour)
+	expires := now.Add(2 * time.Hour)
+	feed, err := f.repo.GetFeedSyncState(f.ctx, f.orgID)
+	if err != nil || feed == nil {
+		t.Fatalf("feed state missing: %+v err=%v", feed, err)
+	}
+	payload := FeedCommercialAuthority{
+		SchemaVersion:                      CommercialAuthoritySchemaV1,
+		BasisSourceRunID:                   feed.LastRunID,
+		BasisSnapshotHash:                  feed.LastSnapshotHash,
+		BasisMembershipHash:                feed.TargetMembershipHash,
+		ValidatedAt:                        now.Add(-time.Hour).Format(time.RFC3339Nano),
+		ValidUntil:                         now.Add(24 * time.Hour).Format(time.RFC3339Nano),
+		State:                              CommercialAuthorityCurrent,
+		NewAdmissionAllowed:                authorityBool(true),
+		ExistingBoundTouchTransportAllowed: authorityBool(true),
+	}
+	feed.SourceGeneratedAt = &stale
+	feed.SourceExpiresAt = &expires
+	feed.LastSuccessAt = &now
+	feed.CommercialAuthorityJSON = marshalCommercialAuthority(&payload)
+	if err := f.repo.UpsertFeedSyncState(f.ctx, feed); err != nil {
+		t.Fatal(err)
+	}
+	blocked := &models.OutreachAccount{
+		ID: uuid.New(), OrganizationID: f.orgID, CNPJ14: "55555444000191", CNPJRoot: "55555444",
+		RazaoSocial: "Blocked Ltda", QueueState: models.OutreachQueueBlocked, Blocked: true,
+		SourceSystem: "extra-cli", SourceRunID: feed.LastRunID,
+	}
+	if _, err := f.repo.UpsertAccount(f.ctx, blocked); err != nil {
+		t.Fatal(err)
+	}
+	dnc := &models.OutreachAccount{
+		ID: uuid.New(), OrganizationID: f.orgID, CNPJ14: "66666555000191", CNPJRoot: "66666555",
+		RazaoSocial: "DNC Ltda", QueueState: models.OutreachQueueDoNotContact, DoNotContact: true,
+		SourceSystem: "extra-cli", SourceRunID: feed.LastRunID,
+	}
+	if _, err := f.repo.UpsertAccount(f.ctx, dnc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.repo.UpsertCandidate(f.ctx, &models.OutreachContactCandidate{
+		ID: uuid.New(), OrganizationID: f.orgID, AccountID: blocked.ID, Email: "bounce@stale.example", Bounced: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	status, statusErr := f.svc.DelegatedFirstTouchStatus(f.ctx, f.orgID, "")
+	if statusErr != nil || status == nil {
+		t.Fatalf("status: %+v err=%v", status, statusErr)
+	}
+	if status.Control.Source.FreshnessState != "stale" {
+		t.Fatalf("source=%s", status.Control.Source.FreshnessState)
+	}
+	if !status.Control.Commercial.Present || status.Control.Commercial.State != CommercialAuthorityCurrent {
+		t.Fatalf("commercial masked: %+v", status.Control.Commercial)
+	}
+	if !status.Control.Commercial.ExistingBoundTouchTransportAllowed {
+		t.Fatal("stale source collapsed existing-bound transport")
+	}
+	if strings.HasPrefix(status.Control.Blocker, "authoritative_feed_") {
+		t.Fatalf("source health still the control blocker: %s", status.Control.Blocker)
+	}
+
+	report, xerr := f.svc.CollectFirstWindowReadiness(f.ctx, f.orgID)
+	if xerr != nil || report == nil {
+		t.Fatalf("collect: %+v err=%v", report, xerr)
+	}
+	if report.Verdict == FirstWindowGOForControlledPilot || strings.Contains(report.Verdict, FirstWindowGOForControlledPilot) {
+		t.Fatal("emitted GO_FOR_CONTROLLED_EMAIL_PILOT")
+	}
+	if report.SourceHealth.State != SourceHealthStale {
+		t.Fatalf("collect source=%s", report.SourceHealth.State)
+	}
+	if !report.CommercialAuthority.Present || report.CommercialAuthority.State != CommercialAuthorityCurrent {
+		t.Fatalf("collect commercial masked: %+v", report.CommercialAuthority)
+	}
+	if report.SuppressionCount < 1 || report.DNCCount < 1 || report.BounceCount < 1 {
+		t.Fatalf("safety snapshot not closed: suppression=%d dnc=%d bounce=%d", report.SuppressionCount, report.DNCCount, report.BounceCount)
+	}
+}

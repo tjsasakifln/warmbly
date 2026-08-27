@@ -390,6 +390,41 @@ func feedSourceFreshnessFromState(feed *models.OutreachFeedSyncState) *FeedSourc
 	return f
 }
 
+func firstPresentAuthority(parts ...*FeedCommercialAuthority) *FeedCommercialAuthority {
+	for _, p := range parts {
+		if authorityPresent(p) {
+			return p
+		}
+	}
+	return nil
+}
+
+func EvaluateStoredFeedAuthority(feed *models.OutreachFeedSyncState, now time.Time, maxAge time.Duration) (SourceHealthDecision, CommercialAuthorityDecision) {
+	source := ClassifySourceHealth(feedSourceFreshnessFromState(feed), now, maxAge)
+	if feed == nil {
+		return source, CommercialAuthorityDecision{State: CommercialAuthorityAbsent}
+	}
+	return source, EvaluateCommercialAuthority(storedCommercialAuthority(feed), CommercialAuthorityBinding{
+		SourceRunID:    feed.LastRunID,
+		SnapshotHash:   feed.LastSnapshotHash,
+		MembershipHash: feed.TargetMembershipHash,
+	}, now)
+}
+
+func commercialReadback(d CommercialAuthorityDecision) DelegatedFirstTouchAuthorityReadback {
+	return DelegatedFirstTouchAuthorityReadback{
+		Present:                            d.Present,
+		State:                              firstNonEmpty(d.State, CommercialAuthorityAbsent),
+		NewAdmissionAllowed:                d.NewAdmissionAllowed,
+		ExistingBoundTouchTransportAllowed: d.ExistingBoundTouchTransportAllowed,
+		BasisSourceRunID:                   d.BasisSourceRunID,
+		BasisSnapshotHash:                  d.BasisSnapshotHash,
+		BasisMembershipHash:                d.BasisMembershipHash,
+		ValidUntil:                         d.ValidUntil,
+		ReasonCodes:                        append([]string{}, d.ReasonCodes...),
+	}
+}
+
 func firstHold(reasons []string) string {
 	if len(reasons) == 0 {
 		return ""
@@ -509,14 +544,15 @@ func (s *service) applyDelegatedFirstTouchManifest(ctx context.Context, orgID uu
 	if feedErr != nil || feedState == nil {
 		return nil, errx.New(errx.Forbidden, "authoritative_feed_attestation_invalid")
 	}
-	if !authorityPresent(manifest.CommercialAuthority) {
+	commercialPayload := firstPresentAuthority(manifest.CommercialAuthority, storedCommercialAuthority(feedState))
+	if !authorityPresent(commercialPayload) {
 		if validateAuthoritativeFeedState(feedState, now, s.cfg.FeedMaxAge, true) != nil {
 			return nil, errx.New(errx.Forbidden, "authoritative_feed_attestation_invalid")
 		}
 	} else {
 		elig := EvaluateOutboundEligibility(
 			feedSourceFreshnessFromState(feedState),
-			manifest.CommercialAuthority,
+			commercialPayload,
 			CommercialAuthorityBinding{SourceRunID: feedState.LastRunID, SnapshotHash: feedState.LastSnapshotHash, MembershipHash: feedState.TargetMembershipHash},
 			TransportState{State: TransportActive},
 			now, s.cfg.FeedMaxAge, nil, false,
@@ -1051,10 +1087,11 @@ func (s *service) validateDelegatedEntry(ctx context.Context, orgID uuid.UUID, m
 	} else {
 		now := s.now()
 		bound := s.delegatedTouchAlreadyBound(ctx, orgID, acc.ID)
-		if authorityPresent(manifest.CommercialAuthority) {
+		commercialPayload := firstPresentAuthority(manifest.CommercialAuthority, storedCommercialAuthority(feedState))
+		if authorityPresent(commercialPayload) {
 			elig := EvaluateOutboundEligibility(
 				feedSourceFreshnessFromState(feedState),
-				manifest.CommercialAuthority,
+				commercialPayload,
 				CommercialAuthorityBinding{SourceRunID: feedState.LastRunID, SnapshotHash: feedState.LastSnapshotHash, MembershipHash: feedState.TargetMembershipHash},
 				TransportState{State: TransportActive},
 				now, s.cfg.FeedMaxAge, nil, bound,
@@ -2061,7 +2098,7 @@ func (s *service) populateDelegatedFirstTouchControl(ctx context.Context, orgID 
 	if out == nil {
 		return fmt.Errorf("delegated first-touch status is required")
 	}
-	now := time.Now().UTC()
+	now := s.now()
 	control := DelegatedFirstTouchControlReadback{
 		SchemaVersion:  "warmbly.confenge.first-touch-control.v1",
 		ReadyReservoir: out.Runway.ReadyReservoirCount,
@@ -2173,10 +2210,15 @@ func (s *service) populateDelegatedFirstTouchControl(ctx context.Context, orgID 
 	} else {
 		control.Blocker = "dispatch_governor_unavailable"
 	}
-	control.Commercial = DelegatedFirstTouchAuthorityReadback{State: CommercialAuthorityAbsent}
+	_, commercial := EvaluateStoredFeedAuthority(feed, now, s.cfg.FeedMaxAge)
+	control.Commercial = commercialReadback(commercial)
 	switch {
-	case control.Source.FreshnessState != "fresh" && !control.Commercial.ExistingBoundTouchTransportAllowed:
+	case !commercial.Present && control.Source.FreshnessState != "fresh":
 		control.Blocker = "authoritative_feed_" + control.Source.FreshnessState
+	case commercial.Present && commercial.State == CommercialAuthorityExpired:
+		control.Blocker = ReasonAuthorityExpired
+	case commercial.Present && commercial.State == CommercialAuthorityUnknown:
+		control.Blocker = ReasonAuthorityBindingMismatch
 	case out.DuplicateLiveAccount > 0 || out.DuplicateLiveRoot > 0:
 		control.Blocker = "duplicate_live_first_touch"
 	case !out.PolicyActive:

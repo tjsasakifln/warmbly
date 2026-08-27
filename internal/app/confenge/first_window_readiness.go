@@ -10,6 +10,7 @@ import (
 
 	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
 	"github.com/warmbly/warmbly/internal/errx"
+	"github.com/warmbly/warmbly/internal/repository"
 )
 
 const (
@@ -254,9 +255,37 @@ func (s *service) CollectFirstWindowReadiness(ctx context.Context, orgID uuid.UU
 		return nil, xerr
 	}
 	now := s.now()
-	status, xerr := s.DelegatedFirstTouchStatus(ctx, orgID, "")
-	if xerr != nil {
-		return nil, xerr
+	feed, feedErr := s.repo.GetFeedSyncState(ctx, orgID)
+	if feedErr != nil {
+		return nil, errx.New(errx.Internal, "feed sync state: "+feedErr.Error())
+	}
+	sourceHealth, authority := EvaluateStoredFeedAuthority(feed, now, s.cfg.FeedMaxAge)
+	source := DelegatedFirstTouchSourceReadback{}
+	if feed != nil {
+		source = DelegatedFirstTouchSourceReadback{
+			RunID: feed.LastRunID, SnapshotHash: feed.LastSnapshotHash,
+			FreshnessState:           delegatedSourceFreshnessState(feed, now, s.cfg.FeedMaxAge),
+			GeneratedAt:              feed.SourceGeneratedAt,
+			ExpiresAt:                feed.SourceExpiresAt,
+			FreshnessHash:            feed.SourceFreshnessHash,
+			TargetMembershipComplete: feed.TargetMembershipComplete,
+			TargetMembershipHash:     feed.TargetMembershipHash,
+			TargetMembershipCount:    feed.TargetMembershipCount,
+			SupplierConfirmedCount:   feed.SupplierConfirmedCount,
+		}
+	} else {
+		source.FreshnessState = "missing"
+	}
+	status, _ := s.DelegatedFirstTouchStatus(ctx, orgID, "")
+	queued, reserved, reservoir := 0, 0, 0
+	outcomesReady := EvidenceUnknown
+	if status != nil {
+		queued = status.Control.Queued
+		reserved = status.Control.Reserved
+		reservoir = status.Control.ReadyReservoir
+		if status.Control.Outcomes != nil {
+			outcomesReady = EvidencePass
+		}
 	}
 	dispatchStatus, dsErr := s.DispatchStatus(ctx, orgID)
 	if dsErr != nil {
@@ -265,37 +294,49 @@ func (s *service) CollectFirstWindowReadiness(ctx context.Context, orgID uuid.UU
 	transport := s.ResolveTransportState(ctx, &orgID)
 	smtpReady, _ := ProbeSMTPReadiness(3 * time.Second)
 	imapReady, _ := ProbeReplyIngestReadiness(ctx, s.cohortStore, 3*time.Second)
-	outcomesReady := EvidenceUnknown
-	if status != nil && status.Control.Outcomes != nil {
-		outcomesReady = EvidencePass
-	}
-	authority := CommercialAuthorityDecision{State: CommercialAuthorityAbsent}
-	if status != nil {
-		authority = CommercialAuthorityDecision{
-			Present:                            status.Control.Commercial.Present,
-			State:                              firstNonEmpty(status.Control.Commercial.State, CommercialAuthorityAbsent),
-			NewAdmissionAllowed:                status.Control.Commercial.NewAdmissionAllowed,
-			ExistingBoundTouchTransportAllowed: status.Control.Commercial.ExistingBoundTouchTransportAllowed,
-			BasisSourceRunID:                   status.Control.Commercial.BasisSourceRunID,
-			BasisSnapshotHash:                  status.Control.Commercial.BasisSnapshotHash,
-			BasisMembershipHash:                status.Control.Commercial.BasisMembershipHash,
-			ValidUntil:                         status.Control.Commercial.ValidUntil,
-			ReasonCodes:                        status.Control.Commercial.ReasonCodes,
-		}
-	}
-	source := DelegatedFirstTouchSourceReadback{}
-	queued, reserved, reservoir := 0, 0, 0
-	if status != nil {
-		source = status.Control.Source
-		queued = status.Control.Queued
-		reserved = status.Control.Reserved
-		reservoir = status.Control.ReadyReservoir
-	}
-	snap := firstWindowSnapshotFromLive(s.cfg, source, authority, dispatchStatus, transport, queued, reserved, reservoir, 0, 0, 0, smtpReady, imapReady, outcomesReady, now)
+	suppression, dnc, bounce := s.collectSafetySnapshots(ctx, orgID)
+	snap := firstWindowSnapshotFromLive(s.cfg, source, authority, dispatchStatus, transport, queued, reserved, reservoir, suppression, dnc, bounce, smtpReady, imapReady, outcomesReady, now)
+	snap.SourceHealth = sourceHealth
 	snap.PausedBy = dispatchStatus.PausedBy
 	snap.PausedAt = dispatchStatus.PausedAt
 	report := EvaluateFirstWindowReadiness(snap)
 	return &report, nil
+}
+
+func (s *service) collectSafetySnapshots(ctx context.Context, orgID uuid.UUID) (suppression, dnc, bounce int) {
+	if s.delegatedDB != nil {
+		err := s.delegatedDB.QueryRow(ctx, `
+			SELECT
+				(SELECT count(*)::int FROM outreach_accounts WHERE organization_id=$1 AND blocked),
+				(SELECT count(*)::int FROM outreach_accounts WHERE organization_id=$1 AND do_not_contact),
+				(SELECT count(*)::int FROM outreach_contact_candidates WHERE organization_id=$1 AND bounced)`, orgID).
+			Scan(&suppression, &dnc, &bounce)
+		if err == nil {
+			return suppression, dnc, bounce
+		}
+	}
+	accounts, err := s.repo.ListAccounts(ctx, orgID, repository.OutreachAccountFilter{Limit: 1000})
+	if err != nil {
+		return 0, 0, 0
+	}
+	for i := range accounts {
+		if accounts[i].Blocked {
+			suppression++
+		}
+		if accounts[i].DoNotContact {
+			dnc++
+		}
+		cands, candErr := s.repo.ListCandidates(ctx, orgID, accounts[i].ID)
+		if candErr != nil {
+			continue
+		}
+		for j := range cands {
+			if cands[j].Bounced {
+				bounce++
+			}
+		}
+	}
+	return suppression, dnc, bounce
 }
 
 func ClassifySourceHealthFromReadback(src DelegatedFirstTouchSourceReadback) SourceHealthDecision {

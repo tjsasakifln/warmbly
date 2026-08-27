@@ -970,7 +970,7 @@ func (r *outreachRepository) GetFeedSyncState(ctx context.Context, orgID uuid.UU
 			COALESCE(last_error,''), COALESCE(last_status,'idle'), counts, updated_at,
 			source_generated_at, source_expires_at, COALESCE(source_freshness_hash,''),
 			target_membership_complete, COALESCE(target_membership_hash,''),
-			target_membership_count, supplier_confirmed_count
+			target_membership_count, supplier_confirmed_count, commercial_authority
 		FROM outreach_feed_sync_state WHERE organization_id=$1`, orgID)
 	var st models.OutreachFeedSyncState
 	var counts []byte
@@ -980,6 +980,7 @@ func (r *outreachRepository) GetFeedSyncState(ctx context.Context, orgID uuid.UU
 		&st.LastError, &st.LastStatus, &counts, &st.UpdatedAt, &st.SourceGeneratedAt,
 		&st.SourceExpiresAt, &st.SourceFreshnessHash, &st.TargetMembershipComplete,
 		&st.TargetMembershipHash, &st.TargetMembershipCount, &st.SupplierConfirmedCount,
+		&st.CommercialAuthorityJSON,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -1007,8 +1008,8 @@ func (r *outreachRepository) UpsertFeedSyncState(ctx context.Context, st *models
 			last_success_at, last_attempt_at, last_error, last_status, counts, updated_at,
 			source_generated_at, source_expires_at, source_freshness_hash,
 			target_membership_complete, target_membership_hash, target_membership_count,
-			supplier_confirmed_count
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+			supplier_confirmed_count, commercial_authority
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 		ON CONFLICT (organization_id) DO UPDATE SET
 			last_snapshot_hash = EXCLUDED.last_snapshot_hash,
 			last_run_id = EXCLUDED.last_run_id,
@@ -1031,12 +1032,14 @@ func (r *outreachRepository) UpsertFeedSyncState(ctx context.Context, st *models
 				THEN outreach_feed_sync_state.target_membership_count ELSE EXCLUDED.target_membership_count END,
 			supplier_confirmed_count = CASE WHEN EXCLUDED.last_success_at IS NULL
 				THEN outreach_feed_sync_state.supplier_confirmed_count ELSE EXCLUDED.supplier_confirmed_count END,
+			commercial_authority = CASE WHEN EXCLUDED.last_success_at IS NULL
+				THEN outreach_feed_sync_state.commercial_authority ELSE EXCLUDED.commercial_authority END,
 			updated_at = EXCLUDED.updated_at`,
 		st.OrganizationID, st.LastSnapshotHash, st.LastRunID, st.LastManifestURI,
 		st.LastSuccessAt, st.LastAttemptAt, st.LastError, st.LastStatus, counts, st.UpdatedAt,
 		st.SourceGeneratedAt, st.SourceExpiresAt, st.SourceFreshnessHash,
 		st.TargetMembershipComplete, st.TargetMembershipHash, st.TargetMembershipCount,
-		st.SupplierConfirmedCount,
+		st.SupplierConfirmedCount, st.CommercialAuthorityJSON,
 	)
 	return err
 }

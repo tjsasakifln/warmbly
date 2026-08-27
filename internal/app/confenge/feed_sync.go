@@ -1,6 +1,7 @@
 package confenge
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -100,6 +101,7 @@ type feedAuthority struct {
 	TargetMembershipHash     string
 	TargetMembershipCount    int
 	SupplierConfirmedCount   int
+	Commercial               *FeedCommercialAuthority
 }
 
 type manifestChunk struct {
@@ -532,6 +534,7 @@ func validateManifestAuthority(manifest *outreachManifest, now time.Time, requir
 		TargetMembershipHash:     strings.ToLower(membership.MembershipHash),
 		TargetMembershipCount:    membership.PopulationCount,
 		SupplierConfirmedCount:   membership.SupplierConfirmedCount,
+		Commercial:               commercialPayload,
 	}, nil
 }
 
@@ -638,7 +641,8 @@ func sameFeedAuthority(current *models.OutreachFeedSyncState, authority *feedAut
 		current.TargetMembershipComplete == authority.TargetMembershipComplete &&
 		current.TargetMembershipHash == authority.TargetMembershipHash &&
 		current.TargetMembershipCount == authority.TargetMembershipCount &&
-		current.SupplierConfirmedCount == authority.SupplierConfirmedCount
+		current.SupplierConfirmedCount == authority.SupplierConfirmedCount &&
+		bytes.Equal(marshalCommercialAuthority(storedCommercialAuthority(current)), marshalCommercialAuthority(authority.Commercial))
 }
 
 func hashStagedTargetMembership(cnpjs map[string]string) (string, int, error) {
@@ -859,8 +863,33 @@ func (s *service) lastAppliedSnapshot(ctx context.Context, orgID uuid.UUID) (sna
 	return "", ""
 }
 
+func marshalCommercialAuthority(p *FeedCommercialAuthority) []byte {
+	if !authorityPresent(p) {
+		return nil
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+func storedCommercialAuthority(st *models.OutreachFeedSyncState) *FeedCommercialAuthority {
+	if st == nil || len(bytes.TrimSpace(st.CommercialAuthorityJSON)) == 0 || bytes.Equal(bytes.TrimSpace(st.CommercialAuthorityJSON), []byte("null")) {
+		return nil
+	}
+	var p FeedCommercialAuthority
+	if err := json.Unmarshal(st.CommercialAuthorityJSON, &p); err != nil {
+		return nil
+	}
+	if !authorityPresent(&p) {
+		return nil
+	}
+	return &p
+}
+
 func (s *service) persistFeedSync(ctx context.Context, orgID uuid.UUID, snap, run, uri, status string, res *FeedSyncResult, success bool, sourceGeneratedAt *time.Time) error {
-	now := time.Now().UTC()
+	now := s.now()
 	st := &models.OutreachFeedSyncState{
 		OrganizationID:   orgID,
 		LastSnapshotHash: snap,
@@ -883,6 +912,7 @@ func (s *service) persistFeedSync(ctx context.Context, orgID uuid.UUID, snap, ru
 			st.TargetMembershipHash = res.authority.TargetMembershipHash
 			st.TargetMembershipCount = res.authority.TargetMembershipCount
 			st.SupplierConfirmedCount = res.authority.SupplierConfirmedCount
+			st.CommercialAuthorityJSON = marshalCommercialAuthority(res.authority.Commercial)
 		}
 	}
 	if res != nil {

@@ -522,7 +522,9 @@ type OutreachFeedSyncState struct {
 	LastError                string     `json:"last_error,omitempty"`
 	LastStatus               string     `json:"last_status"`
 	CountsJSON               []byte     `json:"counts,omitempty"`
-	UpdatedAt                time.Time  `json:"updated_at"`
+	// CommercialAuthorityJSON is the extra-cli payload. Nil keeps fail-closed source freshness.
+	CommercialAuthorityJSON []byte    `json:"commercial_authority,omitempty"`
+	UpdatedAt               time.Time `json:"updated_at"`
 }
 
 // OutreachPilotMembership is the durable definition of one prepared pilot account.
