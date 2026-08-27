@@ -143,8 +143,17 @@ func prepareRehearsalManifest(t *testing.T, sourcePath string) (string, outreach
 		}
 		manifest.SourceFreshness.AsOf, _ = freshness["observed_at"].(string)
 	}
+	// Do NOT fabricate a freshness run id here. This used to copy
+	// manifest.source.run_id (a feed BUILD id) into the freshness block (a PNCP
+	// INGESTION attempt id) purely to satisfy the old string-equality gate. The
+	// real binding is cryptographic (see deriveFeedBuildRunID), so a manifest
+	// without a genuine ingestion run id is unbindable and must fail closed.
 	if strings.TrimSpace(manifest.SourceFreshness.RunID) == "" {
-		manifest.SourceFreshness.RunID = manifest.Source.RunID
+		t.Fatalf("rehearsal manifest %s carries no authoritative PNCP freshness run_id", sourcePath)
+	}
+	if manifest.Source.Freshness == nil || strings.TrimSpace(manifest.Source.FreshnessHash) == "" ||
+		strings.TrimSpace(manifest.ModuleVersion) == "" {
+		t.Fatalf("rehearsal manifest %s is missing the producer freshness binding (module_version/source.authoritative_freshness{,_hash})", sourcePath)
 	}
 	baseDir := filepath.Dir(sourcePath)
 	for index := range manifest.Chunks {
