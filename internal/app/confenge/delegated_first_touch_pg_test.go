@@ -829,6 +829,57 @@ func TestDelegatedFirstTouchLedgerReconciliationRepairsOlderQueueCancellationPos
 	}
 }
 
+func TestDelegatedFirstTouchLedgerReconciliationRepairsOrphanedQueuedProjectionPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	report, xerr := f.svc.ApplyDelegatedFirstTouchManifest(f.ctx, f.orgID, f.manifest, false)
+	if xerr != nil || report == nil || report.Queued != 1 {
+		t.Fatalf("fixture did not queue: report=%+v err=%v", report, xerr)
+	}
+	if _, err := f.pool.Exec(f.ctx, `
+		UPDATE confenge_dispatch_queue
+		SET status='cancelled',cancel_reason='context_stale',last_error='context_stale'
+		WHERE organization_id=$1`, f.orgID); err != nil {
+		t.Fatal(err)
+	}
+
+	reconciled, err := f.svc.ReconcileDelegatedFirstTouchLedger(f.ctx, f.orgID)
+	if err != nil || reconciled != 2 {
+		t.Fatalf("orphaned queued projection was not reconciled: count=%d err=%v", reconciled, err)
+	}
+	var decisionState, touchpointState, draftStatus, queueStatus, stopReason, authorizationMode string
+	var policyAuthorizationID *uuid.UUID
+	var queuedAt, draftApprovedAt *time.Time
+	if err := f.pool.QueryRow(f.ctx, `
+		SELECT decision.state,touchpoint.state,draft.status,queue.status,touchpoint.stop_reason,
+		       touchpoint.authorization_mode,touchpoint.campaign_policy_authorization_id,
+		       touchpoint.queued_at,draft.approved_at
+		FROM confenge_delegated_first_touch_decisions decision
+		JOIN outreach_touchpoints touchpoint
+		  ON touchpoint.organization_id=decision.organization_id AND touchpoint.id=decision.touchpoint_id
+		JOIN outreach_drafts draft
+		  ON draft.organization_id=touchpoint.organization_id AND draft.id=touchpoint.draft_id
+		JOIN confenge_dispatch_queue queue
+		  ON queue.organization_id=decision.organization_id AND queue.draft_id=decision.draft_id
+		 AND queue.message_key=decision.queue_message_key
+		WHERE decision.organization_id=$1`, f.orgID).
+		Scan(&decisionState, &touchpointState, &draftStatus, &queueStatus, &stopReason,
+			&authorizationMode, &policyAuthorizationID, &queuedAt, &draftApprovedAt); err != nil {
+		t.Fatal(err)
+	}
+	if decisionState != "CANCELLED" || touchpointState != models.TouchpointNeedsReview ||
+		draftStatus != models.OutreachDraftNeedsReview || queueStatus != "cancelled" ||
+		stopReason != "canonical_queue_state_drift" || authorizationMode != "" ||
+		policyAuthorizationID != nil || queuedAt != nil || draftApprovedAt != nil {
+		t.Fatalf("orphaned projection remained live: decision=%s touchpoint=%s draft=%s queue=%s stop=%s auth=%s policy=%v queued_at=%v draft_approved_at=%v",
+			decisionState, touchpointState, draftStatus, queueStatus, stopReason, authorizationMode,
+			policyAuthorizationID, queuedAt, draftApprovedAt)
+	}
+	reconciled, err = f.svc.ReconcileDelegatedFirstTouchLedger(f.ctx, f.orgID)
+	if err != nil || reconciled != 0 {
+		t.Fatalf("orphan reconciliation is not idempotent: count=%d err=%v", reconciled, err)
+	}
+}
+
 func TestDelegatedFirstTouchLedgerReconciliationPreservesTransportTransitStatesPostgres(t *testing.T) {
 	tests := []struct {
 		name            string

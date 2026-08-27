@@ -264,7 +264,12 @@ func (s *service) ReconcileDelegatedFirstTouchLedger(ctx context.Context, orgID 
 	if s == nil || s.delegatedDB == nil || orgID == uuid.Nil {
 		return 0, fmt.Errorf("delegated first-touch store is not wired")
 	}
-	result, err := s.delegatedDB.Exec(ctx, `
+	tx, err := s.delegatedDB.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	result, err := tx.Exec(ctx, `
 		WITH invalid AS (
 			SELECT d.id,
 				COALESCE(NULLIF(q.last_error,''),NULLIF(q.cancel_reason,''),'canonical_queue_state_drift') AS reason
@@ -295,7 +300,64 @@ func (s *service) ReconcileDelegatedFirstTouchLedger(ctx context.Context, orgID 
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected(), nil
+	rows, err := tx.Query(ctx, `
+		SELECT DISTINCT t.id
+		FROM outreach_touchpoints t
+		JOIN confenge_delegated_first_touch_decisions d
+		  ON d.organization_id=t.organization_id AND d.touchpoint_id=t.id
+		LEFT JOIN confenge_dispatch_queue q
+		  ON q.organization_id=d.organization_id AND q.draft_id=d.draft_id AND q.message_key=d.queue_message_key
+		WHERE t.organization_id=$1 AND t.state='QUEUED' AND d.state='CANCELLED'
+		  AND (q.status IS NULL OR q.status NOT IN ('queued','reserved','sent'))
+		  AND NOT EXISTS (
+			SELECT 1 FROM confenge_delegated_first_touch_decisions live
+			JOIN confenge_dispatch_queue live_q
+			  ON live_q.organization_id=live.organization_id AND live_q.draft_id=live.draft_id
+			 AND live_q.message_key=live.queue_message_key
+			WHERE live.organization_id=t.organization_id AND live.touchpoint_id=t.id
+			  AND live.state='QUEUED' AND live_q.status IN ('queued','reserved','sent')
+		  )`, orgID)
+	if err != nil {
+		return 0, err
+	}
+	var touchpointIDs []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		touchpointIDs = append(touchpointIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+	if len(touchpointIDs) > 0 {
+		if _, err = tx.Exec(ctx, `
+			UPDATE outreach_drafts d
+			SET status='NEEDS_REVIEW',approved_by=NULL,approved_at=NULL,
+				campaign_id=NULL,enrollment_contact_id=NULL,enrolled_at=NULL,updated_at=now()
+			FROM outreach_touchpoints t
+			WHERE t.organization_id=$1 AND t.id=ANY($2::uuid[])
+			  AND t.draft_id=d.id AND d.organization_id=t.organization_id`, orgID, touchpointIDs); err != nil {
+			return 0, err
+		}
+		if _, err = tx.Exec(ctx, `
+			UPDATE outreach_touchpoints
+			SET state='NEEDS_REVIEW',approved_content_hash='',approved_by=NULL,approved_at=NULL,
+				authorization_mode='',campaign_policy_authorization_id=NULL,authorization_policy_hash='',
+				authorization_at=NULL,signature_version='',queued_at=NULL,
+				stop_reason='canonical_queue_state_drift',updated_at=now()
+			WHERE organization_id=$1 AND id=ANY($2::uuid[])`, orgID, touchpointIDs); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return result.RowsAffected() + int64(len(touchpointIDs)), nil
 }
 
 func hashText(value string) string {
@@ -1974,16 +2036,26 @@ func (s *service) populateDelegatedFirstTouchControl(ctx context.Context, orgID 
 		orgID, sourceRunID).Scan(&control.Transport.ProviderAttempts, &control.Transport.ProviderAccepted, &control.Transport.Sent); err != nil {
 		return err
 	}
+	// Separate identifier joins keep large control-center reads indexable.
 	rows, err := s.delegatedDB.Query(ctx, `
-		SELECT o.event_type,count(*)::int
-		FROM outreach_outcome_outbox o
-		WHERE o.organization_id=$1 AND EXISTS (
-			SELECT 1 FROM outreach_accounts a
-			WHERE a.organization_id=o.organization_id AND a.source_run_id=$2
-			  AND ((o.cnpj14<>'' AND a.cnpj14=o.cnpj14)
-			    OR (o.source_lead_id<>'' AND a.source_lead_id=o.source_lead_id))
+		WITH matched AS (
+			SELECT o.id,o.event_type
+			FROM outreach_outcome_outbox o
+			JOIN outreach_accounts a
+			  ON a.organization_id=o.organization_id AND a.source_run_id=$2
+			 AND o.cnpj14<>'' AND a.cnpj14=o.cnpj14
+			WHERE o.organization_id=$1
+			UNION
+			SELECT o.id,o.event_type
+			FROM outreach_outcome_outbox o
+			JOIN outreach_accounts a
+			  ON a.organization_id=o.organization_id AND a.source_run_id=$2
+			 AND o.source_lead_id<>'' AND a.source_lead_id=o.source_lead_id
+			WHERE o.organization_id=$1
 		)
-		GROUP BY o.event_type`, orgID, sourceRunID)
+		SELECT event_type,count(*)::int
+		FROM matched
+		GROUP BY event_type`, orgID, sourceRunID)
 	if err != nil {
 		return err
 	}
