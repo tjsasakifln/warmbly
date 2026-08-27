@@ -74,9 +74,16 @@ func (m *MemoryStore) SetPaused(ctx context.Context, paused bool, reason string,
 	if paused {
 		now := time.Now().UTC()
 		m.control.PausedAt = &now
+		if by != nil && *by != uuid.Nil {
+			m.control.PauseSource = "api"
+		} else if m.control.PauseSource == "" {
+			m.control.PauseSource = "durable_control"
+		}
 	} else {
 		m.control.PausedAt = nil
 		m.control.PauseReason = ""
+		m.control.PausedBy = nil
+		m.control.PauseSource = ""
 	}
 	return nil
 }

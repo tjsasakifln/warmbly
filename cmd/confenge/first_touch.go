@@ -21,7 +21,7 @@ import (
 
 func cmdFirstTouch(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "first-touch requires authorize-policy, seal, apply, or status")
+		fmt.Fprintln(os.Stderr, "first-touch requires authorize-policy, seal, apply, status, or first-window-readiness")
 		return 2
 	}
 	switch args[0] {
@@ -33,6 +33,8 @@ func cmdFirstTouch(args []string) int {
 		return cmdFirstTouchApply(args[1:])
 	case "status":
 		return cmdFirstTouchStatus(args[1:])
+	case "first-window-readiness":
+		return cmdFirstWindowReadiness(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown first-touch command %q\n", args[0])
 		return 2
@@ -282,6 +284,37 @@ func cmdFirstTouchStatus(args []string) int {
 		return 3
 	}
 	return 0
+}
+
+func cmdFirstWindowReadiness(args []string) int {
+	fs := flag.NewFlagSet("first-touch first-window-readiness", flag.ContinueOnError)
+	orgRaw := fs.String("org-id", "", "organization UUID")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	orgID, err := uuid.Parse(strings.TrimSpace(*orgRaw))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "--org-id is required")
+		return 2
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, svc, _, err := openFirstTouchService(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "first-window-readiness: %v\n", err)
+		return 1
+	}
+	defer pool.Close()
+	report, xerr := svc.CollectFirstWindowReadiness(ctx, orgID)
+	if xerr != nil {
+		fmt.Fprintf(os.Stderr, "first-window-readiness: %s\n", xerr.Message)
+		return 1
+	}
+	printJSON(report)
+	if report.Verdict == confenge.FirstWindowReadyForGOAdjudication {
+		return 0
+	}
+	return 4
 }
 
 func printJSON(value any) {

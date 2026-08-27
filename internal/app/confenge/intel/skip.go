@@ -94,6 +94,9 @@ func skipFromPayload(raw []byte) string {
 	if truthy(m["synthetic"]) || truthy(m["is_synthetic"]) {
 		return InboundSkipSynthetic
 	}
+	if reason := skipTokenIn(asString(m["record_kind"])); reason != "" {
+		return reason
+	}
 	for _, key := range []string{"label", "environment", "env", "fixture", "kind", "canary"} {
 		if reason := skipTokenIn(asString(m[key])); reason != "" {
 			return reason

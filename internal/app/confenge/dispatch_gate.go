@@ -112,21 +112,19 @@ func (s *service) DispatchStatus(ctx context.Context, orgID uuid.UUID) (dispatch
 	if err != nil {
 		return dispatch.Status{}, errx.New(errx.Internal, err.Error())
 	}
-	fileKillSwitch := FileKillSwitchActive()
-	if fileKillSwitch || s.cfg.SendingPaused {
-		st.Paused = true
-		st.PauseReason = "confenge_sending_paused"
-		st.PauseSource = "configuration"
-		if fileKillSwitch {
-			st.PauseReason = "kill_switch_engaged"
-			st.PauseSource = "file_kill_switch"
-		}
+	ctrl, ctrlErr := s.governor.Control(ctx)
+	if ctrlErr != nil {
+		return dispatch.Status{}, errx.New(errx.Internal, ctrlErr.Error())
+	}
+	file := readKillSwitchFile()
+	prov := MergePauseProvenance(ctrl, file, s.cfg.SendingPaused, "confenge_sending_paused", false)
+	applyPauseProvenance(&st, prov)
+	if st.Paused {
 		st.Forecast.SlotsNext24h = 0
 		st.Forecast.SlotsNext7d = 0
 		st.Forecast.EstimatedDaysToDrain = nil
 		st.NextSlotAt = nil
 		for i := range st.Mailboxes {
-			st.Mailboxes[i].PauseSource = st.PauseSource
 			st.Mailboxes[i].NextEligibleSlot = nil
 		}
 		if st.QueuedApproved > 0 && !hasCapacityAlert(st.Alerts, dispatch.AlertQueueRunoff) {
@@ -158,10 +156,10 @@ func (s *service) PauseDispatch(ctx context.Context, orgID, userID uuid.UUID, re
 	}
 	// The worker cannot read the governor's Postgres row. Engage the shared file
 	// switch first so direct or stale queue items are blocked at SMTP boundary.
-	if err := EngageKillSwitch(); err != nil {
+	by := userID
+	if err := EngageKillSwitchFrom(PauseSourceAPI, reason, &by, time.Now().UTC()); err != nil {
 		return errx.New(errx.Internal, "failed to engage transport kill switch: "+err.Error())
 	}
-	by := userID
 	if err := s.governor.Pause(ctx, reason, &by); err != nil {
 		return errx.New(errx.Internal, err.Error())
 	}
@@ -184,9 +182,8 @@ func (s *service) ResumeDispatch(ctx context.Context, orgID, userID uuid.UUID) *
 	if err := s.governor.Resume(ctx, &by); err != nil {
 		return errx.New(errx.Internal, err.Error())
 	}
-	// Clear the transport switch only after the durable governor resumes. If the
-	// filesystem operation fails, restore the durable pause immediately.
-	if err := ReleaseKillSwitch(); err != nil {
+	// Clear only an API-sourced file. A file-only or worker-only pause stays.
+	if err := ReleaseKillSwitchIfSource(PauseSourceAPI); err != nil {
 		_ = s.governor.Pause(ctx, "transport_kill_switch_release_failed", &by)
 		return errx.New(errx.Internal, "failed to release transport kill switch; dispatch remains paused: "+err.Error())
 	}

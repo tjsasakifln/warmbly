@@ -25,9 +25,9 @@ func (s *PGStore) GetControl(ctx context.Context) (ControlState, error) {
 	var pausedAt *time.Time
 	var pausedBy *uuid.UUID
 	err := s.db.QueryRow(ctx, `
-		SELECT paused, pause_reason, paused_at, paused_by
+		SELECT paused, pause_reason, paused_at, paused_by, COALESCE(pause_source, '')
 		FROM confenge_dispatch_control WHERE id = 1`).Scan(
-		&st.Paused, &st.PauseReason, &pausedAt, &pausedBy,
+		&st.Paused, &st.PauseReason, &pausedAt, &pausedBy, &st.PauseSource,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ControlState{}, nil
@@ -40,17 +40,29 @@ func (s *PGStore) GetControl(ctx context.Context) (ControlState, error) {
 	return st, nil
 }
 
+func durablePauseSource(paused bool, by *uuid.UUID) string {
+	if !paused {
+		return ""
+	}
+	if by != nil && *by != uuid.Nil {
+		return "api"
+	}
+	return "durable_control"
+}
+
 func (s *PGStore) SetPaused(ctx context.Context, paused bool, reason string, by *uuid.UUID) error {
+	source := durablePauseSource(paused, by)
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO confenge_dispatch_control (id, paused, pause_reason, paused_at, paused_by, updated_at)
-		VALUES (1, $1, $2, CASE WHEN $1 THEN now() ELSE NULL END, $3, now())
+		INSERT INTO confenge_dispatch_control (id, paused, pause_reason, paused_at, paused_by, pause_source, updated_at)
+		VALUES (1, $1, $2, CASE WHEN $1 THEN now() ELSE NULL END, $3, $4, now())
 		ON CONFLICT (id) DO UPDATE SET
 			paused = EXCLUDED.paused,
 			pause_reason = EXCLUDED.pause_reason,
 			paused_at = EXCLUDED.paused_at,
 			paused_by = EXCLUDED.paused_by,
+			pause_source = EXCLUDED.pause_source,
 			updated_at = now()`,
-		paused, reason, by,
+		paused, reason, by, source,
 	)
 	return err
 }

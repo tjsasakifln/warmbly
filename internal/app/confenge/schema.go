@@ -36,6 +36,9 @@ type FeedSource struct {
 	// AuthoritativeFreshness is emitted by the live extra-cli producer. It is
 	// preserved through freeze and revalidated at authorize/GO/transport.
 	AuthoritativeFreshness *FeedSourceFreshness `json:"authoritative_freshness,omitempty"`
+	// CommercialAuthority is additive. Absence keeps the current fail-closed
+	// source-freshness path. Presence is bound to run/snapshot/membership.
+	CommercialAuthority *FeedCommercialAuthority `json:"commercial_authority,omitempty"`
 }
 
 // FeedPagination supports paged feeds; all fields optional.

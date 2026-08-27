@@ -130,6 +130,36 @@ func TestDelegatedFirstTouchAttributedRouteClassesPassAllDeterministicGates(t *t
 	}
 }
 
+func TestDelegatedFirstTouchCommercialAuthorityGatesAdmission(t *testing.T) {
+	f := newDelegatedValidationFixture(t, RouteClassGenericCompany, "contato@empresa.example")
+	now := f.service.now()
+	feed := f.repo.feedSync[f.orgID]
+	payload := FeedCommercialAuthority{
+		SchemaVersion:                      CommercialAuthoritySchemaV1,
+		BasisSourceRunID:                   feed.LastRunID,
+		BasisSnapshotHash:                  feed.LastSnapshotHash,
+		BasisMembershipHash:                feed.TargetMembershipHash,
+		ValidatedAt:                        now.Add(-time.Minute).Format(time.RFC3339Nano),
+		ValidUntil:                         now.Add(time.Hour).Format(time.RFC3339Nano),
+		State:                              CommercialAuthorityFrozenForNewAdmission,
+		NewAdmissionAllowed:                authorityBool(false),
+		ExistingBoundTouchTransportAllowed: authorityBool(true),
+	}
+	f.manifest.CommercialAuthority = &payload
+	if got := f.validate(); !delegatedTestContains(got, ReasonNewAdmissionFrozen) {
+		t.Fatalf("frozen new admission passed: %v", got)
+	}
+	stale := *feed
+	past := now.Add(-48 * time.Hour)
+	stale.SourceGeneratedAt = &past
+	expired := now.Add(-time.Hour)
+	stale.SourceExpiresAt = &expired
+	f.repo.feedSync[f.orgID] = &stale
+	if got := f.validate(); !delegatedTestContains(got, ReasonNewAdmissionFrozen) {
+		t.Fatalf("stale source un-froze admission: %v", got)
+	}
+}
+
 func TestDelegatedFirstTouchAttributedFreemailPasses(t *testing.T) {
 	f := newDelegatedValidationFixture(t, RouteClassPublicCompanyFreemail, "empresa.alfa@gmail.com")
 	if blockers := f.validate(); len(blockers) != 0 {

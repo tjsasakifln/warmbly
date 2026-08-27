@@ -3,6 +3,7 @@ package confenge
 import (
 	"strings"
 
+	"github.com/warmbly/warmbly/internal/app/confenge/intel"
 	"github.com/warmbly/warmbly/internal/models"
 )
 
@@ -30,6 +31,17 @@ func ClassifyInboundNextAction(lead InboundLeadV1, facts InboundFacts) InboundCl
 		Status:        models.InboundStatusOpen,
 		Actionable:    true,
 		EmailSendable: false,
+	}
+	if reason := inboundSyntheticSkipReason(lead); reason != "" {
+		out.NextAction = models.InboundNextSuppressed
+		out.ActionType = models.ActionOtherManual
+		out.Lane = models.LaneBlockedAction
+		out.Status = models.InboundStatusSuppressed
+		out.SuppressReason = reason
+		out.RecommendedAction = "Receipt labeled " + reason + ". No commercial action."
+		out.Actionable = false
+		out.Warnings = append(out.Warnings, "synthetic_or_internal_receipt")
+		return out
 	}
 	pref := preferredInboundChannel(lead)
 
@@ -191,6 +203,21 @@ func preferredInboundChannel(lead InboundLeadV1) string {
 		return "phone"
 	}
 	return ""
+}
+
+func inboundSyntheticSkipReason(lead InboundLeadV1) string {
+	if lead.Synthetic {
+		return intel.InboundSkipSynthetic
+	}
+	kind := strings.ToLower(strings.TrimSpace(lead.RecordKind))
+	switch kind {
+	case intel.RecordKindSynthetic, intel.InboundSkipQA, intel.InboundSkipInternal:
+		return kind
+	}
+	return intel.InboundCommercialSkipReason(models.OutreachInboundLead{
+		LeadID: lead.LeadID, ReceiptID: lead.ReceiptID, Source: lead.Source,
+		CompanyName: lead.CompanyName, LeadName: lead.Name, LeadEmail: lead.Email, Message: lead.Message,
+	})
 }
 
 func inboundWantsContractReread(lead InboundLeadV1) bool {

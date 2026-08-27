@@ -98,33 +98,48 @@ func (s *service) IngestInboundLead(ctx context.Context, orgID uuid.UUID, raw []
 	}
 
 	applyClassificationToLead(row, parsed, facts, class, now)
+	if reason := InboundCommercialSkipReason(*row); reason != "" {
+		row.Status = models.InboundStatusSuppressed
+		row.NextAction = models.InboundNextSuppressed
+		row.SuppressReason = firstNonEmpty(row.SuppressReason, reason)
+		class.Status = models.InboundStatusSuppressed
+		class.Actionable = false
+	}
 	s.assignInboundOwner(ctx, orgID, row, now)
 
 	if peer := s.secondaryDedupe(ctx, orgID, row, now); peer != nil {
-		row.DedupeOfLeadID = peer.LeadID
-		if peer.ActionID != nil {
-			row.ActionID = peer.ActionID
+		peerSkip := InboundCommercialSkipReason(*peer)
+		rowSkip := InboundCommercialSkipReason(*row)
+		if rowSkip == "" && peerSkip != "" {
+			peer = nil
 		}
-		if peer.AccountID != nil && row.AccountID == nil {
-			row.AccountID = peer.AccountID
-		}
-		row.UpdatedAt = now
-		_ = st.UpdateInboundLead(ctx, row)
-		res.Lead = row
-		res.SecondaryDedupe = true
-		res.EnrichmentStatus = row.EnrichmentStatus
-		res.NextAction = row.NextAction
-		if row.ActionID != nil && s.actionStore() != nil {
-			if a, _ := s.actionStore().GetCommercialAction(ctx, orgID, *row.ActionID); a != nil {
-				res.Action = a
+		if peer != nil {
+			row.DedupeOfLeadID = peer.LeadID
+			if peer.ActionID != nil && rowSkip == "" {
+				row.ActionID = peer.ActionID
 			}
+			if peer.AccountID != nil && row.AccountID == nil {
+				row.AccountID = peer.AccountID
+			}
+			row.UpdatedAt = now
+			_ = st.UpdateInboundLead(ctx, row)
+			res.Lead = row
+			res.SecondaryDedupe = true
+			res.EnrichmentStatus = row.EnrichmentStatus
+			res.NextAction = row.NextAction
+			if row.ActionID != nil && s.actionStore() != nil {
+				if a, _ := s.actionStore().GetCommercialAction(ctx, orgID, *row.ActionID); a != nil {
+					res.Action = a
+				}
+			}
+			s.enqueueInboundImported(ctx, orgID, row)
+			s.ensureOperatorAlert(ctx, orgID, row, now)
+			return res, nil
 		}
-		s.enqueueInboundImported(ctx, orgID, row)
-		s.ensureOperatorAlert(ctx, orgID, row, now)
-		return res, nil
 	}
 
-	if class.Status != models.InboundStatusSuppressed && !opts.SkipCommercialAction {
+	skipCommercial := opts.SkipCommercialAction || class.Status == models.InboundStatusSuppressed || InboundCommercialSkipReason(*row) != ""
+	if !skipCommercial {
 		acc, cand := s.ensureInboundAccount(ctx, orgID, parsed, facts)
 		if acc != nil {
 			id := acc.ID

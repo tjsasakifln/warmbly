@@ -184,6 +184,7 @@ type ControlState struct {
 	PauseReason string
 	PausedAt    *time.Time
 	PausedBy    *uuid.UUID
+	PauseSource string
 }
 
 type FailureRecord struct {
@@ -308,6 +309,9 @@ type Status struct {
 	QueuedApproved int               `json:"queued_approved"`
 	Paused         bool              `json:"paused"`
 	PauseReason    string            `json:"pause_reason,omitempty"`
+	PausedBy       *uuid.UUID        `json:"paused_by,omitempty"`
+	PausedAt       *time.Time        `json:"paused_at,omitempty"`
+	PauseSources   []string          `json:"pause_sources,omitempty"`
 	InSendWindow   bool              `json:"in_send_window"`
 	Timezone       string            `json:"timezone"`
 	WindowStart    string            `json:"window_start"`

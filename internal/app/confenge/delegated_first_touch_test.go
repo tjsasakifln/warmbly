@@ -46,6 +46,33 @@ func TestDelegatedPolicyAuthorizationRequiresConfiguredFounderActor(t *testing.T
 	}
 }
 
+func TestDelegatedFirstTouchUnknownAndV2PolicyHold(t *testing.T) {
+	now := time.Now().UTC()
+	base := DelegatedFirstTouchManifest{
+		SchemaVersion: DelegatedFirstTouchManifestV1, BatchID: "batch-1", AgentID: "agent:test",
+		PolicyHash: DelegatedFirstTouchPolicyHashV1, AuthorityReference: DelegatedFirstTouchAuthorityRef,
+		PolicyAuthorizationID: uuid.New(), SourceRunID: "run-1", SourceSnapshotHash: strings.Repeat("b", 64),
+		EvidenceVersion: DelegatedFirstTouchEvidenceV1, ComposerVersion: ComposerVersion,
+		TemplateVersion: DelegatedFirstTouchTemplateV1, PromptVersion: PromptVersion,
+		GeneratedAt: now, Entries: []DelegatedFirstTouchEntry{{IdempotencyKey: "k"}},
+	}
+	v1 := base
+	v1.PolicyVersion = DelegatedFirstTouchPolicyV1
+	if got := validateDelegatedManifestHeader(v1); delegatedTestContains(got, ReasonPolicyUnknown) || delegatedTestContains(got, ReasonPolicyHold) {
+		t.Fatalf("v1 held: %v", got)
+	}
+	v2 := base
+	v2.PolicyVersion = DelegatedFirstTouchPolicyV2
+	if got := validateDelegatedManifestHeader(v2); !delegatedTestContains(got, ReasonPolicyHold) {
+		t.Fatalf("v2 not held: %v", got)
+	}
+	fuzzy := base
+	fuzzy.PolicyVersion = "CFG-FIRST-TOUCH-ROUTING-v1-beta"
+	if got := validateDelegatedManifestHeader(fuzzy); !delegatedTestContains(got, ReasonPolicyUnknown) {
+		t.Fatalf("fuzzy name accepted: %v", got)
+	}
+}
+
 func TestDelegatedOrganizationRiskFailsClosed(t *testing.T) {
 	svc := &service{orgRisk: delegatedTestOrgRisk{suspended: true}}
 	if svc.orgRisk == nil || !svc.orgRisk.SendingSuspended(context.Background(), uuid.New()) {

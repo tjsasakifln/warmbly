@@ -79,6 +79,7 @@ type DelegatedFirstTouchManifest struct {
 	PromptVersion         string                     `json:"prompt_version"`
 	GeneratedAt           time.Time                  `json:"generated_at"`
 	Entries               []DelegatedFirstTouchEntry `json:"entries"`
+	CommercialAuthority   *FeedCommercialAuthority   `json:"commercial_authority,omitempty"`
 	authority             *models.OutreachFeedSyncState
 }
 
@@ -193,6 +194,18 @@ type DelegatedFirstTouchSourceReadback struct {
 	SupplierConfirmedCount   int        `json:"supplier_confirmed_count"`
 }
 
+type DelegatedFirstTouchAuthorityReadback struct {
+	Present                            bool       `json:"present"`
+	State                              string     `json:"state"`
+	NewAdmissionAllowed                bool       `json:"new_admission_allowed"`
+	ExistingBoundTouchTransportAllowed bool       `json:"existing_bound_touch_transport_allowed"`
+	BasisSourceRunID                   string     `json:"basis_source_run_id,omitempty"`
+	BasisSnapshotHash                  string     `json:"basis_snapshot_hash,omitempty"`
+	BasisMembershipHash                string     `json:"basis_membership_hash,omitempty"`
+	ValidUntil                         *time.Time `json:"valid_until,omitempty"`
+	ReasonCodes                        []string   `json:"reason_codes,omitempty"`
+}
+
 type DelegatedFirstTouchTransportReadback struct {
 	ProviderAttempts  int    `json:"provider_attempts"`
 	ProviderAccepted  int    `json:"provider_accepted"`
@@ -205,6 +218,7 @@ type DelegatedFirstTouchTransportReadback struct {
 type DelegatedFirstTouchControlReadback struct {
 	SchemaVersion     string                               `json:"schema_version"`
 	Source            DelegatedFirstTouchSourceReadback    `json:"source"`
+	Commercial        DelegatedFirstTouchAuthorityReadback `json:"commercial_authority"`
 	Prepared          int                                  `json:"prepared"`
 	ReadyReservoir    int                                  `json:"ready_reservoir"`
 	DelegatedApproved int                                  `json:"delegated_approved"`
@@ -360,6 +374,42 @@ func (s *service) ReconcileDelegatedFirstTouchLedger(ctx context.Context, orgID 
 	return result.RowsAffected() + int64(len(touchpointIDs)), nil
 }
 
+func feedSourceFreshnessFromState(feed *models.OutreachFeedSyncState) *FeedSourceFreshness {
+	if feed == nil || feed.SourceGeneratedAt == nil {
+		return nil
+	}
+	f := &FeedSourceFreshness{
+		ContractVersion: AuthoritativeFreshnessContractV1,
+		Status:          SourceHealthFresh,
+		AsOf:            feed.SourceGeneratedAt.UTC().Format(time.RFC3339Nano),
+		RunID:           feed.LastRunID,
+	}
+	if feed.SourceExpiresAt != nil {
+		f.ExpiresAt = feed.SourceExpiresAt.UTC().Format(time.RFC3339Nano)
+	}
+	return f
+}
+
+func firstHold(reasons []string) string {
+	if len(reasons) == 0 {
+		return ""
+	}
+	return reasons[0]
+}
+
+func (s *service) delegatedTouchAlreadyBound(ctx context.Context, orgID, accountID uuid.UUID) bool {
+	if s == nil || s.delegatedDB == nil || accountID == uuid.Nil {
+		return false
+	}
+	var n int
+	err := s.delegatedDB.QueryRow(ctx, `
+		SELECT count(*)::int FROM confenge_delegated_first_touch_decisions
+		WHERE organization_id=$1 AND account_id=$2
+		  AND decision='DELEGATED_POLICY_APPROVE'
+		  AND state IN ('APPROVED','APPROVED_NOT_SCHEDULED','QUEUED','SENT')`, orgID, accountID).Scan(&n)
+	return err == nil && n > 0
+}
+
 func hashText(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
@@ -455,9 +505,28 @@ func (s *service) applyDelegatedFirstTouchManifest(ctx context.Context, orgID uu
 		return nil, errx.New(errx.Forbidden, strings.Join(blockers, ","))
 	}
 	feedState, feedErr := s.repo.GetFeedSyncState(ctx, orgID)
-	now := time.Now().UTC()
-	if feedErr != nil || validateAuthoritativeFeedState(feedState, now, s.cfg.FeedMaxAge, true) != nil {
+	now := s.now()
+	if feedErr != nil || feedState == nil {
 		return nil, errx.New(errx.Forbidden, "authoritative_feed_attestation_invalid")
+	}
+	if !authorityPresent(manifest.CommercialAuthority) {
+		if validateAuthoritativeFeedState(feedState, now, s.cfg.FeedMaxAge, true) != nil {
+			return nil, errx.New(errx.Forbidden, "authoritative_feed_attestation_invalid")
+		}
+	} else {
+		elig := EvaluateOutboundEligibility(
+			feedSourceFreshnessFromState(feedState),
+			manifest.CommercialAuthority,
+			CommercialAuthorityBinding{SourceRunID: feedState.LastRunID, SnapshotHash: feedState.LastSnapshotHash, MembershipHash: feedState.TargetMembershipHash},
+			TransportState{State: TransportActive},
+			now, s.cfg.FeedMaxAge, nil, false,
+		)
+		if elig.CommercialAuthority.State == CommercialAuthorityUnknown {
+			return nil, errx.New(errx.Forbidden, ReasonAuthorityBindingMismatch)
+		}
+		if elig.CommercialAuthority.State == CommercialAuthorityExpired {
+			return nil, errx.New(errx.Forbidden, ReasonAuthorityExpired)
+		}
 	}
 	if feedState.LastRunID != manifest.SourceRunID || feedState.LastSnapshotHash != manifest.SourceSnapshotHash {
 		return nil, errx.New(errx.Forbidden, "stale_source_run")
@@ -560,7 +629,11 @@ func validateDelegatedManifestHeader(manifest DelegatedFirstTouchManifest) []str
 	if strings.TrimSpace(manifest.AgentID) == "" || len(manifest.AgentID) > 160 {
 		out = append(out, "agent_id_invalid")
 	}
-	if manifest.PolicyVersion != DelegatedFirstTouchPolicyV1 {
+	if known, hold, reason := RecognizeFirstTouchPolicy(manifest.PolicyVersion); !known {
+		out = append(out, ReasonPolicyUnknown)
+	} else if hold {
+		out = append(out, firstNonEmpty(reason, ReasonPolicyHold))
+	} else if manifest.PolicyVersion != DelegatedFirstTouchPolicyV1 {
 		out = append(out, "policy_version_mismatch")
 	}
 	if manifest.PolicyHash != DelegatedFirstTouchPolicyHashV1 {
@@ -976,8 +1049,23 @@ func (s *service) validateDelegatedEntry(ctx context.Context, orgID uuid.UUID, m
 	if feedErr != nil || feedState == nil {
 		add("authoritative_feed_state_unavailable")
 	} else {
-		now := time.Now().UTC()
-		if err := validateAuthoritativeFeedState(feedState, now, s.cfg.FeedMaxAge, true); err != nil {
+		now := s.now()
+		bound := s.delegatedTouchAlreadyBound(ctx, orgID, acc.ID)
+		if authorityPresent(manifest.CommercialAuthority) {
+			elig := EvaluateOutboundEligibility(
+				feedSourceFreshnessFromState(feedState),
+				manifest.CommercialAuthority,
+				CommercialAuthorityBinding{SourceRunID: feedState.LastRunID, SnapshotHash: feedState.LastSnapshotHash, MembershipHash: feedState.TargetMembershipHash},
+				TransportState{State: TransportActive},
+				now, s.cfg.FeedMaxAge, nil, bound,
+			)
+			if !bound && !elig.AllowNewAdmission {
+				add(firstNonEmpty(firstHold(elig.HoldReasons), ReasonNewAdmissionFrozen))
+			}
+			if bound && !elig.AllowExistingBoundTouchTransport {
+				add(firstNonEmpty(firstHold(elig.HoldReasons), ReasonBoundTransportForbidden))
+			}
+		} else if err := validateAuthoritativeFeedState(feedState, now, s.cfg.FeedMaxAge, true); err != nil {
 			add("authoritative_feed_attestation_invalid")
 		}
 		if manifest.SourceRunID != feedState.LastRunID || manifest.SourceSnapshotHash != feedState.LastSnapshotHash {
@@ -2085,8 +2173,9 @@ func (s *service) populateDelegatedFirstTouchControl(ctx context.Context, orgID 
 	} else {
 		control.Blocker = "dispatch_governor_unavailable"
 	}
+	control.Commercial = DelegatedFirstTouchAuthorityReadback{State: CommercialAuthorityAbsent}
 	switch {
-	case control.Source.FreshnessState != "fresh":
+	case control.Source.FreshnessState != "fresh" && !control.Commercial.ExistingBoundTouchTransportAllowed:
 		control.Blocker = "authoritative_feed_" + control.Source.FreshnessState
 	case out.DuplicateLiveAccount > 0 || out.DuplicateLiveRoot > 0:
 		control.Blocker = "duplicate_live_first_touch"

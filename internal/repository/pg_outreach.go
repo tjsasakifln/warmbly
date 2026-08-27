@@ -123,6 +123,8 @@ type OutreachAccountFilter struct {
 	StableOrder              bool
 	// SourceRunID scopes the page to one extra-cli import run. Indexed; implies StableOrder.
 	SourceRunID string
+	// AsOf is the eligibility clock. Empty uses the database now().
+	AsOf time.Time
 }
 
 // OutreachActivationCounts is aggregate activation_state distribution for an org.
@@ -833,11 +835,17 @@ func (r *outreachRepository) ListAccounts(ctx context.Context, orgID uuid.UUID, 
 		args = append(args, filter.ActivationState)
 		n++
 	}
+	nowExpr := "now()"
+	if !filter.AsOf.IsZero() {
+		nowExpr = fmt.Sprintf("$%d", n)
+		args = append(args, filter.AsOf.UTC())
+		n++
+	}
 	if filter.ActivationDueNow {
-		q += ` AND (next_best_action_at IS NULL OR next_best_action_at <= now())`
+		q += ` AND (next_best_action_at IS NULL OR next_best_action_at <= ` + nowExpr + `)`
 	}
 	if filter.ActivationNotExpired {
-		q += ` AND (activation_expires_at IS NULL OR activation_expires_at > now())`
+		q += ` AND (activation_expires_at IS NULL OR activation_expires_at > ` + nowExpr + `)`
 	}
 	if filter.ExcludeTerminal {
 		q += ` AND queue_state NOT IN ('DO_NOT_CONTACT','BLOCKED','BOUNCED','REPLIED','MEETING','PROPOSAL','WON','LOST','SENT','ENROLLED')`

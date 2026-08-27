@@ -59,16 +59,18 @@ type outreachManifest struct {
 		// Freshness is the SAME attestation object the producer also publishes
 		// at manifest.authoritative_source_freshness; FreshnessHash is the
 		// producer's content hash of it and is committed to by source.run_id.
-		Freshness     *FeedSourceFreshness `json:"authoritative_freshness"`
-		FreshnessHash string               `json:"authoritative_freshness_hash"`
+		Freshness           *FeedSourceFreshness     `json:"authoritative_freshness"`
+		FreshnessHash       string                   `json:"authoritative_freshness_hash"`
+		CommercialAuthority *FeedCommercialAuthority `json:"commercial_authority"`
 	} `json:"source"`
-	LeadCount        int                            `json:"lead_count"`
-	ChunkCount       int                            `json:"chunk_count"`
-	Chunks           []manifestChunk                `json:"chunks"`
-	Deactivations    []map[string]any               `json:"deactivations"`
-	DeactivationCnt  int                            `json:"deactivation_count"`
-	SourceFreshness  *FeedSourceFreshness           `json:"authoritative_source_freshness"`
-	TargetMembership *authoritativeTargetMembership `json:"authoritative_target_membership"`
+	CommercialAuthority *FeedCommercialAuthority       `json:"commercial_authority"`
+	LeadCount           int                            `json:"lead_count"`
+	ChunkCount          int                            `json:"chunk_count"`
+	Chunks              []manifestChunk                `json:"chunks"`
+	Deactivations       []map[string]any               `json:"deactivations"`
+	DeactivationCnt     int                            `json:"deactivation_count"`
+	SourceFreshness     *FeedSourceFreshness           `json:"authoritative_source_freshness"`
+	TargetMembership    *authoritativeTargetMembership `json:"authoritative_target_membership"`
 }
 
 const (
@@ -454,6 +456,19 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 	return result, errx.New(errx.BadRequest, "feed sync partial: "+strings.Join(partialErrs, "; "))
 }
 
+func manifestCommercialAuthority(manifest *outreachManifest) *FeedCommercialAuthority {
+	if manifest == nil {
+		return nil
+	}
+	if authorityPresent(manifest.CommercialAuthority) {
+		return manifest.CommercialAuthority
+	}
+	if authorityPresent(manifest.Source.CommercialAuthority) {
+		return manifest.Source.CommercialAuthority
+	}
+	return nil
+}
+
 func validateManifestAuthority(manifest *outreachManifest, now time.Time, required bool) (*feedAuthority, error) {
 	if manifest == nil {
 		return nil, fmt.Errorf("authoritative feed manifest is required")
@@ -461,8 +476,13 @@ func validateManifestAuthority(manifest *outreachManifest, now time.Time, requir
 	if !required && manifest.SourceFreshness == nil && manifest.TargetMembership == nil {
 		return nil, nil
 	}
-	if err := ValidateAuthoritativeSourceFreshness(manifest.SourceFreshness, now); err != nil {
-		return nil, err
+	commercialPayload := manifestCommercialAuthority(manifest)
+	if !authorityPresent(commercialPayload) {
+		if err := ValidateAuthoritativeSourceFreshness(manifest.SourceFreshness, now); err != nil {
+			return nil, err
+		}
+	} else if ClassifySourceHealth(manifest.SourceFreshness, now, 24*time.Hour).State == SourceHealthMissing {
+		return nil, fmt.Errorf("authoritative PNCP freshness missing")
 	}
 	if err := bindManifestFreshnessToBuild(manifest); err != nil {
 		return nil, err
@@ -490,6 +510,16 @@ func validateManifestAuthority(manifest *outreachManifest, now time.Time, requir
 	}
 	if !validSHA256(membership.MembershipHash) {
 		return nil, fmt.Errorf("authoritative TARGET_CONFIRMED membership_hash is invalid")
+	}
+	if authorityPresent(commercialPayload) {
+		decision := EvaluateCommercialAuthority(commercialPayload, CommercialAuthorityBinding{
+			SourceRunID:    strings.TrimSpace(manifest.Source.RunID),
+			SnapshotHash:   strings.TrimSpace(manifest.Source.SnapshotHash),
+			MembershipHash: strings.ToLower(membership.MembershipHash),
+		}, now)
+		if decision.State == CommercialAuthorityUnknown {
+			return nil, fmt.Errorf("commercial authority binding invalid")
+		}
 	}
 	freshnessHash := HashAuthoritativeSourceFreshness(manifest.SourceFreshness)
 	if !validSHA256(freshnessHash) {

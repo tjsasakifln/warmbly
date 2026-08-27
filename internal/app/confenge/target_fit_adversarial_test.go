@@ -130,16 +130,54 @@ func TestTargetFitOutCompaniesNeverEnterOperationalSurface(t *testing.T) {
 }
 
 func TestTargetFitConfirmedFreshRemainsOperational(t *testing.T) {
+	fixedNow := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
 	repo := newMemRepo()
 	svc := NewService(Config{Enabled: true, DynamicPriorityEnabled: true}, repo, nil).(*service)
+	svc.nowFn = func() time.Time { return fixedNow }
 	org := uuid.New()
-	acc := importAdversarialLead(t, svc, org, adversarialLead("11222333000181", "ACME ENGENHARIA LTDA", TargetFitConfirmed, "2026-08-11T12:00:00Z", true), "confirmed")
+	lead := adversarialLead("11222333000181", "ACME ENGENHARIA LTDA", TargetFitConfirmed, "2026-08-11T12:00:00Z", true)
+	lead.Activation.EvaluatedAt = fixedNow.Add(-time.Hour).Format(time.RFC3339)
+	lead.Activation.NextBestActionAt = fixedNow.Add(-time.Hour).Format(time.RFC3339)
+	lead.Activation.ExpiresAt = fixedNow.Add(14 * 24 * time.Hour).Format(time.RFC3339)
+	acc := importAdversarialLead(t, svc, org, lead, "confirmed")
 	items, xerr := svc.ListWorkingQueue(context.Background(), org, LaneNow, 20)
 	if xerr != nil || len(items) != 1 || items[0].Account.ID != acc.ID {
 		t.Fatalf("confirmed company missing from Agora: items=%d err=%v", len(items), xerr)
 	}
 	if _, xerr := svc.PlanAccountCadence(context.Background(), org, uuid.New(), acc.ID, nil, models.OutreachChannelEmail); xerr != nil {
 		t.Fatalf("confirmed company cannot plan: %v", xerr)
+	}
+}
+
+func TestWorkingQueueActivationExpiryBoundary(t *testing.T) {
+	expires := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name string
+		now  time.Time
+		want int
+	}{
+		{"fresh_one_second_before_expiry", expires.Add(-time.Second), 1},
+		{"stale_at_expiry", expires, 0},
+		{"stale_one_second_after_expiry", expires.Add(time.Second), 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newMemRepo()
+			svc := NewService(Config{Enabled: true, DynamicPriorityEnabled: true}, repo, nil).(*service)
+			svc.nowFn = func() time.Time { return tc.now }
+			org := uuid.New()
+			lead := adversarialLead("11222333000181", "ACME ENGENHARIA LTDA", TargetFitConfirmed, "2026-08-11T12:00:00Z", true)
+			lead.Activation.EvaluatedAt = expires.Add(-14 * 24 * time.Hour).Format(time.RFC3339)
+			lead.Activation.NextBestActionAt = expires.Add(-14 * 24 * time.Hour).Format(time.RFC3339)
+			lead.Activation.ExpiresAt = expires.Format(time.RFC3339)
+			acc := importAdversarialLead(t, svc, org, lead, "boundary-"+tc.name)
+			items, xerr := svc.ListWorkingQueue(context.Background(), org, LaneNow, 20)
+			if xerr != nil {
+				t.Fatal(xerr)
+			}
+			if len(items) != tc.want {
+				t.Fatalf("items=%d want=%d acc=%+v", len(items), tc.want, acc.ActivationExpiresAt)
+			}
+		})
 	}
 }
 
