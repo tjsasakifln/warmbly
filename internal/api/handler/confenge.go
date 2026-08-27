@@ -63,6 +63,14 @@ func (h *Handler) GetConfengeStatus(c *gin.Context) {
 	} else {
 		readiness = confenge.BuildReadiness(cfg, confenge.ReadinessInputs{})
 	}
+	// Resolve every control that can stop a send, not just the two this config
+	// can see. Reporting cfg.SendingAllowed() alone let this endpoint claim
+	// sending_allowed=true while the durable control row or the business window
+	// was refusing every dispatch claim.
+	transport := cfg.TransportState()
+	if h.ConfengeService != nil {
+		transport = h.ConfengeService.ResolveTransportState(c.Request.Context(), middleware.GetOrganizationID(c))
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"enabled":                 enabled,
 		"auto_send_enabled":       enabled && cfg.AutoSendEnabled,
@@ -71,7 +79,8 @@ func (h *Handler) GetConfengeStatus(c *gin.Context) {
 		"max_initial_email_words": cfg.MaxInitialEmailWords,
 		"feed_configured":         enabled && cfg.FeedURL != "",
 		"kill_switch":             !cfg.SendingAllowed(),
-		"sending_allowed":         cfg.SendingAllowed(),
+		"sending_allowed":         transport.Active,
+		"transport_state":         transport,
 		"readiness":               readiness,
 	})
 }

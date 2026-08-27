@@ -465,7 +465,10 @@ func (s *PGStore) Enqueue(ctx context.Context, item *QueueItem) error {
 					'delegated_authority_or_source_binding_advanced',
 					'source_run_superseded'
 				  ) THEN 'queued'
-				WHEN confenge_dispatch_queue.status IN ('sent','cancelled') THEN confenge_dispatch_queue.status
+				-- 'attempted' is terminal for enqueue: the message is already with the
+				-- transport and its acceptance is merely unobserved. Re-queueing it
+				-- would dispatch the same message a second time.
+				WHEN confenge_dispatch_queue.status IN ('attempted','sent','cancelled') THEN confenge_dispatch_queue.status
 				ELSE 'queued'
 			END,
 			cancel_reason = CASE
@@ -658,4 +661,36 @@ func (s *PGStore) EnsureControl(ctx context.Context) error {
 		return fmt.Errorf("ensure confenge_dispatch_control: %w", err)
 	}
 	return nil
+}
+
+// ListQueueByStatus enumerates queue rows in one status, oldest first. It backs
+// the attempted->sent reconciliation, which needs to revisit hand-offs whose
+// provider outcome was not yet observable when the worker released them.
+func (s *PGStore) ListQueueByStatus(ctx context.Context, status string, limit int) ([]QueueItem, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id, organization_id, email_account_id, channel, draft_id, message_key,
+		       COALESCE(recipient_ref,''), due_at, priority, attempts, status,
+		       cancel_reason, last_error, created_at
+		FROM confenge_dispatch_queue
+		WHERE status = $1
+		ORDER BY updated_at ASC
+		LIMIT $2`, status, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []QueueItem
+	for rows.Next() {
+		var q QueueItem
+		if err := rows.Scan(&q.ID, &q.OrganizationID, &q.EmailAccountID, &q.Channel, &q.DraftID,
+			&q.MessageKey, &q.RecipientRef, &q.DueAt, &q.Priority, &q.Attempts, &q.Status,
+			&q.CancelReason, &q.LastError, &q.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, q)
+	}
+	return out, rows.Err()
 }
