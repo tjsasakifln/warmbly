@@ -44,6 +44,10 @@ const (
 // outreachManifest is confenge.outreach.manifest.v1 (extra-cli export).
 type outreachManifest struct {
 	SchemaVersion string `json:"schema_version"`
+	// ModuleVersion is an input to the producer's source.run_id derivation and
+	// is therefore required to verify the freshness binding (see
+	// deriveFeedBuildRunID). Fail-closed: never inferred, never defaulted.
+	ModuleVersion string `json:"module_version"`
 	GeneratedAt   string `json:"generated_at"`
 	Source        struct {
 		System       string `json:"system"`
@@ -52,6 +56,11 @@ type outreachManifest struct {
 		RepoSHA      string `json:"repo_sha"`
 		ProfileID    string `json:"profile_id"`
 		ProfileVer   string `json:"profile_version"`
+		// Freshness is the SAME attestation object the producer also publishes
+		// at manifest.authoritative_source_freshness; FreshnessHash is the
+		// producer's content hash of it and is committed to by source.run_id.
+		Freshness     *FeedSourceFreshness `json:"authoritative_freshness"`
+		FreshnessHash string               `json:"authoritative_freshness_hash"`
 	} `json:"source"`
 	LeadCount        int                            `json:"lead_count"`
 	ChunkCount       int                            `json:"chunk_count"`
@@ -455,8 +464,8 @@ func validateManifestAuthority(manifest *outreachManifest, now time.Time, requir
 	if err := ValidateAuthoritativeSourceFreshness(manifest.SourceFreshness, now); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(manifest.SourceFreshness.RunID) != strings.TrimSpace(manifest.Source.RunID) {
-		return nil, fmt.Errorf("authoritative PNCP freshness run_id does not match manifest source run")
+	if err := bindManifestFreshnessToBuild(manifest); err != nil {
+		return nil, err
 	}
 	expiresAt, err := parseFreshnessTime(manifest.SourceFreshness.ExpiresAt)
 	if err != nil {
@@ -494,6 +503,100 @@ func validateManifestAuthority(manifest *outreachManifest, now time.Time, requir
 		TargetMembershipCount:    membership.PopulationCount,
 		SupplierConfirmedCount:   membership.SupplierConfirmedCount,
 	}, nil
+}
+
+// feedBuildRunIDPrefix is the literal prefix the producer prepends to the
+// truncated digest when minting a feed BUILD id.
+const feedBuildRunIDPrefix = "run-"
+
+// deriveFeedBuildRunID recomputes manifest.source.run_id exactly as extra-cli
+// mints it in scripts/warmbly_bridge/export.py::_run_id:
+//
+//	"run-" + sha256(snapshot_hash|profile_id|profile_version|module_version|authoritative_freshness_hash)[:16]
+//
+// WHY THIS REPLACED A STRING COMPARISON.
+//
+// The previous gate required
+//
+//	manifest.authoritative_source_freshness.run_id == manifest.source.run_id
+//
+// which is unsatisfiable by construction against the real producer, because the
+// two identifiers are minted by two different generators in two disjoint
+// namespaces:
+//
+//   - manifest.source.run_id is a content-derived feed BUILD id, minted by
+//     extra-cli scripts/warmbly_bridge/export.py::_run_id (the derivation above).
+//     Real production value: "run-25d918a5801fa976".
+//
+//   - manifest.authoritative_source_freshness.run_id is the PNCP INGESTION
+//     attempt id, minted by extra-cli scripts/crawl/run_evidence.py::new_run_id
+//     as f"{prefix}-{utcstamp}-{uuid4().hex[:10]}" with prefix "contracts-90d".
+//     Real production value: "contracts-90d-20260826T230341Z-5ca7f36505".
+//
+// A build id can never equal an ingestion attempt id, so the gate refused every
+// genuine manifest and left the authority projection empty.
+//
+// The INTENT of that gate was correct and is preserved here, and strengthened
+// from a lexical check into a cryptographic one: source.run_id is itself a
+// commitment over authoritative_freshness_hash, so recomputing it proves the
+// freshness attestation attached to this manifest is the one this feed build
+// was actually produced against, and was not substituted from another run.
+func deriveFeedBuildRunID(snapshotHash, profileID, profileVersion, moduleVersion, freshnessHash string) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{
+		snapshotHash, profileID, profileVersion, moduleVersion, freshnessHash,
+	}, "|")))
+	return feedBuildRunIDPrefix + hex.EncodeToString(sum[:])[:16]
+}
+
+// bindManifestFreshnessToBuild proves the authoritative freshness attestation
+// carried by this manifest genuinely belongs to this feed build. Fail-closed:
+// every input to the derivation must be present and well-formed, and no branch
+// may skip the recomputation.
+func bindManifestFreshnessToBuild(manifest *outreachManifest) error {
+	if manifest == nil || manifest.SourceFreshness == nil {
+		return fmt.Errorf("authoritative PNCP freshness missing")
+	}
+	moduleVersion := strings.TrimSpace(manifest.ModuleVersion)
+	if moduleVersion == "" {
+		return fmt.Errorf("manifest module_version is required to bind the authoritative PNCP freshness attestation to this feed build")
+	}
+	freshnessHash := strings.TrimSpace(manifest.Source.FreshnessHash)
+	if !validSHA256(freshnessHash) {
+		return fmt.Errorf("manifest source.authoritative_freshness_hash is not a valid sha256")
+	}
+	if freshnessHash != strings.ToLower(freshnessHash) {
+		return fmt.Errorf("manifest source.authoritative_freshness_hash must be lowercase hex")
+	}
+	nested := manifest.Source.Freshness
+	if nested == nil {
+		return fmt.Errorf("manifest source.authoritative_freshness block is missing")
+	}
+	// The producer writes the same freshness object twice (top level and inside
+	// source). Disagreement means one of the two copies was substituted.
+	nestedRunID := strings.TrimSpace(nested.RunID)
+	topRunID := strings.TrimSpace(manifest.SourceFreshness.RunID)
+	if nestedRunID == "" || topRunID == "" {
+		return fmt.Errorf("authoritative PNCP freshness run_id is empty")
+	}
+	if nestedRunID != topRunID {
+		return fmt.Errorf(
+			"authoritative PNCP freshness block was substituted: source.authoritative_freshness.run_id %q does not match authoritative_source_freshness.run_id %q",
+			nestedRunID, topRunID)
+	}
+	declaredRunID := strings.TrimSpace(manifest.Source.RunID)
+	derivedRunID := deriveFeedBuildRunID(
+		strings.TrimSpace(manifest.Source.SnapshotHash),
+		strings.TrimSpace(manifest.Source.ProfileID),
+		strings.TrimSpace(manifest.Source.ProfileVer),
+		moduleVersion,
+		freshnessHash,
+	)
+	if declaredRunID != derivedRunID {
+		return fmt.Errorf(
+			"manifest source.run_id %q does not recompute from its published build inputs (derived %q): the authoritative PNCP freshness attestation is not bound to this feed build",
+			declaredRunID, derivedRunID)
+	}
+	return nil
 }
 
 func sameFeedAuthority(current *models.OutreachFeedSyncState, authority *feedAuthority) bool {
