@@ -37,11 +37,17 @@ func TestIngestInboundSyntheticNeverCreatesCommercialAction(t *testing.T) {
 		if res.Action != nil {
 			t.Fatalf("synthetic created action: lead=%s action=%+v", res.Lead.LeadID, res.Action)
 		}
-		if res.Lead == nil || res.Lead.Status != models.InboundStatusSuppressed {
-			t.Fatalf("synthetic not suppressed: %+v", res.Lead)
+		if res.Lead == nil || InboundCommercialSkipReason(*res.Lead) == "" {
+			t.Fatalf("synthetic skip reason missing: %+v", res.Lead)
 		}
 		if res.DispatchAttempted {
 			t.Fatal("synthetic dispatch attempted")
+		}
+		switch res.Lead.LeadID {
+		case "syn-missing", "syn-existing", "qa-probe":
+			if res.Lead.Status != models.InboundStatusSuppressed {
+				t.Fatalf("explicit synthetic/qa next=%s status=%s", res.NextAction, res.Lead.Status)
+			}
 		}
 	}
 

@@ -214,10 +214,8 @@ func inboundSyntheticSkipReason(lead InboundLeadV1) string {
 	case intel.RecordKindSynthetic, intel.InboundSkipQA, intel.InboundSkipInternal:
 		return kind
 	}
-	return intel.InboundCommercialSkipReason(models.OutreachInboundLead{
-		LeadID: lead.LeadID, ReceiptID: lead.ReceiptID, Source: lead.Source,
-		CompanyName: lead.CompanyName, LeadName: lead.Name, LeadEmail: lead.Email, Message: lead.Message,
-	})
+	// Lead_id official markers skip the commercial gate, not next_action.
+	return intel.InboundCommercialSkipReason(models.OutreachInboundLead{Source: lead.Source})
 }
 
 func inboundWantsContractReread(lead InboundLeadV1) bool {

@@ -98,13 +98,6 @@ func (s *service) IngestInboundLead(ctx context.Context, orgID uuid.UUID, raw []
 	}
 
 	applyClassificationToLead(row, parsed, facts, class, now)
-	if reason := InboundCommercialSkipReason(*row); reason != "" {
-		row.Status = models.InboundStatusSuppressed
-		row.NextAction = models.InboundNextSuppressed
-		row.SuppressReason = firstNonEmpty(row.SuppressReason, reason)
-		class.Status = models.InboundStatusSuppressed
-		class.Actionable = false
-	}
 	s.assignInboundOwner(ctx, orgID, row, now)
 
 	if peer := s.secondaryDedupe(ctx, orgID, row, now); peer != nil {
