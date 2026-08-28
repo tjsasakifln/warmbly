@@ -666,6 +666,10 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 			// Target-fit is reversible. Skip this detached/ineligible lead without
 			// bounce-marking or adding a sticky global recipient suppression.
 			log.Info().Str("campaign_id", campaign.ID.String()).Str("contact", contact.Email).Str("reason", gate.Reason).Msg("confenge commercial authorization blocked")
+			// Skipping means advancing past the lead. Without this the same
+			// ineligible contact is reselected every cycle and head-of-line
+			// blocks every other contact in the campaign forever.
+			s.advancePastCommercialBlock(ctx, campaign.ID, contact.ID, sequence.ID)
 			_ = s.taskRepo.UpdateTaskStatusWithLock(ctx, taskID, "skipped_suppressed")
 			if s.campaignLogRepo != nil {
 				_ = s.campaignLogRepo.CreateLog(ctx, &repository.CampaignLogEntry{
