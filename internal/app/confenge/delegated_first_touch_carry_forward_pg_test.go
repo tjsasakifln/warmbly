@@ -148,3 +148,60 @@ func TestDelegatedReservoirServesCarriedForwardAccountPostgres(t *testing.T) {
 		t.Fatalf("unexpected reservoir row: touchpoint=%s account=%s", gotTouchpoint, gotAccount)
 	}
 }
+
+// A producer that publishes no population attestation has revoked nothing. The
+// durable per-account three-year evidence is the authority, so approved work
+// for a still-QUALIFIED account must survive an unattested feed rather than be
+// mass-cancelled as an advanced binding.
+func TestDelegatedUnattestedPopulationKeepsQualifiedApprovalsPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	qualifyDelegatedPGFixture(t, f)
+	report, xerr := f.svc.ApplyDelegatedFirstTouchManifest(f.ctx, f.orgID, f.manifest, false)
+	if xerr != nil || report == nil || report.Queued != 1 {
+		t.Fatalf("fixture did not queue: report=%+v err=%v", report, xerr)
+	}
+
+	// Drop only the population attestation. Every per-account commercial fact
+	// and the structural attestation columns stay exactly as they were.
+	if _, err := f.pool.Exec(f.ctx, `
+		UPDATE outreach_feed_sync_state SET commercial_authority_v2=NULL
+		WHERE organization_id=$1`, f.orgID); err != nil {
+		t.Fatal(err)
+	}
+	state, err := f.repo.GetFeedSyncState(f.ctx, f.orgID)
+	if err != nil || state == nil {
+		t.Fatalf("feed state unavailable: state=%+v err=%v", state, err)
+	}
+	if authority := FeedCommercialAuthorityState(state); authority.Present {
+		t.Fatalf("fixture still carries a population attestation: %+v", authority)
+	}
+
+	retired, err := f.svc.retireStaleDelegatedFirstTouches(f.ctx, f.orgID, state.LastRunID, state.LastSnapshotHash)
+	if err != nil || retired != 0 {
+		t.Fatalf("an unattested population retired a qualified decision: retired=%d err=%v", retired, err)
+	}
+	var decisionState, queueState string
+	if err := f.pool.QueryRow(f.ctx, `
+		SELECT d.state,q.status
+		FROM confenge_delegated_first_touch_decisions d
+		JOIN confenge_dispatch_queue q ON q.organization_id=d.organization_id AND q.message_key=d.queue_message_key
+		WHERE d.organization_id=$1 AND d.touchpoint_id=$2`, f.orgID, report.Items[0].TouchpointID).
+		Scan(&decisionState, &queueState); err != nil {
+		t.Fatal(err)
+	}
+	if decisionState != "QUEUED" || queueState != "queued" {
+		t.Fatalf("qualified decision did not survive an unattested population: decision=%s queue=%s", decisionState, queueState)
+	}
+
+	// Losing the per-account commercial fact still retires the work, so the
+	// fallback is an authority substitution and not a bypass.
+	if _, err := f.pool.Exec(f.ctx, `
+		UPDATE outreach_accounts SET commercial_qualification_state='EXPIRED'
+		WHERE organization_id=$1 AND id=$2`, f.orgID, f.manifest.Entries[0].AccountID); err != nil {
+		t.Fatal(err)
+	}
+	retired, err = f.svc.retireStaleDelegatedFirstTouches(f.ctx, f.orgID, state.LastRunID, state.LastSnapshotHash)
+	if err != nil || retired != 1 {
+		t.Fatalf("an unqualified account survived an unattested population: retired=%d err=%v", retired, err)
+	}
+}
