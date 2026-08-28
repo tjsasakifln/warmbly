@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       service:
-        description: "Service to build (all, backend, consumer, worker, tracking, realtime)"
+        description: "Service to build (all, backend, consumer, worker, tracking, realtime, web, admin)"
         required: false
         default: "all"
 
@@ -23,83 +23,60 @@ jobs:
     name: Detect Changes
     runs-on: ubuntu-latest
     outputs:
-      # JSON lists consumed as matrix inputs. `go` services cross-compile both
-      # arches on one runner; `native` services (Rust, Elixir) have no
-      # cross-compiler, so each arch builds on a native runner and the digests
-      # are merged into one manifest.
+      # JSON lists consumed as matrix inputs. `go` and `static` services
+      # cross-compile or emit arch-independent output on one runner; `native`
+      # services (Rust, Elixir) have no cross-compiler, so each arch builds on a
+      # native runner and the digests are merged into one manifest.
       go: ${{ steps.matrix.outputs.go }}
       native: ${{ steps.matrix.outputs.native }}
+      static: ${{ steps.matrix.outputs.static }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        if: github.event_name == 'push'
-        id: filter
-        with:
-          filters: |
-            backend:
-              - 'go.mod'
-              - 'go.sum'
-              - 'internal/**'
-              - 'cmd/backend/**'
-              - 'deploy/docker/backend.Dockerfile'
-            consumer:
-              - 'go.mod'
-              - 'go.sum'
-              - 'internal/**'
-              - 'cmd/consumer/**'
-              - 'deploy/docker/consumer.Dockerfile'
-            worker:
-              - 'go.mod'
-              - 'go.sum'
-              - 'internal/**'
-              - 'cmd/worker/**'
-              - 'deploy/docker/worker.Dockerfile'
-            tracking:
-              - 'tracking/**'
-            realtime:
-              - 'realtime/**'
-              - 'deploy/docker/realtime.Dockerfile'
       - name: Assemble build matrices
         id: matrix
         env:
           EVENT: ${{ github.event_name }}
           SELECTED: ${{ github.event.inputs.service }}
-          BACKEND: ${{ steps.filter.outputs.backend }}
-          CONSUMER: ${{ steps.filter.outputs.consumer }}
-          WORKER: ${{ steps.filter.outputs.worker }}
-          TRACKING: ${{ steps.filter.outputs.tracking }}
-          REALTIME: ${{ steps.filter.outputs.realtime }}
         run: |
+          # A push to main builds every service. The CONFENGE VPS deploys by
+          # pulling one image per service tagged with the release SHA, so a
+          # partial build would leave a commit with no deployable image for an
+          # unchanged service and force a local rebuild on production. GHA cache
+          # makes an unchanged service a near no-op.
           go=""
           native=""
-          if [ "$EVENT" = "workflow_dispatch" ]; then
-            sel="${SELECTED:-all}"
-            for s in backend consumer worker; do
-              if [ "$sel" = "all" ] || [ "$sel" = "$s" ]; then go="$go\"$s\","; fi
-            done
-            for s in tracking realtime; do
-              if [ "$sel" = "all" ] || [ "$sel" = "$s" ]; then native="$native\"$s\","; fi
-            done
-          else
-            if [ "$BACKEND" = "true" ]; then go="$go\"backend\","; fi
-            if [ "$CONSUMER" = "true" ]; then go="$go\"consumer\","; fi
-            if [ "$WORKER" = "true" ]; then go="$go\"worker\","; fi
-            if [ "$TRACKING" = "true" ]; then native="$native\"tracking\","; fi
-            if [ "$REALTIME" = "true" ]; then native="$native\"realtime\","; fi
-          fi
+          static=""
+          sel="all"
+          if [ "$EVENT" = "workflow_dispatch" ]; then sel="${SELECTED:-all}"; fi
+          for s in backend consumer worker; do
+            if [ "$sel" = "all" ] || [ "$sel" = "$s" ]; then go="$go\"$s\","; fi
+          done
+          for s in tracking realtime; do
+            if [ "$sel" = "all" ] || [ "$sel" = "$s" ]; then native="$native\"$s\","; fi
+          done
+          for s in web admin; do
+            if [ "$sel" = "all" ] || [ "$sel" = "$s" ]; then static="$static\"$s\","; fi
+          done
           echo "go=[${go%,}]" >> "$GITHUB_OUTPUT"
           echo "native=[${native%,}]" >> "$GITHUB_OUTPUT"
+          echo "static=[${static%,}]" >> "$GITHUB_OUTPUT"
 
   # Go services: the Dockerfiles build on $BUILDPLATFORM and cross-compile to
   # each target arch, so one amd64 runner produces both platforms without QEMU.
   build-go:
-    name: Build ${{ matrix.service }}
+    name: Build ${{ matrix.service }}${{ matrix.profile != '' && ' (minprofile)' || '' }}
     needs: changes
     if: needs.changes.outputs.go != '[]'
     strategy:
       fail-fast: false
       matrix:
         service: ${{ fromJSON(needs.changes.outputs.go) }}
+        # Two compile profiles per service. The default image serves self-host;
+        # the `-minprofile` image is what the CONFENGE VPS pins, keeping the
+        # contract that Stripe, the AWS SDK, GCP Tasks/PubSub and Kafka are not
+        # compile-linked on the execution plane. Building it here is what lets
+        # production stop compiling locally without weakening that contract.
+        profile: ["", "minprofile"]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -123,9 +100,65 @@ jobs:
           context: .
           file: deploy/docker/${{ matrix.service }}.Dockerfile
           push: true
+          build-args: |
+            GO_TAGS=${{ matrix.profile }}
+          tags: |
+            ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ github.sha }}${{ matrix.profile != '' && format('-{0}', matrix.profile) || '' }}
+            ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:dev${{ matrix.profile != '' && format('-{0}', matrix.profile) || '' }}
+          # deploy/verify-release.sh reconciles repo SHA -> image label ->
+          # running container. Without this label a pulled image cannot prove
+          # which commit it was built from.
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            br.com.confenge.service=warmbly-${{ matrix.service }}
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha,scope=${{ matrix.service }}${{ matrix.profile != '' && format('-{0}', matrix.profile) || '' }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}${{ matrix.profile != '' && format('-{0}', matrix.profile) || '' }}
+
+  # web and admin: stage 1 builds the SPA on $BUILDPLATFORM and the output is
+  # arch-independent, so one runner produces both platforms. The CONFENGE VPS
+  # runs both, so both must exist in the registry or production still builds.
+  build-static:
+    name: Build ${{ matrix.service }}
+    needs: changes
+    if: needs.changes.outputs.static != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.changes.outputs.static) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.service }}
+          file: ./${{ matrix.service }}/Dockerfile
+          push: true
           tags: |
             ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ github.sha }}
             ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:dev
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            br.com.confenge.service=warmbly-${{ matrix.service }}
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
@@ -175,6 +208,11 @@ jobs:
           platforms: ${{ matrix.platform }}
           cache-from: type=gha,scope=${{ matrix.service }}-${{ steps.prep.outputs.pair }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}-${{ steps.prep.outputs.pair }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            br.com.confenge.service=warmbly-${{ matrix.service }}
           outputs: type=image,name=${{ env.IMAGE_PREFIX }}/${{ matrix.service }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest

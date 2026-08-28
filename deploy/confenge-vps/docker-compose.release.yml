@@ -1,0 +1,50 @@
+# CONFENGE immutable release overlay.
+#
+# Production consumes images CI already built for the exact release SHA. The
+# `build: !reset null` on every application service is the point of this file:
+# with a build section present, `docker compose up` silently falls back to
+# compiling on the VPS when an image is missing, which is how ec-prod
+# accumulated 174 GB of builder cache and filled the root filesystem until
+# Postgres could no longer extend files. Resetting it makes a missing image a
+# loud failure instead of a local build.
+#
+# WARMBLY_RELEASE_SHA is required and has no default on purpose: a mutable
+# `:dev` or `:latest` must never be the deployment authority.
+#
+# The Go services pin the `-minprofile` variant, keeping the execution-plane
+# contract that Stripe, the AWS SDK, GCP Tasks/PubSub and Kafka are not
+# compile-linked.
+
+services:
+  backend:
+    build: !reset null
+    image: ${CONFENGE_IMAGE_PREFIX:-ghcr.io/tjsasakifln/warmbly}/backend:${WARMBLY_RELEASE_SHA:?release sha required for an immutable deploy}-minprofile
+
+  consumer:
+    build: !reset null
+    image: ${CONFENGE_IMAGE_PREFIX:-ghcr.io/tjsasakifln/warmbly}/consumer:${WARMBLY_RELEASE_SHA:?release sha required for an immutable deploy}-minprofile
+
+  worker:
+    build: !reset null
+    image: ${CONFENGE_IMAGE_PREFIX:-ghcr.io/tjsasakifln/warmbly}/worker:${WARMBLY_RELEASE_SHA:?release sha required for an immutable deploy}-minprofile
+
+  tracking:
+    build: !reset null
+    image: ${CONFENGE_IMAGE_PREFIX:-ghcr.io/tjsasakifln/warmbly}/tracking:${WARMBLY_RELEASE_SHA:?release sha required for an immutable deploy}
+
+  realtime:
+    build: !reset null
+    image: ${CONFENGE_IMAGE_PREFIX:-ghcr.io/tjsasakifln/warmbly}/realtime:${WARMBLY_RELEASE_SHA:?release sha required for an immutable deploy}
+
+  web:
+    build: !reset null
+    image: ${CONFENGE_IMAGE_PREFIX:-ghcr.io/tjsasakifln/warmbly}/web:${WARMBLY_RELEASE_SHA:?release sha required for an immutable deploy}
+
+  admin:
+    build: !reset null
+    image: ${CONFENGE_IMAGE_PREFIX:-ghcr.io/tjsasakifln/warmbly}/admin:${WARMBLY_RELEASE_SHA:?release sha required for an immutable deploy}
+
+  # Same binary set as the backend image; seed runs from it under the `seed` profile.
+  seed:
+    build: !reset null
+    image: ${CONFENGE_IMAGE_PREFIX:-ghcr.io/tjsasakifln/warmbly}/backend:${WARMBLY_RELEASE_SHA:?release sha required for an immutable deploy}-minprofile

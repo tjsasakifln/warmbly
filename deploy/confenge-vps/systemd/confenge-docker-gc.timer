@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the CONFENGE bounded Docker GC daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=30m
+Persistent=true
+Unit=confenge-docker-gc.service
+
+[Install]
+WantedBy=timers.target

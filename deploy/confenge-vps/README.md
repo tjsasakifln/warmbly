@@ -7,6 +7,68 @@ Go images build with `GO_TAGS=minprofile`: postgres, redis, nats, filesystem
 blobs, and local KMS only. Stripe, AWS, GCP Cloud Tasks/PubSub, and Kafka are
 not compile-linked and fail closed if selected.
 
+## Deployment model
+
+Production consumes immutable images that CI already built. The VPS does not
+compile. `deploy/confenge-vps/docker-compose.release.yml` pins every application
+service to `ghcr.io/tjsasakifln/warmbly/<service>:<release-sha>` (the Go services
+to the `-minprofile` variant) and resets each `build:` section, so a missing
+image is a loud failure instead of a silent local build.
+
+```bash
+deploy/confenge-vps/release-deploy.sh            # roll onto origin/main
+deploy/confenge-vps/release-deploy.sh <full-sha> # roll onto a specific release
+```
+
+`up.sh` runs the deploy in this order and stops at the first failure:
+
+1. disk preflight, before any mutation
+2. bounded cleanup of reconstructible artifacts if headroom is short
+3. pull the images pinned to the release SHA
+4. verify each image carries `org.opencontainers.image.revision=<sha>`
+5. write the `deploy_preflight` kill switch (outbound cannot fail open)
+6. `compose up -d --no-build --remove-orphans`
+7. backend health, `pg_isready`, and `verify-release.sh` per service
+8. clear the deploy kill switch automatically
+9. bounded retention sweep
+
+Step 8 clears only a switch whose reason is `deploy_preflight`. An operator
+pause from `pause.sh` has a different reason and survives a deploy. After a
+successful deploy the business send window is the only outbound gate, at any
+hour.
+
+Set `CONFENGE_RELEASE_MODE=build` only if GHCR is unreachable. Local production
+builds are what filled the root filesystem.
+
+## Disk safety
+
+`data/backups` reached 4.3 GB inside a 4.7 GB Docker build context, every
+rebuild snapshotted it, builder cache grew to ~174 GB, and Postgres could no
+longer extend files. Three things prevent a repeat:
+
+- `.dockerignore` excludes `data`, `ops`, `ops-evidence`, `backups`, archives
+  and dependency trees. `scripts/build_context_size.py` is the CI gate (150 MB
+  budget); no Dockerfile copies any excluded tree.
+- `disk-guard.sh preflight` refuses a deploy below `20 GB` deploy budget plus a
+  `20 GB` Postgres reserve (and 12% free), after trying a bounded reclaim of
+  reconstructible artifacts only.
+- `disk-guard.sh retain` runs after every deploy and daily via
+  `confenge-docker-gc.timer`: builder cache capped at 8 GB / 168 h, dangling
+  images pruned, Warmbly release images older than the current and previous
+  release removed without `-f`. Named volumes, Postgres data, `confenge_ops`,
+  `confenge_keys` and `blobs` are never touched.
+
+```bash
+deploy/confenge-vps/disk-guard.sh report      # thresholds and current usage
+deploy/confenge-vps/host-disk-report.sh       # shared-host picture, read-only
+sudo deploy/confenge-vps/docker-gc-install.sh # timer + host BuildKit cache cap
+```
+
+Backups keep the newest `CONFENGE_BACKUP_KEEP` (default 10) archives with their
+manifests, checksums and key bundles. Co-tenant data (Extra Consultoria, the
+control center, host Postgres) is reported and never deleted by Warmbly
+automation.
+
 Full docs:
 
 - [vps-execution-plane.md](../../docs/confenge/vps-execution-plane.md)

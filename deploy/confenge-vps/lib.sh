@@ -54,6 +54,13 @@ bind_release_identity() {
   export WARMBLY_RELEASE_SHA CONFENGE_REPOSITORY_SHA
 }
 
+# registry: production runs CI-built images pinned to the release SHA and never
+# compiles on the VPS. `build` is the legacy local-compile path, kept only for
+# an emergency where the registry is unreachable; it is not the normal deploy.
+release_mode() {
+  echo "${CONFENGE_RELEASE_MODE:-registry}"
+}
+
 compose_cmd() {
   local root
   root="$(confenge_repo_root)"
@@ -64,10 +71,44 @@ compose_cmd() {
   args=(docker compose)
   args+=(-f "$root/docker-compose.yml")
   args+=(-f "$root/deploy/confenge-vps/docker-compose.override.yml")
+  if [[ "$(release_mode)" == "registry" ]]; then
+    args+=(-f "$root/deploy/confenge-vps/docker-compose.release.yml")
+  fi
   if [[ -f "$envf" ]]; then
     args+=(--env-file "$envf")
   fi
   COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-warmbly-confenge}" "${args[@]}" "$@"
+}
+
+# Services whose image carries application code. Anything here must exist in the
+# registry for the release SHA before production mutates.
+release_services() {
+  echo "${CONFENGE_RELEASE_SERVICES:-backend consumer worker tracking realtime web}"
+}
+
+# Profile-gated services. Their image is pinned the same way, but a missing one
+# must not block a deploy of the always-on stack.
+release_optional_services() {
+  echo "${CONFENGE_RELEASE_OPTIONAL_SERVICES:-admin}"
+}
+
+image_prefix() {
+  echo "${CONFENGE_IMAGE_PREFIX:-ghcr.io/tjsasakifln/warmbly}"
+}
+
+# The Go services pin the minprofile variant; the rest have a single build.
+release_image_ref() {
+  local svc="$1" sha="${2:-$WARMBLY_RELEASE_SHA}"
+  case "$svc" in
+    backend|consumer|worker|seed)
+      echo "$(image_prefix)/${svc/seed/backend}:${sha}-minprofile" ;;
+    *)
+      echo "$(image_prefix)/${svc}:${sha}" ;;
+  esac
+}
+
+disk_guard() {
+  bash "$_CONFENGE_VPS_DIR/disk-guard.sh" "$@"
 }
 
 api_base() {

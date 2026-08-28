@@ -65,6 +65,14 @@ jobs:
               - 'deploy/verify-release.sh'
               - 'docker-compose.yml'
 
+  build-context:
+    name: Docker build context budget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Measure root build context
+        run: python3 scripts/build_context_size.py . --max-mb 150
+
   confenge-vps-pack:
     name: CONFENGE VPS pack
     needs: changes
@@ -78,6 +86,7 @@ jobs:
           python3 -m unittest
           deploy.confenge-vps.test_vps_pack
           deploy.confenge-vps.test_backup
+          deploy.confenge-vps.test_deploy_disk_safety
           deploy/confenge-vps/asaas-adapter/test_adapter.py
 
       - name: Validate deployment pack
@@ -622,7 +631,7 @@ jobs:
   ci-status:
     name: CI Status
     runs-on: ubuntu-latest
-    needs: [changes, go-ci, web-ci, confenge-product-acceptance, confenge-vps-pack, admin-ci, site-ci, make-ci, rust-ci, elixir-ci, ios-ci, frontend-images, security]
+    needs: [changes, build-context, go-ci, web-ci, confenge-product-acceptance, confenge-vps-pack, admin-ci, site-ci, make-ci, rust-ci, elixir-ci, ios-ci, frontend-images, security]
     if: always()
     steps:
       - name: Check CI status
@@ -650,6 +659,10 @@ jobs:
           if [[ "${{ needs.changes.outputs.confenge-vps }}" == "true" ]] && \
              [[ "$vps_result" != "success" ]]; then
             echo "CONFENGE VPS pack did not pass (result=$vps_result)"
+            vps_failed=1
+          fi
+          if [[ "${{ needs.build-context.result }}" != "success" ]]; then
+            echo "Docker build context budget did not pass (result=${{ needs.build-context.result }})"
             vps_failed=1
           fi
           if [[ "${{ needs.go-ci.result }}" == "failure" ]] || \
