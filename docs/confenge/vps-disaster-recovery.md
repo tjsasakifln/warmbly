@@ -145,6 +145,62 @@ deploy/confenge-vps/pause.sh "incident"
 # or from browser: dispatch pause when available
 ```
 
+## Provider accepted but local completion failed
+
+An `attempted` dispatch is terminal for enqueue. Do not change it back to
+`queued`, replay the campaign task, or insert a `sent` row directly. First
+confirm provider acceptance and capture the original Message-ID and timestamp.
+Keep dispatch paused while reconciling.
+
+The backend image contains the fail-closed operator command. Its dry run checks
+the task, campaign enrollment, touchpoint, recipient, mailbox, reservation,
+queue hand-off, provider Message-ID uniqueness, and organization actor without
+calling the worker or provider:
+
+```bash
+TASK_ID=<original-task-uuid>
+TOUCHPOINT_ID=<original-touchpoint-uuid>
+RECIPIENT=<exact-original-recipient>
+PROVIDER_MESSAGE_ID='<provider-message-id>'
+ACCEPTED_AT=<provider-acceptance-rfc3339>
+ACTOR_ID=<accepted-organization-member-uuid>
+
+deploy/confenge-vps/compose.sh run --rm --no-deps \
+  --entrypoint /app/confenge backend \
+  reconcile-provider-accepted \
+  --task-id "$TASK_ID" \
+  --touchpoint-id "$TOUCHPOINT_ID" \
+  --recipient "$RECIPIENT" \
+  --provider-message-id "$PROVIDER_MESSAGE_ID" \
+  --accepted-at "$ACCEPTED_AT" \
+  --actor "$ACTOR_ID" \
+  --dry-run
+```
+
+Apply only after the dry-run bindings match the provider evidence. The command
+reuses normal campaign completion, preserves the provider acceptance time,
+updates campaign progress only when it is missing, and writes an append-only
+audit entry with `transport_invoked=false`.
+
+```bash
+deploy/confenge-vps/compose.sh run --rm --no-deps \
+  --entrypoint /app/confenge backend \
+  reconcile-provider-accepted \
+  --task-id "$TASK_ID" \
+  --touchpoint-id "$TOUCHPOINT_ID" \
+  --recipient "$RECIPIENT" \
+  --provider-message-id "$PROVIDER_MESSAGE_ID" \
+  --accepted-at "$ACCEPTED_AT" \
+  --actor "$ACTOR_ID" \
+  --confirm PROVIDER_ACCEPTED_LOCAL_COMPLETION_FAILED
+```
+
+Re-running the same command is idempotent. A different task, recipient,
+touchpoint, mailbox, provider Message-ID, or non-accepted queue state is refused.
+Resume dispatch only after the touchpoint is `SENT`, the queue and reservation
+are committed, `confenge_dispatch_sends` has the original task, and the audit
+entry contains the original provider correlation.
+
 ## Network / provider incidents
 
 | Symptom | Action |

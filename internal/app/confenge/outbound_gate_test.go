@@ -213,6 +213,104 @@ func TestObserveCampaignEmailAttemptIncludesNonCohortControlledTouch(t *testing.
 	}
 }
 
+type failOnceCommitStore struct {
+	*dispatch.MemoryStore
+	fail bool
+}
+
+func (s *failOnceCommitStore) CommitReservation(ctx context.Context, id uuid.UUID, sentAt time.Time) error {
+	if s.fail {
+		s.fail = false
+		return errors.New("injected post-provider persistence failure")
+	}
+	return s.MemoryStore.CommitReservation(ctx, id, sentAt)
+}
+
+func TestCompleteCampaignEmailRecoversProviderAcceptedPersistenceFailure(t *testing.T) {
+	allowConfengeSendingForTest(t)
+	ctx := context.Background()
+	repo := newMemRepoWithSettings()
+	orgID, accountID, candidateID := uuid.New(), uuid.New(), uuid.New()
+	_, _ = repo.UpsertAccount(ctx, &models.OutreachAccount{
+		ID: accountID, OrganizationID: orgID, CNPJ14: "12345678000147",
+	})
+	_, _ = repo.UpsertCandidate(ctx, &models.OutreachContactCandidate{
+		ID: candidateID, OrganizationID: orgID, AccountID: accountID, Email: "accepted@example.com",
+	})
+	campaignID, contactID := bindTransportableEnrollment(t, repo.memRepo, orgID, accountID, candidateID, "accepted@example.com")
+	touchpoint, _ := repo.GetTouchpointByEnrollment(ctx, orgID, campaignID, contactID)
+
+	acceptedAt := time.Date(2026, 8, 28, 17, 1, 58, 0, time.UTC)
+	clock := &dispatch.FixedClock{T: acceptedAt.Add(30 * time.Minute)}
+	mailboxID, sequenceID, taskID := uuid.New(), uuid.New(), uuid.New()
+	baseStore := dispatch.NewMemoryStore()
+	baseStore.SetMailboxEnvelope(dispatch.MailboxEnvelope{
+		EmailAccountID: mailboxID, OrganizationID: orgID, DailyCap: 50, HourlyCap: 20,
+		Ready: true, Timezone: "UTC",
+	})
+	store := &failOnceCommitStore{MemoryStore: baseStore, fail: true}
+	cfg := dispatch.DefaultConfig()
+	cfg.SendsPerHour, cfg.MinGap = 100, 0
+	cfg.WindowStart, cfg.WindowEnd, cfg.Timezone = "00:00", "23:59", "UTC"
+	cfg.BusinessDaysOnly = false
+	governor := dispatch.NewGovernor(cfg, store, clock)
+	messageKey := MessageKeyCampaignEmail(campaignID, contactID, sequenceID)
+	queueID := uuid.New()
+	if err := baseStore.Enqueue(ctx, &dispatch.QueueItem{
+		ID: queueID, OrganizationID: orgID, EmailAccountID: &mailboxID,
+		Channel: dispatch.ChannelEmail, DraftID: *touchpoint.DraftID,
+		MessageKey: dispatch.MessageKeyEmail(*touchpoint.DraftID), RecipientRef: touchpoint.Recipient,
+		Status: dispatch.QueueAttempted, CreatedAt: acceptedAt.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("record delegated hand-off: %v", err)
+	}
+	reserved, err := governor.TryReserve(ctx, dispatch.ReserveRequest{
+		OrganizationID: orgID, EmailAccountID: &mailboxID, TaskID: &taskID,
+		Channel: dispatch.ChannelEmail, MessageKey: messageKey, DraftID: touchpoint.DraftID,
+	})
+	if err != nil || !reserved.Allowed {
+		t.Fatalf("reserve accepted send: result=%+v err=%v", reserved, err)
+	}
+
+	svc := &service{cfg: Config{Enabled: true}, repo: repo, governor: governor}
+	providerMessageID := "<provider-accepted@confenge.com.br>"
+	err = svc.CompleteCampaignEmail(ctx, orgID, campaignID, contactID, sequenceID, taskID, mailboxID, providerMessageID, "smtp", acceptedAt)
+	if err == nil {
+		t.Fatal("the injected local commit failure must surface")
+	}
+	if _, committed, getErr := baseStore.GetSendByKey(ctx, messageKey); getErr != nil || committed {
+		t.Fatalf("failed local commit must not claim a durable send: committed=%v err=%v", committed, getErr)
+	}
+	partiallyCompleted, _ := repo.GetTouchpoint(ctx, orgID, touchpoint.ID)
+	if partiallyCompleted.State != models.TouchpointSent || partiallyCompleted.ProviderMessageID != providerMessageID {
+		t.Fatalf("provider fact must remain replayable after the later commit fails: %+v", partiallyCompleted)
+	}
+
+	if err := svc.CompleteCampaignEmail(ctx, orgID, campaignID, contactID, sequenceID, taskID, mailboxID, providerMessageID, "smtp", acceptedAt); err != nil {
+		t.Fatalf("reconcile provider acceptance: %v", err)
+	}
+	sentAt, committed, err := baseStore.GetSendByKey(ctx, messageKey)
+	if err != nil || !committed {
+		t.Fatalf("reconciliation must commit the provider fact once: committed=%v err=%v", committed, err)
+	}
+	if !sentAt.Equal(acceptedAt) {
+		t.Fatalf("dispatch ledger sent_at=%s want provider acceptance %s", sentAt, acceptedAt)
+	}
+	if reconciled, err := svc.ReconcileAttemptedDispatches(ctx); err != nil || reconciled != 1 {
+		t.Fatalf("reconcile delegated hand-off: count=%d err=%v", reconciled, err)
+	}
+	queue, err := baseStore.ListQueueByStatus(ctx, dispatch.QueueSent, 10)
+	if err != nil || len(queue) != 1 || queue[0].ID != queueID {
+		t.Fatalf("delegated queue must close without sharing the campaign reservation key: queue=%+v err=%v", queue, err)
+	}
+	if err := svc.CompleteCampaignEmail(ctx, orgID, campaignID, contactID, sequenceID, taskID, mailboxID, providerMessageID, "smtp", acceptedAt); err != nil {
+		t.Fatalf("idempotent reconciliation replay: %v", err)
+	}
+	if replayedAt, _, _ := baseStore.GetSendByKey(ctx, messageKey); !replayedAt.Equal(acceptedAt) {
+		t.Fatalf("replay changed durable provider time to %s", replayedAt)
+	}
+}
+
 func TestGateCampaignEmailTransientOnGovernorError(t *testing.T) {
 	allowConfengeSendingForTest(t)
 	// errStore fails TryReserveAtomic (simulates DB blip).
