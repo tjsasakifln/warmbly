@@ -182,3 +182,37 @@ func TestTransportAssertionIgnoresMembershipRevision(t *testing.T) {
 		t.Fatal("the three-year commercial qualification must still gate transport")
 	}
 }
+
+// A provider-accepted send must be recordable. The completion path re-ran the
+// pre-send authority guard, which rejects CAMPAIGN_POLICY because it carries no
+// individual approver, so every provider-confirmed CONFENGE first touch failed
+// to persist: Hostinger accepted the mail, the touchpoint stayed QUEUED and
+// confenge_dispatch_sends stayed empty while the consumer retried forever.
+func TestSentTransitionDoesNotReauthorizeAnAcceptedSend(t *testing.T) {
+	b, err := os.ReadFile("touchpoint_sm.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	start := strings.Index(s, "func transitionToSent(")
+	if start < 0 {
+		t.Fatal("transitionToSent not found")
+	}
+	end := strings.Index(s[start:], "\nfunc ")
+	if end < 0 {
+		end = len(s) - start
+	}
+	body := s[start : start+end]
+	if strings.Contains(body, "checkTransitionTransport(") {
+		t.Fatal("the mail has already left; re-authorizing here can only lose the record of an accepted send")
+	}
+	// The state precondition is a real idempotency guard and must stay.
+	if !strings.Contains(body, "cannot mark sent from state") {
+		t.Fatal("only a QUEUED or APPROVED touchpoint may be marked sent")
+	}
+	// Authority must still be enforced where it can actually stop a send.
+	sm := s
+	if !strings.Contains(sm, "func CanTransport(") {
+		t.Fatal("the pre-send transport guard must still exist")
+	}
+}

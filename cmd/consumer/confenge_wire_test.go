@@ -49,3 +49,17 @@ func TestConfengeReplyPathWiresCRM(t *testing.T) {
 		t.Fatal("consumer production boot must not use NewMemoryCohortStore as cohort authority")
 	}
 }
+
+// The consumer observes the provider result, so it is the only process that can
+// commit the dispatch reservation. Without the governor wired, every accepted
+// CONFENGE send failed with "dispatch governor unavailable for provider
+// attempt" and confenge_dispatch_sends could never be written.
+func TestConsumerWiresConfengeDispatchGovernor(t *testing.T) {
+	b, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "confengeSvc.WireDispatch(primaryDB.Pool)") {
+		t.Fatal("the consumer must wire the CONFENGE dispatch governor to commit provider-accepted sends")
+	}
+}

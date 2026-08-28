@@ -341,8 +341,23 @@ func transitionToSent(tp *models.OutreachTouchpoint, now time.Time, providerMsgI
 	if tp.State != models.TouchpointQueued && tp.State != models.TouchpointApproved {
 		return fmt.Errorf("cannot mark sent from state %s", tp.State)
 	}
-	if err := checkTransitionTransport(tp, auth, in); err != nil {
-		return err
+	// Recording an observed provider acceptance is not a decision to send: the
+	// message is already with the provider by the time this runs. Re-running the
+	// individual-approval guard here could not prevent anything, it could only
+	// lose the record of mail that already left, and it did. A delegated first
+	// touch carries CAMPAIGN_POLICY authorization with no individual approver by
+	// design, so CanTransport rejected every provider-confirmed CONFENGE send,
+	// leaving the touchpoint QUEUED and confenge_dispatch_sends empty while the
+	// provider had accepted the message.
+	//
+	// Authority is enforced before the send, where it can still stop one: the
+	// outbound gate, the queue gate and the delegated transport assertion. The
+	// bounded-cohort grant keeps its own transport revalidation, which is a
+	// deliberate property of that model.
+	if isBoundedCohortTouch(tp) {
+		if err := CanTransportCohort(tp, auth, in); err != nil {
+			return err
+		}
 	}
 	tp.State = models.TouchpointSent
 	tp.SentAt = &now
