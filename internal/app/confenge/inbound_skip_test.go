@@ -108,6 +108,7 @@ func TestInboundCommercialSkipReasonTokens(t *testing.T) {
 		{"env qa flag", models.OutreachInboundLead{LeadID: "flag-qa", RawPayload: []byte(`{"environment":"qa"}`)}, InboundSkipQA},
 		{"fixture internal", models.OutreachInboundLead{LeadID: "flag-fix", RawPayload: []byte(`{"fixture":"internal"}`)}, InboundSkipInternal},
 		{"explicit synthetic flag", models.OutreachInboundLead{LeadID: "flag-syn", RawPayload: []byte(`{"synthetic":true}`)}, InboundSkipSynthetic},
+		{"record_kind synthetic", models.OutreachInboundLead{LeadID: "rk-syn", RawPayload: []byte(`{"record_kind":"synthetic"}`)}, InboundSkipSynthetic},
 		{"infrastructure canary source", models.OutreachInboundLead{LeadID: "canary-src", Source: "infrastructure_canary"}, InboundSkipSynthetic},
 		{"infrastructure canary label", models.OutreachInboundLead{LeadID: "canary-label", RawPayload: []byte(`{"label":"infrastructure_canary"}`)}, InboundSkipSynthetic},
 		{"explicit is_synthetic", models.OutreachInboundLead{LeadID: "flag-is", RawPayload: []byte(`{"is_synthetic":"true"}`)}, InboundSkipSynthetic},

@@ -356,6 +356,9 @@ func (m *memRepo) ListAccounts(ctx context.Context, orgID uuid.UUID, filter repo
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now().UTC()
+	if !filter.AsOf.IsZero() {
+		now = filter.AsOf.UTC()
+	}
 	var out []models.OutreachAccount
 	for _, a := range m.byID {
 		if a.OrganizationID != orgID {

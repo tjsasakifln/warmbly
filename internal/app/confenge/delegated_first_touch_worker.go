@@ -146,7 +146,7 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (processed
 	manifest := DelegatedFirstTouchManifest{
 		SchemaVersion: DelegatedFirstTouchManifestV1,
 		BatchID:       "autorun-" + uuid.NewString(), AgentID: "warmbly:delegated-first-touch-worker",
-		PolicyVersion: DelegatedFirstTouchPolicyV1, PolicyHash: DelegatedFirstTouchPolicyHashV1,
+		PolicyVersion: DelegatedFirstTouchPolicyV2, PolicyHash: DelegatedFirstTouchPolicyHashV2,
 		AuthorityReference: DelegatedFirstTouchAuthorityRef, PolicyAuthorizationID: auth.ID,
 		SourceRunID: feed.LastRunID, SourceSnapshotHash: feed.LastSnapshotHash,
 		EvidenceVersion: DelegatedFirstTouchEvidenceV1, ComposerVersion: ComposerVersion,

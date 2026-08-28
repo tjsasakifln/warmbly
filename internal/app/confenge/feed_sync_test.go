@@ -327,6 +327,26 @@ func TestPersistFeedSyncStoresAuthoritativeExpiryAndMembership(t *testing.T) {
 	}
 }
 
+func TestPersistFeedSyncStoresCommercialAuthority(t *testing.T) {
+	orgID := uuid.New()
+	repo := newMemRepo()
+	svc := &service{repo: repo}
+	generatedAt := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	expiresAt := generatedAt.Add(6 * time.Hour)
+	payload := testAuthorityPayload(CommercialAuthorityCurrent, generatedAt)
+	result := &FeedSyncResult{Status: "completed", Counts: map[string]int{}, authority: &feedAuthority{
+		SourceExpiresAt: expiresAt, SourceFreshnessHash: strings.Repeat("a", 64),
+		TargetMembershipComplete: true, TargetMembershipHash: strings.Repeat("a", 64),
+		TargetMembershipCount: 3, SupplierConfirmedCount: 3, Commercial: &payload,
+	}}
+	svc.persistFeedSync(context.Background(), orgID, "snap-abc", "run-abc", "file:///manifest.json", "completed", result, true, &generatedAt)
+	state, err := repo.GetFeedSyncState(context.Background(), orgID)
+	got := storedCommercialAuthority(state)
+	if err != nil || got == nil || got.State != CommercialAuthorityCurrent || got.BasisSourceRunID != "run-abc" {
+		t.Fatalf("commercial authority dropped after persist: state=%+v got=%+v err=%v", state, got, err)
+	}
+}
+
 func TestValidateOutreachManifestAllowsOnlyExplicitDeactivationStates(t *testing.T) {
 	base := outreachManifest{
 		SchemaVersion: "confenge.outreach.manifest.v1",

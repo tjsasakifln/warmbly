@@ -50,6 +50,7 @@ type InboundLeadV1 struct {
 	AssetVersion   string
 	CTAVersion     string
 	RecordKind     string
+	Synthetic      bool
 	ConsentVersion string
 	Consent        InboundConsent
 	UTM            map[string]string
@@ -137,6 +138,7 @@ func ParseInboundLead(raw []byte, now time.Time) (InboundLeadV1, *errx.Error) {
 		AssetVersion:   SanitizeText(strAny(m, "asset_version"), 80),
 		CTAVersion:     SanitizeText(strAny(m, "cta_version"), 80),
 		RecordKind:     SanitizeText(strAny(m, "record_kind"), 40),
+		Synthetic:      boolAny(m, "synthetic", "is_synthetic"),
 		ConsentVersion: SanitizeText(strAny(m, "consent_version"), 80),
 		UTM:            parseUTM(m),
 	}

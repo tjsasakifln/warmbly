@@ -224,6 +224,22 @@ func (g *Governor) CancelQueued(ctx context.Context, messageKey, reason string) 
 	return g.store.CancelQueue(ctx, messageKey, reason)
 }
 
+func appendUniquePauseSources(in []string, source string) []string {
+	if source == "" {
+		return in
+	}
+	for _, existing := range in {
+		if existing == source {
+			return in
+		}
+	}
+	return append(in, source)
+}
+
+func (g *Governor) Control(ctx context.Context) (ControlState, error) {
+	return g.store.GetControl(ctx)
+}
+
 func (g *Governor) Pause(ctx context.Context, reason string, by *uuid.UUID) error {
 	if reason == "" {
 		reason = "manual_pause"
@@ -272,10 +288,25 @@ func (g *Governor) Status(ctx context.Context, orgID *uuid.UUID) (Status, error)
 			st.PauseReason = "env_paused"
 		}
 	}
+	st.PausedBy = ctrl.PausedBy
+	st.PausedAt = ctrl.PausedAt
 	if g.cfg.EnvPaused {
 		st.PauseSource = "environment"
-	} else if ctrl.Paused {
-		st.PauseSource = "durable_control"
+		st.PauseSources = appendUniquePauseSources(st.PauseSources, "environment")
+	}
+	if ctrl.Paused {
+		src := ctrl.PauseSource
+		if src == "" {
+			if ctrl.PausedBy != nil && *ctrl.PausedBy != uuid.Nil {
+				src = "api"
+			} else {
+				src = "durable_control"
+			}
+		}
+		if st.PauseSource == "" {
+			st.PauseSource = src
+		}
+		st.PauseSources = appendUniquePauseSources(st.PauseSources, src)
 	}
 	inWin, _ := InSendWindowBusiness(now, g.cfg.Timezone, g.cfg.WindowStart, g.cfg.WindowEnd, g.cfg.BusinessDaysOnly)
 	st.InSendWindow = inWin

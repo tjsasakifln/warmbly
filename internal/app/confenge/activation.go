@@ -151,12 +151,13 @@ func (s *service) ListWorkingQueue(ctx context.Context, orgID uuid.UUID, lane st
 		limit = 50
 	}
 	lane = normalizeLane(lane)
-	now := time.Now().UTC()
+	now := s.now()
 	// SQL filters push due/activation predicates into the DB (not a 200-row sample).
 	filter := repository.OutreachAccountFilter{
 		Limit:           limit,
 		DynamicPriority: s.cfg.DynamicPriorityEnabled,
 		ExcludeTerminal: true,
+		AsOf:            now,
 	}
 	switch lane {
 	case LaneNow:

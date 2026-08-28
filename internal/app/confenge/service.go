@@ -44,6 +44,9 @@ type Service interface {
 	ReconcileAttemptedDispatches(ctx context.Context) (int, error)
 	// CollectReadiness aggregates operator panel signals for one org.
 	CollectReadiness(ctx context.Context, orgID uuid.UUID, emailReady bool) Readiness
+	// CollectFirstWindowReadiness evaluates READY_FOR_GO_ADJUDICATION or
+	// BLOCKED:<reason> without sending mail. It never emits GO_FOR_CONTROLLED_EMAIL_PILOT.
+	CollectFirstWindowReadiness(ctx context.Context, orgID uuid.UUID) (*FirstWindowReadinessReport, *errx.Error)
 
 	// ImportFromBytes validates and optionally applies a feed payload.
 	ImportFromBytes(ctx context.Context, orgID uuid.UUID, userID *uuid.UUID, raw []byte, opts ImportOptions) (*models.OutreachImportRun, *errx.Error)
@@ -239,6 +242,14 @@ type service struct {
 	// Serializes the preparation workers so their shared NEEDS_REVIEW ceiling
 	// cannot be overshot by concurrent draft generation and recovery.
 	reviewBacklogMu sync.Mutex
+	nowFn           func() time.Time
+}
+
+func (s *service) now() time.Time {
+	if s != nil && s.nowFn != nil {
+		return s.nowFn().UTC()
+	}
+	return time.Now().UTC()
 }
 
 func (s *service) draftReviewBacklogTarget() int {
