@@ -47,12 +47,15 @@ func (s *service) retireStaleDelegatedFirstTouches(ctx context.Context, orgID uu
 		  AND d.touchpoint_id IS NOT NULL
 		  AND (d.evidence_source_run_id<>$2 OR d.source_snapshot_hash<>$3
 		    OR a.id IS NULL OR a.source_run_id<>$2 OR d.runtime_release_sha<>$4
-		    OR d.policy_version<>$5 OR d.policy_hash<>$6
-		    OR ($8 AND ($7::uuid IS NULL OR d.policy_authorization_id<>$7))
-		    OR NOT $9 OR d.source_freshness_hash<>$10 OR d.target_membership_hash<>$11
-		    OR d.target_membership_count<>$12 OR d.source_expires_at IS DISTINCT FROM $13::timestamptz)
+		    OR d.policy_version NOT IN ($5,$6)
+		    OR d.policy_hash<>CASE d.policy_version WHEN $5 THEN $7 WHEN $6 THEN $8 ELSE '' END
+		    OR ($10 AND ($9::uuid IS NULL OR d.policy_authorization_id<>$9))
+		    OR NOT $11 OR d.source_freshness_hash<>$12 OR d.target_membership_hash<>$13
+		    OR d.target_membership_count<>$14 OR d.source_expires_at IS DISTINCT FROM $15::timestamptz)
 		FOR UPDATE OF d`, orgID, sourceRunID, snapshotHash, s.cfg.RepositorySHA,
-		DelegatedFirstTouchPolicyV1, DelegatedFirstTouchPolicyHashV1, policyAuthorizationID, checkPolicyAuthorization,
+		DelegatedFirstTouchPolicyV1, DelegatedFirstTouchPolicyV2,
+		DelegatedFirstTouchPolicyHashV1, DelegatedFirstTouchPolicyHashV2,
+		policyAuthorizationID, checkPolicyAuthorization,
 		authorityValid, sourceFreshnessHash, targetMembershipHash, targetMembershipCount, sourceExpiresAt)
 	if err != nil {
 		return 0, err
