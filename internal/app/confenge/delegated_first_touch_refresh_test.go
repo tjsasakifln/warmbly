@@ -40,10 +40,92 @@ func TestRetireStaleIgnoresAcquisitionProvenance(t *testing.T) {
 	if !strings.Contains(s, "a.commercial_qualification_state<>'QUALIFIED'") {
 		t.Fatal("retirement must gate on the commercial fact, not on which run emitted the row")
 	}
-	for _, integrity := range []string{"d.runtime_release_sha<>", "d.policy_hash<>", "d.target_membership_hash<>", "d.target_membership_count<>"} {
-		if !strings.Contains(s, integrity) {
-			t.Fatalf("%s is a content/binding integrity term and must stay", integrity)
+	// A build identity and a population revision are provenance too. Comparing
+	// them retired every approved touch on each deploy and on each republish of
+	// the same membership: six release cohorts, 7141 qualified decisions, and a
+	// production first-touch queue that could never survive long enough to send.
+	for _, provenance := range []string{
+		"d.runtime_release_sha<>",
+		"d.target_membership_hash<>",
+		"d.target_membership_count<>",
+	} {
+		if strings.Contains(s, provenance) {
+			t.Fatalf("%s is build or import provenance and must not retire a qualified decision", provenance)
 		}
+	}
+	for _, integrity := range []string{"d.policy_hash<>", "d.policy_version NOT IN ("} {
+		if !strings.Contains(s, integrity) {
+			t.Fatalf("%s is a policy binding integrity term and must stay", integrity)
+		}
+	}
+}
+
+// Retirement cancels durable queued work, so it must require positive proof of
+// revocation. A feed that could not be read has revoked nothing; sweeping on it
+// cancelled the whole org queue on a transient database error.
+func TestRetireStaleDoesNotSweepOnUnreadableFeed(t *testing.T) {
+	b, err := os.ReadFile("delegated_first_touch_refresh.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if !strings.Contains(s, "if feedErr != nil {\n\t\treturn 0, feedErr\n\t}") {
+		t.Fatal("a feed read error must abort the sweep, not fall through into a total cancel")
+	}
+	if strings.Contains(s, "OR NOT $9") {
+		t.Fatal("absence of a qualified attestation is not revocation; the sweep must be symmetric with the approval path")
+	}
+	if !strings.Contains(s, "authorityRevoked := authority.Present && authority.State != CommercialQualified") {
+		t.Fatal("only a present-and-unqualified attestation retires population-wide")
+	}
+}
+
+// The autorun must not conflate "policy could not be read" with "policy revoked".
+func TestAutorunDoesNotRetireOnPolicyReadError(t *testing.T) {
+	b, err := os.ReadFile("delegated_first_touch_worker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if strings.Contains(s, "if err != nil || auth == nil {") {
+		t.Fatal("a transient policy read error must not take the retirement branch")
+	}
+	if !strings.Contains(s, "var noAuthorization *uuid.UUID") {
+		t.Fatal("the no-active-policy sentinel must be explicit, not a bare nil variadic")
+	}
+}
+
+// 'attempted' is the terminal hand-off state, not canonical drift. Omitting it
+// made every backend restart un-enrol correctly dispatched touches and strip
+// their approval.
+func TestLedgerReconcilerTreatsAttemptedAsValidTransit(t *testing.T) {
+	b, err := os.ReadFile("delegated_first_touch.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if strings.Contains(s, "'queued','reserved','sent'") {
+		t.Fatal("a queue row in 'attempted' is valid transit and must not be reconciled as drift")
+	}
+	if !strings.Contains(s, "'queued','reserved','attempted','sent'") {
+		t.Fatal("the transit allow-list must include the attempted hand-off state")
+	}
+}
+
+// An attempted row whose touchpoint lost approval can never receive an outcome,
+// and Enqueue treats 'attempted' as terminal, so it would block that draft
+// forever.
+func TestAttemptedReconcilerRecoversOrphanedRows(t *testing.T) {
+	b, err := os.ReadFile("dispatch_queue_worker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if !strings.Contains(s, "touchpoint_reverted_before_provider_outcome") {
+		t.Fatal("an approval-stripped attempted row must reach a terminal, re-queueable state")
+	}
+	if strings.Contains(s, "models.TouchpointOpenStates[tp.State]") {
+		t.Fatal("QUEUED is the healthy in-flight state and must not be failed as an orphan")
 	}
 }
 

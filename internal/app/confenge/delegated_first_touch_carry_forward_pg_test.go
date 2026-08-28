@@ -205,3 +205,86 @@ func TestDelegatedUnattestedPopulationKeepsQualifiedApprovalsPostgres(t *testing
 		t.Fatalf("an unqualified account survived an unattested population: retired=%d err=%v", retired, err)
 	}
 }
+
+// A deploy changes the runtime release sha of the process, not the commercial
+// fact, the policy binding or the copy. Comparing it retired every approved and
+// queued first touch on every deploy: production accumulated 7141 cancelled
+// qualified decisions across six release cohorts and never sent a single mail,
+// because the queue was destroyed faster than the send cadence could drain it.
+func TestDelegatedRedeployKeepsQueuedWorkPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	qualifyDelegatedPGFixture(t, f)
+	report, xerr := f.svc.ApplyDelegatedFirstTouchManifest(f.ctx, f.orgID, f.manifest, false)
+	if xerr != nil || report == nil || report.Queued != 1 {
+		t.Fatalf("fixture did not queue: report=%+v err=%v", report, xerr)
+	}
+	feed, err := f.repo.GetFeedSyncState(f.ctx, f.orgID)
+	if err != nil || feed == nil {
+		t.Fatalf("feed state unavailable: state=%+v err=%v", feed, err)
+	}
+
+	// The next release ships. Nothing about this account changed.
+	f.svc.cfg.RepositorySHA = "sha-after-redeploy-" + uuid.NewString()
+
+	retired, err := f.svc.retireStaleDelegatedFirstTouches(f.ctx, f.orgID, feed.LastRunID, feed.LastSnapshotHash)
+	if err != nil || retired != 0 {
+		t.Fatalf("a redeploy retired still-qualified queued work: retired=%d err=%v", retired, err)
+	}
+	var decisionState, queueState string
+	if err := f.pool.QueryRow(f.ctx, `
+		SELECT d.state,q.status
+		FROM confenge_delegated_first_touch_decisions d
+		JOIN confenge_dispatch_queue q ON q.organization_id=d.organization_id AND q.message_key=d.queue_message_key
+		WHERE d.organization_id=$1 AND d.touchpoint_id=$2`, f.orgID, report.Items[0].TouchpointID).
+		Scan(&decisionState, &queueState); err != nil {
+		t.Fatal(err)
+	}
+	if decisionState != "QUEUED" || queueState != "queued" {
+		t.Fatalf("queued work did not survive the redeploy: decision=%s queue=%s", decisionState, queueState)
+	}
+}
+
+// The population attestation can be republished over the same members with a
+// new revision. That is an import event, not a revocation, and it must not
+// cancel work already proven against the per-account three-year fact.
+func TestDelegatedMembershipRepublishKeepsQueuedWorkPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	qualifyDelegatedPGFixture(t, f)
+	report, xerr := f.svc.ApplyDelegatedFirstTouchManifest(f.ctx, f.orgID, f.manifest, false)
+	if xerr != nil || report == nil || report.Queued != 1 {
+		t.Fatalf("fixture did not queue: report=%+v err=%v", report, xerr)
+	}
+	state, err := f.repo.GetFeedSyncState(f.ctx, f.orgID)
+	if err != nil || state == nil {
+		t.Fatalf("feed state unavailable: state=%+v err=%v", state, err)
+	}
+	account, err := f.repo.GetAccount(f.ctx, f.orgID, f.manifest.Entries[0].AccountID)
+	if err != nil || account == nil {
+		t.Fatalf("account unavailable: account=%+v err=%v", account, err)
+	}
+	// The producer republishes with one more member in the population.
+	state.TargetMembershipHash = strings.Repeat("c", 64)
+	state.TargetMembershipCount += 1
+	qualification := testRootQualification(account.CNPJRoot, time.Now().UTC().AddDate(-1, 0, 0))
+	stampFeedStateWithV2(state, []RootQualification{qualification})
+	if err := f.repo.UpsertFeedSyncState(f.ctx, state); err != nil {
+		t.Fatal(err)
+	}
+
+	retired, err := f.svc.retireStaleDelegatedFirstTouches(f.ctx, f.orgID, state.LastRunID, state.LastSnapshotHash)
+	if err != nil || retired != 0 {
+		t.Fatalf("a membership republish retired still-qualified queued work: retired=%d err=%v", retired, err)
+	}
+	var queueState string
+	if err := f.pool.QueryRow(f.ctx, `
+		SELECT q.status
+		FROM confenge_delegated_first_touch_decisions d
+		JOIN confenge_dispatch_queue q ON q.organization_id=d.organization_id AND q.message_key=d.queue_message_key
+		WHERE d.organization_id=$1 AND d.touchpoint_id=$2`, f.orgID, report.Items[0].TouchpointID).
+		Scan(&queueState); err != nil {
+		t.Fatal(err)
+	}
+	if queueState != "queued" {
+		t.Fatalf("queued work did not survive the republish: queue=%s", queueState)
+	}
+}

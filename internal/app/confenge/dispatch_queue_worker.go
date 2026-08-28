@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 
 	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
 	"github.com/warmbly/warmbly/internal/errx"
@@ -154,6 +155,21 @@ func (s *service) ReconcileAttemptedDispatches(ctx context.Context) (int, error)
 			if err := s.governor.MarkQueue(ctx, item.ID, dispatch.QueueCancelled, "touchpoint_cancelled"); err != nil {
 				return reconciled, err
 			}
+			reconciled++
+		case tp.State == models.TouchpointNeedsReview:
+			// The touchpoint lost its approval before the outcome was observed, so
+			// no outcome can ever arrive. QUEUED is deliberately not treated this
+			// way: that is the healthy in-flight state while acceptance is still
+			// unknown. Enqueue treats 'attempted' as terminal to prevent a
+			// duplicate dispatch, so leaving the row here would block this draft
+			// from ever being queued again. Fail it with a diagnosable reason; a
+			// re-approval can then legitimately re-queue it.
+			if err := s.governor.MarkQueue(ctx, item.ID, dispatch.QueueFailed, "touchpoint_reverted_before_provider_outcome"); err != nil {
+				return reconciled, err
+			}
+			log.Warn().Str("queue_item_id", item.ID.String()).Str("draft_id", item.DraftID.String()).
+				Str("touchpoint_state", tp.State).
+				Msg("confenge: attempted dispatch orphaned by touchpoint revert")
 			reconciled++
 		}
 	}
