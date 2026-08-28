@@ -13,20 +13,22 @@
 #
 # The Go services pin the `-minprofile` variant, keeping the execution-plane
 # contract that Stripe, the AWS SDK, GCP Tasks/PubSub and Kafka are not
-# compile-linked.
+# compile-linked. CONFENGE_GO_IMAGE_SUFFIX exists for one case: rolling back to
+# a release published before that variant existed, with
+# CONFENGE_GO_IMAGE_SUFFIX= to select the plain tag.
 
 services:
   backend:
     build: !reset null
-    image: ${CONFENGE_IMAGE_PREFIX:-ghcr.io/tjsasakifln/warmbly}/backend:${WARMBLY_RELEASE_SHA:?release sha required for an immutable deploy}-minprofile
+    image: ${CONFENGE_IMAGE_PREFIX:-ghcr.io/tjsasakifln/warmbly}/backend:${WARMBLY_RELEASE_SHA:?release sha required for an immutable deploy}${CONFENGE_GO_IMAGE_SUFFIX--minprofile}
 
   consumer:
     build: !reset null
-    image: ${CONFENGE_IMAGE_PREFIX:-ghcr.io/tjsasakifln/warmbly}/consumer:${WARMBLY_RELEASE_SHA:?release sha required for an immutable deploy}-minprofile
+    image: ${CONFENGE_IMAGE_PREFIX:-ghcr.io/tjsasakifln/warmbly}/consumer:${WARMBLY_RELEASE_SHA:?release sha required for an immutable deploy}${CONFENGE_GO_IMAGE_SUFFIX--minprofile}
 
   worker:
     build: !reset null
-    image: ${CONFENGE_IMAGE_PREFIX:-ghcr.io/tjsasakifln/warmbly}/worker:${WARMBLY_RELEASE_SHA:?release sha required for an immutable deploy}-minprofile
+    image: ${CONFENGE_IMAGE_PREFIX:-ghcr.io/tjsasakifln/warmbly}/worker:${WARMBLY_RELEASE_SHA:?release sha required for an immutable deploy}${CONFENGE_GO_IMAGE_SUFFIX--minprofile}
 
   tracking:
     build: !reset null
@@ -47,4 +49,4 @@ services:
   # Same binary set as the backend image; seed runs from it under the `seed` profile.
   seed:
     build: !reset null
-    image: ${CONFENGE_IMAGE_PREFIX:-ghcr.io/tjsasakifln/warmbly}/backend:${WARMBLY_RELEASE_SHA:?release sha required for an immutable deploy}-minprofile
+    image: ${CONFENGE_IMAGE_PREFIX:-ghcr.io/tjsasakifln/warmbly}/backend:${WARMBLY_RELEASE_SHA:?release sha required for an immutable deploy}${CONFENGE_GO_IMAGE_SUFFIX--minprofile}

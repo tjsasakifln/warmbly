@@ -98,3 +98,7 @@ data/backups/
 data/confenge-evidence/
 data/confenge-artifacts/
 data/confenge-backend.env
+
+# Python bytecode
+__pycache__/
+*.pyc
