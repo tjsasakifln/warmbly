@@ -36,7 +36,12 @@ func EvaluateTargetFit(acc *models.OutreachAccount) TargetFitAuthorization {
 		strings.TrimSpace(acc.TargetFitSourceWatermark) == "" || acc.TargetFitObservedAt == nil {
 		return TargetFitAuthorization{Reason: TargetFitReasonMissing}
 	}
-	if !acc.TargetFitFresh {
+	// target_fit_fresh goes false purely on producer watermark lag: the
+	// datalake moved and the classifier has not re-scored yet. That is
+	// acquisition health. A company still inside the rolling three-year
+	// window has strictly stronger evidence than a recent re-score, so the
+	// lag reports but does not disqualify it.
+	if !acc.TargetFitFresh && AccountCommercialQualification(acc, time.Now().UTC()).State != CommercialQualified {
 		return TargetFitAuthorization{Reason: TargetFitReasonStale}
 	}
 	if class != TargetFitConfirmed {

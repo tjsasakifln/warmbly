@@ -12,6 +12,9 @@ const readiness: ConfengeReadiness = {
   feed_configured: true,
   feed_age_seconds: 300,
   feed_age: "fresh",
+  commercial_qualification_state: "QUALIFIED",
+  commercial_qualification_known: true,
+  commercial_qualified_count: 412,
   outcome_loop: "ready",
   ai: "ready",
   governor_cap: 10,
@@ -64,15 +67,46 @@ const overview: ConfengeWorkingQueueSummary = {
 };
 
 describe("bloqueios do lote piloto", () => {
-  it("usa o estado de frescor autoritativo retornado pelo backend", () => {
+  it("não bloqueia por fonte desatualizada quando a população está qualificada", () => {
     const gate = buildPilotGate({
-      readiness: { ...readiness, feed_state: "stale", feed_age_seconds: 60, feed_max_age_seconds: 86_400 },
+      readiness: {
+        ...readiness,
+        feed_state: "stale",
+        feed_age_seconds: 259_200,
+        feed_max_age_seconds: 86_400,
+        pilot_cohort_prepared: PILOT_TARGET,
+        pilot_cohort_approved: PILOT_TARGET,
+      },
       summary,
       overview,
       reviewCount: 0,
     });
 
-    expect(gate.blockers[0]).toMatchObject({ id: "feed" });
+    expect(gate.blockers).toHaveLength(0);
+    expect(gate.ready).toBe(true);
+  });
+
+  it("bloqueia quando a qualificação comercial saiu da janela de três anos", () => {
+    const gate = buildPilotGate({
+      readiness: { ...readiness, commercial_qualification_state: "EXPIRED", commercial_qualified_count: 0 },
+      summary,
+      overview,
+      reviewCount: 0,
+    });
+
+    expect(gate.blockers[0]).toMatchObject({ id: "commercial" });
+    expect(gate.blockers[0].title).toContain("janela de três anos");
+  });
+
+  it("bloqueia quando o backend não devolve leitura comercial", () => {
+    const gate = buildPilotGate({
+      readiness: { ...readiness, commercial_qualification_state: undefined, commercial_qualification_known: false },
+      summary,
+      overview,
+      reviewCount: 0,
+    });
+
+    expect(gate.blockers[0]).toMatchObject({ id: "commercial" });
   });
 
   it("expõe lote, aprovação e pausa quando nada foi preparado", () => {

@@ -244,13 +244,54 @@ export function formatFeedStatus(readiness: {
 }): string {
   if (!readiness.feed_configured) return "Não configurado";
   const age = formatFeedAge(readiness.feed_age_seconds);
-  if (readiness.feed_authority_state === "expired") return `Autoridade expirada · dados ${age}`;
-  if (readiness.feed_state === "stale") return `Desatualizado · dados ${age}`;
+  if (readiness.feed_authority_state === "expired") return `Autoridade da fonte expirada (dados ${age})`;
+  if (readiness.feed_state === "stale") {
+    return `Atualização de mercado atrasada; novos leads podem não estar refletidos (dados ${age})`;
+  }
   if (readiness.feed_state === "missing" || readiness.feed_authority_state === "missing") {
-    return "Autoridade ausente ou incompleta";
+    return "Autoridade da fonte ausente ou incompleta";
   }
   if (readiness.target_membership_complete && readiness.target_membership_count !== undefined) {
     return `Atualizado ${age} · ${readiness.target_membership_count} TARGET / ${readiness.supplier_confirmed_count ?? 0} fornecedores`;
   }
   return `Atualizado ${age}`;
+}
+
+export type CommercialQualificationState = "QUALIFIED" | "EXPIRED" | "REVOKED" | "UNKNOWN";
+
+// A qualificação comercial é fato público de fornecimento na janela de três
+// anos. Idade de feed nunca entra nessa conta.
+export function commercialQualificationTitle(state: CommercialQualificationState): string {
+  switch (state) {
+    case "EXPIRED":
+      return "Qualificação comercial fora da janela de três anos";
+    case "REVOKED":
+      return "Qualificação comercial revogada";
+    default:
+      return "Sem população comercialmente qualificada";
+  }
+}
+
+export function commercialQualificationDetail(state: CommercialQualificationState): string {
+  switch (state) {
+    case "EXPIRED":
+      return "As evidências de fornecimento saíram da janela de três anos. Requalifique a base antes de montar o lote piloto.";
+    case "REVOKED":
+      return "A evidência de fornecimento foi revogada. Reveja a base antes de montar o lote piloto.";
+    default:
+      return "Nenhuma empresa da base tem evidência pública de ter sido fornecedora contratada em obra ou serviço de engenharia nos últimos três anos.";
+  }
+}
+
+export function formatCommercialQualification(readiness: {
+  commercial_qualification_state?: CommercialQualificationState;
+  commercial_qualification_known?: boolean;
+  commercial_qualified_count?: number;
+}): string {
+  const state = readiness.commercial_qualification_state ?? "UNKNOWN";
+  if (state === "QUALIFIED") {
+    return `${readiness.commercial_qualified_count ?? 0} empresas qualificadas (janela de 3 anos)`;
+  }
+  if (!readiness.commercial_qualification_known) return "Leitura indisponível";
+  return commercialQualificationTitle(state);
 }

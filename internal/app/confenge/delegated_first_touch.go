@@ -42,6 +42,15 @@ const (
 	DelegatedWebSourceKindOfficialRegistry = "OFFICIAL_COMPANY_REGISTRY"
 )
 
+// Contact evidence is proven fresh at the instant a decision is minted. The
+// runway schedules sends days ahead, so transport re-proves the same window
+// against that instant plus the widest legal runway, never a moving now.
+const (
+	delegatedContactEvidenceWindow  = 30 * 24 * time.Hour
+	delegatedContactEvidenceRunway  = time.Duration(MaxDelegatedFirstTouchRunwayDays) * 24 * time.Hour
+	delegatedContactEvidenceCeiling = delegatedContactEvidenceWindow + delegatedContactEvidenceRunway
+)
+
 var delegatedSHA256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var delegatedDigitPattern = regexp.MustCompile(`[0-9]`)
 
@@ -424,32 +433,33 @@ func commercialBindingFromStoredFeed(feed *models.OutreachFeedSyncState, payload
 	}
 }
 
-func EvaluateStoredFeedAuthority(feed *models.OutreachFeedSyncState, now time.Time, maxAge time.Duration) (SourceHealthDecision, CommercialAuthorityDecision) {
-	source := ClassifySourceHealth(feedSourceFreshnessFromState(feed), now, maxAge)
-	if feed == nil {
-		return source, CommercialAuthorityDecision{State: CommercialAuthorityAbsent}
-	}
-	payload := storedCommercialAuthority(feed)
-	return source, EvaluateCommercialAuthority(payload, commercialBindingFromStoredFeed(feed, payload), now)
+// EvaluateStoredSourceHealth reports acquisition health only. Callers must not
+// turn its result into a commercial hold.
+func EvaluateStoredSourceHealth(feed *models.OutreachFeedSyncState, now time.Time, maxAge time.Duration) SourceHealthDecision {
+	return ClassifySourceHealth(feedSourceFreshnessFromState(feed), now, maxAge)
 }
 
-func commercialReadback(d CommercialAuthorityDecision) DelegatedFirstTouchAuthorityReadback {
-	return DelegatedFirstTouchAuthorityReadback{
+// commercialReadbackV2 projects the V2 qualification decision onto the
+// operator readback. Basis fields stay pure provenance.
+func commercialReadbackV2(feed *models.OutreachFeedSyncState, d CommercialQualificationDecision) DelegatedFirstTouchAuthorityReadback {
+	out := DelegatedFirstTouchAuthorityReadback{
 		Present:                            d.Present,
-		State:                              firstNonEmpty(d.State, CommercialAuthorityAbsent),
-		NewAdmissionAllowed:                d.NewAdmissionAllowed,
-		ExistingBoundTouchTransportAllowed: d.ExistingBoundTouchTransportAllowed,
-		BasisSourceRunID:                   d.BasisSourceRunID,
-		BasisSnapshotHash:                  d.BasisSnapshotHash,
-		BasisMembershipHash:                d.BasisMembershipHash,
-		BasisPublicationSemanticHash:       d.BasisPublicationSemanticHash,
-		ProducerIdentity:                   d.ProducerIdentity,
-		SourceRunID:                        d.BasisSourceRunID,
-		SnapshotID:                         d.BasisSnapshotHash,
-		MembershipHash:                     d.BasisMembershipHash,
-		ValidUntil:                         d.ValidUntil,
+		State:                              firstNonEmpty(d.State, CommercialUnknown),
+		NewAdmissionAllowed:                d.AllowsNewAdmission(),
+		ExistingBoundTouchTransportAllowed: d.AllowsTransport(),
+		ValidUntil:                         d.QualifiedUntil,
 		ReasonCodes:                        append([]string{}, d.ReasonCodes...),
 	}
+	payload := storedCommercialAuthorityV2(feed)
+	if payload == nil {
+		return out
+	}
+	out.BasisSourceRunID, out.BasisSnapshotHash = payload.BasisSourceRunID, payload.BasisSnapshotHash
+	out.BasisMembershipHash = payload.BasisMembershipHash
+	out.BasisPublicationSemanticHash = payload.BasisPublicationSemanticHash
+	out.ProducerIdentity = payload.ProducerIdentity
+	out.SourceRunID, out.SnapshotID, out.MembershipHash = payload.BasisSourceRunID, payload.BasisSnapshotHash, payload.BasisMembershipHash
+	return out
 }
 
 func firstHold(reasons []string) string {
@@ -567,30 +577,23 @@ func (s *service) applyDelegatedFirstTouchManifest(ctx context.Context, orgID uu
 		return nil, errx.New(errx.Forbidden, strings.Join(blockers, ","))
 	}
 	feedState, feedErr := s.repo.GetFeedSyncState(ctx, orgID)
-	now := s.now()
 	if feedErr != nil || feedState == nil {
 		return nil, errx.New(errx.Forbidden, "authoritative_feed_attestation_invalid")
 	}
-	commercialPayload := firstPresentAuthority(manifest.CommercialAuthority, storedCommercialAuthority(feedState))
-	if !authorityPresent(commercialPayload) {
-		if validateAuthoritativeFeedState(feedState, now, s.cfg.FeedMaxAge, true) != nil {
-			return nil, errx.New(errx.Forbidden, "authoritative_feed_attestation_invalid")
-		}
-	} else {
-		elig := EvaluateOutboundEligibility(
-			feedSourceFreshnessFromState(feedState),
-			commercialPayload,
-			commercialBindingFromStoredFeed(feedState, commercialPayload),
-			TransportState{State: TransportActive},
-			now, s.cfg.FeedMaxAge, nil, false,
-		)
-		if elig.CommercialAuthority.State == CommercialAuthorityUnknown {
-			return nil, errx.New(errx.Forbidden, ReasonAuthorityBindingMismatch)
-		}
-		if elig.CommercialAuthority.State == CommercialAuthorityExpired {
-			return nil, errx.New(errx.Forbidden, ReasonAuthorityExpired)
-		}
+	// The snapshot must be structurally whole. Its AGE is acquisition health
+	// and is deliberately not consulted here.
+	if err := validateAuthoritativeFeedStructure(feedState, true); err != nil {
+		return nil, errx.New(errx.Forbidden, "authoritative_feed_attestation_invalid")
 	}
+	// Same posture as transport: the population attestation only blocks when it
+	// is present and not qualified. Absent, the per-account three-year rule in
+	// validateDelegatedEntry still gates every entry and fails closed.
+	if authority := FeedCommercialAuthorityState(feedState); authority.Present && authority.State != CommercialQualified {
+		return nil, errx.New(errx.Forbidden, firstNonEmpty(firstHold(authority.ReasonCodes), ReasonQualificationMissing))
+	}
+	// Manifest-vs-state integrity, not producer age: this manifest was built
+	// against a different snapshot than the one actually applied. A carried
+	// forward qualified account is unaffected.
 	if feedState.LastRunID != manifest.SourceRunID || feedState.LastSnapshotHash != manifest.SourceSnapshotHash {
 		return nil, errx.New(errx.Forbidden, "stale_source_run")
 	}
@@ -687,6 +690,8 @@ func expectedFirstTouchPolicyHash(version string) (string, bool) {
 		return DelegatedFirstTouchPolicyHashV1, true
 	case DelegatedFirstTouchPolicyV2:
 		return DelegatedFirstTouchPolicyHashV2, true
+	case DelegatedFirstTouchPolicyV3:
+		return DelegatedFirstTouchPolicyHashV3, true
 	default:
 		return "", false
 	}
@@ -1085,7 +1090,9 @@ func (s *service) validateDelegatedEntry(ctx context.Context, orgID uuid.UUID, m
 			add("contractor_role_provenance_missing")
 		}
 	}
-	if entry.EvidenceObservedAt.After(time.Now().UTC().Add(5*time.Minute)) || time.Since(entry.EvidenceObservedAt) > 30*24*time.Hour {
+	// No age ceiling: a proven contractor role does not stop being true because
+	// it was observed a while ago. Only future-dating is impossible.
+	if entry.EvidenceObservedAt.IsZero() || entry.EvidenceObservedAt.After(time.Now().UTC().Add(5*time.Minute)) {
 		add("contractor_role_evidence_stale")
 	}
 	if !delegatedSHA256Pattern.MatchString(entry.ContractEvidenceHash) {
@@ -1124,33 +1131,26 @@ func (s *service) validateDelegatedEntry(ctx context.Context, orgID uuid.UUID, m
 		add("authoritative_feed_state_unavailable")
 	} else {
 		now := s.now()
-		bound := s.delegatedTouchAlreadyBound(ctx, orgID, acc.ID)
-		commercialPayload := firstPresentAuthority(manifest.CommercialAuthority, storedCommercialAuthority(feedState))
-		if authorityPresent(commercialPayload) {
-			elig := EvaluateOutboundEligibility(
-				feedSourceFreshnessFromState(feedState),
-				commercialPayload,
-				commercialBindingFromStoredFeed(feedState, commercialPayload),
-				TransportState{State: TransportActive},
-				now, s.cfg.FeedMaxAge, nil, bound,
-			)
-			if !bound && !elig.AllowNewAdmission {
-				add(firstNonEmpty(firstHold(elig.HoldReasons), ReasonNewAdmissionFrozen))
-			}
-			if bound && !elig.AllowExistingBoundTouchTransport {
-				add(firstNonEmpty(firstHold(elig.HoldReasons), ReasonBoundTransportForbidden))
-			}
-		} else if err := validateAuthoritativeFeedState(feedState, now, s.cfg.FeedMaxAge, true); err != nil {
+		if err := validateAuthoritativeFeedStructure(feedState, true); err != nil {
 			add("authoritative_feed_attestation_invalid")
 		}
+		// A present-but-unqualified population attestation blocks; an absent one
+		// falls through to the per-account rule, which is never optional.
+		if authority := FeedCommercialAuthorityState(feedState); authority.Present && authority.State != CommercialQualified {
+			add(firstNonEmpty(firstHold(authority.ReasonCodes), ReasonQualificationMissing))
+		}
+		// The company itself must still be inside the rolling three-year
+		// window. Producer age never substitutes for this and never revokes it.
+		qual := AccountCommercialQualification(acc, now)
+		if !qual.AllowsNewAdmission() {
+			add(firstNonEmpty(firstHold(qual.ReasonCodes), ReasonQualificationMissing))
+		}
+		// Manifest-vs-state integrity, not producer age. See applyDelegated.
 		if manifest.SourceRunID != feedState.LastRunID || manifest.SourceSnapshotHash != feedState.LastSnapshotHash {
 			add("stale_source_run")
 		}
-		if acc.SourceRunID != feedState.LastRunID {
-			add("account_source_run_drift")
-		}
 	}
-	blockers = append(blockers, validatePersistedContractorRole(acc, manifest, entry)...)
+	blockers = append(blockers, validatePersistedContractorRole(acc, entry)...)
 	if err := RequireTargetFit(acc); err != nil {
 		add("target_confirmed_gate_failed")
 	}
@@ -1232,7 +1232,7 @@ func (s *service) validateDelegatedDeterministicQA(ctx context.Context, orgID uu
 	if len(entry.ContractEvidenceIDs) == 0 || canonicalStringSet(entry.EvidenceIDs) != canonicalStringSet(wantEvidence) {
 		add("fact_evidence_binding_mismatch")
 	}
-	if !delegatedEvidenceRowsCurrent(evidence, entry.EvidenceIDs, acc.LastImportRunID, time.Now().UTC()) {
+	if admissionNow := time.Now().UTC(); !delegatedEvidenceRowsCurrent(evidence, entry.EvidenceIDs, acc.LastImportRunID, admissionNow, admissionNow) {
 		add("fact_evidence_not_current_confirmed")
 	}
 	out := &DraftOutput{
@@ -1265,7 +1265,9 @@ func (s *service) validateDelegatedDeterministicQA(ctx context.Context, orgID uu
 	return blockers
 }
 
-func delegatedEvidenceRowsCurrent(evidence []models.OutreachEvidence, required []string, importID *uuid.UUID, now time.Time) bool {
+// ref is the instant the currency question is asked (now at admission, the
+// decision instant at transport); now still caps the absolute ceiling.
+func delegatedEvidenceRowsCurrent(evidence []models.OutreachEvidence, required []string, importID *uuid.UUID, ref, now time.Time) bool {
 	if len(required) == 0 || importID == nil || *importID == uuid.Nil {
 		return false
 	}
@@ -1273,7 +1275,9 @@ func delegatedEvidenceRowsCurrent(evidence []models.OutreachEvidence, required [
 	for i := range evidence {
 		row := evidence[i]
 		if row.EpistemicClass != models.OutreachEpistemicConfirmedFact || row.LastImportRunID == nil || *row.LastImportRunID != *importID ||
-			row.ConsultedAt == nil || row.ConsultedAt.After(now.Add(5*time.Minute)) || now.Sub(row.ConsultedAt.UTC()) > 30*24*time.Hour {
+			row.ConsultedAt == nil || row.ConsultedAt.After(now.Add(5*time.Minute)) ||
+			ref.Sub(row.ConsultedAt.UTC()) > delegatedContactEvidenceWindow ||
+			now.Sub(row.ConsultedAt.UTC()) > delegatedContactEvidenceCeiling {
 			continue
 		}
 		if id := strings.TrimSpace(row.SourceEvidenceID); id != "" {
@@ -1346,7 +1350,7 @@ func validateDelegatedPartyRole(entry DelegatedFirstTouchEntry) []string {
 	return out
 }
 
-func validatePersistedContractorRole(acc *models.OutreachAccount, manifest DelegatedFirstTouchManifest, entry DelegatedFirstTouchEntry) []string {
+func validatePersistedContractorRole(acc *models.OutreachAccount, entry DelegatedFirstTouchEntry) []string {
 	if acc == nil {
 		return []string{"contractor_role_account_missing"}
 	}
@@ -1358,9 +1362,8 @@ func validatePersistedContractorRole(acc *models.OutreachAccount, manifest Deleg
 	if acc.ContractorRolePolicyVersion != DelegatedFirstTouchEvidenceV1 || acc.ContractorRoleSource != "extra-cli:v_contracts_canonical_v2" {
 		add("persisted_contractor_role_authority_mismatch")
 	}
-	if acc.ContractorRoleSourceRunID != manifest.SourceRunID || acc.SourceRunID != manifest.SourceRunID {
-		add("contractor_role_source_run_drift")
-	}
+	// No run-id equality here: which run emitted the role is provenance, and
+	// the semantic bindings below are what actually prove it.
 	if acc.ContractorRoleObservedAt == nil || !acc.ContractorRoleObservedAt.Equal(entry.EvidenceObservedAt.UTC()) {
 		add("contractor_role_observed_at_mismatch")
 	}
@@ -1391,8 +1394,19 @@ func canonicalStringSet(values []string) string {
 	return strings.Join(out, "\x00")
 }
 
-func delegatedWebSourceObservedFresh(source DelegatedWebSource, now time.Time) bool {
-	return !source.ObservedAt.IsZero() && !source.ObservedAt.After(now.Add(5*time.Minute)) && now.Sub(source.ObservedAt) <= 30*24*time.Hour
+// ref is the instant the freshness question is legitimately asked: now at
+// admission, the decision instant at transport.
+func delegatedWebSourceObservedFresh(source DelegatedWebSource, ref time.Time) bool {
+	return !source.ObservedAt.IsZero() && !source.ObservedAt.After(ref.Add(5*time.Minute)) &&
+		ref.Sub(source.ObservedAt) <= delegatedContactEvidenceWindow
+}
+
+// delegatedWebSourceTransportable is the absolute ceiling at send time: a
+// decision parked past the approval window plus the widest runway must be
+// re-proved, not shipped.
+func delegatedWebSourceTransportable(source DelegatedWebSource, now time.Time) bool {
+	return !source.ObservedAt.IsZero() && !source.ObservedAt.After(now.Add(5*time.Minute)) &&
+		now.Sub(source.ObservedAt) <= delegatedContactEvidenceCeiling
 }
 
 func delegatedWebSourceSupportsMailbox(source DelegatedWebSource) bool {
@@ -2284,15 +2298,15 @@ func (s *service) populateDelegatedFirstTouchControl(ctx context.Context, orgID 
 	} else {
 		control.Blocker = "dispatch_governor_unavailable"
 	}
-	_, commercial := EvaluateStoredFeedAuthority(feed, now, s.cfg.FeedMaxAge)
-	control.Commercial = commercialReadback(commercial)
+	// V2 labels the operator blocker; the V1 age bands would report an expiry
+	// for a population that is commercially QUALIFIED.
+	commercial := FeedCommercialAuthorityState(feed)
+	control.Commercial = commercialReadbackV2(feed, commercial)
 	switch {
 	case !commercial.Present && control.Source.FreshnessState != "fresh":
 		control.Blocker = "authoritative_feed_" + control.Source.FreshnessState
-	case commercial.Present && commercial.State == CommercialAuthorityExpired:
-		control.Blocker = ReasonAuthorityExpired
-	case commercial.Present && commercial.State == CommercialAuthorityUnknown:
-		control.Blocker = ReasonAuthorityBindingMismatch
+	case commercial.Present && commercial.State != CommercialQualified:
+		control.Blocker = firstNonEmpty(firstHold(commercial.ReasonCodes), ReasonQualificationMissing)
 	case out.DuplicateLiveAccount > 0 || out.DuplicateLiveRoot > 0:
 		control.Blocker = "duplicate_live_first_touch"
 	case !out.PolicyActive:
@@ -2335,6 +2349,8 @@ func (s *service) assertDelegatedFirstTouchDecision(ctx context.Context, orgID u
 	if s.orgRisk == nil || s.orgRisk.SendingSuspended(ctx, orgID) {
 		return fmt.Errorf("organization sending risk blocks delegated first-touch")
 	}
+	// Source run id, snapshot hash, expiry and freshness hash are read for the
+	// audit record only; they are acquisition provenance and gate nothing.
 	type binding struct {
 		State, PolicyVersion, PolicyHash, AuthorityReference, ContentHash, ActorType, Authority string
 		SourceRunID, SourceSnapshotHash, EvidenceVersion, EvidenceHash, EvidenceReference       string
@@ -2344,7 +2360,7 @@ func (s *service) assertDelegatedFirstTouchDecision(ctx context.Context, orgID u
 		ComposerVersion, TemplateVersion, PromptVersion, RuntimeReleaseSHA                      string
 		SourceFreshnessHash, TargetMembershipHash                                               string
 		PolicyAuthorizationID, ContactCandidateID                                               uuid.UUID
-		EvidenceObservedAt                                                                      time.Time
+		EvidenceObservedAt, DecidedAt                                                           time.Time
 		SourceExpiresAt                                                                         *time.Time
 		TargetMembershipCount                                                                   int
 		ContractEvidenceIDs, RoleReasonCodes, WebSources                                        []byte
@@ -2357,7 +2373,7 @@ func (s *service) assertDelegatedFirstTouchDecision(ctx context.Context, orgID u
 			contract_evidence_ids,role_reason_codes,web_sources,recipient,route_class,
 			contractor_role_status,target_party_role,supplier_cnpj14,buyer_cnpj14,supplier_identity_ref,
 			buyer_identity_ref,role_match_method,role_confidence,composer_version,template_version,prompt_version,
-			runtime_release_sha,policy_authorization_id,contact_candidate_id
+			runtime_release_sha,policy_authorization_id,contact_candidate_id,decided_at
 		FROM confenge_delegated_first_touch_decisions
 		WHERE organization_id=$1 AND touchpoint_id=$2
 		  AND decision='DELEGATED_POLICY_APPROVE'
@@ -2368,7 +2384,7 @@ func (s *service) assertDelegatedFirstTouchDecision(ctx context.Context, orgID u
 			&got.TargetMembershipCount, &got.ContractEvidenceIDs, &got.RoleReasonCodes, &got.WebSources, &got.Recipient, &got.RouteClass,
 			&got.RoleStatus, &got.TargetPartyRole, &got.SupplierCNPJ14, &got.BuyerCNPJ14, &got.SupplierIdentityRef,
 			&got.BuyerIdentityRef, &got.RoleMatchMethod, &got.RoleConfidence, &got.ComposerVersion, &got.TemplateVersion,
-			&got.PromptVersion, &got.RuntimeReleaseSHA, &got.PolicyAuthorizationID, &got.ContactCandidateID)
+			&got.PromptVersion, &got.RuntimeReleaseSHA, &got.PolicyAuthorizationID, &got.ContactCandidateID, &got.DecidedAt)
 	if err != nil {
 		return fmt.Errorf("delegated decision missing")
 	}
@@ -2439,29 +2455,42 @@ func (s *service) assertDelegatedFirstTouchDecision(ctx context.Context, orgID u
 		return fail("recipient_shared_across_cnpj_identities")
 	}
 	now := time.Now().UTC()
+	// Contact freshness was legitimately proven when the decision was minted;
+	// the runway ships days later, so re-prove it against that instant plus an
+	// absolute ceiling instead of a moving now.
+	decidedAt := got.DecidedAt.UTC()
+	if decidedAt.IsZero() || decidedAt.After(now.Add(5*time.Minute)) {
+		return fail("recipient_evidence_freshness_drift")
+	}
 	var webSources []DelegatedWebSource
 	if json.Unmarshal(got.WebSources, &webSources) != nil || !candidateSourceCorroborated(cand, webSources) {
 		return fail("recipient_evidence_association_drift")
 	}
 	for i := range webSources {
-		if !delegatedWebSourceAllowed(webSources[i], now) {
+		if !delegatedWebSourceAllowed(webSources[i], decidedAt) || !delegatedWebSourceTransportable(webSources[i], now) {
 			return fail("recipient_evidence_freshness_drift")
 		}
 	}
 	if acc.LastImportRunID == nil || cand.LastImportRunID == nil || *acc.LastImportRunID != *cand.LastImportRunID {
 		return fail("recipient_import_run_drift")
 	}
+	// The feed must be readable and structurally whole. Which run last emitted
+	// this row is acquisition provenance and never cancels a bound decision.
 	feedState, feedErr := s.repo.GetFeedSyncState(ctx, orgID)
-	if feedErr != nil || feedState == nil || feedState.LastRunID != got.SourceRunID ||
-		feedState.LastSnapshotHash != got.SourceSnapshotHash || acc.SourceRunID != got.SourceRunID {
+	if feedErr != nil || feedState == nil {
 		return fail("source_run_or_snapshot_drift")
 	}
-	if err := validateAuthoritativeFeedState(feedState, now, s.cfg.FeedMaxAge, true); err != nil {
-		return fail("source_freshness_drift")
+	if err := validateAuthoritativeFeedStructure(feedState, true); err != nil {
+		return fail("authoritative_feed_attestation_invalid")
 	}
-	if got.SourceExpiresAt == nil || !got.SourceExpiresAt.Equal(feedState.SourceExpiresAt.UTC()) ||
-		got.SourceFreshnessHash != feedState.SourceFreshnessHash ||
-		got.TargetMembershipHash != feedState.TargetMembershipHash ||
+	// The commercial question at the last gate before SMTP: is this company
+	// still a proven public-engineering supplier inside the three-year window?
+	if qual := AccountCommercialQualification(acc, now); !qual.AllowsTransport() {
+		return fail(firstNonEmpty(firstHold(qual.ReasonCodes), ReasonQualificationMissing))
+	}
+	// Membership binding only: snapshot expiry and freshness hash move on every
+	// refresh and are acquisition provenance recorded on the decision.
+	if got.TargetMembershipHash != feedState.TargetMembershipHash ||
 		got.TargetMembershipCount != feedState.TargetMembershipCount {
 		return fail("source_authority_binding_drift")
 	}
@@ -2471,7 +2500,7 @@ func (s *service) assertDelegatedFirstTouchDecision(ctx context.Context, orgID u
 	}
 	if acc.ContractorRoleStatus != ContractorRoleConfirmed || acc.TargetPartyRole != "SUPPLIER" ||
 		acc.ContractorRolePolicyVersion != DelegatedFirstTouchEvidenceV1 || acc.ContractorRoleSource != "extra-cli:v_contracts_canonical_v2" ||
-		acc.ContractorRoleSourceRunID != got.SourceRunID || acc.ContractorRoleEvidenceHash != got.EvidenceHash ||
+		acc.ContractorRoleEvidenceHash != got.EvidenceHash ||
 		acc.ContractorRoleEvidenceReference != got.EvidenceReference || acc.SupplierCNPJ14 != got.SupplierCNPJ14 ||
 		acc.BuyerCNPJ14 != got.BuyerCNPJ14 || acc.SupplierIdentityRef != got.SupplierIdentityRef ||
 		acc.BuyerIdentityRef != got.BuyerIdentityRef || acc.ContractorRoleMatchMethod != got.RoleMatchMethod ||
@@ -2489,12 +2518,16 @@ func (s *service) assertDelegatedFirstTouchDecision(ctx context.Context, orgID u
 		got.EvidenceReference != "extra-cli:v_contracts_canonical_v2:sha256:"+got.EvidenceHash {
 		return fail("contractor_role_semantic_binding_drift")
 	}
+	// The role observation must match the decision exactly and cannot be
+	// future-dated. It deliberately carries NO age ceiling: a proven
+	// contractor role does not stop being true because it was observed a
+	// while ago. Expiry comes from the three-year qualification window.
 	if acc.ContractorRoleObservedAt == nil || !acc.ContractorRoleObservedAt.Equal(got.EvidenceObservedAt.UTC()) ||
-		acc.ContractorRoleObservedAt.After(now.Add(5*time.Minute)) || now.Sub(acc.ContractorRoleObservedAt.UTC()) > 30*24*time.Hour {
-		return fail("contractor_role_freshness_drift")
+		acc.ContractorRoleObservedAt.After(now.Add(5*time.Minute)) {
+		return fail("contractor_role_observation_drift")
 	}
 	evidence, evidenceErr := s.repo.ListEvidence(ctx, orgID, acc.ID)
-	if evidenceErr != nil || !delegatedEvidenceRowsCurrent(evidence, tp.EvidenceIDs, acc.LastImportRunID, now) {
+	if evidenceErr != nil || !delegatedEvidenceRowsCurrent(evidence, tp.EvidenceIDs, acc.LastImportRunID, decidedAt, now) {
 		return fail("fact_evidence_row_drift")
 	}
 	return nil

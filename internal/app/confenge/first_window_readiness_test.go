@@ -21,14 +21,11 @@ func readyFirstWindowSnapshot(now time.Time) FirstWindowReadinessSnapshot {
 		SourceRunID:        "run-abc",
 		SourceSnapshotHash: "snap-abc",
 		SourceHealth:       SourceHealthDecision{State: SourceHealthFresh},
-		CommercialAuthority: CommercialAuthorityDecision{
-			Present: true, State: CommercialAuthorityCurrent,
-			NewAdmissionAllowed: true, ExistingBoundTouchTransportAllowed: true,
-			BasisSourceRunID: "run-abc", BasisSnapshotHash: "snap-abc",
-			BasisMembershipHash:          strings.Repeat("a", 64),
-			BasisPublicationSemanticHash: strings.Repeat("s", 64),
-			ProducerIdentity:             strings.Repeat("p", 64),
-			ValidUntil:                   &until,
+		CommercialAuthority: CommercialQualificationDecision{
+			Present: true, State: CommercialQualified,
+			PolicyVersion:  CommercialAuthorityPolicyV2,
+			EvidenceHash:   strings.Repeat("e", 64),
+			QualifiedUntil: &until,
 		},
 		MembershipHash:            strings.Repeat("a", 64),
 		PolicyID:                  DelegatedFirstTouchPolicyV2,
@@ -169,7 +166,7 @@ func TestCollectFirstWindowReadinessIndependentAuthorityOnStaleSource(t *testing
 	repo := newMemRepo()
 	generatedAt := now.Add(-48 * time.Hour)
 	expiresAt := now.Add(2 * time.Hour)
-	payload := testAuthorityPayload(CommercialAuthorityCurrent, now)
+	qualification := testRootQualification("11222333", now.AddDate(-1, 0, 0))
 	svc := NewService(Config{
 		Enabled: true, RepositorySHA: strings.Repeat("a", 40),
 		FeedSchemaVersion: "confenge.outreach.v1", FeedMaxAge: 24 * time.Hour,
@@ -184,7 +181,16 @@ func TestCollectFirstWindowReadinessIndependentAuthorityOnStaleSource(t *testing
 		LastSuccessAt: &now, LastStatus: "completed",
 		SourceGeneratedAt: &generatedAt, SourceExpiresAt: &expiresAt,
 		TargetMembershipComplete: true, TargetMembershipHash: strings.Repeat("a", 64),
-		TargetMembershipCount: 3, CommercialAuthorityJSON: marshalCommercialAuthority(&payload),
+		TargetMembershipCount: 3,
+		CommercialAuthorityV2JSON: testCommercialAuthorityV2JSON(
+			"run-abc", "snap-abc", strings.Repeat("a", 64),
+			strings.Repeat("s", 64), strings.Repeat("p", 64),
+			[]RootQualification{qualification}),
+		PublicationSemanticHash:   strings.Repeat("s", 64),
+		ProducerIdentity:          strings.Repeat("p", 64),
+		QualificationEvidenceHash: HashQualificationCorpus([]RootQualification{qualification}),
+		QualifiedRootCount:        1,
+		QualificationWindowYears:  QualificationWindowYears,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -212,10 +218,10 @@ func TestCollectFirstWindowReadinessIndependentAuthorityOnStaleSource(t *testing
 	if report.SourceHealth.State != SourceHealthStale {
 		t.Fatalf("source=%s commercial=%+v", report.SourceHealth.State, report.CommercialAuthority)
 	}
-	if !report.CommercialAuthority.Present || report.CommercialAuthority.State != CommercialAuthorityCurrent {
+	if !report.CommercialAuthority.Present || report.CommercialAuthority.State != CommercialQualified {
 		t.Fatalf("commercial masked by source: %+v", report.CommercialAuthority)
 	}
-	if !report.CommercialAuthority.ExistingBoundTouchTransportAllowed {
+	if !report.CommercialAuthority.AllowsTransport() {
 		t.Fatal("stale source collapsed existing-bound transport")
 	}
 	if report.PauseState == "" || report.PauseSource == "" {

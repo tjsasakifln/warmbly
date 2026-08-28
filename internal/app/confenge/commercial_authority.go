@@ -31,6 +31,12 @@ const (
 	// File bytes of Governance commercial/outbound/cfg-first-touch-routing.v2.json.
 	DelegatedFirstTouchPolicyHashV2 = "f9d031f4239bb1e17beb714ae5f691b973f6c2147a55efa7e47ed09d6d905932"
 
+	// v3 carries the rolling three-year commercial rule. It is additive: v2 is
+	// still honoured so already-approved work keeps its exact binding.
+	DelegatedFirstTouchPolicyV3 = "CFG-FIRST-TOUCH-ROUTING-v3"
+	// File bytes of Governance commercial/outbound/cfg-first-touch-routing.v3.json.
+	DelegatedFirstTouchPolicyHashV3 = "43d452d501041e48391e32c35ae5bd94d4a8deac330e43a3ff160abe09198f65"
+
 	ReasonAuthorityAbsent             = "commercial_authority_absent"
 	ReasonAuthorityBindingMismatch    = "commercial_authority_binding_mismatch"
 	ReasonAuthorityExpired            = "commercial_authority_expired"
@@ -226,8 +232,13 @@ func flagsForState(state string) (newAdmission, bound bool, reasons []string) {
 	}
 }
 
-// EvaluateCommercialAuthority is a pure function of the attested payload, the
-// live binding, and an explicit now. Tests inject the clock. Live state is
+// EvaluateCommercialAuthority survives only to prove the BINDING of a legacy
+// COMMERCIAL_AUTHORITY/1.0 payload at ingest. Its age bands can no longer gate
+// anything: commercial eligibility is decided exclusively by
+// COMMERCIAL_AUTHORITY/2.0 and the rolling three-year rule.
+//
+// It is a pure function of the attested payload, the live binding, and an
+// explicit now. Tests inject the clock. Live state is
 // recomputed from validated_at; a static snapshot state is never trusted forever.
 func EvaluateCommercialAuthority(payload *FeedCommercialAuthority, binding CommercialAuthorityBinding, now time.Time) CommercialAuthorityDecision {
 	out := CommercialAuthorityDecision{State: CommercialAuthorityAbsent}
@@ -362,9 +373,12 @@ func ClassifySourceHealth(f *FeedSourceFreshness, now time.Time, maxAge time.Dur
 	return out
 }
 
-// EvaluateOutboundEligibility keeps the three questions separate. Explicit
-// suppression, deactivation, recipient expiry, party-role conflict, and
-// evidence expiry are supplied by the caller as liveGateHold; they always win.
+// EvaluateOutboundEligibility keeps the three questions separate: acquisition
+// health, commercial qualification, and transport safety. Source health is
+// reported but is NEVER part of the authorization conjunction, and it can never
+// grant authority by fallback. Explicit suppression, deactivation, recipient
+// expiry, party-role conflict, and evidence expiry are supplied by the caller
+// as liveGateHold; they always win.
 func EvaluateOutboundEligibility(
 	source *FeedSourceFreshness,
 	payload *FeedCommercialAuthority,
@@ -386,24 +400,10 @@ func EvaluateOutboundEligibility(
 		TransportReasons:    append([]string{}, transport.Blockers...),
 	}
 	if !out.CommercialAuthority.Present {
-		// Current fail-closed path: source must be FRESH and the producer
-		// contract must still validate. Source DEGRADED/STALE is not a
-		// deactivation, but it also does not authorize new work.
-		if err := ValidateAuthoritativeSourceFreshness(source, now); err != nil {
-			out.HoldReasons = appendUnique(out.HoldReasons, ReasonAuthorityAbsent)
-			if out.SourceHealth.State == SourceHealthStale {
-				out.HoldReasons = appendUnique(out.HoldReasons, ReasonSourceHealthStale)
-			}
-			if out.SourceHealth.State == SourceHealthDegraded {
-				out.HoldReasons = appendUnique(out.HoldReasons, ReasonSourceHealthDegraded)
-			}
-			if out.SourceHealth.State == SourceHealthMissing {
-				out.HoldReasons = appendUnique(out.HoldReasons, ReasonSourceHealthMissing)
-			}
-		} else if len(liveGateHold) == 0 {
-			out.AllowNewAdmission = true
-			out.AllowExistingBoundTouchTransport = true
-		}
+		// Fail closed on the commercial fact itself. A FRESH crawler is NOT a
+		// substitute for commercial authority and must never grant admission
+		// or transport by fallback.
+		out.HoldReasons = appendUnique(out.HoldReasons, ReasonQualificationMissing)
 	} else {
 		out.AllowNewAdmission = out.CommercialAuthority.NewAdmissionAllowed
 		out.AllowExistingBoundTouchTransport = out.CommercialAuthority.ExistingBoundTouchTransportAllowed
@@ -413,9 +413,6 @@ func EvaluateOutboundEligibility(
 		if !out.AllowExistingBoundTouchTransport {
 			out.HoldReasons = appendUnique(out.HoldReasons, ReasonBoundTransportForbidden)
 		}
-		// Source health is reported but never the sole reason a bound lead
-		// "ceased to exist". It can still HOLD new admission when the
-		// authority itself forbids it.
 		_ = boundExisting
 	}
 	for _, reason := range liveGateHold {
@@ -434,7 +431,7 @@ func EvaluateOutboundEligibility(
 // RecognizeFirstTouchPolicy is exact. Partial names and fuzzy prefixes HOLD.
 func RecognizeFirstTouchPolicy(policyID string) (known bool, hold bool, reason string) {
 	switch strings.TrimSpace(policyID) {
-	case DelegatedFirstTouchPolicyV1, DelegatedFirstTouchPolicyV2:
+	case DelegatedFirstTouchPolicyV1, DelegatedFirstTouchPolicyV2, DelegatedFirstTouchPolicyV3:
 		return true, false, ""
 	case "":
 		return false, true, ReasonPolicyUnknown

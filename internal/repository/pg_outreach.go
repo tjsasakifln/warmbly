@@ -453,7 +453,14 @@ const outreachAccountSelect = `
 		contractor_role_evidence_ids, COALESCE(supplier_cnpj14,''), COALESCE(supplier_identity_ref,''),
 		COALESCE(buyer_cnpj14,''), COALESCE(buyer_identity_ref,''),
 		COALESCE(contractor_role_match_method,'NONE'), COALESCE(contractor_role_confidence,'UNKNOWN'),
-		contractor_role_reason_codes, COALESCE(initial_backlog_reason_code,'') `
+		contractor_role_reason_codes, COALESCE(initial_backlog_reason_code,''),
+		COALESCE(commercial_qualification_state,'UNKNOWN'), COALESCE(commercial_qualification_policy_version,''),
+		COALESCE(commercial_qualifying_contract_id,''), commercial_qualifying_contract_date,
+		COALESCE(commercial_qualifying_date_field,''), COALESCE(commercial_qualifying_contract_count,0),
+		commercial_qualified_until, COALESCE(commercial_qualification_evidence_hash,''),
+		COALESCE(commercial_qualification_evidence_reference,''), COALESCE(commercial_qualification_provenance,''),
+		COALESCE(commercial_qualification_cnpj_root8,''), commercial_qualification_observed_at,
+		COALESCE(commercial_qualification_deactivated,false), COALESCE(commercial_qualification_deactivation_reason,'') `
 
 func scanAccount(row scannable) (*models.OutreachAccount, error) {
 	var a models.OutreachAccount
@@ -484,6 +491,13 @@ func scanAccount(row scannable) (*models.OutreachAccount, error) {
 		&a.ContractorRoleEvidenceReference, &roleEvidence, &a.SupplierCNPJ14, &a.SupplierIdentityRef,
 		&a.BuyerCNPJ14, &a.BuyerIdentityRef, &a.ContractorRoleMatchMethod, &a.ContractorRoleConfidence,
 		&roleReasons, &a.InitialBacklogReasonCode,
+		&a.CommercialQualificationState, &a.CommercialQualificationPolicyVersion,
+		&a.CommercialQualifyingContractID, &a.CommercialQualifyingContractDate,
+		&a.CommercialQualifyingDateField, &a.CommercialQualifyingContractCount,
+		&a.CommercialQualifiedUntil, &a.CommercialQualificationEvidenceHash,
+		&a.CommercialQualificationEvidenceReference, &a.CommercialQualificationProvenance,
+		&a.CommercialQualificationCNPJRoot8, &a.CommercialQualificationObservedAt,
+		&a.CommercialQualificationDeactivated, &a.CommercialQualificationDeactivationReason,
 	)
 	if err != nil {
 		return nil, err
@@ -592,7 +606,14 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 			contractor_role_source_run_id, contractor_role_observed_at, contractor_role_evidence_hash,
 			contractor_role_evidence_reference, contractor_role_evidence_ids, supplier_cnpj14,
 			supplier_identity_ref, buyer_cnpj14, buyer_identity_ref, contractor_role_match_method,
-			contractor_role_confidence, contractor_role_reason_codes
+			contractor_role_confidence, contractor_role_reason_codes,
+			commercial_qualification_state, commercial_qualification_policy_version,
+			commercial_qualifying_contract_id, commercial_qualifying_contract_date,
+			commercial_qualifying_date_field, commercial_qualifying_contract_count,
+			commercial_qualified_until, commercial_qualification_evidence_hash,
+			commercial_qualification_evidence_reference, commercial_qualification_provenance,
+			commercial_qualification_cnpj_root8, commercial_qualification_observed_at,
+			commercial_qualification_deactivated, commercial_qualification_deactivation_reason
 		) VALUES (
 			$1,$2,$3,$4,$5,
 			$6,$7,$8,$9,$10,
@@ -608,7 +629,8 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 			$47,$48,$49,$50,
 			$51,$52,$53,
 			$54,$55,$56,$57,$58,$59,$60,$61,$62,$63,$64,$65,
-			$66,$67,$68,$69,$70,$71,$72,$73,$74,$75,$76,$77,$78,$79,$80,$81
+			$66,$67,$68,$69,$70,$71,$72,$73,$74,$75,$76,$77,$78,$79,$80,$81,
+			$82,$83,$84,$85,$86,$87,$88,$89,$90,$91,$92,$93,$94,$95
 		)
 		ON CONFLICT (organization_id, cnpj14) DO UPDATE SET
 			source_lead_id = EXCLUDED.source_lead_id,
@@ -766,6 +788,35 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 			contractor_role_match_method = EXCLUDED.contractor_role_match_method,
 			contractor_role_confidence = EXCLUDED.contractor_role_confidence,
 			contractor_role_reason_codes = EXCLUDED.contractor_role_reason_codes,
+			-- A feed without the V2 block must not erase a proven qualification.
+			commercial_qualification_state = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualification_state ELSE outreach_accounts.commercial_qualification_state END,
+			commercial_qualification_policy_version = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualification_policy_version ELSE outreach_accounts.commercial_qualification_policy_version END,
+			commercial_qualifying_contract_id = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualifying_contract_id ELSE outreach_accounts.commercial_qualifying_contract_id END,
+			commercial_qualifying_contract_date = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualifying_contract_date ELSE outreach_accounts.commercial_qualifying_contract_date END,
+			commercial_qualifying_date_field = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualifying_date_field ELSE outreach_accounts.commercial_qualifying_date_field END,
+			commercial_qualifying_contract_count = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualifying_contract_count ELSE outreach_accounts.commercial_qualifying_contract_count END,
+			commercial_qualified_until = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualified_until ELSE outreach_accounts.commercial_qualified_until END,
+			commercial_qualification_evidence_hash = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualification_evidence_hash ELSE outreach_accounts.commercial_qualification_evidence_hash END,
+			commercial_qualification_evidence_reference = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualification_evidence_reference ELSE outreach_accounts.commercial_qualification_evidence_reference END,
+			commercial_qualification_provenance = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualification_provenance ELSE outreach_accounts.commercial_qualification_provenance END,
+			commercial_qualification_cnpj_root8 = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualification_cnpj_root8 ELSE outreach_accounts.commercial_qualification_cnpj_root8 END,
+			commercial_qualification_observed_at = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualification_observed_at ELSE outreach_accounts.commercial_qualification_observed_at END,
+			commercial_qualification_deactivated = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualification_deactivated ELSE outreach_accounts.commercial_qualification_deactivated END,
+			commercial_qualification_deactivation_reason = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualification_deactivation_reason ELSE outreach_accounts.commercial_qualification_deactivation_reason END,
 			updated_at = EXCLUDED.updated_at,
 			id = outreach_accounts.id
 		RETURNING (xmax = 0) AS inserted, id`,
@@ -791,6 +842,13 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 		acc.ContractorRoleEvidenceReference, roleEvidence, acc.SupplierCNPJ14, acc.SupplierIdentityRef,
 		acc.BuyerCNPJ14, acc.BuyerIdentityRef, acc.ContractorRoleMatchMethod, acc.ContractorRoleConfidence,
 		roleReasons,
+		commercialQualificationState(acc), acc.CommercialQualificationPolicyVersion,
+		acc.CommercialQualifyingContractID, acc.CommercialQualifyingContractDate,
+		acc.CommercialQualifyingDateField, acc.CommercialQualifyingContractCount,
+		acc.CommercialQualifiedUntil, acc.CommercialQualificationEvidenceHash,
+		acc.CommercialQualificationEvidenceReference, acc.CommercialQualificationProvenance,
+		acc.CommercialQualificationCNPJRoot8, acc.CommercialQualificationObservedAt,
+		acc.CommercialQualificationDeactivated, acc.CommercialQualificationDeactivationReason,
 	).Scan(&created, &acc.ID)
 	return created, err
 }
@@ -970,7 +1028,10 @@ func (r *outreachRepository) GetFeedSyncState(ctx context.Context, orgID uuid.UU
 			COALESCE(last_error,''), COALESCE(last_status,'idle'), counts, updated_at,
 			source_generated_at, source_expires_at, COALESCE(source_freshness_hash,''),
 			target_membership_complete, COALESCE(target_membership_hash,''),
-			target_membership_count, supplier_confirmed_count, commercial_authority
+			target_membership_count, supplier_confirmed_count, commercial_authority,
+			commercial_authority_v2, COALESCE(qualification_evidence_hash,''),
+			qualified_root_count, qualification_window_years,
+			COALESCE(publication_semantic_hash,''), COALESCE(producer_identity,'')
 		FROM outreach_feed_sync_state WHERE organization_id=$1`, orgID)
 	var st models.OutreachFeedSyncState
 	var counts []byte
@@ -980,7 +1041,9 @@ func (r *outreachRepository) GetFeedSyncState(ctx context.Context, orgID uuid.UU
 		&st.LastError, &st.LastStatus, &counts, &st.UpdatedAt, &st.SourceGeneratedAt,
 		&st.SourceExpiresAt, &st.SourceFreshnessHash, &st.TargetMembershipComplete,
 		&st.TargetMembershipHash, &st.TargetMembershipCount, &st.SupplierConfirmedCount,
-		&st.CommercialAuthorityJSON,
+		&st.CommercialAuthorityJSON, &st.CommercialAuthorityV2JSON,
+		&st.QualificationEvidenceHash, &st.QualifiedRootCount, &st.QualificationWindowYears,
+		&st.PublicationSemanticHash, &st.ProducerIdentity,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -1008,8 +1071,11 @@ func (r *outreachRepository) UpsertFeedSyncState(ctx context.Context, st *models
 			last_success_at, last_attempt_at, last_error, last_status, counts, updated_at,
 			source_generated_at, source_expires_at, source_freshness_hash,
 			target_membership_complete, target_membership_hash, target_membership_count,
-			supplier_confirmed_count, commercial_authority
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+			supplier_confirmed_count, commercial_authority,
+			commercial_authority_v2, qualification_evidence_hash,
+			qualified_root_count, qualification_window_years,
+			publication_semantic_hash, producer_identity
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
 		ON CONFLICT (organization_id) DO UPDATE SET
 			last_snapshot_hash = EXCLUDED.last_snapshot_hash,
 			last_run_id = EXCLUDED.last_run_id,
@@ -1034,12 +1100,27 @@ func (r *outreachRepository) UpsertFeedSyncState(ctx context.Context, st *models
 				THEN outreach_feed_sync_state.supplier_confirmed_count ELSE EXCLUDED.supplier_confirmed_count END,
 			commercial_authority = CASE WHEN EXCLUDED.last_success_at IS NULL
 				THEN outreach_feed_sync_state.commercial_authority ELSE EXCLUDED.commercial_authority END,
+			commercial_authority_v2 = CASE WHEN EXCLUDED.last_success_at IS NULL
+				THEN outreach_feed_sync_state.commercial_authority_v2 ELSE EXCLUDED.commercial_authority_v2 END,
+			qualification_evidence_hash = CASE WHEN EXCLUDED.last_success_at IS NULL
+				THEN outreach_feed_sync_state.qualification_evidence_hash ELSE EXCLUDED.qualification_evidence_hash END,
+			qualified_root_count = CASE WHEN EXCLUDED.last_success_at IS NULL
+				THEN outreach_feed_sync_state.qualified_root_count ELSE EXCLUDED.qualified_root_count END,
+			qualification_window_years = CASE WHEN EXCLUDED.last_success_at IS NULL
+				THEN outreach_feed_sync_state.qualification_window_years ELSE EXCLUDED.qualification_window_years END,
+			publication_semantic_hash = CASE WHEN EXCLUDED.last_success_at IS NULL
+				THEN outreach_feed_sync_state.publication_semantic_hash ELSE EXCLUDED.publication_semantic_hash END,
+			producer_identity = CASE WHEN EXCLUDED.last_success_at IS NULL
+				THEN outreach_feed_sync_state.producer_identity ELSE EXCLUDED.producer_identity END,
 			updated_at = EXCLUDED.updated_at`,
 		st.OrganizationID, st.LastSnapshotHash, st.LastRunID, st.LastManifestURI,
 		st.LastSuccessAt, st.LastAttemptAt, st.LastError, st.LastStatus, counts, st.UpdatedAt,
 		st.SourceGeneratedAt, st.SourceExpiresAt, st.SourceFreshnessHash,
 		st.TargetMembershipComplete, st.TargetMembershipHash, st.TargetMembershipCount,
 		st.SupplierConfirmedCount, st.CommercialAuthorityJSON,
+		st.CommercialAuthorityV2JSON, st.QualificationEvidenceHash,
+		st.QualifiedRootCount, st.QualificationWindowYears,
+		st.PublicationSemanticHash, st.ProducerIdentity,
 	)
 	return err
 }
@@ -1872,4 +1953,44 @@ func (r *outreachRepository) UpsertEvidence(ctx context.Context, e *models.Outre
 		e.LastImportRunID, e.CreatedAt, e.UpdatedAt,
 	).Scan(&created, &e.ID)
 	return created, err
+}
+
+// UpsertAccountCommercialQualification writes the COMMERCIAL_AUTHORITY/2.0
+// qualifying fact for one account. Idempotent by construction: replaying the
+// same evidence rewrites identical values and touches nothing else.
+func (r *outreachRepository) UpsertAccountCommercialQualification(ctx context.Context, orgID uuid.UUID, q models.AccountCommercialQualificationWrite) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE outreach_accounts SET
+			commercial_qualification_state = $3,
+			commercial_qualification_policy_version = $4,
+			commercial_qualifying_contract_id = $5,
+			commercial_qualifying_contract_date = $6,
+			commercial_qualifying_date_field = $7,
+			commercial_qualifying_contract_count = $8,
+			commercial_qualified_until = $9,
+			commercial_qualification_evidence_hash = $10,
+			commercial_qualification_evidence_reference = $11,
+			commercial_qualification_provenance = $12,
+			commercial_qualification_cnpj_root8 = $13,
+			commercial_qualification_observed_at = $14,
+			commercial_qualification_deactivated = $15,
+			commercial_qualification_deactivation_reason = $16,
+			updated_at = now()
+		WHERE organization_id=$1 AND id=$2`,
+		orgID, q.AccountID, q.State, q.PolicyVersion, q.QualifyingContractID,
+		q.QualifyingContractDate, q.QualifyingDateField, q.QualifyingContractCount,
+		q.QualifiedUntil, q.EvidenceHash, q.EvidenceReference, q.Provenance,
+		q.CNPJRoot8, q.ObservedAt, q.Deactivated, q.DeactivationReason)
+	return err
+}
+
+// commercialQualificationState keeps the CHECK constraint satisfied for rows
+// written before COMMERCIAL_AUTHORITY/2.0 evidence exists.
+func commercialQualificationState(acc *models.OutreachAccount) string {
+	switch acc.CommercialQualificationState {
+	case "QUALIFIED", "EXPIRED", "REVOKED", "UNKNOWN":
+		return acc.CommercialQualificationState
+	default:
+		return "UNKNOWN"
+	}
 }

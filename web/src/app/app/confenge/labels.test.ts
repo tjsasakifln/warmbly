@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { channelLabel, formatFeedAge, formatFeedStatus, formatPtBrDate, intentLabel, purposeLabel, reasonLabel, stateLabel } from "./labels";
+import { channelLabel, formatCommercialQualification, formatFeedAge, formatFeedStatus, formatPtBrDate, intentLabel, purposeLabel, reasonLabel, stateLabel } from "./labels";
 
 describe("rótulos da Central comercial CONFENGE", () => {
   it("traduz estados, canais, etapas e motivos conhecidos", () => {
@@ -47,6 +47,27 @@ describe("rótulos da Central comercial CONFENGE", () => {
       target_membership_complete: true,
       target_membership_count: 8653,
       supplier_confirmed_count: 7276,
-    })).toBe("Autoridade expirada · dados há 1 h");
+    })).toBe("Autoridade da fonte expirada (dados há 1 h)");
+  });
+
+  it("apresenta fonte atrasada como condição de aquisição, nunca como bloqueio de outbound", () => {
+    const label = formatFeedStatus({
+      feed_configured: true,
+      feed_age_seconds: 259200,
+      feed_state: "stale",
+      feed_authority_state: "stale",
+    });
+    expect(label).toContain("Atualização de mercado atrasada");
+    expect(label).toContain("novos leads podem não estar refletidos");
+    expect(label).not.toContain("Outbound bloqueado");
+  });
+
+  it("resume a qualificação comercial sem olhar idade de fonte", () => {
+    expect(formatCommercialQualification({
+      commercial_qualification_state: "QUALIFIED",
+      commercial_qualification_known: true,
+      commercial_qualified_count: 412,
+    })).toBe("412 empresas qualificadas (janela de 3 anos)");
+    expect(formatCommercialQualification({ commercial_qualification_known: false })).toBe("Leitura indisponível");
   });
 });

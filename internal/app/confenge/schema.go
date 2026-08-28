@@ -86,6 +86,9 @@ type FeedLead struct {
 	// ContractorRole is the typed buyer/supplier truth projected by extra-cli.
 	// Warmbly stores and verifies this contract; it never reinterprets raw PNCP.
 	ContractorRole FeedContractorRole `json:"contractor_role,omitempty"`
+	// CommercialQualification is COMMERCIAL_AUTHORITY/2.0: the qualifying
+	// public-engineering contracting fact inside the rolling three-year window.
+	CommercialQualification *RootQualification `json:"commercial_qualification,omitempty"`
 }
 
 // FeedContractorRole is the fail-closed extra-cli projection of the target's
@@ -377,7 +380,62 @@ func ValidateLead(i int, lead FeedLead) *LeadValidationError {
 	if err := validateFeedContractorRole(cnpj, lead.ContractorRole); err != "" {
 		return &LeadValidationError{Index: i, SourceLeadID: sid, CNPJ14: cnpj, Message: err}
 	}
+	if err := validateFeedCommercialQualification(cnpj, lead.CommercialQualification); err != "" {
+		return &LeadValidationError{Index: i, SourceLeadID: sid, CNPJ14: cnpj, Message: err}
+	}
 	return nil
+}
+
+// validateFeedCommercialQualification is structural and self-proving: the
+// evidence hash must reproduce, the role must be SUPPLIER, and qualified_until
+// must be exactly the contracting date plus the window. Window membership
+// itself is evaluated at read time against the live clock, never frozen here.
+func validateFeedCommercialQualification(leadCNPJ string, q *RootQualification) string {
+	if q == nil {
+		return ""
+	}
+	root := digits(leadCNPJ)
+	if len(root) < 8 {
+		return "commercial_qualification requires a full CNPJ on the lead"
+	}
+	if strings.TrimSpace(q.CNPJRoot8) != root[:8] {
+		return "commercial_qualification cnpj_root8 does not match the lead"
+	}
+	if !strings.EqualFold(strings.TrimSpace(q.PartyRole), PartyRoleSupplier) {
+		return "commercial_qualification requires party_role SUPPLIER"
+	}
+	if strings.TrimSpace(q.QualifyingContractID) == "" {
+		return "commercial_qualification is missing its qualifying contract reference"
+	}
+	// These fields are hash inputs. Storing a truncated copy would make the
+	// evidence unprovable forever, so an over-long value is refused outright.
+	if len([]rune(strings.TrimSpace(q.CNPJRoot8))) > 8 {
+		return "commercial_qualification cnpj_root8 is longer than a CNPJ root"
+	}
+	if len([]rune(strings.TrimSpace(q.QualifyingContractID))) > 200 {
+		return "commercial_qualification qualifying_contract_id exceeds 200 characters"
+	}
+	if len([]rune(strings.TrimSpace(q.EvidenceReference))) > 500 {
+		return "commercial_qualification evidence reference exceeds 500 characters"
+	}
+	if len([]rune(strings.TrimSpace(q.Provenance))) > 500 {
+		return "commercial_qualification provenance exceeds 500 characters"
+	}
+	if !containsStr(QualifyingDatePrecedence, strings.TrimSpace(q.QualifyingDateField)) {
+		return "commercial_qualification qualifying_date_field is not a canonical contracting date"
+	}
+	contractDate, err := parseQualifyingDate(q.QualifyingContractDate)
+	if err != nil {
+		return "commercial_qualification qualifying_contract_date is invalid"
+	}
+	declared, err := parseQualifyingDate(q.QualifiedUntil)
+	if err != nil || !declared.Equal(QualifiedUntilFor(contractDate)) {
+		return "commercial_qualification qualified_until must be the contracting date plus the rolling window"
+	}
+	if strings.ToLower(strings.TrimSpace(q.EvidenceHash)) != HashRootQualification(*q) {
+		return "commercial_qualification evidence hash does not reproduce"
+	}
+	return ""
 }
 
 func validateFeedContractorRole(leadCNPJ string, role FeedContractorRole) string {

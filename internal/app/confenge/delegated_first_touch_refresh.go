@@ -2,14 +2,16 @@ package confenge
 
 import (
 	"context"
-	"time"
 
 	"github.com/google/uuid"
 )
 
 const delegatedBindingRefreshReason = "delegated_authority_or_source_binding_advanced"
 
-// retireStaleDelegatedFirstTouches revokes approvals bound to an older feed, runtime or policy.
+// retireStaleDelegatedFirstTouches revokes approvals whose account is no longer
+// commercially QUALIFIED, or whose runtime, policy or membership binding moved.
+// Source run id, snapshot expiry and freshness hash are acquisition provenance
+// and never retire a still-qualified decision.
 func (s *service) retireStaleDelegatedFirstTouches(ctx context.Context, orgID uuid.UUID, sourceRunID, snapshotHash string, policyAuthorizationIDs ...*uuid.UUID) (int, error) {
 	if s == nil || s.delegatedDB == nil {
 		return 0, nil
@@ -27,12 +29,10 @@ func (s *service) retireStaleDelegatedFirstTouches(ctx context.Context, orgID uu
 	feedState, feedErr := s.repo.GetFeedSyncState(ctx, orgID)
 	authorityValid := feedErr == nil && feedState != nil && feedState.LastRunID == sourceRunID &&
 		feedState.LastSnapshotHash == snapshotHash &&
-		validateAuthoritativeFeedState(feedState, time.Now().UTC(), s.cfg.FeedMaxAge, true) == nil
-	var sourceExpiresAt *time.Time
-	sourceFreshnessHash, targetMembershipHash, targetMembershipCount := "", "", 0
+		validateAuthoritativeFeedStructure(feedState, true) == nil &&
+		FeedCommercialAuthorityState(feedState).State == CommercialQualified
+	targetMembershipHash, targetMembershipCount := "", 0
 	if feedState != nil {
-		sourceExpiresAt = feedState.SourceExpiresAt
-		sourceFreshnessHash = feedState.SourceFreshnessHash
 		targetMembershipHash = feedState.TargetMembershipHash
 		targetMembershipCount = feedState.TargetMembershipCount
 	}
@@ -45,18 +45,19 @@ func (s *service) retireStaleDelegatedFirstTouches(ctx context.Context, orgID uu
 		WHERE d.organization_id=$1
 		  AND d.state IN ('APPROVED','QUEUED','APPROVED_NOT_SCHEDULED')
 		  AND d.touchpoint_id IS NOT NULL
-		  AND (d.evidence_source_run_id<>$2 OR d.source_snapshot_hash<>$3
-		    OR a.id IS NULL OR a.source_run_id<>$2 OR d.runtime_release_sha<>$4
-		    OR d.policy_version NOT IN ($5,$6)
-		    OR d.policy_hash<>CASE d.policy_version WHEN $5 THEN $7 WHEN $6 THEN $8 ELSE '' END
-		    OR ($10 AND ($9::uuid IS NULL OR d.policy_authorization_id<>$9))
-		    OR NOT $11 OR d.source_freshness_hash<>$12 OR d.target_membership_hash<>$13
-		    OR d.target_membership_count<>$14 OR d.source_expires_at IS DISTINCT FROM $15::timestamptz)
-		FOR UPDATE OF d`, orgID, sourceRunID, snapshotHash, s.cfg.RepositorySHA,
+		  AND (a.id IS NULL OR a.commercial_qualification_state<>'QUALIFIED'
+		    OR d.runtime_release_sha<>$2
+		    OR d.policy_version NOT IN ($3,$4,$12)
+		    OR d.policy_hash<>CASE d.policy_version WHEN $3 THEN $5 WHEN $4 THEN $6 WHEN $12 THEN $13 ELSE '' END
+		    OR ($8 AND ($7::uuid IS NULL OR d.policy_authorization_id<>$7))
+		    OR NOT $9 OR d.target_membership_hash<>$10
+		    OR d.target_membership_count<>$11)
+		FOR UPDATE OF d`, orgID, s.cfg.RepositorySHA,
 		DelegatedFirstTouchPolicyV1, DelegatedFirstTouchPolicyV2,
 		DelegatedFirstTouchPolicyHashV1, DelegatedFirstTouchPolicyHashV2,
 		policyAuthorizationID, checkPolicyAuthorization,
-		authorityValid, sourceFreshnessHash, targetMembershipHash, targetMembershipCount, sourceExpiresAt)
+		authorityValid, targetMembershipHash, targetMembershipCount,
+		DelegatedFirstTouchPolicyV3, DelegatedFirstTouchPolicyHashV3)
 	if err != nil {
 		return 0, err
 	}

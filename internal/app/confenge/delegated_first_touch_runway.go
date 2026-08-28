@@ -114,11 +114,21 @@ func (s *service) delegatedFirstTouchRunwayPlan(
 		plan.CapacityBlocker = "runway_horizon_invalid"
 		return plan, nil
 	}
-	if err := validateAuthoritativeFeedState(feed, now, s.cfg.FeedMaxAge, true); err != nil {
-		plan.CapacityBlocker = "policy_or_feed_stale"
+	// Runway fill is commercial work over an intact snapshot. Producer age is
+	// not a capacity blocker; an ageing crawler must never drain the reservoir.
+	if err := validateAuthoritativeFeedStructure(feed, true); err != nil {
+		plan.CapacityBlocker = "authoritative_feed_attestation_invalid"
+		return plan, nil
+	}
+	// Transport posture: block only on a present-but-unqualified population
+	// attestation. Absent, the per-account three-year rule still gates fill.
+	if authority := FeedCommercialAuthorityState(feed); authority.Present && authority.State != CommercialQualified {
+		plan.CapacityBlocker = firstNonEmpty(firstHold(authority.ReasonCodes), ReasonQualificationMissing)
 		return plan, nil
 	}
 	manifest := DelegatedFirstTouchManifest{PolicyAuthorizationID: auth.ID}
+	// Legacy code name. The conditions are policy validity and founder binding;
+	// no term here is producer age.
 	if len(validateDelegatedPolicy(auth, manifest, now)) > 0 || len(s.validateDelegatedFounderBinding(orgID, auth)) > 0 {
 		plan.CapacityBlocker = "policy_or_feed_stale"
 		return plan, nil
@@ -360,12 +370,17 @@ func (s *service) delegatedFirstTouchReadyReservoirCount(
 		WHERE t.organization_id=$1
 		  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
 		  AND t.state IN ('DUE','NEEDS_REVIEW') AND t.contact_candidate_id IS NOT NULL
-		  AND feed.last_status='completed' AND a.source_run_id=feed.last_run_id
-		  AND t.source_run_id=feed.last_run_id AND a.initial_backlog_reason_code=''
+		  AND feed.last_status='completed'
+		  -- Same reservoir predicate as nextDelegatedFirstTouchCandidate; the
+		  -- readback must not report a reservoir the selector cannot serve.
+		  AND (a.source_run_id=feed.last_run_id OR a.commercial_qualification_state='QUALIFIED')
+		  AND (t.source_run_id=feed.last_run_id OR a.commercial_qualification_state='QUALIFIED')
+		  AND a.initial_backlog_reason_code=''
 		  AND a.last_import_run_id IS NOT NULL AND EXISTS (
 		    SELECT 1 FROM outreach_contact_candidates c
 		    WHERE c.organization_id=t.organization_id AND c.id=t.contact_candidate_id
-		      AND c.last_import_run_id=a.last_import_run_id
+		      AND c.email<>'' AND NOT c.blocked AND NOT c.do_not_contact AND NOT c.bounced
+		      AND upper(c.route_suppression) IN ('','NONE')
 		  )
 		  AND NOT EXISTS (
 		    SELECT 1 FROM confenge_delegated_first_touch_decisions d

@@ -61,7 +61,9 @@ func TestEvaluateCommercialAuthorityMatrix(t *testing.T) {
 	fresh := testFreshSource(now)
 	active := TransportState{State: TransportActive}
 
-	t.Run("absent_strict_fallback", func(t *testing.T) {
+	// A FRESH crawler is NOT commercial authority. Absence fails closed even at
+	// peak source health; freshness must never be promoted into authorization.
+	t.Run("absent_never_granted_by_source_freshness", func(t *testing.T) {
 		got := EvaluateOutboundEligibility(fresh, nil, binding, active, now, 24*time.Hour, nil, false)
 		if got.CommercialAuthority.Present || got.CommercialAuthority.State != CommercialAuthorityAbsent {
 			t.Fatalf("absent: %+v", got.CommercialAuthority)
@@ -69,8 +71,11 @@ func TestEvaluateCommercialAuthorityMatrix(t *testing.T) {
 		if got.SourceHealth.State != SourceHealthFresh {
 			t.Fatalf("source=%s", got.SourceHealth.State)
 		}
-		if !got.AllowNewAdmission || !got.AllowExistingBoundTouchTransport {
-			t.Fatalf("strict fresh should admit: %+v", got)
+		if got.AllowNewAdmission || got.AllowExistingBoundTouchTransport {
+			t.Fatalf("FRESH source granted commercial authority by fallback: %+v", got)
+		}
+		if !containsStr(got.HoldReasons, ReasonQualificationMissing) {
+			t.Fatalf("missing authority not reported explicitly: %+v", got.HoldReasons)
 		}
 		stale := ClassifySourceHealth(&FeedSourceFreshness{
 			ContractVersion: AuthoritativeFreshnessContractV1, Status: SourceHealthStale,

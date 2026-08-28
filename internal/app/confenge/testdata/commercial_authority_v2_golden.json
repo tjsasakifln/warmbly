@@ -1,0 +1,19 @@
+{
+  "_comment": "Cross-language golden vector for COMMERCIAL_AUTHORITY/2.0. extra-cli (scripts/confenge_activation/commercial_authority_v2.py) and Warmbly must produce byte-identical digests. Regenerating one side without the other is a contract break.",
+  "qualification": {
+    "cnpj_root8": "11222333",
+    "party_role": "SUPPLIER",
+    "qualifying_contract_id": "contract-11222333",
+    "qualifying_contract_date": "2025-08-28",
+    "qualifying_date_field": "data_assinatura",
+    "qualified_until": "2028-08-28",
+    "qualification_evidence_reference": "extra-cli:v_contracts_canonical_v2:contract-11222333"
+  },
+  "expected_evidence_hash": "8e5d7c66e5b921be7705f360fd55b2cb018783fa3bb2be01d9305be8e0573790",
+  "expected_corpus_hash": "ecb439a3a4523ed62eb63bdec7b2e10e16376d2a8cd6e8342374c6df0e950519",
+  "leap_normalization": {
+    "_comment": "Go AddDate normalizes 2024-02-29 + 3y forward to 2027-03-01. Python must match, not fall back to 2027-02-28.",
+    "contract_date": "2024-02-29",
+    "qualified_until": "2027-03-01"
+  }
+}

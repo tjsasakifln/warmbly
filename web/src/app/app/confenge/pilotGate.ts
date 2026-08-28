@@ -3,11 +3,12 @@ import type {
   ConfengeSummary,
   ConfengeWorkingQueueSummary,
 } from "@/lib/api/models/app/confenge/Confenge";
+import { commercialQualificationDetail, commercialQualificationTitle } from "./labels";
 
 export const PILOT_TARGET = 30;
 
 export type PilotBlocker = {
-  id: "email" | "feed" | "outcome" | "stale" | "cohort" | "approval" | "dispatch";
+  id: "email" | "commercial" | "outcome" | "stale" | "cohort" | "approval" | "dispatch";
   title: string;
   detail: string;
   href: string;
@@ -52,15 +53,13 @@ export function buildPilotGate(input: {
     });
   }
 
-  const feedMaxAge = readiness.feed_max_age_seconds ?? 86_400;
-  const feedBlocked = readiness.feed_state
-    ? readiness.feed_state !== "fresh"
-    : readiness.feed_age_seconds === null || readiness.feed_age_seconds === undefined || readiness.feed_age_seconds > feedMaxAge;
-  if (!readiness.feed_configured || feedBlocked) {
+  // Só a qualificação comercial bloqueia. Idade de feed é saúde de aquisição.
+  const commercialState = readiness.commercial_qualification_state ?? "UNKNOWN";
+  if (commercialState !== "QUALIFIED") {
     blockers.push({
-      id: "feed",
-      title: "Base comercial ausente ou desatualizada",
-      detail: "Atualize o feed antes de escolher as empresas do lote piloto.",
+      id: "commercial",
+      title: commercialQualificationTitle(commercialState),
+      detail: commercialQualificationDetail(commercialState),
       href: "#visao-geral",
       action: "Ver condições",
     });

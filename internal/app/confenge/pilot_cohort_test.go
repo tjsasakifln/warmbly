@@ -286,28 +286,70 @@ func TestPilotRecipientBlockReasons(t *testing.T) {
 	}
 }
 
-func TestPilotCohortFeedMissingAndStale(t *testing.T) {
+func TestPilotCohortFeedMissingBlocksAndStaleDoesNot(t *testing.T) {
+	t.Run("missing", func(t *testing.T) {
+		fixture := newPilotFixture(t)
+		accountID := fixture.addReadyAccount(t, 20)
+		fixture.repo.feedSync = nil
+		result, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID, []uuid.UUID{accountID}, PilotOperation{IdempotencyKey: "feed-missing"})
+		if xerr != nil {
+			t.Fatal(xerr)
+		}
+		if result.Results[0].ReasonCode != "feed_missing" || result.Prepared != 0 {
+			t.Fatalf("unexpected result: %+v", result)
+		}
+	})
+	// A quiet crawler is acquisition health. The snapshot stays commercially
+	// usable, so preparation must still run and only report the staleness.
+	t.Run("stale", func(t *testing.T) {
+		fixture := newPilotFixture(t)
+		accountID := fixture.addReadyAccount(t, 20)
+		stale := fixture.now.Add(-25 * time.Hour)
+		fixture.repo.feedSync[fixture.orgID].SourceGeneratedAt = &stale
+		result, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID, []uuid.UUID{accountID}, PilotOperation{IdempotencyKey: "feed-stale"})
+		if xerr != nil {
+			t.Fatal(xerr)
+		}
+		if result.Prepared != 1 || result.Results[0].ReasonCode != "" {
+			t.Fatalf("stale snapshot blocked proven work: %+v", result)
+		}
+		if result.SourceAcquisitionHealth != "stale" {
+			t.Fatalf("acquisition health must still be reported: %q", result.SourceAcquisitionHealth)
+		}
+	})
+}
+
+// A snapshot 72h old, an account the newest run did not re-emit: the member is
+// prepared while it is QUALIFIED, and only excluded once it loses that fact.
+func TestPilotCohortStaleRunProvenanceOnlyBlocksUnqualifiedAccounts(t *testing.T) {
 	for _, test := range []struct {
 		name      string
-		configure func(*pilotFixture)
-		want      string
+		qualify   func(*models.OutreachAccount, time.Time)
+		wantBlock string
 	}{
-		{name: "missing", configure: func(fixture *pilotFixture) { fixture.repo.feedSync = nil }, want: "feed_missing"},
-		{name: "stale", configure: func(fixture *pilotFixture) {
-			stale := fixture.now.Add(-25 * time.Hour)
-			fixture.repo.feedSync[fixture.orgID].SourceGeneratedAt = &stale
-		}, want: "feed_stale"},
+		{name: "qualified", qualify: func(acc *models.OutreachAccount, now time.Time) {
+			applyTestQualification(acc, now.AddDate(-1, 0, 0), now)
+		}},
+		{name: "expired", qualify: func(acc *models.OutreachAccount, now time.Time) {
+			applyTestQualification(acc, now.AddDate(-4, 0, 0), now)
+		}, wantBlock: "account_not_in_current_snapshot"},
+		{name: "unknown", qualify: func(*models.OutreachAccount, time.Time) {}, wantBlock: "account_not_in_current_snapshot"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newPilotFixture(t)
-			accountID := fixture.addReadyAccount(t, 20)
-			test.configure(fixture)
-			result, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID, []uuid.UUID{accountID}, PilotOperation{IdempotencyKey: "feed-" + test.name})
+			accountID := fixture.addReadyAccount(t, 21)
+			stale := fixture.now.Add(-72 * time.Hour)
+			fixture.repo.feedSync[fixture.orgID].SourceGeneratedAt = &stale
+			fixture.repo.feedSync[fixture.orgID].LastRunID = "run-newer-without-this-account"
+			acc := fixture.repo.byID[accountID]
+			acc.TargetPartyRole = PartyRoleSupplier
+			test.qualify(acc, fixture.now)
+			result, xerr := fixture.service.PreparePilotCohort(context.Background(), fixture.orgID, fixture.userID, []uuid.UUID{accountID}, PilotOperation{IdempotencyKey: "run-provenance-" + test.name})
 			if xerr != nil {
 				t.Fatal(xerr)
 			}
-			if result.Results[0].ReasonCode != test.want || result.Prepared != 0 {
-				t.Fatalf("unexpected result: %+v", result)
+			if result.Results[0].ReasonCode != test.wantBlock {
+				t.Fatalf("reason=%q want=%q result=%+v", result.Results[0].ReasonCode, test.wantBlock, result.Results[0])
 			}
 		})
 	}

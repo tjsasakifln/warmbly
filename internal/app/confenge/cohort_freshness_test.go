@@ -256,7 +256,10 @@ func TestHashStagedTargetMembershipUsesSortedUniqueRoots(t *testing.T) {
 	}
 }
 
-func TestAuthoritativeFeedStateExpiryOverridesGenericMaxAge(t *testing.T) {
+// The ingest gate still fails closed on an expired producer window, but the
+// STRUCTURE of the same snapshot stays valid: an intact membership does not
+// dissolve because the crawler window closed.
+func TestAuthoritativeFeedAgeIsIngestOnlyAndStructureSurvivesExpiry(t *testing.T) {
 	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
 	generatedAt := now.Add(-time.Hour)
 	expiresAt := now.Add(-time.Second)
@@ -267,11 +270,22 @@ func TestAuthoritativeFeedStateExpiryOverridesGenericMaxAge(t *testing.T) {
 		TargetMembershipHash: strings.Repeat("b", 64), TargetMembershipCount: 10,
 		SupplierConfirmedCount: 8,
 	}
-	if err := validateAuthoritativeFeedState(state, now, 24*time.Hour, false); err != nil {
-		t.Fatalf("legacy max-age state unexpectedly rejected: %v", err)
-	}
+	// Ingest of NEW facts still demands a live producer window.
 	if err := validateAuthoritativeFeedState(state, now, 24*time.Hour, true); err == nil || !strings.Contains(err.Error(), "expired") {
-		t.Fatalf("producer expiry did not dominate delegated gate: %v", err)
+		t.Fatalf("ingest accepted an expired producer window: %v", err)
+	}
+	// The commercial path asks only whether the snapshot is whole.
+	if err := validateAuthoritativeFeedStructure(state, true); err != nil {
+		t.Fatalf("expired producer window dissolved an intact snapshot: %v", err)
+	}
+	if err := validateAuthoritativeFeedAge(state, now, 24*time.Hour); err == nil {
+		t.Fatal("age check stopped reporting an expired producer window")
+	}
+	// Age is reported, never fatal, once the window is merely old.
+	stale := generatedAt.Add(-72 * time.Hour)
+	state.SourceGeneratedAt = &stale
+	if err := validateAuthoritativeFeedStructure(state, true); err != nil {
+		t.Fatalf("a three-day-old snapshot lost structural validity: %v", err)
 	}
 }
 
@@ -311,13 +325,25 @@ func TestFrozenFreshnessExpiryAndTamperBlockAuthorizationAndTransport(t *testing
 		t.Fatalf("post-freeze freshness tamper accepted: %v", err)
 	}
 
-	if err := ValidateFrozenSourceFreshness(snap, now.Add(2*time.Hour), true); err == nil || !strings.Contains(err.Error(), "expired") {
-		t.Fatalf("expired source accepted: %v", err)
+	// A frozen cohort is already-proven work. The producer window closing does
+	// NOT un-prove it; only tamper does.
+	if err := ValidateFrozenSourceFreshness(snap, now.Add(2*time.Hour), true); err != nil {
+		t.Fatalf("a closed producer window revoked already-frozen work: %v", err)
 	}
 	auth := &BoundedCohortAuthorization{FrozenManifest: snap}
 	reasons := ValidateBoundedCohortAuthorization(auth, CohortTransportInput{Now: now.Add(2 * time.Hour)})
-	if !containsReason(reasons, "authoritative_source_freshness_invalid") {
-		t.Fatalf("transport did not block expired source: %v", reasons)
+	if containsReason(reasons, "authoritative_source_freshness_invalid") {
+		t.Fatalf("transport blocked a frozen cohort purely on source age: %v", reasons)
+	}
+	// A snapshot that was never FRESH at publication is still refused.
+	neverFresh := *snap
+	nf := *snap.AuthoritativeSourceFreshness
+	nf.Status = "STALE"
+	neverFresh.AuthoritativeSourceFreshness = &nf
+	neverFresh.AuthoritativeFreshnessHash = HashAuthoritativeSourceFreshness(&nf)
+	neverFresh.CohortHash = HashFrozenCohort(&neverFresh)
+	if err := ValidateFrozenSourceFreshness(&neverFresh, now, true); err == nil {
+		t.Fatal("a snapshot never proven FRESH at publication was accepted")
 	}
 }
 

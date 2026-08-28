@@ -12,7 +12,18 @@ import (
 	"github.com/warmbly/warmbly/internal/repository"
 )
 
+// A lagging last_import_run_id is acquisition provenance: it must not retire a
+// first touch in review. Only actual recipient invalidity may.
+func TestRetireStaleReviewBacklogKeepsLaggingButValidRecipients(t *testing.T) {
+	runStaleReviewBacklogFixture(t, false)
+}
+
 func TestRetireStaleReviewBacklogRequeuesOnlyAgainstCurrentRoute(t *testing.T) {
+	runStaleReviewBacklogFixture(t, true)
+}
+
+func runStaleReviewBacklogFixture(t *testing.T, invalidateRecipient bool) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pool, err := pgxpool.New(ctx, testPostgresDSN(t))
@@ -77,6 +88,9 @@ func TestRetireStaleReviewBacklogRequeuesOnlyAgainstCurrentRoute(t *testing.T) {
 	}
 	oldCandidate := makeCandidate("stale-review-old-route", "old@stale-review.example", oldRun)
 	currentCandidate := makeCandidate("stale-review-current-route", "current@stale-review.example", currentRun)
+	if invalidateRecipient {
+		oldCandidate.Bounced = true
+	}
 	if _, err = repo.UpsertCandidate(ctx, oldCandidate); err != nil {
 		t.Fatal(err)
 	}
@@ -108,6 +122,22 @@ func TestRetireStaleReviewBacklogRequeuesOnlyAgainstCurrentRoute(t *testing.T) {
 	retired, requeued, err := svc.retireStaleReviewBacklog(ctx, orgID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !invalidateRecipient {
+		if retired != 0 || requeued != 0 {
+			t.Fatalf("a lagging import run retired proven review work: retired=%d requeued=%d", retired, requeued)
+		}
+		var keptState, keptDraft string
+		if err = pool.QueryRow(ctx, `SELECT state FROM outreach_touchpoints WHERE id=$1`, touchpointID).Scan(&keptState); err != nil {
+			t.Fatal(err)
+		}
+		if err = pool.QueryRow(ctx, `SELECT status FROM outreach_drafts WHERE id=$1`, draftID).Scan(&keptDraft); err != nil {
+			t.Fatal(err)
+		}
+		if keptState != models.TouchpointNeedsReview || keptDraft != "NEEDS_REVIEW" {
+			t.Fatalf("touchpoint=%s draft=%s must stay in review", keptState, keptDraft)
+		}
+		return
 	}
 	if retired != 1 || requeued != 1 {
 		t.Fatalf("retired=%d requeued=%d want 1/1", retired, requeued)

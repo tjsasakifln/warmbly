@@ -56,6 +56,11 @@ func newDelegatedValidationFixture(t *testing.T, routeClass, email string) deleg
 		BuyerIdentityRef: "cnpj:99888777000166", ContractorRoleMatchMethod: "SUPPLIER_EXACT_CNPJ14",
 		ContractorRoleConfidence: "HIGH", ContractorRoleReasonCodes: []string{"lead_matches_supplier", "lead_differs_from_buyer"},
 	}
+	// COMMERCIAL_AUTHORITY/2.0: a supplier contract signed a year ago, well
+	// inside the rolling three-year window.
+	qualification := testRootQualification(account.CNPJRoot, now.AddDate(-1, 0, 0))
+	applyCommercialQualificationToAccount(account, &qualification, now)
+	stampFeedStateWithV2(repo.feedSync[orgID], []RootQualification{qualification})
 	personUnknown := routeClass != RouteClassDirectPerson
 	discovery := []byte(`{"route_class":"` + routeClass + `","controlled_email_eligible":true,"preferred_initial":true,"mailbox_company_evidence":"OBSERVED","person_unknown":` + map[bool]string{true: "true", false: "false"}[personUnknown] + `,"risk_class":"ALLOWED"}`)
 	candidate := models.OutreachContactCandidate{
@@ -130,35 +135,51 @@ func TestDelegatedFirstTouchAttributedRouteClassesPassAllDeterministicGates(t *t
 	}
 }
 
+// COMMERCIAL_AUTHORITY/2.0 admission is decided by the qualifying public fact,
+// never by how old the crawler's last run is.
 func TestDelegatedFirstTouchCommercialAuthorityGatesAdmission(t *testing.T) {
 	f := newDelegatedValidationFixture(t, RouteClassGenericCompany, "contato@empresa.example")
 	now := f.service.now()
+
+	// Baseline: a supplier contract inside the window admits.
+	if got := f.validate(); len(got) != 0 {
+		t.Fatalf("qualified company blocked: %v", got)
+	}
+
+	// A STALE, even expired, producer window must not change the verdict.
 	feed := f.repo.feedSync[f.orgID]
-	payload := FeedCommercialAuthority{
-		SchemaVersion:                      CommercialAuthoritySchemaV1,
-		BasisSourceRunID:                   feed.LastRunID,
-		BasisSnapshotHash:                  feed.LastSnapshotHash,
-		BasisMembershipHash:                feed.TargetMembershipHash,
-		BasisPublicationSemanticHash:       strings.Repeat("s", 64),
-		ProducerIdentity:                   strings.Repeat("p", 64),
-		ValidatedAt:                        now.Add(-73 * time.Hour).Format(time.RFC3339Nano),
-		ValidUntil:                         now.Add(time.Hour).Format(time.RFC3339Nano),
-		State:                              CommercialAuthorityFrozenForNewAdmission,
-		NewAdmissionAllowed:                authorityBool(false),
-		ExistingBoundTouchTransportAllowed: authorityBool(true),
-	}
-	f.manifest.CommercialAuthority = &payload
-	if got := f.validate(); !delegatedTestContains(got, ReasonNewAdmissionFrozen) {
-		t.Fatalf("frozen new admission passed: %v", got)
-	}
 	stale := *feed
-	past := now.Add(-48 * time.Hour)
-	stale.SourceGeneratedAt = &past
+	past := now.Add(-96 * time.Hour)
 	expired := now.Add(-time.Hour)
+	stale.SourceGeneratedAt = &past
 	stale.SourceExpiresAt = &expired
 	f.repo.feedSync[f.orgID] = &stale
-	if got := f.validate(); !delegatedTestContains(got, ReasonNewAdmissionFrozen) {
-		t.Fatalf("stale source un-froze admission: %v", got)
+	if got := f.validate(); len(got) != 0 {
+		t.Fatalf("stale source blocked an otherwise qualified company: %v", got)
+	}
+	f.repo.feedSync[f.orgID] = feed
+
+	// A contract that fell out of the three-year window expires the company.
+	expiredQual := testRootQualification(f.account.CNPJRoot, now.AddDate(-3, 0, -1))
+	applyCommercialQualificationToAccount(f.account, &expiredQual, now)
+	if got := f.validate(); !delegatedTestContains(got, ReasonQualificationExpired) {
+		t.Fatalf("a contract older than three years still admitted: %v", got)
+	}
+
+	// Explicit deactivation beats everything, inside the window or not.
+	revoked := testRootQualification(f.account.CNPJRoot, now.AddDate(-1, 0, 0))
+	revoked.Deactivated = true
+	revoked.DeactivationReason = "EXPLICIT_REVOCATION"
+	revoked.EvidenceHash = HashRootQualification(revoked)
+	applyCommercialQualificationToAccount(f.account, &revoked, now)
+	if got := f.validate(); !delegatedTestContains(got, ReasonQualificationRevoked) {
+		t.Fatalf("explicit deactivation did not block admission: %v", got)
+	}
+
+	// Absent qualification is fail-closed and explicitly named.
+	f.account.CommercialQualificationState = ""
+	if got := f.validate(); !delegatedTestContains(got, ReasonQualificationMissing) {
+		t.Fatalf("missing commercial authority was not fail-closed: %v", got)
 	}
 }
 

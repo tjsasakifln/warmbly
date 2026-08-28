@@ -70,7 +70,7 @@ import type {
   ConfengeDispatchStatus,
 } from "@/lib/api/models/app/confenge/Confenge";
 import type { AppError } from "@/lib/api/client/normalizeError";
-import { channelLabel, formatFeedStatus, formatPtBrDate, intentLabel, purposeLabel, reasonLabel, stateLabel } from "./labels";
+import { channelLabel, formatCommercialQualification, formatFeedStatus, formatPtBrDate, intentLabel, purposeLabel, reasonLabel, stateLabel } from "./labels";
 import { formatReceivedAgoSaoPaulo, formatSaoPauloClock, notifyOperatorAlert, shouldNotifyOperatorAlert } from "./operatorNotify";
 import { buildPilotGate, type PilotGate } from "./pilotGate";
 import { isAuthorizeReady } from "./reviewReady";
@@ -584,7 +584,8 @@ export default function ConfengePage() {
             <p className="mt-1 text-[11.5px] text-slate-500">Mostra se dados, geração e envio estão prontos para o trabalho diário.</p>
             <div className="mt-2 flex flex-wrap gap-2 text-[11.5px]">
               <ReadinessItem label="E-mail" value={stateLabel(status.data.readiness.email)} />
-              <ReadinessItem label="Feed de dados" value={formatFeedStatus(status.data.readiness)} />
+              <ReadinessItem label="Qualificação comercial" value={formatCommercialQualification(status.data.readiness)} />
+              <ReadinessItem label="Fonte de mercado" value={formatFeedStatus(status.data.readiness)} />
               <ReadinessItem label="Inbound" value={stateLabel(status.data.readiness.inbound || "not_configured")} />
               <ReadinessItem label="Auto-envio" value={status.data.readiness.auto_send_enabled ? "Ligado (proibido)" : "Desligado"} />
               <ReadinessItem label="Geração" value={stateLabel(status.data.readiness.ai)} />
