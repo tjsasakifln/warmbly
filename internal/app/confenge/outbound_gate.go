@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 
 	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
 	"github.com/warmbly/warmbly/internal/app/confenge/intel"
@@ -672,16 +673,29 @@ func (s *service) CompleteCampaignEmail(ctx context.Context, orgID, campaignID, 
 	if err := s.repo.UpdateTouchpoint(ctx, touchpoint); err != nil {
 		return err
 	}
-	if err := s.markDelegatedFirstTouchSent(ctx, orgID, touchpoint.ID, now); err != nil {
-		return err
-	}
+	// The provider fact is committed before any legacy projection. It is the one
+	// thing this system cannot reconstruct: confenge_dispatch_sends is the sole
+	// source of "already sent" and the only per-mailbox send counter, so a
+	// fallible audit write must never stand in front of it.
 	if err := commitProviderSend(now); err != nil {
 		return err
 	}
-	if err := observeAccepted(); err != nil {
-		return err
+	// Everything past this point is compatibility reconciliation. It is allowed
+	// to fail and converge later; none of it may turn an accepted send back into
+	// pending work.
+	if err := s.markDelegatedFirstTouchSent(ctx, orgID, touchpoint.ID, now); err != nil {
+		log.Warn().Err(err).Str("touchpoint_id", touchpoint.ID.String()).
+			Msg("confenge: delegated decision lagging an accepted send")
 	}
-	return s.releaseNextTouch(ctx, orgID, touchpoint)
+	if err := observeAccepted(); err != nil {
+		log.Warn().Err(err).Str("touchpoint_id", touchpoint.ID.String()).
+			Msg("confenge: intel projection lagging an accepted send")
+	}
+	if err := s.releaseNextTouch(ctx, orgID, touchpoint); err != nil {
+		log.Warn().Err(err).Str("touchpoint_id", touchpoint.ID.String()).
+			Msg("confenge: next touch not released after an accepted send")
+	}
+	return nil
 }
 
 func firstNonZeroTime(value *time.Time, fallback time.Time) time.Time {

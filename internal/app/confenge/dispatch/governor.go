@@ -428,6 +428,25 @@ func (g *Governor) RetryQueue(ctx context.Context, id uuid.UUID, dueAt time.Time
 	return g.store.RetryQueue(ctx, id, dueAt.UTC(), errText)
 }
 
+// DeferQueue re-queues a claimed row for its next legitimate slot without
+// spending a retry attempt.
+func (g *Governor) DeferQueue(ctx context.Context, id uuid.UUID, dueAt time.Time, reason string) error {
+	return g.store.DeferQueue(ctx, id, dueAt.UTC(), reason)
+}
+
+// SendRecorded reports whether the ledger already holds an accepted send for
+// this key. It is the only question that decides "did this already go out".
+func (g *Governor) SendRecorded(ctx context.Context, messageKey string) (time.Time, bool, error) {
+	return g.store.GetSendByKey(ctx, messageKey)
+}
+
+// CommitFirstTouch records a provider-accepted first touch and the evidence for
+// it in one transaction, closing the reservation and the queue row with it.
+// This is the single authoritative write of the fast lane.
+func (g *Governor) CommitFirstTouch(ctx context.Context, reservationID uuid.UUID, sentAt time.Time, ev SendEvidence) error {
+	return g.store.CommitReservationWithEvidence(ctx, reservationID, sentAt.UTC(), ev)
+}
+
 func (g *Governor) countSince(ctx context.Context, since time.Time) int {
 	n, _ := g.store.CountSendsSince(ctx, since)
 	return n

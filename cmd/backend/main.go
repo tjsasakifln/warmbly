@@ -1120,9 +1120,17 @@ func main() {
 		}
 		// Async outcome outbox → extra-cli HMAC webhook (idle when URL/secret unset).
 		go confenge.NewOutcomeDeliveryWorker(outreachRepo, confengeCfg, confenge.OutcomeDeliveryOptions{}).Run(ctx)
-		// Exact-hash human approvals are durable schedules. This worker is idle
-		// while paused or outside the configured business window.
-		go confenge.NewDispatchQueueWorker(confengeServiceForHandler, 30*time.Second).Run(ctx)
+		// Exact-hash human approvals are durable schedules. Either the fast lane
+		// or the legacy dispatcher owns that queue -- never both, because two
+		// transports draining one queue is how a first touch gets sent twice.
+		if confenge.FastLaneEnabled() {
+			confengeServiceForHandler.WireFastLane(primaryDB.Pool, confenge.NewSMTPFirstTouchTransport(emailRepostory))
+			log.Println("CONFENGE first-touch fast lane owns transport; legacy dispatch queue worker disabled")
+			go confenge.NewFastLaneWorker(confengeServiceForHandler, 30*time.Second).Run(ctx)
+		} else {
+			// This worker is idle while paused or outside the business window.
+			go confenge.NewDispatchQueueWorker(confengeServiceForHandler, 30*time.Second).Run(ctx)
+		}
 		// Suboptimal and explicitly rejected copy is recoverable. AI rewrites run
 		// asynchronously and always return to human review.
 		go confenge.NewEditorialRecoveryWorker(confengeServiceForHandler, time.Minute).Run(ctx)

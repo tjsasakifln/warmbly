@@ -370,6 +370,10 @@ func (s *PGStore) RefreshReservation(ctx context.Context, id uuid.UUID, leaseUnt
 }
 
 func (s *PGStore) CommitReservation(ctx context.Context, id uuid.UUID, sentAt time.Time) error {
+	return s.CommitReservationWithEvidence(ctx, id, sentAt, SendEvidence{})
+}
+
+func (s *PGStore) CommitReservationWithEvidence(ctx context.Context, id uuid.UUID, sentAt time.Time, ev SendEvidence) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -406,10 +410,12 @@ func (s *PGStore) CommitReservation(ctx context.Context, id uuid.UUID, sentAt ti
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO confenge_dispatch_sends
-			(organization_id, email_account_id, task_id, channel, message_key, draft_id, reservation_id, sent_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+			(organization_id, email_account_id, task_id, channel, message_key, draft_id, reservation_id, sent_at,
+			 recipient, provider, provider_message_id, queue_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 		ON CONFLICT (message_key) DO NOTHING`,
 		r.OrganizationID, r.EmailAccountID, r.TaskID, r.Channel, r.MessageKey, r.DraftID, r.ID, sentAt,
+		ev.Recipient, ev.Provider, ev.ProviderMessageID, ev.QueueID,
 	)
 	if err != nil {
 		return err
@@ -616,6 +622,18 @@ func (s *PGStore) RetryQueue(ctx context.Context, id uuid.UUID, dueAt time.Time,
 		UPDATE confenge_dispatch_queue
 		SET status='queued', due_at=$2, last_error=$3, reserved_until=NULL, updated_at=now()
 		WHERE id=$1 AND status='reserved'`, id, dueAt.UTC(), errText)
+	return err
+}
+
+// DeferQueue re-queues a claimed row for a later slot and gives back the
+// attempt the claim consumed, so a row deferred by the cap or the window all
+// day is still on its first real attempt when it finally sends.
+func (s *PGStore) DeferQueue(ctx context.Context, id uuid.UUID, dueAt time.Time, reason string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE confenge_dispatch_queue
+		SET status='queued', due_at=$2, last_error=$3, reserved_until=NULL,
+		    attempts=GREATEST(attempts - 1, 0), updated_at=now()
+		WHERE id=$1 AND status='reserved'`, id, dueAt.UTC(), reason)
 	return err
 }
 

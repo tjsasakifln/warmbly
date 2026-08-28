@@ -119,6 +119,12 @@ type Service interface {
 	ObserveCampaignEmailAttempt(ctx context.Context, orgID, campaignID, contactID, sequenceID, taskID, mailboxID uuid.UUID, provider string, attemptedAt time.Time) error
 	RecordCampaignEmailFailure(ctx context.Context, taskID uuid.UUID, errorCode, errorText string, occurredAt time.Time) error
 	ProcessDispatchQueueOnce(ctx context.Context) (bool, error)
+	// ProcessFastLaneOnce claims one due first touch and takes it to a terminal
+	// state through the CONFENGE fast lane (claim -> gates -> send -> ledger).
+	ProcessFastLaneOnce(ctx context.Context) (bool, error)
+	// WireFastLane installs the synchronous transport that owns first-touch
+	// sending. Without it the fast lane stays inert and the legacy path runs.
+	WireFastLane(pool *pgxpool.Pool, transport FirstTouchTransport)
 	ProcessEditorialRecoveryOnce(ctx context.Context) (bool, error)
 	ProcessDraftGenerationOnce(ctx context.Context) (bool, error)
 	ProcessDelegatedFirstTouchOnce(ctx context.Context) (bool, error)
@@ -243,6 +249,10 @@ type service struct {
 	// cannot be overshot by concurrent draft generation and recovery.
 	reviewBacklogMu sync.Mutex
 	nowFn           func() time.Time
+	// Fast-lane transport: the synchronous provider used by the CONFENGE
+	// first-touch loop. Nil disables the fast lane entirely.
+	firstTouchTransport FirstTouchTransport
+	fastLaneDB          *pgxpool.Pool
 }
 
 func (s *service) now() time.Time {
