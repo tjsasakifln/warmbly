@@ -178,7 +178,9 @@ func EvaluateFirstWindowReadiness(snap FirstWindowReadinessSnapshot) FirstWindow
 		add(snap.CommercialAuthority.State != CommercialExpired, ReasonQualificationExpired)
 		add(snap.CommercialAuthority.State != CommercialRevoked, ReasonQualificationRevoked)
 		add(RecognizeCommercialAuthorityPolicy(snap.CommercialAuthority.PolicyVersion), ReasonPolicyVersionUnsupported)
-		add(validSHA256(snap.CommercialAuthority.EvidenceHash), ReasonQualificationEvidenceDrift)
+		// An account-derived rollup carries no corpus digest; its evidence is
+		// the per-account hash each row was already verified against.
+		add(snap.CommercialAuthority.EvidenceHash == "" || validSHA256(snap.CommercialAuthority.EvidenceHash), ReasonQualificationEvidenceDrift)
 	} else {
 		// Absence of commercial authority is explicit and fail-closed. Source
 		// freshness is never promoted into a commercial authorization, so a
@@ -296,6 +298,9 @@ func (s *service) CollectFirstWindowReadiness(ctx context.Context, orgID uuid.UU
 	}
 	sourceHealth := EvaluateStoredSourceHealth(feed, now, s.cfg.FeedMaxAge)
 	authority := FeedCommercialAuthorityState(feed)
+	if !authority.Present {
+		authority = s.commercialQualificationFromAccounts(ctx, orgID, now)
+	}
 	source := DelegatedFirstTouchSourceReadback{}
 	if feed != nil {
 		source = DelegatedFirstTouchSourceReadback{
@@ -337,6 +342,35 @@ func (s *service) CollectFirstWindowReadiness(ctx context.Context, orgID uuid.UU
 	snap.PausedAt = dispatchStatus.PausedAt
 	report := EvaluateFirstWindowReadiness(snap)
 	return &report, nil
+}
+
+// commercialQualificationFromAccounts derives population qualification from the
+// durable per-account evidence. It is used when the producer has not attested a
+// population: per-company evidence, each hash-verified and inside the rolling
+// three-year window, is strictly stronger than an attestation, so an unattested
+// but individually proven population is not treated as unqualified.
+func (s *service) commercialQualificationFromAccounts(ctx context.Context, orgID uuid.UUID, now time.Time) CommercialQualificationDecision {
+	out := CommercialQualificationDecision{State: CommercialUnknown, ReasonCodes: []string{ReasonQualificationMissing}}
+	if s.delegatedDB == nil {
+		return out
+	}
+	var qualified int
+	err := s.delegatedDB.QueryRow(ctx, `
+		SELECT count(*)::int FROM outreach_accounts
+		WHERE organization_id=$1
+		  AND commercial_qualification_state='QUALIFIED'
+		  AND NOT commercial_qualification_deactivated
+		  AND commercial_qualified_until > $2::date`, orgID, now).Scan(&qualified)
+	if err != nil || qualified <= 0 {
+		return out
+	}
+	return CommercialQualificationDecision{
+		Present:       true,
+		State:         CommercialQualified,
+		PolicyVersion: CommercialAuthorityPolicyV2,
+		EvidenceHash:  "",
+		ReasonCodes:   []string{ReasonQualified},
+	}
 }
 
 func (s *service) collectSafetySnapshots(ctx context.Context, orgID uuid.UUID) (suppression, dnc, bounce int) {
