@@ -14,9 +14,11 @@ import (
 )
 
 const (
-	FirstWindowReadyForGOAdjudication = "READY_FOR_GO_ADJUDICATION"
-	FirstWindowBlockedPrefix          = "BLOCKED:"
-	FirstWindowGOForControlledPilot   = ReleaseGOForControlledEmailPilot
+	FirstWindowReadyForGOAdjudication     = "READY_FOR_GO_ADJUDICATION"
+	FirstWindowArmedForNextBusinessWindow = "ARMED_FOR_NEXT_BUSINESS_WINDOW"
+	FirstWindowTransportActiveInWindow    = "TRANSPORT_ACTIVE_IN_WINDOW"
+	FirstWindowBlockedPrefix              = "BLOCKED:"
+	FirstWindowGOForControlledPilot       = ReleaseGOForControlledEmailPilot
 )
 
 // FirstWindowReadinessSnapshot is the closed evidence pack for a candidate
@@ -188,8 +190,38 @@ func EvaluateFirstWindowReadiness(snap FirstWindowReadinessSnapshot) FirstWindow
 		rep.Verdict = firstWindowBlocked(blockers[0])
 		return rep
 	}
-	rep.Verdict = FirstWindowReadyForGOAdjudication
+	// READY_FOR_GO_ADJUDICATION is the pre-GO pack. After PRE-GO pauses are
+	// lifted, the same gates plus a live queue become the armed/in-window
+	// transport verdict. This function still never emits GO_FOR_CONTROLLED_EMAIL_PILOT.
+	if firstWindowPreGOPauseEngaged(snap) {
+		rep.Verdict = FirstWindowReadyForGOAdjudication
+		return rep
+	}
+	if snap.Queued <= 0 && snap.Reserved <= 0 {
+		rep.Verdict = FirstWindowReadyForGOAdjudication
+		return rep
+	}
+	if snap.PauseState == TransportActive {
+		rep.Verdict = FirstWindowTransportActiveInWindow
+		return rep
+	}
+	rep.Verdict = FirstWindowArmedForNextBusinessWindow
 	return rep
+}
+
+func firstWindowPreGOPauseEngaged(snap FirstWindowReadinessSnapshot) bool {
+	if snap.KillSwitchEngaged {
+		return true
+	}
+	src := strings.ToLower(strings.TrimSpace(snap.PauseSource))
+	switch src {
+	case PauseSourceKillSwitch, PauseSourceDurable, PauseSourceAPI, PauseSourceWorkerGuard, PauseSourceEnvironment, PauseSourceConfiguration:
+		return true
+	}
+	if strings.Contains(src, "deploy_preflight") || strings.Contains(src, "scale_pre_go") {
+		return true
+	}
+	return false
 }
 
 func firstWindowSnapshotFromLive(
