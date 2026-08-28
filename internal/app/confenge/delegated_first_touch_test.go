@@ -63,8 +63,9 @@ func TestDelegatedFirstTouchUnknownAndV2PolicyHold(t *testing.T) {
 	}
 	v2 := base
 	v2.PolicyVersion = DelegatedFirstTouchPolicyV2
-	if got := validateDelegatedManifestHeader(v2); !delegatedTestContains(got, ReasonPolicyHold) {
-		t.Fatalf("v2 not held: %v", got)
+	v2.PolicyHash = DelegatedFirstTouchPolicyHashV2
+	if got := validateDelegatedManifestHeader(v2); delegatedTestContains(got, ReasonPolicyHold) || delegatedTestContains(got, ReasonPolicyUnknown) || delegatedTestContains(got, "policy_hash_mismatch") {
+		t.Fatalf("v2 held: %v", got)
 	}
 	fuzzy := base
 	fuzzy.PolicyVersion = "CFG-FIRST-TOUCH-ROUTING-v1-beta"

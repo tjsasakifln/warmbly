@@ -1053,6 +1053,8 @@ func TestDelegatedFirstTouchStatusKeepsCommercialWhenSourceStalePostgres(t *test
 		BasisSourceRunID:                   feed.LastRunID,
 		BasisSnapshotHash:                  feed.LastSnapshotHash,
 		BasisMembershipHash:                feed.TargetMembershipHash,
+		BasisPublicationSemanticHash:       strings.Repeat("s", 64),
+		ProducerIdentity:                   strings.Repeat("p", 64),
 		ValidatedAt:                        now.Add(-time.Hour).Format(time.RFC3339Nano),
 		ValidUntil:                         now.Add(24 * time.Hour).Format(time.RFC3339Nano),
 		State:                              CommercialAuthorityCurrent,

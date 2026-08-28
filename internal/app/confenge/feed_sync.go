@@ -64,14 +64,16 @@ type outreachManifest struct {
 		FreshnessHash       string                   `json:"authoritative_freshness_hash"`
 		CommercialAuthority *FeedCommercialAuthority `json:"commercial_authority"`
 	} `json:"source"`
-	CommercialAuthority *FeedCommercialAuthority       `json:"commercial_authority"`
-	LeadCount           int                            `json:"lead_count"`
-	ChunkCount          int                            `json:"chunk_count"`
-	Chunks              []manifestChunk                `json:"chunks"`
-	Deactivations       []map[string]any               `json:"deactivations"`
-	DeactivationCnt     int                            `json:"deactivation_count"`
-	SourceFreshness     *FeedSourceFreshness           `json:"authoritative_source_freshness"`
-	TargetMembership    *authoritativeTargetMembership `json:"authoritative_target_membership"`
+	CommercialAuthority     *FeedCommercialAuthority       `json:"commercial_authority"`
+	ProducerIdentity        string                         `json:"producer_identity"`
+	PublicationSemanticHash string                         `json:"publication_semantic_hash"`
+	LeadCount               int                            `json:"lead_count"`
+	ChunkCount              int                            `json:"chunk_count"`
+	Chunks                  []manifestChunk                `json:"chunks"`
+	Deactivations           []map[string]any               `json:"deactivations"`
+	DeactivationCnt         int                            `json:"deactivation_count"`
+	SourceFreshness         *FeedSourceFreshness           `json:"authoritative_source_freshness"`
+	TargetMembership        *authoritativeTargetMembership `json:"authoritative_target_membership"`
 }
 
 const (
@@ -515,9 +517,11 @@ func validateManifestAuthority(manifest *outreachManifest, now time.Time, requir
 	}
 	if authorityPresent(commercialPayload) {
 		decision := EvaluateCommercialAuthority(commercialPayload, CommercialAuthorityBinding{
-			SourceRunID:    strings.TrimSpace(manifest.Source.RunID),
-			SnapshotHash:   strings.TrimSpace(manifest.Source.SnapshotHash),
-			MembershipHash: strings.ToLower(membership.MembershipHash),
+			SourceRunID:             strings.TrimSpace(manifest.Source.RunID),
+			SnapshotHash:            strings.TrimSpace(manifest.Source.SnapshotHash),
+			MembershipHash:          strings.ToLower(membership.MembershipHash),
+			PublicationSemanticHash: strings.ToLower(strings.TrimSpace(firstNonEmpty(manifest.PublicationSemanticHash, commercialPayload.BasisPublicationSemanticHash))),
+			ProducerIdentity:        strings.ToLower(strings.TrimSpace(firstNonEmpty(manifest.ProducerIdentity, commercialPayload.ProducerIdentity))),
 		}, now)
 		if decision.State == CommercialAuthorityUnknown {
 			return nil, fmt.Errorf("commercial authority binding invalid")

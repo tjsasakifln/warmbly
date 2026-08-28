@@ -177,6 +177,8 @@ func EvaluateFirstWindowReadiness(snap FirstWindowReadinessSnapshot) FirstWindow
 		add(strings.TrimSpace(snap.CommercialAuthority.BasisSourceRunID) == strings.TrimSpace(snap.SourceRunID), "commercial_authority_run_mismatch")
 		add(strings.TrimSpace(snap.CommercialAuthority.BasisSnapshotHash) == strings.TrimSpace(snap.SourceSnapshotHash), "commercial_authority_snapshot_mismatch")
 		add(strings.ToLower(strings.TrimSpace(snap.CommercialAuthority.BasisMembershipHash)) == strings.ToLower(strings.TrimSpace(snap.MembershipHash)), "commercial_authority_membership_mismatch")
+		add(strings.TrimSpace(snap.CommercialAuthority.BasisPublicationSemanticHash) != "", "commercial_authority_semantic_missing")
+		add(strings.TrimSpace(snap.CommercialAuthority.ProducerIdentity) != "", "commercial_authority_producer_missing")
 	} else {
 		add(snap.SourceHealth.State == SourceHealthFresh, "source_health_not_fresh_strict_fallback")
 	}

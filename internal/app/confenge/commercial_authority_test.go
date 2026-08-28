@@ -9,12 +9,24 @@ import (
 func authorityBool(v bool) *bool { return &v }
 
 func testAuthorityPayload(state string, now time.Time) FeedCommercialAuthority {
+	validated := now.Add(-time.Hour)
+	switch state {
+	case CommercialAuthorityDegraded:
+		validated = now.Add(-25 * time.Hour)
+	case CommercialAuthorityFrozenForNewAdmission:
+		validated = now.Add(-73 * time.Hour)
+	case CommercialAuthorityExpired:
+		validated = now.Add(-7*24*time.Hour - time.Second)
+	}
 	return FeedCommercialAuthority{
 		SchemaVersion:                      CommercialAuthoritySchemaV1,
+		Schema:                             "COMMERCIAL_AUTHORITY/1.0",
 		BasisSourceRunID:                   "run-abc",
 		BasisSnapshotHash:                  "snap-abc",
 		BasisMembershipHash:                strings.Repeat("a", 64),
-		ValidatedAt:                        now.Add(-time.Hour).Format(time.RFC3339Nano),
+		BasisPublicationSemanticHash:       strings.Repeat("s", 64),
+		ProducerIdentity:                   strings.Repeat("p", 64),
+		ValidatedAt:                        validated.Format(time.RFC3339Nano),
 		ValidUntil:                         now.Add(24 * time.Hour).Format(time.RFC3339Nano),
 		State:                              state,
 		NewAdmissionAllowed:                authorityBool(state == CommercialAuthorityCurrent || state == CommercialAuthorityDegraded),
@@ -23,7 +35,13 @@ func testAuthorityPayload(state string, now time.Time) FeedCommercialAuthority {
 }
 
 func testBinding() CommercialAuthorityBinding {
-	return CommercialAuthorityBinding{SourceRunID: "run-abc", SnapshotHash: "snap-abc", MembershipHash: strings.Repeat("a", 64)}
+	return CommercialAuthorityBinding{
+		SourceRunID:             "run-abc",
+		SnapshotHash:            "snap-abc",
+		MembershipHash:          strings.Repeat("a", 64),
+		PublicationSemanticHash: strings.Repeat("s", 64),
+		ProducerIdentity:        strings.Repeat("p", 64),
+	}
 }
 
 func testFreshSource(now time.Time) *FeedSourceFreshness {
@@ -95,8 +113,7 @@ func TestEvaluateCommercialAuthorityMatrix(t *testing.T) {
 	})
 
 	t.Run("EXPIRED", func(t *testing.T) {
-		p := testAuthorityPayload(CommercialAuthorityCurrent, now)
-		p.ValidUntil = now.Add(-time.Second).Format(time.RFC3339Nano)
+		p := testAuthorityPayload(CommercialAuthorityExpired, now)
 		got := EvaluateCommercialAuthority(&p, binding, now)
 		if got.State != CommercialAuthorityExpired || got.NewAdmissionAllowed || got.ExistingBoundTouchTransportAllowed {
 			t.Fatalf("%+v", got)
@@ -183,7 +200,7 @@ func TestRecognizeFirstTouchPolicyExact(t *testing.T) {
 		t.Fatalf("v1: known=%v hold=%v reason=%s", known, hold, reason)
 	}
 	known, hold, reason = RecognizeFirstTouchPolicy(DelegatedFirstTouchPolicyV2)
-	if !known || !hold || reason != ReasonPolicyHold {
+	if !known || hold || reason != "" {
 		t.Fatalf("v2: known=%v hold=%v reason=%s", known, hold, reason)
 	}
 	for _, name := range []string{"CFG-FIRST-TOUCH-ROUTING", "CFG-FIRST-TOUCH-ROUTING-v1-beta", "CFG-FIRST-TOUCH-ROUTING-v10", ""} {
@@ -225,13 +242,17 @@ func TestManifestAuthorityAllowsDegradedSourceWhenCommercialAuthorityBinds(t *te
 		BasisSourceRunID:                   manifest.Source.RunID,
 		BasisSnapshotHash:                  manifest.Source.SnapshotHash,
 		BasisMembershipHash:                manifest.TargetMembership.MembershipHash,
-		ValidatedAt:                        now.Add(-time.Minute).Format(time.RFC3339Nano),
+		BasisPublicationSemanticHash:       strings.Repeat("s", 64),
+		ProducerIdentity:                   strings.Repeat("p", 64),
+		ValidatedAt:                        now.Add(-25 * time.Hour).Format(time.RFC3339Nano),
 		ValidUntil:                         now.Add(time.Hour).Format(time.RFC3339Nano),
 		State:                              CommercialAuthorityDegraded,
 		NewAdmissionAllowed:                authorityBool(true),
 		ExistingBoundTouchTransportAllowed: authorityBool(true),
 	}
 	manifest.CommercialAuthority = &payload
+	manifest.ProducerIdentity = strings.Repeat("p", 64)
+	manifest.PublicationSemanticHash = strings.Repeat("s", 64)
 	authority, err := validateManifestAuthority(manifest, now, true)
 	if err != nil || authority == nil {
 		t.Fatalf("degraded source with bound commercial authority rejected: %+v err=%v", authority, err)
@@ -243,9 +264,50 @@ func TestCommercialAuthorityDoesNotHardcodeSevenDays(t *testing.T) {
 	p := testAuthorityPayload(CommercialAuthorityCurrent, now)
 	p.ValidUntil = now.Add(30 * time.Minute).Format(time.RFC3339Nano)
 	if got := EvaluateCommercialAuthority(&p, testBinding(), now); got.State != CommercialAuthorityCurrent {
-		t.Fatalf("30m window rejected: %+v", got)
+		t.Fatalf("live CURRENT rejected because of a stale snapshot valid_until: %+v", got)
 	}
-	if got := EvaluateCommercialAuthority(&p, testBinding(), now.Add(31*time.Minute)); got.State != CommercialAuthorityExpired {
-		t.Fatalf("payload valid_until ignored: %+v", got)
+	if got := EvaluateCommercialAuthority(&p, testBinding(), now.Add(31*time.Minute)); got.State != CommercialAuthorityCurrent {
+		t.Fatalf("static 30m valid_until revoked a still-current population: %+v", got)
+	}
+	p.WindowsHours = &CommercialAuthorityWindows{CurrentMaxHours: 1, DegradedMaxHours: 2, FrozenMaxHours: 3}
+	p.ValidatedAt = now.Add(-90 * time.Minute).Format(time.RFC3339Nano)
+	if got := EvaluateCommercialAuthority(&p, testBinding(), now); got.State != CommercialAuthorityDegraded {
+		t.Fatalf("payload windows ignored: %+v", got)
+	}
+}
+
+func TestOneByteProducerBindingDriftFailsClosed(t *testing.T) {
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	p := testAuthorityPayload(CommercialAuthorityCurrent, now)
+	binding := testBinding()
+	if got := EvaluateCommercialAuthority(&p, binding, now); got.State != CommercialAuthorityCurrent {
+		t.Fatalf("happy path: %+v", got)
+	}
+	flip := func(value string) string { return value[:len(value)-1] + "b" }
+	cases := []CommercialAuthorityBinding{
+		{SourceRunID: binding.SourceRunID, SnapshotHash: binding.SnapshotHash, MembershipHash: flip(binding.MembershipHash), PublicationSemanticHash: binding.PublicationSemanticHash, ProducerIdentity: binding.ProducerIdentity},
+		{SourceRunID: binding.SourceRunID, SnapshotHash: binding.SnapshotHash, MembershipHash: binding.MembershipHash, PublicationSemanticHash: flip(binding.PublicationSemanticHash), ProducerIdentity: binding.ProducerIdentity},
+		{SourceRunID: binding.SourceRunID, SnapshotHash: binding.SnapshotHash, MembershipHash: binding.MembershipHash, PublicationSemanticHash: binding.PublicationSemanticHash, ProducerIdentity: flip(binding.ProducerIdentity)},
+	}
+	for i, drifted := range cases {
+		got := EvaluateCommercialAuthority(&p, drifted, now)
+		if got.State != CommercialAuthorityUnknown || got.NewAdmissionAllowed {
+			t.Fatalf("case %d did not fail closed: %+v", i, got)
+		}
+	}
+}
+
+func TestLosslessAliasFillsCanonicalAndConflictFailsClosed(t *testing.T) {
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	p := testAuthorityPayload(CommercialAuthorityCurrent, now)
+	p.SourceRunIDAlias = p.BasisSourceRunID
+	p.SnapshotIDAlias = p.BasisSnapshotHash
+	p.MembershipHashAlias = p.BasisMembershipHash
+	if got := EvaluateCommercialAuthority(&p, testBinding(), now); got.State != CommercialAuthorityCurrent {
+		t.Fatalf("matching aliases rejected: %+v", got)
+	}
+	p.SourceRunIDAlias = "run-other"
+	if got := EvaluateCommercialAuthority(&p, testBinding(), now); got.State != CommercialAuthorityUnknown {
+		t.Fatalf("alias conflict accepted: %+v", got)
 	}
 }

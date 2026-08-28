@@ -202,6 +202,11 @@ type DelegatedFirstTouchAuthorityReadback struct {
 	BasisSourceRunID                   string     `json:"basis_source_run_id,omitempty"`
 	BasisSnapshotHash                  string     `json:"basis_snapshot_hash,omitempty"`
 	BasisMembershipHash                string     `json:"basis_membership_hash,omitempty"`
+	BasisPublicationSemanticHash       string     `json:"basis_publication_semantic_hash,omitempty"`
+	ProducerIdentity                   string     `json:"producer_identity,omitempty"`
+	SourceRunID                        string     `json:"source_run_id,omitempty"`
+	SnapshotID                         string     `json:"snapshot_id,omitempty"`
+	MembershipHash                     string     `json:"membership_hash,omitempty"`
 	ValidUntil                         *time.Time `json:"valid_until,omitempty"`
 	ReasonCodes                        []string   `json:"reason_codes,omitempty"`
 }
@@ -404,10 +409,19 @@ func EvaluateStoredFeedAuthority(feed *models.OutreachFeedSyncState, now time.Ti
 	if feed == nil {
 		return source, CommercialAuthorityDecision{State: CommercialAuthorityAbsent}
 	}
-	return source, EvaluateCommercialAuthority(storedCommercialAuthority(feed), CommercialAuthorityBinding{
-		SourceRunID:    feed.LastRunID,
-		SnapshotHash:   feed.LastSnapshotHash,
-		MembershipHash: feed.TargetMembershipHash,
+	payload := storedCommercialAuthority(feed)
+	semantic, producer := "", ""
+	if payload != nil {
+		payload.NormalizeAliases()
+		semantic = payload.BasisPublicationSemanticHash
+		producer = payload.ProducerIdentity
+	}
+	return source, EvaluateCommercialAuthority(payload, CommercialAuthorityBinding{
+		SourceRunID:             feed.LastRunID,
+		SnapshotHash:            feed.LastSnapshotHash,
+		MembershipHash:          feed.TargetMembershipHash,
+		PublicationSemanticHash: semantic,
+		ProducerIdentity:        producer,
 	}, now)
 }
 
@@ -420,6 +434,11 @@ func commercialReadback(d CommercialAuthorityDecision) DelegatedFirstTouchAuthor
 		BasisSourceRunID:                   d.BasisSourceRunID,
 		BasisSnapshotHash:                  d.BasisSnapshotHash,
 		BasisMembershipHash:                d.BasisMembershipHash,
+		BasisPublicationSemanticHash:       d.BasisPublicationSemanticHash,
+		ProducerIdentity:                   d.ProducerIdentity,
+		SourceRunID:                        d.BasisSourceRunID,
+		SnapshotID:                         d.BasisSnapshotHash,
+		MembershipHash:                     d.BasisMembershipHash,
 		ValidUntil:                         d.ValidUntil,
 		ReasonCodes:                        append([]string{}, d.ReasonCodes...),
 	}
@@ -654,6 +673,17 @@ func (s *service) lockDelegatedAccount(ctx context.Context, orgID uuid.UUID, cnp
 	}, nil
 }
 
+func expectedFirstTouchPolicyHash(version string) (string, bool) {
+	switch strings.TrimSpace(version) {
+	case DelegatedFirstTouchPolicyV1:
+		return DelegatedFirstTouchPolicyHashV1, true
+	case DelegatedFirstTouchPolicyV2:
+		return DelegatedFirstTouchPolicyHashV2, true
+	default:
+		return "", false
+	}
+}
+
 func validateDelegatedManifestHeader(manifest DelegatedFirstTouchManifest) []string {
 	var out []string
 	if manifest.SchemaVersion != DelegatedFirstTouchManifestV1 {
@@ -669,10 +699,10 @@ func validateDelegatedManifestHeader(manifest DelegatedFirstTouchManifest) []str
 		out = append(out, ReasonPolicyUnknown)
 	} else if hold {
 		out = append(out, firstNonEmpty(reason, ReasonPolicyHold))
-	} else if manifest.PolicyVersion != DelegatedFirstTouchPolicyV1 {
-		out = append(out, "policy_version_mismatch")
 	}
-	if manifest.PolicyHash != DelegatedFirstTouchPolicyHashV1 {
+	if expected, ok := expectedFirstTouchPolicyHash(manifest.PolicyVersion); !ok {
+		out = append(out, "policy_version_mismatch")
+	} else if manifest.PolicyHash != expected {
 		out = append(out, "policy_hash_mismatch")
 	}
 	if manifest.AuthorityReference != DelegatedFirstTouchAuthorityRef {
@@ -1993,8 +2023,8 @@ func (s *service) DelegatedFirstTouchStatus(ctx context.Context, orgID uuid.UUID
 	}
 	out := &DelegatedFirstTouchStatus{
 		SchemaVersion: "warmbly.confenge.first-touch-control.v1", RuntimeReleaseSHA: s.cfg.RepositorySHA,
-		BatchID: batchID, PolicyID: DelegatedFirstTouchPolicyV1, PolicyVersion: DelegatedFirstTouchPolicyV1,
-		PolicyHash: DelegatedFirstTouchPolicyHashV1, Counts: map[string]int{}, Items: []DelegatedFirstTouchDecisionView{},
+		BatchID: batchID, PolicyID: DelegatedFirstTouchPolicyV2, PolicyVersion: DelegatedFirstTouchPolicyV2,
+		PolicyHash: DelegatedFirstTouchPolicyHashV2, Counts: map[string]int{}, Items: []DelegatedFirstTouchDecisionView{},
 	}
 	if settings, settingsErr := s.repo.GetOrgSettings(ctx, orgID); settingsErr == nil && settings != nil && settings.CampaignID != nil && s.policyStore != nil {
 		if auth, authErr := s.policyStore.GetActiveCampaignPolicy(ctx, orgID, *settings.CampaignID, time.Now().UTC()); authErr == nil && auth != nil {
@@ -2314,7 +2344,7 @@ func (s *service) assertDelegatedFirstTouchDecision(ctx context.Context, orgID u
 	if !stateBound {
 		return fail("delegated_decision_queue_state_drift")
 	}
-	if got.PolicyVersion != DelegatedFirstTouchPolicyV1 || got.PolicyHash != DelegatedFirstTouchPolicyHashV1 ||
+	if expected, ok := expectedFirstTouchPolicyHash(got.PolicyVersion); !ok || got.PolicyHash != expected ||
 		got.AuthorityReference != DelegatedFirstTouchAuthorityRef || got.ActorType != "delegated_agent" || got.Authority != DelegatedFirstTouchAuthority ||
 		got.EvidenceVersion != DelegatedFirstTouchEvidenceV1 || got.RuntimeReleaseSHA != s.cfg.RepositorySHA {
 		return fail("policy_or_authority_drift")

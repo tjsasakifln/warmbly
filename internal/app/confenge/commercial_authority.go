@@ -28,42 +28,106 @@ const (
 	TransportHealthUnknown = TransportUnknown
 
 	DelegatedFirstTouchPolicyV2 = "CFG-FIRST-TOUCH-ROUTING-v2"
+	// File bytes of Governance commercial/outbound/cfg-first-touch-routing.v2.json.
+	DelegatedFirstTouchPolicyHashV2 = "f9d031f4239bb1e17beb714ae5f691b973f6c2147a55efa7e47ed09d6d905932"
 
-	ReasonAuthorityAbsent            = "commercial_authority_absent"
-	ReasonAuthorityBindingMismatch   = "commercial_authority_binding_mismatch"
-	ReasonAuthorityExpired           = "commercial_authority_expired"
-	ReasonAuthorityUnknownState      = "commercial_authority_state_unknown"
-	ReasonAuthorityValidUntilMissing = "commercial_authority_valid_until_missing"
-	ReasonNewAdmissionFrozen         = "new_admission_frozen"
-	ReasonBoundTransportForbidden    = "existing_bound_touch_transport_forbidden"
-	ReasonPolicyUnknown              = "policy_version_unknown"
-	ReasonPolicyHold                 = "policy_version_hold"
-	ReasonSourceHealthStale          = "source_health_stale"
-	ReasonSourceHealthDegraded       = "source_health_degraded"
-	ReasonSourceHealthMissing        = "source_health_missing"
+	ReasonAuthorityAbsent             = "commercial_authority_absent"
+	ReasonAuthorityBindingMismatch    = "commercial_authority_binding_mismatch"
+	ReasonAuthorityExpired            = "commercial_authority_expired"
+	ReasonAuthorityUnknownState       = "commercial_authority_state_unknown"
+	ReasonAuthorityValidUntilMissing  = "commercial_authority_valid_until_missing"
+	ReasonAuthorityValidatedAtMissing = "commercial_authority_validated_at_missing"
+	ReasonAuthorityAliasConflict      = "commercial_authority_alias_conflict"
+	ReasonNewAdmissionFrozen          = "new_admission_frozen"
+	ReasonBoundTransportForbidden     = "existing_bound_touch_transport_forbidden"
+	ReasonPolicyUnknown               = "policy_version_unknown"
+	ReasonPolicyHold                  = "policy_version_hold"
+	ReasonSourceHealthStale           = "source_health_stale"
+	ReasonSourceHealthDegraded        = "source_health_degraded"
+	ReasonSourceHealthMissing         = "source_health_missing"
 )
 
 // FeedCommercialAuthority is the extra-cli payload. Every field is optional at
 // the JSON layer so a missing object stays fail-closed.
 type FeedCommercialAuthority struct {
-	SchemaVersion                      string   `json:"schema_version,omitempty"`
-	BasisSourceRunID                   string   `json:"basis_source_run_id,omitempty"`
-	BasisSnapshotHash                  string   `json:"basis_snapshot_hash,omitempty"`
-	BasisMembershipHash                string   `json:"basis_membership_hash,omitempty"`
-	ValidatedAt                        string   `json:"validated_at,omitempty"`
-	ValidUntil                         string   `json:"valid_until,omitempty"`
-	State                              string   `json:"state,omitempty"`
-	NewAdmissionAllowed                *bool    `json:"new_admission_allowed,omitempty"`
-	ExistingBoundTouchTransportAllowed *bool    `json:"existing_bound_touch_transport_allowed,omitempty"`
-	ReasonCodes                        []string `json:"reason_codes,omitempty"`
+	Schema                             string                      `json:"schema,omitempty"`
+	SchemaVersion                      string                      `json:"schema_version,omitempty"`
+	ContractVersion                    string                      `json:"contract_version,omitempty"`
+	PolicyVersion                      string                      `json:"policy_version,omitempty"`
+	BasisSourceRunID                   string                      `json:"basis_source_run_id,omitempty"`
+	BasisSnapshotHash                  string                      `json:"basis_snapshot_hash,omitempty"`
+	BasisMembershipHash                string                      `json:"basis_membership_hash,omitempty"`
+	BasisPublicationSemanticHash       string                      `json:"basis_publication_semantic_hash,omitempty"`
+	ProducerIdentity                   string                      `json:"producer_identity,omitempty"`
+	SourceRunIDAlias                   string                      `json:"source_run_id,omitempty"`
+	SnapshotIDAlias                    string                      `json:"snapshot_id,omitempty"`
+	MembershipHashAlias                string                      `json:"membership_hash,omitempty"`
+	ValidatedAt                        string                      `json:"validated_at,omitempty"`
+	ValidUntil                         string                      `json:"valid_until,omitempty"`
+	State                              string                      `json:"state,omitempty"`
+	NewAdmissionAllowed                *bool                       `json:"new_admission_allowed,omitempty"`
+	ExistingBoundTouchTransportAllowed *bool                       `json:"existing_bound_touch_transport_allowed,omitempty"`
+	ReasonCodes                        []string                    `json:"reason_codes,omitempty"`
+	WindowsHours                       *CommercialAuthorityWindows `json:"windows_hours,omitempty"`
+}
+
+// CommercialAuthorityWindows is COMMERCIAL_AUTHORITY_POLICY/1.0. Defaults match extra-cli.
+type CommercialAuthorityWindows struct {
+	CurrentMaxHours  float64 `json:"current_max_hours,omitempty"`
+	DegradedMaxHours float64 `json:"degraded_max_hours,omitempty"`
+	FrozenMaxHours   float64 `json:"frozen_max_hours,omitempty"`
+}
+
+func (w *CommercialAuthorityWindows) durations() (current, degraded, frozen time.Duration) {
+	currentH, degradedH, frozenH := 24.0, 72.0, 168.0
+	if w != nil {
+		if w.CurrentMaxHours > 0 {
+			currentH = w.CurrentMaxHours
+		}
+		if w.DegradedMaxHours > 0 {
+			degradedH = w.DegradedMaxHours
+		}
+		if w.FrozenMaxHours > 0 {
+			frozenH = w.FrozenMaxHours
+		}
+	}
+	return time.Duration(currentH * float64(time.Hour)),
+		time.Duration(degradedH * float64(time.Hour)),
+		time.Duration(frozenH * float64(time.Hour))
+}
+
+// NormalizeAliases copies lossless aliases into canonical fields. Disagreeing
+// alias+canonical is a conflict; semantic hash and producer identity have no alias.
+func (p *FeedCommercialAuthority) NormalizeAliases() (conflicts []string) {
+	if p == nil {
+		return nil
+	}
+	p.BasisSourceRunID, conflicts = mergeAlias(p.BasisSourceRunID, p.SourceRunIDAlias, "basis_source_run_id", conflicts)
+	p.BasisSnapshotHash, conflicts = mergeAlias(p.BasisSnapshotHash, p.SnapshotIDAlias, "basis_snapshot_hash", conflicts)
+	p.BasisMembershipHash, conflicts = mergeAlias(p.BasisMembershipHash, p.MembershipHashAlias, "basis_membership_hash", conflicts)
+	return conflicts
+}
+
+func mergeAlias(canonical, alias, field string, conflicts []string) (string, []string) {
+	c := strings.TrimSpace(canonical)
+	a := strings.TrimSpace(alias)
+	if c != "" && a != "" && c != a {
+		return c, append(conflicts, field)
+	}
+	if c != "" {
+		return c, conflicts
+	}
+	return a, conflicts
 }
 
 // CommercialAuthorityBinding is the live feed identity the payload must close
 // against. A new membership never inherits an old approval by similarity.
 type CommercialAuthorityBinding struct {
-	SourceRunID    string
-	SnapshotHash   string
-	MembershipHash string
+	SourceRunID             string
+	SnapshotHash            string
+	MembershipHash          string
+	PublicationSemanticHash string
+	ProducerIdentity        string
 }
 
 // CommercialAuthorityDecision is independent of source health and transport.
@@ -78,6 +142,8 @@ type CommercialAuthorityDecision struct {
 	BasisSourceRunID                   string     `json:"basis_source_run_id,omitempty"`
 	BasisSnapshotHash                  string     `json:"basis_snapshot_hash,omitempty"`
 	BasisMembershipHash                string     `json:"basis_membership_hash,omitempty"`
+	BasisPublicationSemanticHash       string     `json:"basis_publication_semantic_hash,omitempty"`
+	ProducerIdentity                   string     `json:"producer_identity,omitempty"`
 	ReasonCodes                        []string   `json:"reason_codes,omitempty"`
 }
 
@@ -107,18 +173,62 @@ func authorityPresent(p *FeedCommercialAuthority) bool {
 	if p == nil {
 		return false
 	}
+	p.NormalizeAliases()
 	return strings.TrimSpace(p.State) != "" ||
 		strings.TrimSpace(p.BasisSourceRunID) != "" ||
 		strings.TrimSpace(p.BasisSnapshotHash) != "" ||
 		strings.TrimSpace(p.BasisMembershipHash) != "" ||
+		strings.TrimSpace(p.BasisPublicationSemanticHash) != "" ||
+		strings.TrimSpace(p.ProducerIdentity) != "" ||
 		strings.TrimSpace(p.ValidUntil) != "" ||
+		strings.TrimSpace(p.ValidatedAt) != "" ||
 		strings.TrimSpace(p.SchemaVersion) != "" ||
+		strings.TrimSpace(p.Schema) != "" ||
 		p.NewAdmissionAllowed != nil ||
 		p.ExistingBoundTouchTransportAllowed != nil
 }
 
+func classifyAuthorityAge(age time.Duration, windows *CommercialAuthorityWindows) string {
+	current, degraded, frozen := windows.durations()
+	if age <= current {
+		return CommercialAuthorityCurrent
+	}
+	if age <= degraded {
+		return CommercialAuthorityDegraded
+	}
+	if age <= frozen {
+		return CommercialAuthorityFrozenForNewAdmission
+	}
+	return CommercialAuthorityExpired
+}
+
+func explicitRevocation(reasons []string) bool {
+	for _, reason := range reasons {
+		if strings.EqualFold(strings.TrimSpace(reason), "EXPLICIT_REVOCATION") {
+			return true
+		}
+	}
+	return false
+}
+
+func flagsForState(state string) (newAdmission, bound bool, reasons []string) {
+	switch state {
+	case CommercialAuthorityCurrent:
+		return true, true, []string{"COMMERCIAL_AUTHORITY_CURRENT"}
+	case CommercialAuthorityDegraded:
+		return true, true, []string{"COMMERCIAL_AUTHORITY_DEGRADED", "NEW_ADMISSION_REQUIRES_VALID_EVIDENCE_AND_NO_DRIFT"}
+	case CommercialAuthorityFrozenForNewAdmission:
+		return false, true, []string{"COMMERCIAL_AUTHORITY_FROZEN_FOR_NEW_ADMISSION", "NEW_ADMISSION_FROZEN", "EXISTING_BOUND_TOUCH_MAY_CONTINUE"}
+	case CommercialAuthorityExpired:
+		return false, false, []string{"COMMERCIAL_AUTHORITY_EXPIRED", "ALL_NEW_TRANSPORT_EXPIRED"}
+	default:
+		return false, false, []string{"COMMERCIAL_AUTHORITY_UNKNOWN"}
+	}
+}
+
 // EvaluateCommercialAuthority is a pure function of the attested payload, the
-// live binding, and an explicit now. Tests inject the clock.
+// live binding, and an explicit now. Tests inject the clock. Live state is
+// recomputed from validated_at; a static snapshot state is never trusted forever.
 func EvaluateCommercialAuthority(payload *FeedCommercialAuthority, binding CommercialAuthorityBinding, now time.Time) CommercialAuthorityDecision {
 	out := CommercialAuthorityDecision{State: CommercialAuthorityAbsent}
 	if now.IsZero() {
@@ -129,75 +239,82 @@ func EvaluateCommercialAuthority(payload *FeedCommercialAuthority, binding Comme
 		out.ReasonCodes = []string{ReasonAuthorityAbsent}
 		return out
 	}
+	conflicts := payload.NormalizeAliases()
 	out.Present = true
-	out.SchemaVersion = strings.TrimSpace(payload.SchemaVersion)
+	out.SchemaVersion = firstNonEmpty(strings.TrimSpace(payload.Schema), strings.TrimSpace(payload.ContractVersion), strings.TrimSpace(payload.SchemaVersion))
 	out.BasisSourceRunID = strings.TrimSpace(payload.BasisSourceRunID)
 	out.BasisSnapshotHash = strings.TrimSpace(payload.BasisSnapshotHash)
 	out.BasisMembershipHash = strings.ToLower(strings.TrimSpace(payload.BasisMembershipHash))
+	out.BasisPublicationSemanticHash = strings.ToLower(strings.TrimSpace(payload.BasisPublicationSemanticHash))
+	out.ProducerIdentity = strings.ToLower(strings.TrimSpace(payload.ProducerIdentity))
 	out.ReasonCodes = append([]string{}, payload.ReasonCodes...)
-
-	if validated, err := parseFreshnessTime(payload.ValidatedAt); err == nil {
-		t := validated.UTC()
-		out.ValidatedAt = &t
-	}
-	if strings.TrimSpace(payload.ValidUntil) == "" {
+	if len(conflicts) > 0 {
 		out.State = CommercialAuthorityUnknown
-		out.ReasonCodes = appendUnique(out.ReasonCodes, ReasonAuthorityValidUntilMissing)
+		out.ReasonCodes = appendUnique(out.ReasonCodes, ReasonAuthorityAliasConflict)
+		out.ReasonCodes = appendUnique(out.ReasonCodes, ReasonAuthorityBindingMismatch)
 		return out
 	}
-	until, err := parseFreshnessTime(payload.ValidUntil)
-	if err != nil {
-		out.State = CommercialAuthorityUnknown
-		out.ReasonCodes = appendUnique(out.ReasonCodes, ReasonAuthorityValidUntilMissing)
-		return out
-	}
-	u := until.UTC()
-	out.ValidUntil = &u
 
 	bindRun := strings.TrimSpace(binding.SourceRunID)
 	bindSnap := strings.TrimSpace(binding.SnapshotHash)
 	bindMem := strings.ToLower(strings.TrimSpace(binding.MembershipHash))
+	bindSem := strings.ToLower(strings.TrimSpace(binding.PublicationSemanticHash))
+	bindProd := strings.ToLower(strings.TrimSpace(binding.ProducerIdentity))
 	if out.BasisSourceRunID == "" || out.BasisSnapshotHash == "" || out.BasisMembershipHash == "" ||
-		bindRun == "" || bindSnap == "" || bindMem == "" ||
-		out.BasisSourceRunID != bindRun || out.BasisSnapshotHash != bindSnap || out.BasisMembershipHash != bindMem {
+		out.BasisPublicationSemanticHash == "" || out.ProducerIdentity == "" ||
+		bindRun == "" || bindSnap == "" || bindMem == "" || bindSem == "" || bindProd == "" ||
+		out.BasisSourceRunID != bindRun || out.BasisSnapshotHash != bindSnap || out.BasisMembershipHash != bindMem ||
+		out.BasisPublicationSemanticHash != bindSem || out.ProducerIdentity != bindProd {
 		out.State = CommercialAuthorityUnknown
 		out.ReasonCodes = appendUnique(out.ReasonCodes, ReasonAuthorityBindingMismatch)
 		return out
 	}
 
-	state := strings.ToUpper(strings.TrimSpace(payload.State))
-	if !now.Before(u) || state == CommercialAuthorityExpired {
+	if explicitRevocation(payload.ReasonCodes) {
 		out.State = CommercialAuthorityExpired
+		out.NewAdmissionAllowed = false
+		out.ExistingBoundTouchTransportAllowed = false
 		out.ReasonCodes = appendUnique(out.ReasonCodes, ReasonAuthorityExpired)
 		return out
 	}
 
-	switch state {
-	case CommercialAuthorityCurrent, CommercialAuthorityDegraded:
-		out.State = state
-		out.NewAdmissionAllowed = boolVal(payload.NewAdmissionAllowed)
-		out.ExistingBoundTouchTransportAllowed = boolVal(payload.ExistingBoundTouchTransportAllowed)
-		if !out.NewAdmissionAllowed {
-			out.ReasonCodes = appendUnique(out.ReasonCodes, ReasonNewAdmissionFrozen)
-		}
-		if !out.ExistingBoundTouchTransportAllowed {
-			out.ReasonCodes = appendUnique(out.ReasonCodes, ReasonBoundTransportForbidden)
-		}
-	case CommercialAuthorityFrozenForNewAdmission:
-		out.State = CommercialAuthorityFrozenForNewAdmission
-		out.NewAdmissionAllowed = false
-		out.ExistingBoundTouchTransportAllowed = boolVal(payload.ExistingBoundTouchTransportAllowed)
-		out.ReasonCodes = appendUnique(out.ReasonCodes, ReasonNewAdmissionFrozen)
-		if !out.ExistingBoundTouchTransportAllowed {
-			out.ReasonCodes = appendUnique(out.ReasonCodes, ReasonBoundTransportForbidden)
-		}
-	case CommercialAuthorityUnknown, "":
+	validated, err := parseFreshnessTime(payload.ValidatedAt)
+	if err != nil {
 		out.State = CommercialAuthorityUnknown
-		out.ReasonCodes = appendUnique(out.ReasonCodes, ReasonAuthorityUnknownState)
-	default:
-		out.State = CommercialAuthorityUnknown
-		out.ReasonCodes = appendUnique(out.ReasonCodes, ReasonAuthorityUnknownState)
+		out.ReasonCodes = appendUnique(out.ReasonCodes, ReasonAuthorityValidatedAtMissing)
+		return out
 	}
+	t := validated.UTC()
+	out.ValidatedAt = &t
+	if t.After(now.Add(5 * time.Minute)) {
+		out.State = CommercialAuthorityUnknown
+		out.ReasonCodes = appendUnique(out.ReasonCodes, ReasonAuthorityUnknownState)
+		return out
+	}
+	age := now.Sub(t)
+	if age < 0 {
+		age = 0
+	}
+	state := classifyAuthorityAge(age, payload.WindowsHours)
+	out.State = state
+	newAdmission, bound, reasons := flagsForState(state)
+	out.NewAdmissionAllowed = newAdmission
+	out.ExistingBoundTouchTransportAllowed = bound
+	for _, reason := range reasons {
+		out.ReasonCodes = appendUnique(out.ReasonCodes, reason)
+	}
+	current, degraded, frozen := payload.WindowsHours.durations()
+	var until time.Time
+	switch state {
+	case CommercialAuthorityCurrent:
+		until = t.Add(current)
+	case CommercialAuthorityDegraded:
+		until = t.Add(degraded)
+	default:
+		until = t.Add(frozen)
+	}
+	u := until.UTC()
+	out.ValidUntil = &u
 	return out
 }
 
@@ -317,10 +434,8 @@ func EvaluateOutboundEligibility(
 // RecognizeFirstTouchPolicy is exact. Partial names and fuzzy prefixes HOLD.
 func RecognizeFirstTouchPolicy(policyID string) (known bool, hold bool, reason string) {
 	switch strings.TrimSpace(policyID) {
-	case DelegatedFirstTouchPolicyV1:
+	case DelegatedFirstTouchPolicyV1, DelegatedFirstTouchPolicyV2:
 		return true, false, ""
-	case DelegatedFirstTouchPolicyV2:
-		return true, true, ReasonPolicyHold
 	case "":
 		return false, true, ReasonPolicyUnknown
 	default:
