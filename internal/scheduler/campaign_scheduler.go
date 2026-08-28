@@ -87,6 +87,12 @@ func (s *schedulerService) CalculateNextCampaignTime(ctx context.Context, campai
 	}
 
 	if len(accounts) == 0 {
+		s.logCampaignDecision(ctx, campaignID, "no_email_accounts",
+			"No active mailbox resolved for this campaign",
+			map[string]interface{}{
+				"user_id": campaign.UserID, "sender_count": len(senders),
+				"tag_count": len(campaign.EmailTags), "sender_strategy": campaign.SenderStrategy,
+			})
 		return time.Time{}, nil, uuid.Nil, ErrNoEmailAccounts
 	}
 	if campaign.OrganizationID != nil && s.orgRisk != nil && s.orgRisk.SendingSuspended(ctx, *campaign.OrganizationID) {

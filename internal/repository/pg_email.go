@@ -1248,8 +1248,11 @@ func (r *emailRepository) GetByCampaignSenders(ctx context.Context, userID strin
 		JOIN campaign_senders cs ON cs.email_account_id = ea.id
 		WHERE cs.campaign_id = $2
 		  AND cs.enabled
-		  AND ea.user_id = $1
 		  AND ea.status = 'active'
+		  AND (
+		    ($1 <> '' AND ea.user_id = $1::uuid)
+		    OR ea.organization_id = (SELECT c.organization_id FROM campaigns c WHERE c.id = $2)
+		  )
 		ORDER BY ea.id
 	`
 
