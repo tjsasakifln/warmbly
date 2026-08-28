@@ -312,6 +312,13 @@ func (m *MemoryStore) RefreshReservation(ctx context.Context, id uuid.UUID, leas
 }
 
 func (m *MemoryStore) CommitReservation(ctx context.Context, id uuid.UUID, sentAt time.Time) error {
+	return m.CommitReservationWithEvidence(ctx, id, sentAt, SendEvidence{})
+}
+
+// CommitReservationWithEvidence mirrors the PG behaviour; the in-memory store
+// keeps no evidence columns, so the evidence is accepted and ignored.
+func (m *MemoryStore) CommitReservationWithEvidence(ctx context.Context, id uuid.UUID, sentAt time.Time, _ SendEvidence) error {
+	m.closeQueueForKey(id)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	r := m.byResID[id]
@@ -521,6 +528,38 @@ func (m *MemoryStore) UpdateQueueStatus(ctx context.Context, id uuid.UUID, statu
 	return nil
 }
 
+// GetQueueByKey returns a copy of the queue row for a message key. It exists
+// for inspection and tests; the Store interface does not expose it.
+// closeQueueForKey mirrors the PG commit transaction, which closes the queue
+// row sharing the reservation's message key.
+func (m *MemoryStore) closeQueueForKey(reservationID uuid.UUID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r := m.byResID[reservationID]
+	if r == nil {
+		return
+	}
+	q := m.queue[r.MessageKey]
+	if q == nil {
+		return
+	}
+	switch q.Status {
+	case QueueQueued, QueueReserved, QueueAttempted:
+		q.Status = QueueSent
+	}
+}
+
+func (m *MemoryStore) GetQueueByKey(_ context.Context, messageKey string) (*QueueItem, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	q := m.queue[messageKey]
+	if q == nil {
+		return nil, nil
+	}
+	cp := *q
+	return &cp, nil
+}
+
 func (m *MemoryStore) ListQueueByStatus(_ context.Context, status string, limit int) ([]QueueItem, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -538,6 +577,16 @@ func (m *MemoryStore) ListQueueByStatus(_ context.Context, status string, limit 
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+func (m *MemoryStore) DeferQueue(ctx context.Context, id uuid.UUID, dueAt time.Time, reason string) error {
+	m.mu.Lock()
+	q := m.queueByID[id]
+	if q != nil && q.Attempts > 0 {
+		q.Attempts--
+	}
+	m.mu.Unlock()
+	return m.RetryQueue(ctx, id, dueAt, reason)
 }
 
 func (m *MemoryStore) RetryQueue(ctx context.Context, id uuid.UUID, dueAt time.Time, errText string) error {

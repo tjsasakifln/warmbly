@@ -141,6 +141,17 @@ type ReserveRequest struct {
 	CapOverride int
 }
 
+// SendEvidence is what the provider actually told us about one accepted
+// message. It is written in the same transaction that commits the send, so the
+// ledger row is self-contained external truth. Empty fields stay empty:
+// evidence that was not observed is never invented.
+type SendEvidence struct {
+	Recipient         string
+	Provider          string
+	ProviderMessageID string
+	QueueID           *uuid.UUID
+}
+
 type ReserveResult struct {
 	Allowed          bool
 	AlreadyCommitted bool

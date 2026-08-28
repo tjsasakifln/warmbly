@@ -133,6 +133,13 @@ Import query/header:
 - `?dry_run=true` — validate + count only
 - `Idempotency-Key` — same key + same payload returns prior run; different payload → `409`
 
+## First-touch transport
+
+See [first-touch-fast-lane.md](./first-touch-fast-lane.md) for the fast lane
+that owns first-touch sending: the claim/send/ledger loop, the gates it keeps,
+the failure model, duplicate prevention, and the cutover and rollback switch
+(`CONFENGE_FAST_LANE_ENABLED`).
+
 ## Local one-command ops
 
 See [local-ops.md](./local-ops.md) for `make confenge-local`,

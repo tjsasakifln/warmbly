@@ -43,6 +43,10 @@ type Store interface {
 
 	RefreshReservation(ctx context.Context, id uuid.UUID, leaseUntil time.Time, workerToken string) error
 	CommitReservation(ctx context.Context, id uuid.UUID, sentAt time.Time) error
+	// CommitReservationWithEvidence commits the send and records what the
+	// provider reported in the same transaction, so an accepted message can
+	// never be recorded without the evidence that proves it.
+	CommitReservationWithEvidence(ctx context.Context, id uuid.UUID, sentAt time.Time, ev SendEvidence) error
 	ReleaseReservation(ctx context.Context, id uuid.UUID, state, errText string) error
 	ExpireStaleReservations(ctx context.Context, now time.Time) (int, error)
 
@@ -60,6 +64,10 @@ type Store interface {
 	// ListQueueByStatus enumerates rows awaiting reconciliation, oldest first.
 	ListQueueByStatus(ctx context.Context, status string, limit int) ([]QueueItem, error)
 	RetryQueue(ctx context.Context, id uuid.UUID, dueAt time.Time, errText string) error
+	// DeferQueue returns a claimed row to the queue at its next legitimate slot
+	// without consuming a retry attempt. A cap, min-gap or window deferral is
+	// scheduling, not failure, and must not exhaust the row.
+	DeferQueue(ctx context.Context, id uuid.UUID, dueAt time.Time, reason string) error
 
 	RecordFailure(ctx context.Context, f FailureRecord) error
 	ListRecentFailures(ctx context.Context, limit int) ([]FailureRecord, error)
