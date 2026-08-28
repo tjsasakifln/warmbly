@@ -285,9 +285,23 @@ class TestImmutableRelease(unittest.TestCase):
         self.assertNotIn("WARMBLY_RELEASE_SHA:-", code)
 
     def test_go_services_keep_the_minprofile_contract(self) -> None:
+        """Defaults to the variant with Stripe/AWS/GCP/Kafka not compile-linked."""
         text = (PACK / "docker-compose.release.yml").read_text()
         for svc in ("backend", "consumer", "worker", "seed"):
-            self.assertRegex(text, rf"\n  {svc}:\n.*\n    image: .*-minprofile\n")
+            self.assertRegex(
+                text,
+                rf"\n  {svc}:\n.*\n    image: .*\$\{{CONFENGE_GO_IMAGE_SUFFIX--minprofile\}}\n",
+            )
+        sha = "a" * 40
+        proc = self._lib(
+            f'WARMBLY_RELEASE_SHA={sha}; release_image_ref backend; '
+            f'CONFENGE_GO_IMAGE_SUFFIX= release_image_ref backend'
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        default_ref, rollback_ref = proc.stdout.split()
+        self.assertTrue(default_ref.endswith("-minprofile"))
+        # Rolling back to a release published before the variant existed.
+        self.assertTrue(rollback_ref.endswith(sha))
 
     def test_ci_publishes_every_image_the_vps_pins(self) -> None:
         wf = (ROOT / ".github/workflows/build-push.yml").read_text()
@@ -351,6 +365,14 @@ class TestDeployPath(unittest.TestCase):
         driver = (PACK / "release-deploy.sh").read_text()
         self.assertNotIn("compose.sh build", driver)
         self.assertIn("up.sh", driver)
+
+    def test_driver_exports_the_release_before_any_compose_call(self) -> None:
+        """compose_cmd rebinds the decision-audit identity from this variable,
+        so a post-deploy compose call without it refuses instead of reporting."""
+        driver = strip_comments((PACK / "release-deploy.sh").read_text())
+        export = driver.index('export WARMBLY_RELEASE_SHA="$NEW_SHA"')
+        self.assertLess(export, driver.index("up.sh"))
+        self.assertLess(export, driver.index("compose_cmd"))
 
 
 class TestBuildContext(unittest.TestCase):

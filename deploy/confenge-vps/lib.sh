@@ -97,11 +97,17 @@ image_prefix() {
 }
 
 # The Go services pin the minprofile variant; the rest have a single build.
+# Must stay in step with docker-compose.release.yml, including the rollback
+# override for releases published before the minprofile variant existed.
+go_image_suffix() {
+  echo "${CONFENGE_GO_IMAGE_SUFFIX--minprofile}"
+}
+
 release_image_ref() {
   local svc="$1" sha="${2:-$WARMBLY_RELEASE_SHA}"
   case "$svc" in
     backend|consumer|worker|seed)
-      echo "$(image_prefix)/${svc/seed/backend}:${sha}-minprofile" ;;
+      echo "$(image_prefix)/${svc/seed/backend}:${sha}$(go_image_suffix)" ;;
     *)
       echo "$(image_prefix)/${svc}:${sha}" ;;
   esac

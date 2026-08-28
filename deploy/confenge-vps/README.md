@@ -40,6 +40,12 @@ hour.
 Set `CONFENGE_RELEASE_MODE=build` only if GHCR is unreachable. Local production
 builds are what filled the root filesystem.
 
+Rollback pulls the previous release the same way. Releases published before the
+`-minprofile` variant existed need `CONFENGE_GO_IMAGE_SUFFIX=` to select the
+plain tag; the local `warmbly-confenge-*` images from the pre-registry era are
+left in place as the rollback path for those releases and are never pruned by
+the retention sweep.
+
 ## Disk safety
 
 `data/backups` reached 4.3 GB inside a 4.7 GB Docker build context, every

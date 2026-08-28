@@ -25,6 +25,10 @@ else
   git checkout --quiet "$TARGET"
 fi
 NEW_SHA="$(git rev-parse HEAD)"
+# Export before any compose_cmd: the release overlay interpolates this and
+# compose_cmd rebinds the decision-audit identity from it. Passing it only as a
+# prefix to up.sh left the post-deploy migration check without an identity.
+export WARMBLY_RELEASE_SHA="$NEW_SHA"
 echo "== release $NEW_SHA =="
 
 ENVF="${CONFENGE_VPS_ENV:-$ROOT/deploy/confenge-vps/.env}"
@@ -42,7 +46,7 @@ chmod 600 "$ENVF"
 
 # up.sh runs the disk preflight, pulls and verifies the pinned images, recreates
 # the stack, checks Postgres and the running SHA, and clears its own deploy pause.
-WARMBLY_RELEASE_SHA="$NEW_SHA" bash "$ROOT/deploy/confenge-vps/up.sh"
+bash "$ROOT/deploy/confenge-vps/up.sh"
 
 printf '%s\n' "$NEW_SHA" >"$ROOT/.deployed_sha"
 
