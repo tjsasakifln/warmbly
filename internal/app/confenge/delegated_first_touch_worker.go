@@ -193,9 +193,9 @@ func (s *service) nextDelegatedFirstTouchCandidate(ctx context.Context, orgID uu
 			  AND NOT EXISTS (
 			    SELECT 1 FROM confenge_delegated_first_touch_decisions d
 			    WHERE d.organization_id=t.organization_id AND d.account_id=t.account_id
-			      AND (d.state='SENT' OR (d.state<>'CANCELLED'
-			        AND d.evidence_source_run_id=$2 AND d.source_snapshot_hash=$3
-			        AND d.runtime_release_sha=$4 AND d.policy_authorization_id=$5))
+			      AND (d.state='SENT'
+			        OR (d.evidence_source_run_id=$2 AND d.source_snapshot_hash=$3
+			          AND d.runtime_release_sha=$4 AND d.policy_authorization_id=$5))
 			  )
 			ORDER BY t.delegated_retry_at,t.due_at,t.created_at,t.id
 			LIMIT 1 FOR UPDATE OF t SKIP LOCKED
