@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/warmbly/warmbly/internal/models"
 )
 
 func authorityBool(v bool) *bool { return &v }
@@ -309,5 +311,28 @@ func TestLosslessAliasFillsCanonicalAndConflictFailsClosed(t *testing.T) {
 	p.SourceRunIDAlias = "run-other"
 	if got := EvaluateCommercialAuthority(&p, testBinding(), now); got.State != CommercialAuthorityUnknown {
 		t.Fatalf("alias conflict accepted: %+v", got)
+	}
+}
+
+func TestCommercialBindingFromStoredFeedKeepsSemanticAndProducer(t *testing.T) {
+	now := time.Date(2026, 8, 28, 6, 0, 0, 0, time.UTC)
+	p := testAuthorityPayload(CommercialAuthorityCurrent, now)
+	feed := &models.OutreachFeedSyncState{
+		LastRunID:            p.BasisSourceRunID,
+		LastSnapshotHash:     p.BasisSnapshotHash,
+		TargetMembershipHash: p.BasisMembershipHash,
+	}
+	thin := CommercialAuthorityBinding{
+		SourceRunID:    feed.LastRunID,
+		SnapshotHash:   feed.LastSnapshotHash,
+		MembershipHash: feed.TargetMembershipHash,
+	}
+	if got := EvaluateCommercialAuthority(&p, thin, now); got.State != CommercialAuthorityUnknown {
+		t.Fatalf("omitting semantic hash/producer identity must fail closed: %+v", got)
+	}
+	binding := commercialBindingFromStoredFeed(feed, &p)
+	elig := EvaluateOutboundEligibility(testFreshSource(now), &p, binding, TransportState{State: TransportActive}, now, 24*time.Hour, nil, false)
+	if elig.CommercialAuthority.State != CommercialAuthorityCurrent || !elig.AllowNewAdmission {
+		t.Fatalf("stored CURRENT authority must remain CURRENT on autorun apply: %+v", elig.CommercialAuthority)
 	}
 }

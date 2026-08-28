@@ -405,25 +405,32 @@ func firstPresentAuthority(parts ...*FeedCommercialAuthority) *FeedCommercialAut
 	return nil
 }
 
-func EvaluateStoredFeedAuthority(feed *models.OutreachFeedSyncState, now time.Time, maxAge time.Duration) (SourceHealthDecision, CommercialAuthorityDecision) {
-	source := ClassifySourceHealth(feedSourceFreshnessFromState(feed), now, maxAge)
-	if feed == nil {
-		return source, CommercialAuthorityDecision{State: CommercialAuthorityAbsent}
-	}
-	payload := storedCommercialAuthority(feed)
+func commercialBindingFromStoredFeed(feed *models.OutreachFeedSyncState, payload *FeedCommercialAuthority) CommercialAuthorityBinding {
 	semantic, producer := "", ""
 	if payload != nil {
 		payload.NormalizeAliases()
 		semantic = payload.BasisPublicationSemanticHash
 		producer = payload.ProducerIdentity
 	}
-	return source, EvaluateCommercialAuthority(payload, CommercialAuthorityBinding{
+	if feed == nil {
+		return CommercialAuthorityBinding{PublicationSemanticHash: semantic, ProducerIdentity: producer}
+	}
+	return CommercialAuthorityBinding{
 		SourceRunID:             feed.LastRunID,
 		SnapshotHash:            feed.LastSnapshotHash,
 		MembershipHash:          feed.TargetMembershipHash,
 		PublicationSemanticHash: semantic,
 		ProducerIdentity:        producer,
-	}, now)
+	}
+}
+
+func EvaluateStoredFeedAuthority(feed *models.OutreachFeedSyncState, now time.Time, maxAge time.Duration) (SourceHealthDecision, CommercialAuthorityDecision) {
+	source := ClassifySourceHealth(feedSourceFreshnessFromState(feed), now, maxAge)
+	if feed == nil {
+		return source, CommercialAuthorityDecision{State: CommercialAuthorityAbsent}
+	}
+	payload := storedCommercialAuthority(feed)
+	return source, EvaluateCommercialAuthority(payload, commercialBindingFromStoredFeed(feed, payload), now)
 }
 
 func commercialReadback(d CommercialAuthorityDecision) DelegatedFirstTouchAuthorityReadback {
@@ -573,7 +580,7 @@ func (s *service) applyDelegatedFirstTouchManifest(ctx context.Context, orgID uu
 		elig := EvaluateOutboundEligibility(
 			feedSourceFreshnessFromState(feedState),
 			commercialPayload,
-			CommercialAuthorityBinding{SourceRunID: feedState.LastRunID, SnapshotHash: feedState.LastSnapshotHash, MembershipHash: feedState.TargetMembershipHash},
+			commercialBindingFromStoredFeed(feedState, commercialPayload),
 			TransportState{State: TransportActive},
 			now, s.cfg.FeedMaxAge, nil, false,
 		)
@@ -1123,7 +1130,7 @@ func (s *service) validateDelegatedEntry(ctx context.Context, orgID uuid.UUID, m
 			elig := EvaluateOutboundEligibility(
 				feedSourceFreshnessFromState(feedState),
 				commercialPayload,
-				CommercialAuthorityBinding{SourceRunID: feedState.LastRunID, SnapshotHash: feedState.LastSnapshotHash, MembershipHash: feedState.TargetMembershipHash},
+				commercialBindingFromStoredFeed(feedState, commercialPayload),
 				TransportState{State: TransportActive},
 				now, s.cfg.FeedMaxAge, nil, bound,
 			)
