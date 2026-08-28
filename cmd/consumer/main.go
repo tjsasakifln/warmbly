@@ -359,6 +359,11 @@ func main() {
 		// commercial store they would fall back to process memory and disappear
 		// before the backend/Control Center can reconstruct cohort outcomes.
 		confengeSvc.WireIntel(primaryDB.Pool)
+		// The consumer is the only process that observes a provider result, so
+		// it is the only one that can commit the dispatch reservation into
+		// confenge_dispatch_sends. Without the governor, every provider-accepted
+		// CONFENGE send failed to record and retried forever.
+		confengeSvc.WireDispatch(primaryDB.Pool)
 		confengeSvc.WireCohortAuth(confenge.NewPostgresCohortStore(primaryDB.Pool))
 		if sink, ok := confengeSvc.(confenge.OutcomeSink); ok {
 			confengeSink = sink
