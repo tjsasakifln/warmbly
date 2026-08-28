@@ -38,6 +38,8 @@ func main() {
 		os.Exit(cmdImport(os.Args[2:]))
 	case "reconcile-target-fit":
 		os.Exit(cmdReconcileTargetFit(os.Args[2:]))
+	case "reconcile-provider-accepted":
+		os.Exit(cmdReconcileProviderAccepted(os.Args[2:]))
 	case "stop-sending":
 		os.Exit(cmdStopSending())
 	case "resume-sending":
@@ -75,6 +77,7 @@ Usage:
   confenge bootstrap [--org-id UUID]
   confenge import --feed PATH|file://... [--dry-run] [--org-id UUID]
   confenge reconcile-target-fit [--dry-run] [--org-id UUID]
+  confenge reconcile-provider-accepted --task-id UUID --touchpoint-id UUID --recipient EMAIL --provider-message-id ID --accepted-at RFC3339 --actor UUID [--dry-run|--confirm PROVIDER_ACCEPTED_LOCAL_COMPLETION_FAILED]
   confenge commercial-qualification --corpus PATH [--dry-run] [--org-id UUID]
   confenge stop-sending
   confenge resume-sending

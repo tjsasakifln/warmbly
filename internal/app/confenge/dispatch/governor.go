@@ -186,8 +186,19 @@ func (g *Governor) Commit(ctx context.Context, reservationID uuid.UUID) error {
 
 // CommitByMessageKey records provider-confirmed delivery for an async transport.
 func (g *Governor) CommitByMessageKey(ctx context.Context, messageKey string) error {
+	if g == nil {
+		return fmt.Errorf("dispatch reservation key is unavailable")
+	}
+	return g.CommitByMessageKeyAt(ctx, messageKey, g.clock.Now().UTC())
+}
+
+// CommitByMessageKeyAt preserves the provider-observed acceptance time.
+func (g *Governor) CommitByMessageKeyAt(ctx context.Context, messageKey string, sentAt time.Time) error {
 	if g == nil || g.store == nil || messageKey == "" {
 		return fmt.Errorf("dispatch reservation key is unavailable")
+	}
+	if sentAt.IsZero() {
+		sentAt = g.clock.Now().UTC()
 	}
 	reservation, err := g.store.GetReservationByKey(ctx, messageKey)
 	if err != nil {
@@ -196,7 +207,7 @@ func (g *Governor) CommitByMessageKey(ctx context.Context, messageKey string) er
 	if reservation == nil {
 		return fmt.Errorf("dispatch reservation not found for provider-confirmed send")
 	}
-	return g.store.CommitReservation(ctx, reservation.ID, g.clock.Now().UTC())
+	return g.store.CommitReservation(ctx, reservation.ID, sentAt.UTC())
 }
 
 func (g *Governor) Release(ctx context.Context, reservationID uuid.UUID, errText string) error {

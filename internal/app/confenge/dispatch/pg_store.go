@@ -407,7 +407,7 @@ func (s *PGStore) CommitReservation(ctx context.Context, id uuid.UUID, sentAt ti
 	}
 	_, _ = tx.Exec(ctx, `
 		UPDATE confenge_dispatch_queue SET status = 'sent', updated_at = now()
-		WHERE message_key = $1 AND status IN ('queued','reserved')`, r.MessageKey)
+		WHERE message_key = $1 AND status IN ('queued','reserved','attempted')`, r.MessageKey)
 	return tx.Commit(ctx)
 }
 

@@ -622,11 +622,15 @@ func (s *service) CompleteCampaignEmail(ctx context.Context, orgID, campaignID, 
 	if touchpoint == nil {
 		return ErrCampaignTouchpointNotFound
 	}
-	commitProviderSend := func() error {
+	providerAcceptedAt := acceptedAt.UTC()
+	if providerAcceptedAt.IsZero() {
+		providerAcceptedAt = time.Now().UTC()
+	}
+	commitProviderSend := func(sentAt time.Time) error {
 		if sequenceID == uuid.Nil || s.governor == nil {
 			return fmt.Errorf("provider-confirmed CONFENGE send cannot commit its dispatch reservation")
 		}
-		return s.governor.CommitByMessageKey(ctx, MessageKeyCampaignEmail(campaignID, contactID, sequenceID))
+		return s.governor.CommitByMessageKeyAt(ctx, MessageKeyCampaignEmail(campaignID, contactID, sequenceID), sentAt)
 	}
 	observeAccepted := func() error {
 		var cand *models.OutreachContactCandidate
@@ -634,7 +638,7 @@ func (s *service) CompleteCampaignEmail(ctx context.Context, orgID, campaignID, 
 			cand, _ = s.repo.GetCandidate(ctx, orgID, *touchpoint.ContactCandidateID)
 		}
 		return s.observeControlledEmail(ctx, orgID, intel.EventProviderAccepted, touchpoint, cand, ControlledEmailContext{
-			OccurredAt: acceptedAt, ProviderName: firstNonEmpty(provider, "smtp"),
+			OccurredAt: providerAcceptedAt, ProviderName: firstNonEmpty(provider, "smtp"),
 			MailboxID: opaqueUUID(mailboxID), StableEventRef: firstNonEmpty(opaqueUUID(taskID), providerMessageID),
 		})
 	}
@@ -643,10 +647,11 @@ func (s *service) CompleteCampaignEmail(ctx context.Context, orgID, campaignID, 
 			strings.TrimSpace(providerMessageID) != "" && existing != strings.TrimSpace(providerMessageID) {
 			return fmt.Errorf("provider message id conflicts with completed touchpoint")
 		}
-		if err := commitProviderSend(); err != nil {
+		sentAt := firstNonZeroTime(touchpoint.SentAt, providerAcceptedAt)
+		if err := commitProviderSend(sentAt); err != nil {
 			return err
 		}
-		if err := s.markDelegatedFirstTouchSent(ctx, orgID, touchpoint.ID, firstNonZeroTime(touchpoint.SentAt, acceptedAt)); err != nil {
+		if err := s.markDelegatedFirstTouchSent(ctx, orgID, touchpoint.ID, sentAt); err != nil {
 			return err
 		}
 		if err := observeAccepted(); err != nil {
@@ -655,15 +660,12 @@ func (s *service) CompleteCampaignEmail(ctx context.Context, orgID, campaignID, 
 		return s.releaseNextTouch(ctx, orgID, touchpoint)
 	}
 	if models.TouchpointTerminalStates[touchpoint.State] {
-		if err := commitProviderSend(); err != nil {
+		if err := commitProviderSend(providerAcceptedAt); err != nil {
 			return err
 		}
 		return observeAccepted()
 	}
-	now := acceptedAt.UTC()
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
+	now := providerAcceptedAt
 	if err := s.transitionCompletedTouchpointKeyed(ctx, orgID, touchpoint, now, providerMessageID, MessageKeyCampaignEmail(campaignID, contactID, sequenceID)); err != nil {
 		return err
 	}
@@ -673,7 +675,7 @@ func (s *service) CompleteCampaignEmail(ctx context.Context, orgID, campaignID, 
 	if err := s.markDelegatedFirstTouchSent(ctx, orgID, touchpoint.ID, now); err != nil {
 		return err
 	}
-	if err := commitProviderSend(); err != nil {
+	if err := commitProviderSend(now); err != nil {
 		return err
 	}
 	if err := observeAccepted(); err != nil {
