@@ -2404,9 +2404,14 @@ func (s *service) assertDelegatedFirstTouchDecision(ctx context.Context, orgID u
 	if !stateBound {
 		return fail("delegated_decision_queue_state_drift")
 	}
+	// The runtime release sha is the build that made the decision, not the
+	// authority behind it. Comparing it here cancelled every approved touch the
+	// moment a new release shipped: the policy version, policy hash, authority
+	// reference, actor type and evidence version below are what actually bind
+	// this decision, and copy is bound separately by editorial authority.
 	if expected, ok := expectedFirstTouchPolicyHash(got.PolicyVersion); !ok || got.PolicyHash != expected ||
 		got.AuthorityReference != DelegatedFirstTouchAuthorityRef || got.ActorType != "delegated_agent" || got.Authority != DelegatedFirstTouchAuthority ||
-		got.EvidenceVersion != DelegatedFirstTouchEvidenceV1 || got.RuntimeReleaseSHA != s.cfg.RepositorySHA {
+		got.EvidenceVersion != DelegatedFirstTouchEvidenceV1 {
 		return fail("policy_or_authority_drift")
 	}
 	if s.policyStore == nil {
