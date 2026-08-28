@@ -130,6 +130,7 @@ func openFirstTouchService(ctx context.Context) (*pgxpool.Pool, confenge.Service
 	svc := confenge.NewService(cfg, repo, nil)
 	svc.WireDispatch(pool)
 	svc.WirePolicyAuth(repository.NewConfengePolicyRepository(pool))
+	svc.WireCohortAuth(confenge.NewPostgresCohortStore(pool))
 	svc.WireDelegatedFirstTouch(pool)
 	svc.WireOrgRisk(orgrisk.NewService(repository.NewOrgRiskRepository(pool), nil))
 	return pool, svc, cfg, nil
