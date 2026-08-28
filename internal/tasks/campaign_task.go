@@ -299,6 +299,7 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 			return sxerr
 		}
 		if suppressed {
+			s.advancePastSkippedPair(ctx, campaign.ID, contact.ID, nextPair.SequenceID, "failed to advance past suppressed recipient")
 			_ = s.taskRepo.UpdateTaskStatusWithLock(ctx, taskID, "skipped_suppressed")
 			if s.campaignLogRepo != nil {
 				_ = s.campaignLogRepo.CreateLog(ctx, &repository.CampaignLogEntry{
@@ -310,7 +311,7 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 					},
 				})
 			}
-			_ = s.createCampaignTask(ctx, campaign.ID, accountID, nextTime)
+			_ = s.createCampaignTask(ctx, campaign.ID, accountID, skipRetryTime(nextTime))
 			executionStatus = "completed"
 			return nil
 		}
@@ -322,6 +323,7 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 	// campaign's "send to risky emails" toggle is off (see the next gate).
 	// 'unknown'/'valid' always send.
 	if contact.VerificationStatus == "invalid" {
+		s.advancePastSkippedPair(ctx, campaign.ID, contact.ID, nextPair.SequenceID, "failed to advance past unverifiable recipient")
 		_ = s.taskRepo.UpdateTaskStatusWithLock(ctx, taskID, "skipped_suppressed")
 		if s.campaignLogRepo != nil {
 			_ = s.campaignLogRepo.CreateLog(ctx, &repository.CampaignLogEntry{
@@ -331,7 +333,7 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 				Metadata:   map[string]interface{}{"reason": contact.VerificationReason},
 			})
 		}
-		_ = s.createCampaignTask(ctx, campaign.ID, accountID, nextTime)
+		_ = s.createCampaignTask(ctx, campaign.ID, accountID, skipRetryTime(nextTime))
 		executionStatus = "completed"
 		return nil
 	}
@@ -341,6 +343,7 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 	// which raise bounce risk. Enforces the campaign.RiskyEmails toggle that the
 	// settings UI exposes — without this the toggle is stored but inert.
 	if !campaign.RiskyEmails && contact.VerificationStatus == "risky" {
+		s.advancePastSkippedPair(ctx, campaign.ID, contact.ID, nextPair.SequenceID, "failed to advance past risky recipient")
 		_ = s.taskRepo.UpdateTaskStatusWithLock(ctx, taskID, "skipped_suppressed")
 		if s.campaignLogRepo != nil {
 			_ = s.campaignLogRepo.CreateLog(ctx, &repository.CampaignLogEntry{
@@ -350,7 +353,7 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 				Metadata:   map[string]interface{}{"reason": contact.VerificationReason},
 			})
 		}
-		_ = s.createCampaignTask(ctx, campaign.ID, accountID, nextTime)
+		_ = s.createCampaignTask(ctx, campaign.ID, accountID, skipRetryTime(nextTime))
 		executionStatus = "completed"
 		return nil
 	}
