@@ -164,3 +164,21 @@ func TestTransportAssertionIgnoresRuntimeReleaseSHA(t *testing.T) {
 		}
 	}
 }
+
+// A republish of the population over the same members must not cancel a queued
+// decision at transport either, for the same reason the retire sweep no longer
+// compares it: revocation is per account, not per attestation revision.
+func TestTransportAssertionIgnoresMembershipRevision(t *testing.T) {
+	b, err := os.ReadFile("delegated_first_touch.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if strings.Contains(s, "source_authority_binding_drift") {
+		t.Fatal("an import revision is not revocation; it must not cancel a queued first touch at transport")
+	}
+	// The per-account commercial fact is what actually gates transport.
+	if !strings.Contains(s, "AccountCommercialQualification(acc, now); !qual.AllowsTransport()") {
+		t.Fatal("the three-year commercial qualification must still gate transport")
+	}
+}
