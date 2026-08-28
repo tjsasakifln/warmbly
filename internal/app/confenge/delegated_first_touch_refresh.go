@@ -4,15 +4,22 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 )
 
 const delegatedBindingRefreshReason = "delegated_authority_or_source_binding_advanced"
 
 // retireStaleDelegatedFirstTouches revokes approvals whose account is no longer
-// commercially QUALIFIED, or whose runtime, policy or membership binding moved.
-// Source run id, snapshot expiry and freshness hash are acquisition provenance
-// and never retire a still-qualified decision, so sourceRunID and snapshotHash
-// are accepted for call-site symmetry and deliberately not compared.
+// commercially QUALIFIED, whose policy binding moved, or whose campaign policy
+// authorization is gone. Acquisition and build provenance never retire a
+// still-qualified decision: source run id, snapshot expiry, freshness hash, the
+// population attestation revision and the runtime release sha are all import or
+// build identity rather than authority, so sourceRunID and snapshotHash are
+// accepted for call-site symmetry and deliberately not compared.
+//
+// Retirement is destructive and irreversible for a queued touch, so it requires
+// positive proof of revocation. Doubt (an unreadable feed, a structurally
+// invalid attestation) blocks transport elsewhere and retires nothing here.
 func (s *service) retireStaleDelegatedFirstTouches(ctx context.Context, orgID uuid.UUID, sourceRunID, snapshotHash string, policyAuthorizationIDs ...*uuid.UUID) (int, error) {
 	_, _ = sourceRunID, snapshotHash
 	if s == nil || s.delegatedDB == nil {
@@ -29,6 +36,14 @@ func (s *service) retireStaleDelegatedFirstTouches(ctx context.Context, orgID uu
 		policyAuthorizationID = policyAuthorizationIDs[0]
 	}
 	feedState, feedErr := s.repo.GetFeedSyncState(ctx, orgID)
+	// A feed that could not be read has revoked nothing. Sweeping on an unknown
+	// population would cancel every approved touch on a transient database error.
+	if feedErr != nil {
+		return 0, feedErr
+	}
+	if feedState == nil || validateAuthoritativeFeedStructure(feedState, true) != nil {
+		return 0, nil
+	}
 	// A producer that published no population attestation has not revoked
 	// anything. Fall back to the durable per-account three-year evidence, the
 	// same authority the first-window readback reads, so an unattested but
@@ -37,14 +52,9 @@ func (s *service) retireStaleDelegatedFirstTouches(ctx context.Context, orgID uu
 	if !authority.Present {
 		authority = s.commercialQualificationFromAccounts(ctx, orgID, s.now())
 	}
-	authorityValid := feedErr == nil && feedState != nil &&
-		validateAuthoritativeFeedStructure(feedState, true) == nil &&
-		authority.State == CommercialQualified
-	targetMembershipHash, targetMembershipCount := "", 0
-	if feedState != nil {
-		targetMembershipHash = feedState.TargetMembershipHash
-		targetMembershipCount = feedState.TargetMembershipCount
-	}
+	// Symmetric with the approval path, which blocks only on a present-and-not-
+	// qualified attestation. Absence of proof is not proof of revocation.
+	authorityRevoked := authority.Present && authority.State != CommercialQualified
 
 	rows, err := tx.Query(ctx, `
 		SELECT d.touchpoint_id
@@ -55,18 +65,16 @@ func (s *service) retireStaleDelegatedFirstTouches(ctx context.Context, orgID uu
 		  AND d.state IN ('APPROVED','QUEUED','APPROVED_NOT_SCHEDULED')
 		  AND d.touchpoint_id IS NOT NULL
 		  AND (a.id IS NULL OR a.commercial_qualification_state<>'QUALIFIED'
-		    OR d.runtime_release_sha<>$2
-		    OR d.policy_version NOT IN ($3,$4,$12)
-		    OR d.policy_hash<>CASE d.policy_version WHEN $3 THEN $5 WHEN $4 THEN $6 WHEN $12 THEN $13 ELSE '' END
-		    OR ($8 AND ($7::uuid IS NULL OR d.policy_authorization_id<>$7))
-		    OR NOT $9 OR d.target_membership_hash<>$10
-		    OR d.target_membership_count<>$11)
-		FOR UPDATE OF d`, orgID, s.cfg.RepositorySHA,
+		    OR d.policy_version NOT IN ($2,$3,$8)
+		    OR d.policy_hash<>CASE d.policy_version WHEN $2 THEN $4 WHEN $3 THEN $5 WHEN $8 THEN $9 ELSE '' END
+		    OR ($7 AND ($6::uuid IS NULL OR d.policy_authorization_id<>$6))
+		    OR $10)
+		FOR UPDATE OF d`, orgID,
 		DelegatedFirstTouchPolicyV1, DelegatedFirstTouchPolicyV2,
 		DelegatedFirstTouchPolicyHashV1, DelegatedFirstTouchPolicyHashV2,
 		policyAuthorizationID, checkPolicyAuthorization,
-		authorityValid, targetMembershipHash, targetMembershipCount,
-		DelegatedFirstTouchPolicyV3, DelegatedFirstTouchPolicyHashV3)
+		DelegatedFirstTouchPolicyV3, DelegatedFirstTouchPolicyHashV3,
+		authorityRevoked)
 	if err != nil {
 		return 0, err
 	}
@@ -125,5 +133,10 @@ func (s *service) retireStaleDelegatedFirstTouches(ctx context.Context, orgID uu
 	if err = tx.Commit(ctx); err != nil {
 		return 0, err
 	}
+	// Retirement cancels durable queued work, so its blast radius is never silent.
+	log.Warn().Str("organization_id", orgID.String()).Int("retired", len(touchpointIDs)).
+		Bool("authority_revoked", authorityRevoked).
+		Bool("policy_authorization_enforced", checkPolicyAuthorization).
+		Msg("confenge: retired delegated first-touch approvals")
 	return len(touchpointIDs), nil
 }

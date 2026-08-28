@@ -93,9 +93,20 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (processed
 		return false, err
 	}
 	auth, err := s.policyStore.GetActiveCampaignPolicy(ctx, orgID, *settings.CampaignID, time.Now().UTC())
-	if err != nil || auth == nil {
-		_, _ = s.retireStaleDelegatedFirstTouches(ctx, orgID, feed.LastRunID, feed.LastSnapshotHash, nil)
+	if err != nil {
+		// A policy read that failed is not a revoked policy. Retiring here would
+		// cancel every approved touch in the org on a transient database error.
 		return false, err
+	}
+	if auth == nil {
+		// No active campaign policy authorization: nothing is authorized to
+		// send, so approvals made under a previous authorization do retire. The
+		// nil pointer is the sentinel the predicate reads as "matches none".
+		var noAuthorization *uuid.UUID
+		if _, retireErr := s.retireStaleDelegatedFirstTouches(ctx, orgID, feed.LastRunID, feed.LastSnapshotHash, noAuthorization); retireErr != nil {
+			return false, retireErr
+		}
+		return false, nil
 	}
 	if _, err = s.retireStaleDelegatedFirstTouches(ctx, orgID, feed.LastRunID, feed.LastSnapshotHash, &auth.ID); err != nil {
 		return false, err

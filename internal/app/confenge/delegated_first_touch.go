@@ -313,7 +313,7 @@ func (s *service) ReconcileDelegatedFirstTouchLedger(ctx context.Context, orgID 
 				(d.state IN ('APPROVED','APPROVED_NOT_SCHEDULED') AND t.state <> 'APPROVED')
 				OR (d.state='QUEUED' AND (
 					t.state NOT IN ('QUEUED','SENT')
-					OR (t.state='QUEUED' AND (q.status IS NULL OR q.status NOT IN ('queued','reserved','sent')))
+					OR (t.state='QUEUED' AND (q.status IS NULL OR q.status NOT IN ('queued','reserved','attempted','sent')))
 				))
 			  )
 		)
@@ -337,14 +337,14 @@ func (s *service) ReconcileDelegatedFirstTouchLedger(ctx context.Context, orgID 
 		LEFT JOIN confenge_dispatch_queue q
 		  ON q.organization_id=d.organization_id AND q.draft_id=d.draft_id AND q.message_key=d.queue_message_key
 		WHERE t.organization_id=$1 AND t.state='QUEUED' AND d.state='CANCELLED'
-		  AND (q.status IS NULL OR q.status NOT IN ('queued','reserved','sent'))
+		  AND (q.status IS NULL OR q.status NOT IN ('queued','reserved','attempted','sent'))
 		  AND NOT EXISTS (
 			SELECT 1 FROM confenge_delegated_first_touch_decisions live
 			JOIN confenge_dispatch_queue live_q
 			  ON live_q.organization_id=live.organization_id AND live_q.draft_id=live.draft_id
 			 AND live_q.message_key=live.queue_message_key
 			WHERE live.organization_id=t.organization_id AND live.touchpoint_id=t.id
-			  AND live.state='QUEUED' AND live_q.status IN ('queued','reserved','sent')
+			  AND live.state='QUEUED' AND live_q.status IN ('queued','reserved','attempted','sent')
 		  )`, orgID)
 	if err != nil {
 		return 0, err
