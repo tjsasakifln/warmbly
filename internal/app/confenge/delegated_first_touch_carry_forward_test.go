@@ -180,15 +180,21 @@ func TestDelegatedFirstTouchGatesCarryNoRunIDRevocation(t *testing.T) {
 		"acc.ContractorRoleSourceRunID != got.SourceRunID",
 		"feedState.LastRunID != got.SourceRunID",
 		"got.SourceExpiresAt.Equal(feedState.SourceExpiresAt",
+		// The attestation revision is import provenance for the same reason the
+		// run id and snapshot hash are: a republish over the same members moves
+		// the hash and count without revoking anything. Revocation is carried
+		// per account by the three-year qualification.
+		"got.TargetMembershipHash != feedState.TargetMembershipHash",
+		"got.TargetMembershipCount != feedState.TargetMembershipCount",
 	} {
 		if strings.Contains(s, revocation) {
 			t.Fatalf("%s revokes a bound decision on acquisition provenance", revocation)
 		}
 	}
 	for _, binding := range []string{
-		"got.TargetMembershipHash != feedState.TargetMembershipHash",
 		"acc.ContractorRoleEvidenceHash != got.EvidenceHash",
 		"got.ContentHash != tp.ContentHash",
+		"AccountCommercialQualification(acc, now); !qual.AllowsTransport()",
 	} {
 		if !strings.Contains(s, binding) {
 			t.Fatalf("%s is a content/binding integrity term and must stay", binding)
