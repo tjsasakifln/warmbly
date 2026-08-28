@@ -678,7 +678,12 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 					Metadata: map[string]interface{}{"reason": gate.Reason},
 				})
 			}
-			_ = s.createCampaignTask(ctx, campaign.ID, accountID, nextTime)
+			// Nothing was sent, so this lead must not consume a mailbox send slot.
+			// Pacing at nextTime made every skipped lead cost a full min-gap, so a
+			// handful of ineligible leads at the head of the campaign delayed the
+			// first eligible contact behind them by hours. The gate itself is the
+			// pacing authority and still defers a real send to its own slot.
+			_ = s.createCampaignTask(ctx, campaign.ID, accountID, skipRetryTime(nextTime))
 			executionStatus = "completed"
 			return nil
 
@@ -1240,4 +1245,14 @@ func (s *tasksService) recordSchedulerFailure(ctx context.Context, campaignID uu
 		Message:    message,
 		Metadata:   meta,
 	})
+}
+
+// skipRetryTime paces a cycle that sent no mail. A skip must not burn the
+// mailbox min-gap, but it must not hot-loop either.
+func skipRetryTime(nextTime time.Time) time.Time {
+	soon := time.Now().UTC().Add(30 * time.Second)
+	if !nextTime.IsZero() && nextTime.Before(soon) {
+		return nextTime
+	}
+	return soon
 }

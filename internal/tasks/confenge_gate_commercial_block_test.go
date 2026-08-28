@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -65,4 +66,31 @@ func TestAdvancePastCommercialBlockToleratesProgressFailure(t *testing.T) {
 func TestAdvancePastCommercialBlockWithoutProgressRepo(t *testing.T) {
 	svc := &tasksService{}
 	svc.advancePastCommercialBlock(context.Background(), uuid.New(), uuid.New(), uuid.New())
+}
+
+// A cycle that sent no mail must not consume the mailbox min-gap. Pacing a skip
+// at the next send slot made each ineligible lead cost a full gap, so a handful
+// of blocked leads at the head of the campaign delayed the first eligible
+// contact behind them by hours.
+func TestSkipRetryTimeDoesNotBurnTheSendSlot(t *testing.T) {
+	now := time.Now().UTC()
+	nextSlot := now.Add(27 * time.Minute)
+
+	got := skipRetryTime(nextSlot)
+
+	if !got.Before(nextSlot) {
+		t.Fatalf("a skip consumed the send slot: got=%s next_slot=%s", got, nextSlot)
+	}
+	if got.Before(now.Add(5 * time.Second)) {
+		t.Fatalf("a skip must not hot-loop: got=%s now=%s", got, now)
+	}
+}
+
+// When the mailbox is already due, the real slot is sooner than the skip delay
+// and must win, so a skip never delays an eligible send.
+func TestSkipRetryTimeKeepsAnAlreadyDueSlot(t *testing.T) {
+	due := time.Now().UTC().Add(-time.Minute)
+	if got := skipRetryTime(due); !got.Equal(due) {
+		t.Fatalf("an already-due slot was pushed back: got=%s due=%s", got, due)
+	}
 }
