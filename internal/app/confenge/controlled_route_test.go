@@ -75,4 +75,23 @@ func TestLeadToCandidatePersistsRegistrySourceInDiscoveryJSON(t *testing.T) {
 	if d.Source != "company_registry" || d.SourceType != "company_registry" {
 		t.Fatalf("import dropped extra-cli registry source: %+v json=%s", d, cand.DiscoveryJSON)
 	}
+	if !candidateIsObservedRegistry(cand) {
+		t.Fatal("imported company_registry contact must be observed-registry")
+	}
+}
+
+func TestCandidateIsObservedRegistryAcceptsImportedOfficialSourceWithoutURL(t *testing.T) {
+	cand := &models.OutreachContactCandidate{
+		VerificationStatus: models.OutreachVerifyOfficialSource,
+		ChannelEpistemic:   "OBSERVED",
+		SourceURL:          "",
+		DiscoveryJSON:      []byte(`{"route_class":"GENERIC_COMPANY","controlled_email_eligible":true}`),
+	}
+	if !candidateIsObservedRegistry(cand) {
+		t.Fatal("already-imported OFFICIAL_SOURCE with empty URL must be observed-registry")
+	}
+	cand.SourceURL = "https://empresa.example/contato"
+	if candidateIsObservedRegistry(cand) {
+		t.Fatal("web-attributed official source must stay on the HTTP gate")
+	}
 }

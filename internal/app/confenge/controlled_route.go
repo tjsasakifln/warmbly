@@ -87,6 +87,33 @@ func parseControlledDiscovery(c *models.OutreachContactCandidate) controlledDisc
 	return d
 }
 
+func candidateRegistrySource(c *models.OutreachContactCandidate) string {
+	d := parseControlledDiscovery(c)
+	src := strings.ToLower(strings.TrimSpace(d.Source))
+	if src == "" {
+		src = strings.ToLower(strings.TrimSpace(d.SourceType))
+	}
+	return src
+}
+
+func candidateIsObservedRegistry(c *models.OutreachContactCandidate) bool {
+	if c == nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(c.VerificationStatus), models.OutreachVerifyOfficialSource) {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(c.ChannelEpistemic), "OBSERVED") {
+		return false
+	}
+	switch candidateRegistrySource(c) {
+	case "company_registry", "official_registry", "real_registry":
+		return true
+	}
+	// extra-cli READY company_registry ammo imported before source_type was persisted.
+	return strings.TrimSpace(c.SourceURL) == ""
+}
+
 func CandidateRouteClass(c *models.OutreachContactCandidate) string {
 	d := parseControlledDiscovery(c)
 	if class := strings.ToUpper(strings.TrimSpace(d.RouteClass)); class != "" {
