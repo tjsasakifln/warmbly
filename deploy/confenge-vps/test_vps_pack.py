@@ -16,6 +16,19 @@ ROOT = PACK.parent.parent
 
 
 class TestConfengeVpsPack(unittest.TestCase):
+    def test_resume_clears_the_ops_volume_kill_switch(self) -> None:
+        """up.sh and pause.sh engage the switch on the ops volume, which is what
+        the backend reads. resume.sh once cleared only the host mirror, so it
+        reported DISPATCH=ACTIVE while every deploy preflight pause stayed on."""
+        resume = (PACK / "resume.sh").read_text(encoding="utf-8")
+        self.assertIn("confenge-ops/kill-switch", resume)
+        self.assertIn("_confenge_ops", resume)
+        self.assertRegex(
+            resume,
+            r"if docker run .*\$OPS_VOLUME:/data:ro.* test -f /data/kill-switch",
+        )
+        self.assertIn("REFUSE: transport kill switch still engaged after resume", resume)
+
     def test_required_scripts_exist_and_executable_intent(self) -> None:
         required = [
             "validate.sh",
