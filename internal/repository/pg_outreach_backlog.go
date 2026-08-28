@@ -103,7 +103,13 @@ func (r *outreachRepository) materializeCurrentInitialBacklog(ctx context.Contex
 					AND upper(c.route_suppression) IN ('','NONE')
 					AND upper(c.email_derivation)<>'INFERRED'
 					AND c.email LIKE '%@%' AND c.email !~ '[[:space:]]'
-					AND c.source_url ~* '^https?://'
+					AND (
+						c.source_url ~* '^https?://'
+						OR (
+							lower(COALESCE(c.source, '')) IN ('company_registry', 'official_registry')
+							AND lower(COALESCE(c.source_type, 'company_registry')) IN ('company_registry', 'real_registry', 'official_registry')
+						)
+					)
 					AND c.source_date BETWEEN CURRENT_DATE - 29 AND CURRENT_DATE
 				) FILTER (WHERE c.discovery_json->>'preferred_initial'='true') AS preferred_delegated_eligible
 			FROM outreach_accounts a
