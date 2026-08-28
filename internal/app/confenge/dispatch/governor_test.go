@@ -69,6 +69,34 @@ func TestCommitByMessageKeyWaitsForProviderConfirmation(t *testing.T) {
 	}
 }
 
+func TestCommitByMessageKeyAtRepairsLegacyCommitTimestamp(t *testing.T) {
+	providerAcceptedAt := time.Date(2026, 8, 28, 17, 1, 58, 0, time.UTC)
+	legacyReplayAt := providerAcceptedAt.Add(2*time.Hour + 26*time.Minute)
+	clock := &FixedClock{T: legacyReplayAt}
+	governor, store := newTestGov(t, clock)
+	key := "email:campaign:legacy-provider-replay"
+	result, err := governor.TryReserve(context.Background(), ReserveRequest{
+		OrganizationID: uuid.New(), Channel: ChannelEmail, MessageKey: key,
+	})
+	if err != nil || !result.Allowed {
+		t.Fatalf("reserve: allowed=%v err=%v", result.Allowed, err)
+	}
+	if err := store.CommitReservation(context.Background(), result.Reservation.ID, legacyReplayAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := governor.CommitByMessageKeyAt(context.Background(), key, providerAcceptedAt); err != nil {
+		t.Fatal(err)
+	}
+	sentAt, sent, err := store.GetSendByKey(context.Background(), key)
+	if err != nil || !sent || !sentAt.Equal(providerAcceptedAt) {
+		t.Fatalf("provider replay must repair legacy send time: sent=%v sent_at=%s err=%v", sent, sentAt, err)
+	}
+	reservation, err := store.GetReservationByKey(context.Background(), key)
+	if err != nil || reservation == nil || reservation.CommittedAt == nil || !reservation.CommittedAt.Equal(providerAcceptedAt) {
+		t.Fatalf("provider replay must repair reservation time: reservation=%+v err=%v", reservation, err)
+	}
+}
+
 func TestCap10Blocks11th(t *testing.T) {
 	clock := &FixedClock{T: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)}
 	g, _ := newTestGov(t, clock)

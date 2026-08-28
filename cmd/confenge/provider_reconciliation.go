@@ -152,7 +152,7 @@ func cmdReconcileProviderAccepted(args []string) int {
 		INSERT INTO campaign_contact_progress (campaign_id, contact_id, sequence_id, sent_at)
 		VALUES ($1,$2,$3,$4)
 		ON CONFLICT (campaign_id, contact_id, sequence_id)
-		DO UPDATE SET sent_at=COALESCE(campaign_contact_progress.sent_at, EXCLUDED.sent_at)`,
+		DO UPDATE SET sent_at=EXCLUDED.sent_at`,
 		target.CampaignID, target.ContactID, target.SequenceID, acceptedAt); err != nil {
 		_ = writeProviderRecoveryAudit(ctx, pool, actorID, taskID, touchpointID, recipientValue, providerIDValue, acceptedAt, target, "PARTIAL", err.Error())
 		fmt.Fprintf(os.Stderr, "provider reconciliation campaign progress: %v\n", err)
