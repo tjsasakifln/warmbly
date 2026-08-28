@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 
 	"github.com/warmbly/warmbly/internal/app/confenge"
 )
@@ -18,4 +19,18 @@ type ConfengeOutboundGate interface {
 // WireConfengeDispatch attaches CONFENGE mailbox pacing to campaign sends.
 func (s *tasksService) WireConfengeDispatch(g ConfengeOutboundGate) {
 	s.confengeGate = g
+}
+
+// advancePastCommercialBlock moves campaign routing past a lead the CONFENGE
+// commercial gate rejected. The block is reversible, so this records no bounce
+// and no global recipient suppression: it only stops the campaign reselecting
+// the same ineligible contact on every cycle, which would otherwise head-of-line
+// block every other contact behind it.
+func (s *tasksService) advancePastCommercialBlock(ctx context.Context, campaignID, contactID, sequenceID uuid.UUID) {
+	if s.campaignProgressRepo == nil {
+		return
+	}
+	if err := s.campaignProgressRepo.RecordEmailSent(ctx, campaignID, contactID, sequenceID); err != nil {
+		log.Warn().Err(err).Str("campaign_id", campaignID.String()).Msg("confenge gate: failed to advance past commercial block")
+	}
 }
