@@ -179,7 +179,7 @@ deploy/confenge-vps/compose.sh run --rm --no-deps \
 
 Apply only after the dry-run bindings match the provider evidence. The command
 reuses normal campaign completion, preserves the provider acceptance time,
-updates campaign progress only when it is missing, and writes an append-only
+aligns campaign progress to that provider-confirmed time, and writes an append-only
 audit entry with `transport_invoked=false`.
 
 ```bash

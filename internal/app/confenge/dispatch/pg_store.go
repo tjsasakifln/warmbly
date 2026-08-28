@@ -387,6 +387,20 @@ func (s *PGStore) CommitReservation(ctx context.Context, id uuid.UUID, sentAt ti
 	}
 	r.DraftID = draftID
 	if r.State == StateCommitted {
+		_, err = tx.Exec(ctx, `
+			UPDATE confenge_dispatch_sends
+			SET sent_at = LEAST(sent_at, $2)
+			WHERE message_key = $1`, r.MessageKey, sentAt)
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `
+			UPDATE confenge_dispatch_reservations
+			SET committed_at = LEAST(COALESCE(committed_at, $2), $2)
+			WHERE id = $1`, id, sentAt)
+		if err != nil {
+			return err
+		}
 		return tx.Commit(ctx)
 	}
 

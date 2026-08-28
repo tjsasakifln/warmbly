@@ -319,6 +319,18 @@ func (m *MemoryStore) CommitReservation(ctx context.Context, id uuid.UUID, sentA
 		return fmt.Errorf("reservation not found")
 	}
 	if r.State == StateCommitted {
+		current, sent := m.sends[r.MessageKey]
+		if sent && sentAt.Before(current) {
+			m.sends[r.MessageKey] = sentAt
+			m.sendTimes = m.sendTimes[:0]
+			for _, at := range m.sends {
+				m.sendTimes = append(m.sendTimes, at)
+			}
+		}
+		if r.CommittedAt == nil || sentAt.Before(*r.CommittedAt) {
+			t := sentAt
+			r.CommittedAt = &t
+		}
 		return nil
 	}
 	if _, ok := m.sends[r.MessageKey]; ok {
