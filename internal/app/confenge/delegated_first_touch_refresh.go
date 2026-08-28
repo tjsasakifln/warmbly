@@ -11,8 +11,10 @@ const delegatedBindingRefreshReason = "delegated_authority_or_source_binding_adv
 // retireStaleDelegatedFirstTouches revokes approvals whose account is no longer
 // commercially QUALIFIED, or whose runtime, policy or membership binding moved.
 // Source run id, snapshot expiry and freshness hash are acquisition provenance
-// and never retire a still-qualified decision.
+// and never retire a still-qualified decision, so sourceRunID and snapshotHash
+// are accepted for call-site symmetry and deliberately not compared.
 func (s *service) retireStaleDelegatedFirstTouches(ctx context.Context, orgID uuid.UUID, sourceRunID, snapshotHash string, policyAuthorizationIDs ...*uuid.UUID) (int, error) {
+	_, _ = sourceRunID, snapshotHash
 	if s == nil || s.delegatedDB == nil {
 		return 0, nil
 	}
@@ -27,10 +29,17 @@ func (s *service) retireStaleDelegatedFirstTouches(ctx context.Context, orgID uu
 		policyAuthorizationID = policyAuthorizationIDs[0]
 	}
 	feedState, feedErr := s.repo.GetFeedSyncState(ctx, orgID)
-	authorityValid := feedErr == nil && feedState != nil && feedState.LastRunID == sourceRunID &&
-		feedState.LastSnapshotHash == snapshotHash &&
+	// A producer that published no population attestation has not revoked
+	// anything. Fall back to the durable per-account three-year evidence, the
+	// same authority the first-window readback reads, so an unattested but
+	// individually proven population never retires its own approved work.
+	authority := FeedCommercialAuthorityState(feedState)
+	if !authority.Present {
+		authority = s.commercialQualificationFromAccounts(ctx, orgID, s.now())
+	}
+	authorityValid := feedErr == nil && feedState != nil &&
 		validateAuthoritativeFeedStructure(feedState, true) == nil &&
-		FeedCommercialAuthorityState(feedState).State == CommercialQualified
+		authority.State == CommercialQualified
 	targetMembershipHash, targetMembershipCount := "", 0
 	if feedState != nil {
 		targetMembershipHash = feedState.TargetMembershipHash
