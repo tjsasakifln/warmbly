@@ -68,6 +68,29 @@ func TestAdvancePastCommercialBlockWithoutProgressRepo(t *testing.T) {
 	svc.advancePastCommercialBlock(context.Background(), uuid.New(), uuid.New(), uuid.New())
 }
 
+// An unverifiable mailbox (550 / no MX) must advance campaign routing the same
+// way a reversible commercial block does. Production selected
+// vtsconstrucoeslocacoe@hotmail.com on every tick after 19:12Z on 2026-08-28
+// because the invalid-verification skip did not mark the pair done, so no
+// other first-touch behind it could send.
+func TestAdvancePastUnverifiableRecipientAdvancesWithoutBounce(t *testing.T) {
+	repo := &commercialBlockProgressRepo{}
+	svc := &tasksService{campaignProgressRepo: repo}
+	campaignID, contactID, sequenceID := uuid.New(), uuid.New(), uuid.New()
+
+	svc.advancePastSkippedPair(context.Background(), campaignID, contactID, sequenceID, "test")
+
+	if repo.sent != 1 {
+		t.Fatalf("unverifiable skip did not advance campaign routing: sent=%d", repo.sent)
+	}
+	if repo.lastPair != [3]uuid.UUID{campaignID, contactID, sequenceID} {
+		t.Fatalf("advanced the wrong pair: %+v", repo.lastPair)
+	}
+	if repo.bounced != 0 {
+		t.Fatalf("unverifiable skip bounce-marked the contact: bounced=%d", repo.bounced)
+	}
+}
+
 // A cycle that sent no mail must not consume the mailbox min-gap. Pacing a skip
 // at the next send slot made each ineligible lead cost a full gap, so a handful
 // of blocked leads at the head of the campaign delayed the first eligible

@@ -27,10 +27,18 @@ func (s *tasksService) WireConfengeDispatch(g ConfengeOutboundGate) {
 // the same ineligible contact on every cycle, which would otherwise head-of-line
 // block every other contact behind it.
 func (s *tasksService) advancePastCommercialBlock(ctx context.Context, campaignID, contactID, sequenceID uuid.UUID) {
+	s.advancePastSkippedPair(ctx, campaignID, contactID, sequenceID, "confenge gate: failed to advance past commercial block")
+}
+
+// advancePastSkippedPair moves campaign routing past a lead this cycle will not
+// send. It records no bounce and no global suppression. Without it the scheduler
+// reselects the same skipped contact forever, which is how an unverifiable
+// mailbox (550 / no MX) starved every eligible first-touch behind it.
+func (s *tasksService) advancePastSkippedPair(ctx context.Context, campaignID, contactID, sequenceID uuid.UUID, warnMsg string) {
 	if s.campaignProgressRepo == nil {
 		return
 	}
 	if err := s.campaignProgressRepo.RecordEmailSent(ctx, campaignID, contactID, sequenceID); err != nil {
-		log.Warn().Err(err).Str("campaign_id", campaignID.String()).Msg("confenge gate: failed to advance past commercial block")
+		log.Warn().Err(err).Str("campaign_id", campaignID.String()).Msg(warnMsg)
 	}
 }
