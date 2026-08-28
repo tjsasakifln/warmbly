@@ -361,11 +361,13 @@ func (s *service) pilotFeedEvidence(ctx context.Context, orgID uuid.UUID, now ti
 		return pilotFeedEvidence{State: "missing"}
 	}
 	if state != nil {
-		if err := validateAuthoritativeFeedState(state, now, maxAge, s.cfg.DelegatedFirstTouchEnabled); err != nil {
-			if strings.Contains(err.Error(), "stale") || strings.Contains(err.Error(), "expired") {
-				return pilotFeedEvidence{State: "stale", SnapshotHash: state.LastSnapshotHash, RunID: state.LastRunID, Timestamp: state.SourceGeneratedAt}
-			}
+		// Structural integrity decides validity. Age is reported as "stale"
+		// for observability but the snapshot stays commercially usable.
+		if err := validateAuthoritativeFeedStructure(state, s.cfg.DelegatedFirstTouchEnabled); err != nil {
 			return pilotFeedEvidence{State: "missing"}
+		}
+		if validateAuthoritativeFeedAge(state, now, maxAge) != nil {
+			return pilotFeedEvidence{State: "stale", SnapshotHash: state.LastSnapshotHash, RunID: state.LastRunID, Timestamp: state.SourceGeneratedAt}
 		}
 		value := pilotFeedEvidence{State: "fresh", SnapshotHash: state.LastSnapshotHash, RunID: state.LastRunID, Timestamp: state.SourceGeneratedAt}
 		return value

@@ -424,6 +424,12 @@ func commercialBindingFromStoredFeed(feed *models.OutreachFeedSyncState, payload
 	}
 }
 
+// EvaluateStoredSourceHealth reports acquisition health only. Callers must not
+// turn its result into a commercial hold.
+func EvaluateStoredSourceHealth(feed *models.OutreachFeedSyncState, now time.Time, maxAge time.Duration) SourceHealthDecision {
+	return ClassifySourceHealth(feedSourceFreshnessFromState(feed), now, maxAge)
+}
+
 func EvaluateStoredFeedAuthority(feed *models.OutreachFeedSyncState, now time.Time, maxAge time.Duration) (SourceHealthDecision, CommercialAuthorityDecision) {
 	source := ClassifySourceHealth(feedSourceFreshnessFromState(feed), now, maxAge)
 	if feed == nil {
@@ -567,29 +573,20 @@ func (s *service) applyDelegatedFirstTouchManifest(ctx context.Context, orgID uu
 		return nil, errx.New(errx.Forbidden, strings.Join(blockers, ","))
 	}
 	feedState, feedErr := s.repo.GetFeedSyncState(ctx, orgID)
-	now := s.now()
 	if feedErr != nil || feedState == nil {
 		return nil, errx.New(errx.Forbidden, "authoritative_feed_attestation_invalid")
 	}
-	commercialPayload := firstPresentAuthority(manifest.CommercialAuthority, storedCommercialAuthority(feedState))
-	if !authorityPresent(commercialPayload) {
-		if validateAuthoritativeFeedState(feedState, now, s.cfg.FeedMaxAge, true) != nil {
-			return nil, errx.New(errx.Forbidden, "authoritative_feed_attestation_invalid")
-		}
-	} else {
-		elig := EvaluateOutboundEligibility(
-			feedSourceFreshnessFromState(feedState),
-			commercialPayload,
-			commercialBindingFromStoredFeed(feedState, commercialPayload),
-			TransportState{State: TransportActive},
-			now, s.cfg.FeedMaxAge, nil, false,
-		)
-		if elig.CommercialAuthority.State == CommercialAuthorityUnknown {
-			return nil, errx.New(errx.Forbidden, ReasonAuthorityBindingMismatch)
-		}
-		if elig.CommercialAuthority.State == CommercialAuthorityExpired {
-			return nil, errx.New(errx.Forbidden, ReasonAuthorityExpired)
-		}
+	// The snapshot must be structurally whole. Its AGE is acquisition health
+	// and is deliberately not consulted here.
+	if err := validateAuthoritativeFeedStructure(feedState, true); err != nil {
+		return nil, errx.New(errx.Forbidden, "authoritative_feed_attestation_invalid")
+	}
+	authority := FeedCommercialAuthorityState(feedState)
+	if !authority.Present {
+		return nil, errx.New(errx.Forbidden, ReasonQualificationMissing)
+	}
+	if authority.State != CommercialQualified {
+		return nil, errx.New(errx.Forbidden, firstNonEmpty(firstHold(authority.ReasonCodes), ReasonQualificationMissing))
 	}
 	if feedState.LastRunID != manifest.SourceRunID || feedState.LastSnapshotHash != manifest.SourceSnapshotHash {
 		return nil, errx.New(errx.Forbidden, "stale_source_run")
@@ -1124,30 +1121,21 @@ func (s *service) validateDelegatedEntry(ctx context.Context, orgID uuid.UUID, m
 		add("authoritative_feed_state_unavailable")
 	} else {
 		now := s.now()
-		bound := s.delegatedTouchAlreadyBound(ctx, orgID, acc.ID)
-		commercialPayload := firstPresentAuthority(manifest.CommercialAuthority, storedCommercialAuthority(feedState))
-		if authorityPresent(commercialPayload) {
-			elig := EvaluateOutboundEligibility(
-				feedSourceFreshnessFromState(feedState),
-				commercialPayload,
-				commercialBindingFromStoredFeed(feedState, commercialPayload),
-				TransportState{State: TransportActive},
-				now, s.cfg.FeedMaxAge, nil, bound,
-			)
-			if !bound && !elig.AllowNewAdmission {
-				add(firstNonEmpty(firstHold(elig.HoldReasons), ReasonNewAdmissionFrozen))
-			}
-			if bound && !elig.AllowExistingBoundTouchTransport {
-				add(firstNonEmpty(firstHold(elig.HoldReasons), ReasonBoundTransportForbidden))
-			}
-		} else if err := validateAuthoritativeFeedState(feedState, now, s.cfg.FeedMaxAge, true); err != nil {
+		if err := validateAuthoritativeFeedStructure(feedState, true); err != nil {
 			add("authoritative_feed_attestation_invalid")
+		}
+		authority := FeedCommercialAuthorityState(feedState)
+		if !authority.Present || authority.State != CommercialQualified {
+			add(firstNonEmpty(firstHold(authority.ReasonCodes), ReasonQualificationMissing))
+		}
+		// The company itself must still be inside the rolling three-year
+		// window. Producer age never substitutes for this and never revokes it.
+		qual := AccountCommercialQualification(acc, now)
+		if !qual.AllowsNewAdmission() {
+			add(firstNonEmpty(firstHold(qual.ReasonCodes), ReasonQualificationMissing))
 		}
 		if manifest.SourceRunID != feedState.LastRunID || manifest.SourceSnapshotHash != feedState.LastSnapshotHash {
 			add("stale_source_run")
-		}
-		if acc.SourceRunID != feedState.LastRunID {
-			add("account_source_run_drift")
 		}
 	}
 	blockers = append(blockers, validatePersistedContractorRole(acc, manifest, entry)...)
@@ -2456,8 +2444,13 @@ func (s *service) assertDelegatedFirstTouchDecision(ctx context.Context, orgID u
 		feedState.LastSnapshotHash != got.SourceSnapshotHash || acc.SourceRunID != got.SourceRunID {
 		return fail("source_run_or_snapshot_drift")
 	}
-	if err := validateAuthoritativeFeedState(feedState, now, s.cfg.FeedMaxAge, true); err != nil {
-		return fail("source_freshness_drift")
+	if err := validateAuthoritativeFeedStructure(feedState, true); err != nil {
+		return fail("authoritative_feed_attestation_invalid")
+	}
+	// The commercial question at the last gate before SMTP: is this company
+	// still a proven public-engineering supplier inside the three-year window?
+	if qual := AccountCommercialQualification(acc, now); !qual.AllowsTransport() {
+		return fail(firstNonEmpty(firstHold(qual.ReasonCodes), ReasonQualificationMissing))
 	}
 	if got.SourceExpiresAt == nil || !got.SourceExpiresAt.Equal(feedState.SourceExpiresAt.UTC()) ||
 		got.SourceFreshnessHash != feedState.SourceFreshnessHash ||
@@ -2489,9 +2482,13 @@ func (s *service) assertDelegatedFirstTouchDecision(ctx context.Context, orgID u
 		got.EvidenceReference != "extra-cli:v_contracts_canonical_v2:sha256:"+got.EvidenceHash {
 		return fail("contractor_role_semantic_binding_drift")
 	}
+	// The role observation must match the decision exactly and cannot be
+	// future-dated. It deliberately carries NO age ceiling: a proven
+	// contractor role does not stop being true because it was observed a
+	// while ago. Expiry comes from the three-year qualification window.
 	if acc.ContractorRoleObservedAt == nil || !acc.ContractorRoleObservedAt.Equal(got.EvidenceObservedAt.UTC()) ||
-		acc.ContractorRoleObservedAt.After(now.Add(5*time.Minute)) || now.Sub(acc.ContractorRoleObservedAt.UTC()) > 30*24*time.Hour {
-		return fail("contractor_role_freshness_drift")
+		acc.ContractorRoleObservedAt.After(now.Add(5*time.Minute)) {
+		return fail("contractor_role_observation_drift")
 	}
 	evidence, evidenceErr := s.repo.ListEvidence(ctx, orgID, acc.ID)
 	if evidenceErr != nil || !delegatedEvidenceRowsCurrent(evidence, tp.EvidenceIDs, acc.LastImportRunID, now) {

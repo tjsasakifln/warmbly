@@ -114,8 +114,14 @@ func (s *service) delegatedFirstTouchRunwayPlan(
 		plan.CapacityBlocker = "runway_horizon_invalid"
 		return plan, nil
 	}
-	if err := validateAuthoritativeFeedState(feed, now, s.cfg.FeedMaxAge, true); err != nil {
-		plan.CapacityBlocker = "policy_or_feed_stale"
+	// Runway fill is commercial work over an intact snapshot. Producer age is
+	// not a capacity blocker; an ageing crawler must never drain the reservoir.
+	if err := validateAuthoritativeFeedStructure(feed, true); err != nil {
+		plan.CapacityBlocker = "authoritative_feed_attestation_invalid"
+		return plan, nil
+	}
+	if authority := FeedCommercialAuthorityState(feed); !authority.Present || authority.State != CommercialQualified {
+		plan.CapacityBlocker = firstNonEmpty(firstHold(authority.ReasonCodes), ReasonQualificationMissing)
 		return plan, nil
 	}
 	manifest := DelegatedFirstTouchManifest{PolicyAuthorizationID: auth.ID}

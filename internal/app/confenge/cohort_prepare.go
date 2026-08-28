@@ -192,7 +192,10 @@ func PrepareControlledCohort(accounts []CohortAccountInput, opts CohortPrepareOp
 		opts.Now = time.Now().UTC()
 	}
 	if opts.RequireAuthoritativeFreshness || opts.AuthoritativeSourceFreshness != nil {
-		if err := ValidateAuthoritativeSourceFreshness(opts.AuthoritativeSourceFreshness, opts.Now); err != nil {
+		// Preparing copy for an already-proven population is commercial work.
+		// The attestation must have been FRESH when published; it is not
+		// re-expired against the wall clock.
+		if err := ValidateHistoricalSourceFreshness(opts.AuthoritativeSourceFreshness); err != nil {
 			return nil, err
 		}
 	}

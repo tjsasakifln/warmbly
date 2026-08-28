@@ -65,6 +65,7 @@ type outreachManifest struct {
 		CommercialAuthority *FeedCommercialAuthority `json:"commercial_authority"`
 	} `json:"source"`
 	CommercialAuthority     *FeedCommercialAuthority       `json:"commercial_authority"`
+	CommercialAuthorityV2   *FeedCommercialAuthorityV2     `json:"commercial_authority_v2"`
 	ProducerIdentity        string                         `json:"producer_identity"`
 	PublicationSemanticHash string                         `json:"publication_semantic_hash"`
 	LeadCount               int                            `json:"lead_count"`
@@ -104,6 +105,7 @@ type feedAuthority struct {
 	TargetMembershipCount    int
 	SupplierConfirmedCount   int
 	Commercial               *FeedCommercialAuthority
+	CommercialV2             *FeedCommercialAuthorityV2
 }
 
 type manifestChunk struct {
@@ -527,6 +529,21 @@ func validateManifestAuthority(manifest *outreachManifest, now time.Time, requir
 			return nil, fmt.Errorf("commercial authority binding invalid")
 		}
 	}
+	// COMMERCIAL_AUTHORITY/2.0 must close against the same publication identity.
+	// It carries no TTL, so nothing here consults producer age.
+	v2Payload := manifest.CommercialAuthorityV2
+	if authorityV2Present(v2Payload) {
+		decision := EvaluateCommercialAuthorityV2(v2Payload, CommercialAuthorityBinding{
+			SourceRunID:             strings.TrimSpace(manifest.Source.RunID),
+			SnapshotHash:            strings.TrimSpace(manifest.Source.SnapshotHash),
+			MembershipHash:          strings.ToLower(membership.MembershipHash),
+			PublicationSemanticHash: strings.ToLower(strings.TrimSpace(firstNonEmpty(manifest.PublicationSemanticHash, v2Payload.BasisPublicationSemanticHash))),
+			ProducerIdentity:        strings.ToLower(strings.TrimSpace(firstNonEmpty(manifest.ProducerIdentity, v2Payload.ProducerIdentity))),
+		})
+		if decision.State != CommercialQualified {
+			return nil, fmt.Errorf("commercial authority v2 invalid: %s", firstNonEmpty(firstHold(decision.ReasonCodes), ReasonQualificationMissing))
+		}
+	}
 	freshnessHash := HashAuthoritativeSourceFreshness(manifest.SourceFreshness)
 	if !validSHA256(freshnessHash) {
 		return nil, fmt.Errorf("authoritative PNCP freshness hash is invalid")
@@ -539,6 +556,7 @@ func validateManifestAuthority(manifest *outreachManifest, now time.Time, requir
 		TargetMembershipCount:    membership.PopulationCount,
 		SupplierConfirmedCount:   membership.SupplierConfirmedCount,
 		Commercial:               commercialPayload,
+		CommercialV2:             v2Payload,
 	}, nil
 }
 
@@ -917,6 +935,12 @@ func (s *service) persistFeedSync(ctx context.Context, orgID uuid.UUID, snap, ru
 			st.TargetMembershipCount = res.authority.TargetMembershipCount
 			st.SupplierConfirmedCount = res.authority.SupplierConfirmedCount
 			st.CommercialAuthorityJSON = marshalCommercialAuthority(res.authority.Commercial)
+			st.CommercialAuthorityV2JSON = marshalCommercialAuthorityV2(res.authority.CommercialV2)
+			if res.authority.CommercialV2 != nil {
+				st.QualificationEvidenceHash = strings.ToLower(strings.TrimSpace(res.authority.CommercialV2.QualificationEvidenceHash))
+				st.QualifiedRootCount = res.authority.CommercialV2.QualifiedRootCount
+				st.QualificationWindowYears = res.authority.CommercialV2.QualificationWindowYears
+			}
 		}
 	}
 	if res != nil {
@@ -933,4 +957,15 @@ func (s *service) persistFeedSync(ctx context.Context, orgID uuid.UUID, snap, ru
 		st.CountsJSON = b
 	}
 	return s.repo.UpsertFeedSyncState(ctx, st)
+}
+
+func marshalCommercialAuthorityV2(p *FeedCommercialAuthorityV2) []byte {
+	if p == nil {
+		return nil
+	}
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return nil
+	}
+	return raw
 }

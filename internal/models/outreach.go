@@ -236,6 +236,23 @@ type OutreachAccount struct {
 	ContractorRoleConfidence        string     `json:"contractor_role_confidence,omitempty"`
 	ContractorRoleReasonCodes       []string   `json:"contractor_role_reason_codes,omitempty"`
 
+	// COMMERCIAL_AUTHORITY/2.0. The qualifying public fact, not the crawler's
+	// age. CommercialQualifiedUntil is the contracting date plus three years.
+	CommercialQualificationState              string     `json:"commercial_qualification_state,omitempty"`
+	CommercialQualificationPolicyVersion      string     `json:"commercial_qualification_policy_version,omitempty"`
+	CommercialQualifyingContractID            string     `json:"commercial_qualifying_contract_id,omitempty"`
+	CommercialQualifyingContractDate          *time.Time `json:"commercial_qualifying_contract_date,omitempty"`
+	CommercialQualifyingDateField             string     `json:"commercial_qualifying_date_field,omitempty"`
+	CommercialQualifyingContractCount         int        `json:"commercial_qualifying_contract_count,omitempty"`
+	CommercialQualifiedUntil                  *time.Time `json:"commercial_qualified_until,omitempty"`
+	CommercialQualificationEvidenceHash       string     `json:"commercial_qualification_evidence_hash,omitempty"`
+	CommercialQualificationEvidenceReference  string     `json:"commercial_qualification_evidence_reference,omitempty"`
+	CommercialQualificationProvenance         string     `json:"commercial_qualification_provenance,omitempty"`
+	CommercialQualificationCNPJRoot8          string     `json:"commercial_qualification_cnpj_root8,omitempty"`
+	CommercialQualificationObservedAt         *time.Time `json:"commercial_qualification_observed_at,omitempty"`
+	CommercialQualificationDeactivated        bool       `json:"commercial_qualification_deactivated,omitempty"`
+	CommercialQualificationDeactivationReason string     `json:"commercial_qualification_deactivation_reason,omitempty"`
+
 	// Joined / computed (not always filled).
 	Contacts  []OutreachContactCandidate `json:"contacts,omitempty"`
 	Evidence  []OutreachEvidence         `json:"evidence,omitempty"`
@@ -523,8 +540,14 @@ type OutreachFeedSyncState struct {
 	LastStatus               string     `json:"last_status"`
 	CountsJSON               []byte     `json:"counts,omitempty"`
 	// CommercialAuthorityJSON is the extra-cli payload. Nil keeps fail-closed source freshness.
-	CommercialAuthorityJSON []byte    `json:"commercial_authority,omitempty"`
-	UpdatedAt               time.Time `json:"updated_at"`
+	CommercialAuthorityJSON []byte `json:"commercial_authority,omitempty"`
+	// CommercialAuthorityV2JSON is COMMERCIAL_AUTHORITY/2.0. Evidence-based and
+	// timeless: it is not invalidated by producer age.
+	CommercialAuthorityV2JSON []byte    `json:"commercial_authority_v2,omitempty"`
+	QualificationEvidenceHash string    `json:"qualification_evidence_hash,omitempty"`
+	QualifiedRootCount        int       `json:"qualified_root_count,omitempty"`
+	QualificationWindowYears  int       `json:"qualification_window_years,omitempty"`
+	UpdatedAt                 time.Time `json:"updated_at"`
 }
 
 // OutreachPilotMembership is the durable definition of one prepared pilot account.
@@ -871,4 +894,24 @@ type OutreachCommercialAction struct {
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 
 	CompanyName string `json:"company_name,omitempty"`
+}
+
+// AccountCommercialQualificationWrite is the durable COMMERCIAL_AUTHORITY/2.0
+// fact for one account. Everything here is evidence; nothing is a clock.
+type AccountCommercialQualificationWrite struct {
+	AccountID               uuid.UUID
+	State                   string
+	PolicyVersion           string
+	QualifyingContractID    string
+	QualifyingContractDate  *time.Time
+	QualifyingDateField     string
+	QualifyingContractCount int
+	QualifiedUntil          *time.Time
+	EvidenceHash            string
+	EvidenceReference       string
+	Provenance              string
+	CNPJRoot8               string
+	ObservedAt              *time.Time
+	Deactivated             bool
+	DeactivationReason      string
 }

@@ -652,6 +652,7 @@ func leadToAccount(orgID uuid.UUID, lead FeedLead, feed *Feed, runID uuid.UUID, 
 	// Store activation projection from extra-cli (no local commercial re-score).
 	applyActivationToAccount(acc, lead)
 	applyContractorRoleToAccount(acc, lead.ContractorRole)
+	applyCommercialQualificationToAccount(acc, lead.CommercialQualification, time.Now().UTC())
 	// Imported send-fit only — never promote ACTIONABLE_NOW → A_AUTOMATIC.
 	acc.TargetFitSendTier = strings.ToUpper(SanitizeText(lead.TargetFitSendTier, 40))
 	acc.TargetFitReasons = lead.TargetFitReasons
@@ -729,6 +730,37 @@ func applyContractorRoleToAccount(acc *models.OutreachAccount, role FeedContract
 	if acc.TargetPartyRole == "" {
 		acc.TargetPartyRole = ContractorRoleUnknown
 	}
+}
+
+// applyCommercialQualificationToAccount records the COMMERCIAL_AUTHORITY/2.0
+// qualifying fact. State is recomputed from the evidence itself, so an import
+// can never mint a qualification the evidence does not support.
+func applyCommercialQualificationToAccount(acc *models.OutreachAccount, q *RootQualification, now time.Time) {
+	if acc == nil {
+		return
+	}
+	if q == nil {
+		// A feed without the V2 block leaves the account unqualified. Absence
+		// is fail-closed; it is never inferred from source freshness.
+		acc.CommercialQualificationState = CommercialUnknown
+		return
+	}
+	decision := EvaluateRootQualification(q, now)
+	acc.CommercialQualificationState = decision.State
+	acc.CommercialQualificationPolicyVersion = CommercialAuthorityPolicyV2
+	acc.CommercialQualificationCNPJRoot8 = SanitizeText(q.CNPJRoot8, 8)
+	acc.CommercialQualifyingContractID = SanitizeText(q.QualifyingContractID, 200)
+	acc.CommercialQualifyingContractDate = decision.QualifyingContractDate
+	acc.CommercialQualifyingDateField = SanitizeText(q.QualifyingDateField, 40)
+	acc.CommercialQualifyingContractCount = q.QualifyingContractCount
+	acc.CommercialQualifiedUntil = decision.QualifiedUntil
+	acc.CommercialQualificationEvidenceHash = strings.ToLower(SanitizeText(q.EvidenceHash, 128))
+	acc.CommercialQualificationEvidenceReference = SanitizeText(q.EvidenceReference, 500)
+	acc.CommercialQualificationProvenance = SanitizeText(q.Provenance, 500)
+	acc.CommercialQualificationDeactivated = q.Deactivated
+	acc.CommercialQualificationDeactivationReason = SanitizeText(q.DeactivationReason, 200)
+	observed := now.UTC()
+	acc.CommercialQualificationObservedAt = &observed
 }
 
 func leadToCandidate(orgID, accountID, runID uuid.UUID, fc FeedContact) *models.OutreachContactCandidate {

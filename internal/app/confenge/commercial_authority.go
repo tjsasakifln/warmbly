@@ -386,24 +386,10 @@ func EvaluateOutboundEligibility(
 		TransportReasons:    append([]string{}, transport.Blockers...),
 	}
 	if !out.CommercialAuthority.Present {
-		// Current fail-closed path: source must be FRESH and the producer
-		// contract must still validate. Source DEGRADED/STALE is not a
-		// deactivation, but it also does not authorize new work.
-		if err := ValidateAuthoritativeSourceFreshness(source, now); err != nil {
-			out.HoldReasons = appendUnique(out.HoldReasons, ReasonAuthorityAbsent)
-			if out.SourceHealth.State == SourceHealthStale {
-				out.HoldReasons = appendUnique(out.HoldReasons, ReasonSourceHealthStale)
-			}
-			if out.SourceHealth.State == SourceHealthDegraded {
-				out.HoldReasons = appendUnique(out.HoldReasons, ReasonSourceHealthDegraded)
-			}
-			if out.SourceHealth.State == SourceHealthMissing {
-				out.HoldReasons = appendUnique(out.HoldReasons, ReasonSourceHealthMissing)
-			}
-		} else if len(liveGateHold) == 0 {
-			out.AllowNewAdmission = true
-			out.AllowExistingBoundTouchTransport = true
-		}
+		// Fail closed on the commercial fact itself. A FRESH crawler is NOT a
+		// substitute for commercial authority and must never grant admission
+		// or transport by fallback.
+		out.HoldReasons = appendUnique(out.HoldReasons, ReasonQualificationMissing)
 	} else {
 		out.AllowNewAdmission = out.CommercialAuthority.NewAdmissionAllowed
 		out.AllowExistingBoundTouchTransport = out.CommercialAuthority.ExistingBoundTouchTransportAllowed

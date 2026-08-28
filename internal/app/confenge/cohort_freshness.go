@@ -70,9 +70,63 @@ func ValidateAuthoritativeSourceFreshness(f *FeedSourceFreshness, now time.Time)
 	return nil
 }
 
-func validateAuthoritativeFeedState(state *models.OutreachFeedSyncState, now time.Time, maxAge time.Duration, requireAttestation bool) error {
+// validateAuthoritativeFeedStructure proves the feed was completely applied and
+// that its membership attestation is internally whole. It is deliberately
+// timeless: an intact snapshot does not decay because the crawler went quiet.
+// Commercial eligibility is decided by COMMERCIAL_AUTHORITY/2.0, not here.
+// ValidateHistoricalSourceFreshness proves the attestation was well-formed and
+// FRESH when it was published. It deliberately does NOT re-test expires_at
+// against now: a snapshot that was proven good stays the last known truth even
+// after the producer window closes.
+func ValidateHistoricalSourceFreshness(f *FeedSourceFreshness) error {
+	if f == nil {
+		return fmt.Errorf("authoritative PNCP freshness missing")
+	}
+	if strings.TrimSpace(f.ContractVersion) != AuthoritativeFreshnessContractV1 {
+		return fmt.Errorf("authoritative PNCP freshness contract unsupported")
+	}
+	if strings.ToUpper(strings.TrimSpace(f.Status)) != "FRESH" {
+		return fmt.Errorf("authoritative PNCP freshness was never proven FRESH at publication: %s", firstNonEmpty(f.Status, "UNKNOWN"))
+	}
+	asOf, err := parseFreshnessTime(f.AsOf)
+	if err != nil {
+		return fmt.Errorf("authoritative PNCP freshness as_of invalid")
+	}
+	expires, err := parseFreshnessTime(f.ExpiresAt)
+	if err != nil {
+		return fmt.Errorf("authoritative PNCP freshness expires_at invalid")
+	}
+	if !expires.After(asOf) {
+		return fmt.Errorf("authoritative PNCP freshness validity window invalid")
+	}
+	if f.PagesExpected != nil && (f.PagesFetched == nil || *f.PagesFetched < *f.PagesExpected) {
+		return fmt.Errorf("authoritative PNCP freshness pagination incomplete")
+	}
+	return nil
+}
+
+func validateAuthoritativeFeedStructure(state *models.OutreachFeedSyncState, requireAttestation bool) error {
 	if state == nil || state.LastStatus != "completed" || state.SourceGeneratedAt == nil ||
 		strings.TrimSpace(state.LastSnapshotHash) == "" || strings.TrimSpace(state.LastRunID) == "" {
+		return fmt.Errorf("authoritative feed is not completely applied")
+	}
+	if !requireAttestation {
+		return nil
+	}
+	if state.SourceExpiresAt == nil || !validSHA256(state.SourceFreshnessHash) ||
+		!state.TargetMembershipComplete || !validSHA256(state.TargetMembershipHash) ||
+		state.TargetMembershipCount < 1 || state.SupplierConfirmedCount < 0 ||
+		state.SupplierConfirmedCount > state.TargetMembershipCount {
+		return fmt.Errorf("authoritative feed attestation is incomplete")
+	}
+	return nil
+}
+
+// validateAuthoritativeFeedAge is SOURCE ACQUISITION HEALTH ONLY. It answers
+// "are we still acquiring facts?" and must never be part of an admission,
+// queueing or transport conjunction for an already-proven member.
+func validateAuthoritativeFeedAge(state *models.OutreachFeedSyncState, now time.Time, maxAge time.Duration) error {
+	if state == nil || state.SourceGeneratedAt == nil {
 		return fmt.Errorf("authoritative feed is not completely applied")
 	}
 	if now.IsZero() {
@@ -84,19 +138,20 @@ func validateAuthoritativeFeedState(state *models.OutreachFeedSyncState, now tim
 	if state.SourceGeneratedAt.After(now.UTC().Add(5*time.Minute)) || now.UTC().Sub(state.SourceGeneratedAt.UTC()) > maxAge {
 		return fmt.Errorf("authoritative feed is stale")
 	}
-	if !requireAttestation {
-		return nil
-	}
-	if state.SourceExpiresAt == nil || !validSHA256(state.SourceFreshnessHash) ||
-		!state.TargetMembershipComplete || !validSHA256(state.TargetMembershipHash) ||
-		state.TargetMembershipCount < 1 || state.SupplierConfirmedCount < 0 ||
-		state.SupplierConfirmedCount > state.TargetMembershipCount {
-		return fmt.Errorf("authoritative feed attestation is incomplete")
-	}
-	if !now.UTC().Before(state.SourceExpiresAt.UTC()) {
+	if state.SourceExpiresAt != nil && !now.UTC().Before(state.SourceExpiresAt.UTC()) {
 		return fmt.Errorf("authoritative feed source attestation expired")
 	}
 	return nil
+}
+
+// validateAuthoritativeFeedState is the INGEST-side gate: publishing new facts
+// still demands a live FRESH producer window. Callers on the commercial path
+// must use validateAuthoritativeFeedStructure instead.
+func validateAuthoritativeFeedState(state *models.OutreachFeedSyncState, now time.Time, maxAge time.Duration, requireAttestation bool) error {
+	if err := validateAuthoritativeFeedStructure(state, requireAttestation); err != nil {
+		return err
+	}
+	return validateAuthoritativeFeedAge(state, now, maxAge)
 }
 
 func parseFreshnessTime(value string) (time.Time, error) {
@@ -145,7 +200,9 @@ func ValidateFrozenSourceFreshness(snap *FrozenCohortSnapshot, now time.Time, re
 	}
 	required := require || snap.AuthoritativeFreshnessRequired
 	if required || snap.AuthoritativeSourceFreshness != nil {
-		if err := ValidateAuthoritativeSourceFreshness(snap.AuthoritativeSourceFreshness, now); err != nil {
+		// A frozen cohort is already-proven work. It is validated against the
+		// attestation it froze, not against the current producer window.
+		if err := ValidateHistoricalSourceFreshness(snap.AuthoritativeSourceFreshness); err != nil {
 			return err
 		}
 		observed := HashAuthoritativeSourceFreshness(snap.AuthoritativeSourceFreshness)

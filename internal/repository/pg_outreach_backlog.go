@@ -122,12 +122,13 @@ func (r *outreachRepository) materializeCurrentInitialBacklog(ctx context.Contex
 			LEFT JOIN outreach_contact_candidates c
 			  ON c.organization_id=a.organization_id AND c.account_id=a.id
 			 AND a.last_import_run_id IS NOT NULL AND c.last_import_run_id=a.last_import_run_id
-			WHERE a.organization_id=$1 AND a.source_run_id=$2
+			WHERE a.organization_id=$1
+			  AND (a.source_run_id=$2 OR a.commercial_qualification_state='QUALIFIED')
 			GROUP BY a.id
 		), classified AS (
 			SELECT a.id AS account_id,cr.candidate_id,
 				(a.contractor_role_status='CONTRACTOR_ROLE_CONFIRMED'
-				 AND a.target_party_role='SUPPLIER' AND a.contractor_role_source_run_id=$2
+				 AND a.target_party_role='SUPPLIER'
 				 AND a.supplier_cnpj14=a.cnpj14 AND a.contractor_role_evidence_hash ~ '^[0-9a-f]{64}$'
 				 AND jsonb_array_length(a.contractor_role_evidence_ids)>0) AS supplier_confirmed,
 				(COALESCE(cr.preferred_count,0)=1 AND cr.candidate_id IS NOT NULL) AS candidate_attributed,
@@ -146,7 +147,8 @@ func (r *outreachRepository) materializeCurrentInitialBacklog(ctx context.Contex
 					WHEN NOT COALESCE(cr.preferred_eligible,false) THEN 'preferred_current_recipient_ineligible'
 					WHEN a.contractor_role_status='PARTY_ROLE_CONFLICT' THEN 'supplier_role_conflict'
 					WHEN a.contractor_role_status<>'CONTRACTOR_ROLE_CONFIRMED' OR a.target_party_role<>'SUPPLIER' THEN 'supplier_role_unknown'
-					WHEN a.contractor_role_source_run_id<>$2 THEN 'supplier_role_stale_source_run'
+					WHEN a.commercial_qualification_state<>'QUALIFIED' THEN 'commercial_qualification_not_qualified'
+					WHEN a.commercial_qualified_until IS NULL OR a.commercial_qualified_until <= CURRENT_DATE THEN 'commercial_qualification_expired'
 					WHEN a.supplier_cnpj14<>a.cnpj14 THEN 'supplier_identity_mismatch'
 					WHEN a.contractor_role_evidence_hash !~ '^[0-9a-f]{64}$' OR jsonb_array_length(a.contractor_role_evidence_ids)=0 THEN 'supplier_role_evidence_incomplete'
 					WHEN NOT COALESCE(cr.preferred_delegated_eligible,false) THEN 'preferred_current_recipient_not_delegated'
@@ -154,7 +156,8 @@ func (r *outreachRepository) materializeCurrentInitialBacklog(ctx context.Contex
 				END AS reason_code
 			FROM outreach_accounts a
 			LEFT JOIN candidate_rollup cr ON cr.account_id=a.id
-			WHERE a.organization_id=$1 AND a.source_run_id=$2
+			WHERE a.organization_id=$1
+			  AND (a.source_run_id=$2 OR a.commercial_qualification_state='QUALIFIED')
 		)
 		SELECT account_id,candidate_id,supplier_confirmed,candidate_attributed,initial_prepared,
 			(initial_prepared AND supplier_confirmed AND delegated_candidate AND reason_code='') AS delegated_eligible,reason_code

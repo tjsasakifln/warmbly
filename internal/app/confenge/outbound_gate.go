@@ -601,22 +601,10 @@ func (s *service) assertBoundedCohortTransport(ctx context.Context, tp *models.O
 	return CanTransportCohort(tp, auth, s.liveCohortInput(ctx, tp, cand, boundedCohortMessageKey(tp, messageKey)))
 }
 
+// assertAuthoritativeFeedForTransport now asks the commercial question only.
+// PNCP/source age is acquisition health and is not part of this conjunction.
 func (s *service) assertAuthoritativeFeedForTransport(ctx context.Context, orgID uuid.UUID, acc *models.OutreachAccount) error {
-	if s == nil || (!s.cfg.FeedSyncEnabled && !s.cfg.OperatorMode) {
-		return nil
-	}
-	state, err := s.repo.GetFeedSyncState(ctx, orgID)
-	if err != nil || state == nil {
-		return fmt.Errorf("authoritative feed state unavailable")
-	}
-	now := time.Now().UTC()
-	if err := validateAuthoritativeFeedState(state, now, s.cfg.FeedMaxAge, s.cfg.DelegatedFirstTouchEnabled); err != nil {
-		return err
-	}
-	if acc == nil || strings.TrimSpace(acc.SourceRunID) != strings.TrimSpace(state.LastRunID) {
-		return fmt.Errorf("account is not from the completely applied authoritative snapshot")
-	}
-	return nil
+	return s.assertCommercialAuthorityForTransport(ctx, orgID, acc)
 }
 
 func (s *service) CompleteCampaignEmail(ctx context.Context, orgID, campaignID, contactID, sequenceID, taskID, mailboxID uuid.UUID, providerMessageID, provider string, acceptedAt time.Time) error {

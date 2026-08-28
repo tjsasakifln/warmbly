@@ -30,7 +30,7 @@ type FirstWindowReadinessSnapshot struct {
 	SourceRunID               string
 	SourceSnapshotHash        string
 	SourceHealth              SourceHealthDecision
-	CommercialAuthority       CommercialAuthorityDecision
+	CommercialAuthority       CommercialQualificationDecision
 	MembershipHash            string
 	PolicyID                  string
 	PolicyVersion             string
@@ -63,41 +63,41 @@ type FirstWindowReadinessSnapshot struct {
 // FirstWindowReadinessReport is the only artifact this campaign may emit for
 // #43. It never emits GO_FOR_CONTROLLED_EMAIL_PILOT.
 type FirstWindowReadinessReport struct {
-	Verdict                   string                      `json:"verdict"`
-	Blockers                  []string                    `json:"blockers,omitempty"`
-	WarmblyReleaseSHA         string                      `json:"warmbly_release_sha"`
-	FeedManifestSchema        string                      `json:"feed_manifest_schema"`
-	SourceRunID               string                      `json:"source_run_id,omitempty"`
-	SourceSnapshotHash        string                      `json:"source_snapshot_hash,omitempty"`
-	SourceHealth              SourceHealthDecision        `json:"source_health"`
-	CommercialAuthority       CommercialAuthorityDecision `json:"commercial_authority"`
-	MembershipHash            string                      `json:"membership_hash,omitempty"`
-	PolicyID                  string                      `json:"policy_id"`
-	PolicyVersion             string                      `json:"policy_version"`
-	AllowedRouteClasses       []string                    `json:"allowed_route_classes"`
-	MailboxSet                []string                    `json:"mailbox_set"`
-	SMTPReady                 string                      `json:"smtp_ready"`
-	IMAPReplyIngestReady      string                      `json:"imap_reply_ingest_ready"`
-	GlobalSendsPerHour        int                         `json:"global_sends_per_hour"`
-	MailboxRateCaps           []int                       `json:"mailbox_rate_caps"`
-	MinWaitSeconds            int                         `json:"min_wait_seconds"`
-	BusinessTimezone          string                      `json:"business_timezone"`
-	BusinessWindowStart       string                      `json:"business_window_start"`
-	BusinessWindowEnd         string                      `json:"business_window_end"`
-	PauseState                string                      `json:"pause_state"`
-	PauseSource               string                      `json:"pause_source,omitempty"`
-	PausedBy                  *uuid.UUID                  `json:"paused_by,omitempty"`
-	PausedAt                  *time.Time                  `json:"paused_at,omitempty"`
-	KillSwitchEngaged         bool                        `json:"kill_switch_engaged"`
-	SuppressionCount          int                         `json:"suppression_count"`
-	DNCCount                  int                         `json:"dnc_count"`
-	BounceCount               int                         `json:"bounce_count"`
-	ReadyReservoir            int                         `json:"ready_reservoir"`
-	Queued                    int                         `json:"queued"`
-	Reserved                  int                         `json:"reserved"`
-	OutcomeObservabilityReady string                      `json:"outcome_observability_ready"`
-	ProviderMutationCount     int                         `json:"provider_mutation_count"`
-	EvaluatedAt               time.Time                   `json:"evaluated_at"`
+	Verdict                   string                          `json:"verdict"`
+	Blockers                  []string                        `json:"blockers,omitempty"`
+	WarmblyReleaseSHA         string                          `json:"warmbly_release_sha"`
+	FeedManifestSchema        string                          `json:"feed_manifest_schema"`
+	SourceRunID               string                          `json:"source_run_id,omitempty"`
+	SourceSnapshotHash        string                          `json:"source_snapshot_hash,omitempty"`
+	SourceHealth              SourceHealthDecision            `json:"source_health"`
+	CommercialAuthority       CommercialQualificationDecision `json:"commercial_authority"`
+	MembershipHash            string                          `json:"membership_hash,omitempty"`
+	PolicyID                  string                          `json:"policy_id"`
+	PolicyVersion             string                          `json:"policy_version"`
+	AllowedRouteClasses       []string                        `json:"allowed_route_classes"`
+	MailboxSet                []string                        `json:"mailbox_set"`
+	SMTPReady                 string                          `json:"smtp_ready"`
+	IMAPReplyIngestReady      string                          `json:"imap_reply_ingest_ready"`
+	GlobalSendsPerHour        int                             `json:"global_sends_per_hour"`
+	MailboxRateCaps           []int                           `json:"mailbox_rate_caps"`
+	MinWaitSeconds            int                             `json:"min_wait_seconds"`
+	BusinessTimezone          string                          `json:"business_timezone"`
+	BusinessWindowStart       string                          `json:"business_window_start"`
+	BusinessWindowEnd         string                          `json:"business_window_end"`
+	PauseState                string                          `json:"pause_state"`
+	PauseSource               string                          `json:"pause_source,omitempty"`
+	PausedBy                  *uuid.UUID                      `json:"paused_by,omitempty"`
+	PausedAt                  *time.Time                      `json:"paused_at,omitempty"`
+	KillSwitchEngaged         bool                            `json:"kill_switch_engaged"`
+	SuppressionCount          int                             `json:"suppression_count"`
+	DNCCount                  int                             `json:"dnc_count"`
+	BounceCount               int                             `json:"bounce_count"`
+	ReadyReservoir            int                             `json:"ready_reservoir"`
+	Queued                    int                             `json:"queued"`
+	Reserved                  int                             `json:"reserved"`
+	OutcomeObservabilityReady string                          `json:"outcome_observability_ready"`
+	ProviderMutationCount     int                             `json:"provider_mutation_count"`
+	EvaluatedAt               time.Time                       `json:"evaluated_at"`
 }
 
 func firstWindowBlocked(reason string) string {
@@ -174,15 +174,16 @@ func EvaluateFirstWindowReadiness(snap FirstWindowReadinessSnapshot) FirstWindow
 	add(snap.OutcomeObservabilityReady.IsPass(), "outcome_observability_not_ready")
 	add(snap.ProviderMutationCount == 0, "provider_mutation_nonzero")
 	if snap.CommercialAuthority.Present {
-		add(snap.CommercialAuthority.State != CommercialAuthorityUnknown, "commercial_authority_unknown")
-		add(snap.CommercialAuthority.State != CommercialAuthorityExpired, "commercial_authority_expired")
-		add(strings.TrimSpace(snap.CommercialAuthority.BasisSourceRunID) == strings.TrimSpace(snap.SourceRunID), "commercial_authority_run_mismatch")
-		add(strings.TrimSpace(snap.CommercialAuthority.BasisSnapshotHash) == strings.TrimSpace(snap.SourceSnapshotHash), "commercial_authority_snapshot_mismatch")
-		add(strings.ToLower(strings.TrimSpace(snap.CommercialAuthority.BasisMembershipHash)) == strings.ToLower(strings.TrimSpace(snap.MembershipHash)), "commercial_authority_membership_mismatch")
-		add(strings.TrimSpace(snap.CommercialAuthority.BasisPublicationSemanticHash) != "", "commercial_authority_semantic_missing")
-		add(strings.TrimSpace(snap.CommercialAuthority.ProducerIdentity) != "", "commercial_authority_producer_missing")
+		add(snap.CommercialAuthority.State != CommercialUnknown, "commercial_authority_unknown")
+		add(snap.CommercialAuthority.State != CommercialExpired, ReasonQualificationExpired)
+		add(snap.CommercialAuthority.State != CommercialRevoked, ReasonQualificationRevoked)
+		add(RecognizeCommercialAuthorityPolicy(snap.CommercialAuthority.PolicyVersion), ReasonPolicyVersionUnsupported)
+		add(validSHA256(snap.CommercialAuthority.EvidenceHash), ReasonQualificationEvidenceDrift)
 	} else {
-		add(snap.SourceHealth.State == SourceHealthFresh, "source_health_not_fresh_strict_fallback")
+		// Absence of commercial authority is explicit and fail-closed. Source
+		// freshness is never promoted into a commercial authorization, so a
+		// STALE source with valid authority produces no blocker at all.
+		add(false, ReasonQualificationMissing)
 	}
 	sort.Strings(blockers)
 	if len(blockers) > 0 {
@@ -227,7 +228,7 @@ func firstWindowPreGOPauseEngaged(snap FirstWindowReadinessSnapshot) bool {
 func firstWindowSnapshotFromLive(
 	cfg Config,
 	source DelegatedFirstTouchSourceReadback,
-	authority CommercialAuthorityDecision,
+	authority CommercialQualificationDecision,
 	status dispatch.Status,
 	transport TransportState,
 	queued, reserved, reservoir int,
@@ -293,7 +294,8 @@ func (s *service) CollectFirstWindowReadiness(ctx context.Context, orgID uuid.UU
 	if feedErr != nil {
 		return nil, errx.New(errx.Internal, "feed sync state: "+feedErr.Error())
 	}
-	sourceHealth, authority := EvaluateStoredFeedAuthority(feed, now, s.cfg.FeedMaxAge)
+	sourceHealth := EvaluateStoredSourceHealth(feed, now, s.cfg.FeedMaxAge)
+	authority := FeedCommercialAuthorityState(feed)
 	source := DelegatedFirstTouchSourceReadback{}
 	if feed != nil {
 		source = DelegatedFirstTouchSourceReadback{

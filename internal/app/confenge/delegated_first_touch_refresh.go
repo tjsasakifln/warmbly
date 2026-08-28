@@ -27,7 +27,8 @@ func (s *service) retireStaleDelegatedFirstTouches(ctx context.Context, orgID uu
 	feedState, feedErr := s.repo.GetFeedSyncState(ctx, orgID)
 	authorityValid := feedErr == nil && feedState != nil && feedState.LastRunID == sourceRunID &&
 		feedState.LastSnapshotHash == snapshotHash &&
-		validateAuthoritativeFeedState(feedState, time.Now().UTC(), s.cfg.FeedMaxAge, true) == nil
+		validateAuthoritativeFeedStructure(feedState, true) == nil &&
+		FeedCommercialAuthorityState(feedState).State == CommercialQualified
 	var sourceExpiresAt *time.Time
 	sourceFreshnessHash, targetMembershipHash, targetMembershipCount := "", "", 0
 	if feedState != nil {
