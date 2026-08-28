@@ -257,3 +257,27 @@ func TestReadinessAcceptsAccountDerivedQualificationWithoutFeedAttestation(t *te
 		t.Fatalf("verdict %s blockers=%v", report.Verdict, report.Blockers)
 	}
 }
+
+// An ACTIVE transport has nothing paused, so it has no pause source. Demanding
+// one blocked exactly the state the cutover is trying to reach.
+func TestReadinessActiveTransportNeedsNoPauseSource(t *testing.T) {
+	now := time.Date(2026, 8, 28, 16, 0, 0, 0, time.UTC)
+	snap := readyFirstWindowSnapshot(now)
+	snap.PauseState = TransportActive
+	snap.PauseSource = ""
+	snap.KillSwitchEngaged = false
+	snap.Queued = 3
+	report := EvaluateFirstWindowReadiness(snap)
+	if containsStr(report.Blockers, "pause_source_missing") {
+		t.Fatalf("an unpaused transport was blocked for having no pause source: %v", report.Blockers)
+	}
+	if report.Verdict != FirstWindowTransportActiveInWindow {
+		t.Fatalf("verdict=%s blockers=%v", report.Verdict, report.Blockers)
+	}
+	// Still fail closed when actually paused with an unreadable source.
+	snap.PauseState = TransportPaused
+	snap.PauseSource = ""
+	if !containsStr(EvaluateFirstWindowReadiness(snap).Blockers, "pause_source_missing") {
+		t.Fatal("a paused transport with no readable source stopped failing closed")
+	}
+}

@@ -170,7 +170,10 @@ func EvaluateFirstWindowReadiness(snap FirstWindowReadinessSnapshot) FirstWindow
 	add(snap.MinWaitSeconds > 0, "min_wait_time_missing")
 	add(strings.TrimSpace(snap.BusinessTimezone) != "" && strings.TrimSpace(snap.BusinessWindowStart) != "" && strings.TrimSpace(snap.BusinessWindowEnd) != "", "business_window_missing")
 	add(strings.TrimSpace(snap.PauseState) != "", "pause_state_missing")
-	add(strings.TrimSpace(snap.PauseSource) != "", "pause_source_missing")
+	// A fully ACTIVE transport legitimately has no pause source. Requiring one
+	// unconditionally blocked precisely the healthy end state; an unreadable
+	// source while actually paused still fails closed.
+	add(snap.PauseState == TransportActive || strings.TrimSpace(snap.PauseSource) != "", "pause_source_missing")
 	add(snap.OutcomeObservabilityReady.IsPass(), "outcome_observability_not_ready")
 	add(snap.ProviderMutationCount == 0, "provider_mutation_nonzero")
 	if snap.CommercialAuthority.Present {
