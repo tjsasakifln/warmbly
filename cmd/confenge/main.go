@@ -56,6 +56,8 @@ func main() {
 		os.Exit(cmdEditorial(os.Args[2:]))
 	case "first-touch":
 		os.Exit(cmdFirstTouch(os.Args[2:]))
+	case "commercial-qualification":
+		os.Exit(cmdCommercialQualification(os.Args[2:]))
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -73,6 +75,7 @@ Usage:
   confenge bootstrap [--org-id UUID]
   confenge import --feed PATH|file://... [--dry-run] [--org-id UUID]
   confenge reconcile-target-fit [--dry-run] [--org-id UUID]
+  confenge commercial-qualification --corpus PATH [--dry-run] [--org-id UUID]
   confenge stop-sending
   confenge resume-sending
   confenge intel-report [--month YYYY-MM] [--include-synthetic] [--json PATH] [--md PATH]
