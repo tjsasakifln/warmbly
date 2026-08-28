@@ -513,6 +513,65 @@ func TestMaterializeCurrentInitialBacklogRetiresAccountOmittedFromNewRunPostgres
 	}
 }
 
+func TestMaterializeDelegatedEligibleForRegistryWithoutURLPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	if _, err := f.pool.Exec(f.ctx, `
+		UPDATE outreach_contact_candidates
+		SET source_url='',
+			discovery_json = COALESCE(discovery_json,'{}'::jsonb) || '{"source":"company_registry","source_type":"company_registry"}'::jsonb
+		WHERE organization_id=$1`, f.orgID); err != nil {
+		t.Fatal(err)
+	}
+	backlog, err := f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, f.manifest.SourceRunID)
+	if err != nil {
+		t.Fatalf("materialize referenced missing candidate columns: %v", err)
+	}
+	if backlog.DelegatedEligible != 1 || backlog.HeldException != 0 {
+		t.Fatalf("company_registry OBSERVED without URL must be delegated eligible: counts=%+v", backlog)
+	}
+}
+
+func TestMaterializeDelegatedEligibleForImportedOfficialSourceWithoutURLPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	if _, err := f.pool.Exec(f.ctx, `
+		UPDATE outreach_contact_candidates SET source_url='' WHERE organization_id=$1`, f.orgID); err != nil {
+		t.Fatal(err)
+	}
+	backlog, err := f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, f.manifest.SourceRunID)
+	if err != nil {
+		t.Fatalf("materialize referenced missing candidate columns: %v", err)
+	}
+	if backlog.DelegatedEligible != 1 || backlog.HeldException != 0 {
+		t.Fatalf("already-imported OFFICIAL_SOURCE with empty source_url must rematerialize: counts=%+v", backlog)
+	}
+}
+
+func TestMaterializeHoldsNonOfficialEmptyURLWithoutRegistryPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	if _, err := f.pool.Exec(f.ctx, `
+		UPDATE outreach_contact_candidates
+		SET source_url='', verification_status='PUBLIC_DOCUMENT_RECENT'
+		WHERE organization_id=$1`, f.orgID); err != nil {
+		t.Fatal(err)
+	}
+	backlog, err := f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, f.manifest.SourceRunID)
+	if err != nil {
+		t.Fatalf("materialize referenced missing candidate columns: %v", err)
+	}
+	if backlog.DelegatedEligible != 0 || backlog.InitialPrepared != 1 {
+		t.Fatalf("empty URL without registry/OFFICIAL_SOURCE must stay not-delegated: counts=%+v", backlog)
+	}
+	var reason string
+	if err := f.pool.QueryRow(f.ctx, `
+		SELECT initial_backlog_reason_code FROM outreach_accounts
+		WHERE organization_id=$1 AND id=$2`, f.orgID, f.manifest.Entries[0].AccountID).Scan(&reason); err != nil {
+		t.Fatal(err)
+	}
+	if reason != "preferred_current_recipient_not_delegated" {
+		t.Fatalf("held reason=%q", reason)
+	}
+}
+
 func TestDelegatedFirstTouchWorkerIgnoresHistoricalLegacyKeyFromStaleBinding(t *testing.T) {
 	f := newDelegatedPGFixture(t)
 	entry := f.manifest.Entries[0]

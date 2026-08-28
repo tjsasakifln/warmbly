@@ -35,6 +35,8 @@ type controlledDiscovery struct {
 	PersonUnknown             *bool  `json:"person_unknown,omitempty"`
 	EmailValidated            *bool  `json:"email_validated,omitempty"`
 	RiskClass                 string `json:"risk_class,omitempty"`
+	Source                    string `json:"source,omitempty"`
+	SourceType                string `json:"source_type,omitempty"`
 	PolicyVersion             string `json:"policy_version,omitempty"`
 	SchemaVersion             string `json:"schema_version,omitempty"`
 }
@@ -275,6 +277,18 @@ func mergeControlledDiscovery(existing []byte, fc FeedContact) []byte {
 	}
 	if fc.RiskClass != "" {
 		d.RiskClass = fc.RiskClass
+	}
+	if src := strings.TrimSpace(fc.Source); src != "" {
+		d.Source = src
+	}
+	if st := strings.TrimSpace(fc.SourceType); st != "" {
+		d.SourceType = st
+	}
+	if d.Source == "" && d.SourceType != "" {
+		d.Source = d.SourceType
+	}
+	if d.SourceType == "" && d.Source != "" {
+		d.SourceType = d.Source
 	}
 	if d.RouteClass == "" && d.ControlledEmailEligible == nil {
 		return existing

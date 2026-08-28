@@ -2,6 +2,7 @@ package repository
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -20,5 +21,19 @@ func TestDelegatedEligibilityKeepsHTTPGateAndAllowsObservedRegistry(t *testing.T
 	}
 	if !strings.Contains(s, "CURRENT_DATE - 29") {
 		t.Fatal("recipient freshness window must stay 29 days")
+	}
+	if !strings.Contains(s, "discovery_json->>'source'") || !strings.Contains(s, "discovery_json->>'source_type'") {
+		t.Fatal("registry provenance must be read from discovery_json; outreach_contact_candidates has no source/source_type columns")
+	}
+	if !strings.Contains(s, "OFFICIAL_SOURCE") || !strings.Contains(s, "COALESCE(c.source_url,'')=''") {
+		t.Fatal("already-imported company_registry ammo is OFFICIAL_SOURCE with empty source_url and must rematerialize without a new snapshot")
+	}
+	// c.source / c.source_type are not columns. source_url, source_date, source_document,
+	// source_contact_id, source_run_id (on accounts) remain valid.
+	if regexp.MustCompile(`c\.source[^_a-zA-Z]`).MatchString(s) {
+		t.Fatal("do not reference missing column c.source; use discovery_json")
+	}
+	if regexp.MustCompile(`c\.source_type[^_a-zA-Z]`).MatchString(s) {
+		t.Fatal("do not reference missing column c.source_type; use discovery_json")
 	}
 }
