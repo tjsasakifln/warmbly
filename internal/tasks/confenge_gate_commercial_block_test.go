@@ -94,3 +94,38 @@ func TestSkipRetryTimeKeepsAnAlreadyDueSlot(t *testing.T) {
 		t.Fatalf("an already-due slot was pushed back: got=%s due=%s", got, due)
 	}
 }
+
+// Send-time optimization is a preference about when inside a day to send, not
+// an authority over which day. Unbounded it rolled a CONFENGE send from Friday
+// 17:11 UTC to Monday 09:00 UTC: three days of silence after a single send, at
+// 06:00 in the campaign's own timezone, outside its 09:00-18:00 window.
+func TestOptimizedSendTimeCannotParkTheCampaignOnALaterDay(t *testing.T) {
+	tz := "America/Sao_Paulo"
+	base := time.Date(2026, 8, 28, 17, 11, 0, 0, time.UTC)
+	parked := time.Date(2026, 8, 31, 9, 0, 0, 0, time.UTC)
+
+	if got := withinDayOptimizedSendTime(base, parked, tz); !got.Equal(base) {
+		t.Fatalf("optimization moved the send to a later day: got=%s base=%s", got, base)
+	}
+}
+
+// Within the same local day the optimizer still wins, so the feature keeps working.
+func TestOptimizedSendTimeKeepsAWithinDayPreference(t *testing.T) {
+	tz := "America/Sao_Paulo"
+	base := time.Date(2026, 8, 28, 15, 5, 0, 0, time.UTC)   // 12:05 local
+	better := time.Date(2026, 8, 28, 17, 0, 0, 0, time.UTC) // 14:00 local, same day
+
+	if got := withinDayOptimizedSendTime(base, better, tz); !got.Equal(better) {
+		t.Fatalf("a same-day optimization was discarded: got=%s want=%s", got, better)
+	}
+}
+
+// An optimizer result before the scheduler's slot must never pull a send early,
+// because the slot already encodes the mailbox min-gap.
+func TestOptimizedSendTimeNeverPullsASendEarlier(t *testing.T) {
+	base := time.Date(2026, 8, 28, 17, 11, 0, 0, time.UTC)
+	earlier := base.Add(-2 * time.Hour)
+	if got := withinDayOptimizedSendTime(base, earlier, "America/Sao_Paulo"); !got.Equal(base) {
+		t.Fatalf("optimization pulled the send earlier than its slot: got=%s base=%s", got, base)
+	}
+}

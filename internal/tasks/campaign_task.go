@@ -911,7 +911,7 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 	scheduledNext := nextTime
 	if s.advanced != nil && campaign.OrganizationID != nil {
 		if optimized, xerr := s.advanced.OptimizeSendTime(ctx, *campaign.OrganizationID, contact, nextTime); xerr == nil {
-			scheduledNext = optimized
+			scheduledNext = withinDayOptimizedSendTime(nextTime, optimized, campaign.Timezone)
 		}
 	}
 
@@ -1255,4 +1255,31 @@ func skipRetryTime(nextTime time.Time) time.Time {
 		return nextTime
 	}
 	return soon
+}
+
+// withinDayOptimizedSendTime keeps send-time optimization a preference about
+// when inside a day to send, never an authority over which day.
+//
+// The optimizer works from its own preferred-hours list in its own timezone. If
+// the scheduler's slot is past the last preferred hour it rolls to the next day
+// and then past the weekend, so one CONFENGE send at 17:11 UTC on a Friday
+// scheduled the next campaign task for Monday 09:00 UTC: three days of silence
+// after a single send, at 06:00 in the campaign's own timezone, outside its
+// 09:00-18:00 window. An optimization that lands on a later local day than the
+// scheduler chose is discarded and the scheduler's slot stands.
+func withinDayOptimizedSendTime(base, optimized time.Time, timezone string) time.Time {
+	if optimized.IsZero() || optimized.Before(base) {
+		return base
+	}
+	loc, err := time.LoadLocation(strings.TrimSpace(timezone))
+	if err != nil || loc == nil {
+		loc = time.UTC
+	}
+	b, o := base.In(loc), optimized.In(loc)
+	by, bm, bd := b.Date()
+	oy, om, od := o.Date()
+	if by != oy || bm != om || bd != od {
+		return base
+	}
+	return optimized
 }
