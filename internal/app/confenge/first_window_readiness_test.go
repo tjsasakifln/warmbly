@@ -231,3 +231,29 @@ func TestCollectFirstWindowReadinessIndependentAuthorityOnStaleSource(t *testing
 		t.Fatalf("safety snapshot not from stored state: suppression=%d dnc=%d bounce=%d", report.SuppressionCount, report.DNCCount, report.BounceCount)
 	}
 }
+
+// A population every one of whose members carries verified three-year evidence
+// is qualified even when the producer has published no population attestation.
+// Per-company evidence is stronger than an attestation, not weaker.
+func TestReadinessAcceptsAccountDerivedQualificationWithoutFeedAttestation(t *testing.T) {
+	now := time.Date(2026, 8, 28, 16, 0, 0, 0, time.UTC)
+	snap := readyFirstWindowSnapshot(now)
+	snap.SourceHealth = SourceHealthDecision{State: SourceHealthStale}
+	snap.CommercialAuthority = CommercialQualificationDecision{
+		Present:       true,
+		State:         CommercialQualified,
+		PolicyVersion: CommercialAuthorityPolicyV2,
+		// Account-derived rollups carry no corpus digest.
+		EvidenceHash: "",
+	}
+	report := EvaluateFirstWindowReadiness(snap)
+	for _, blocker := range report.Blockers {
+		if strings.Contains(blocker, "fresh") || strings.Contains(blocker, "stale") ||
+			blocker == ReasonQualificationEvidenceDrift || blocker == ReasonQualificationMissing {
+			t.Fatalf("account-derived qualification blocked: %v", report.Blockers)
+		}
+	}
+	if strings.HasPrefix(report.Verdict, "BLOCKED") {
+		t.Fatalf("verdict %s blockers=%v", report.Verdict, report.Blockers)
+	}
+}
