@@ -22,6 +22,19 @@ if [[ "$CODE" != "200" ]]; then
   exit 1
 fi
 
+# The authoritative switch is the file on the shared ops volume: the backend
+# reads CONFENGE_KILL_SWITCH_PATH=/data/confenge-ops/kill-switch, which is that
+# volume. Clearing only the host mirror reported DISPATCH=ACTIVE while every
+# deploy preflight pause stayed engaged, so outbound silently stayed dead.
+OPS_VOLUME="${COMPOSE_PROJECT_NAME:-warmbly-confenge}_confenge_ops"
+if ! compose_cmd exec -T backend sh -c 'rm -f /data/confenge-ops/kill-switch' 2>/dev/null; then
+  docker run --rm -v "$OPS_VOLUME:/data" alpine sh -c 'rm -f /data/kill-switch' >/dev/null
+fi
+if docker run --rm -v "$OPS_VOLUME:/data:ro" alpine test -f /data/kill-switch; then
+  echo "REFUSE: transport kill switch still engaged after resume" >&2
+  exit 1
+fi
+
 HOST_KS="${CONFENGE_KILL_SWITCH_HOST_PATH:-$ROOT/data/confenge-kill-switch}"
 rm -f "$HOST_KS"
 
