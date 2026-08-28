@@ -193,16 +193,17 @@ func cmdReconcileProviderAccepted(args []string) int {
 
 func loadProviderAcceptedRecoveryTarget(ctx context.Context, pool *pgxpool.Pool, taskID, touchpointID uuid.UUID, recipient, providerMessageID string, acceptedAt time.Time) (providerAcceptedRecoveryTarget, *models.OutreachTouchpoint, error) {
 	target := providerAcceptedRecoveryTarget{}
+	var mailboxProvider *string
 	err := pool.QueryRow(ctx, `
 		SELECT c.organization_id, ct.campaign_id, ct.contact_id, ct.sequence_id,
-		       t.email_account_id, c.name, t.status::text, COALESCE(e.provider,'smtp')
+		       t.email_account_id, c.name, t.status::text, e.provider::text
 		FROM tasks t
 		JOIN campaign_tasks ct ON ct.task_id=t.id
 		JOIN campaigns c ON c.id=ct.campaign_id
 		LEFT JOIN email_accounts e ON e.id=t.email_account_id
 		WHERE t.id=$1`, taskID).Scan(
 		&target.OrganizationID, &target.CampaignID, &target.ContactID, &target.SequenceID,
-		&target.MailboxID, &target.CampaignName, &target.TaskStatus, &target.MailboxProvider,
+		&target.MailboxID, &target.CampaignName, &target.TaskStatus, &mailboxProvider,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return target, nil, fmt.Errorf("campaign task not found")
@@ -210,6 +211,7 @@ func loadProviderAcceptedRecoveryTarget(ctx context.Context, pool *pgxpool.Pool,
 	if err != nil {
 		return target, nil, err
 	}
+	target.MailboxProvider = providerAcceptedMailboxProvider(mailboxProvider)
 	if !confenge.IsConfengeCampaign(target.CampaignName) {
 		return target, nil, fmt.Errorf("task is not bound to the canonical CONFENGE campaign")
 	}
@@ -313,6 +315,13 @@ func loadProviderAcceptedRecoveryTarget(ctx context.Context, pool *pgxpool.Pool,
 		WHERE campaign_id=$1 AND contact_id=$2 AND sequence_id=$3`,
 		target.CampaignID, target.ContactID, target.SequenceID).Scan(&target.ProgressSentAt)
 	return target, touchpoint, nil
+}
+
+func providerAcceptedMailboxProvider(provider *string) string {
+	if provider == nil || strings.TrimSpace(*provider) == "" {
+		return "smtp"
+	}
+	return strings.TrimSpace(*provider)
 }
 
 func writeProviderRecoveryAudit(ctx context.Context, pool *pgxpool.Pool, actorID, taskID, touchpointID uuid.UUID, recipient, providerMessageID string, acceptedAt time.Time, target providerAcceptedRecoveryTarget, outcome, failure string) error {
