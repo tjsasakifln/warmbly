@@ -1,3 +1,4 @@
+DROP INDEX IF EXISTS idx_outreach_accounts_org_cnpj_root;
 DROP INDEX IF EXISTS idx_outreach_accounts_commercial_root8;
 DROP INDEX IF EXISTS idx_outreach_accounts_commercial_qualified;
 
@@ -21,6 +22,8 @@ ALTER TABLE outreach_accounts
     DROP COLUMN IF EXISTS commercial_qualification_deactivation_reason;
 
 ALTER TABLE outreach_feed_sync_state
+    DROP COLUMN IF EXISTS publication_semantic_hash,
+    DROP COLUMN IF EXISTS producer_identity,
     DROP COLUMN IF EXISTS commercial_authority_v2,
     DROP COLUMN IF EXISTS qualification_evidence_hash,
     DROP COLUMN IF EXISTS qualified_root_count,

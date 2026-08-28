@@ -131,8 +131,7 @@ func cmdCommercialQualification(args []string) int {
 					commercial_qualification_deactivation_reason = $15,
 					commercial_qualification_observed_at = $16,
 					updated_at = now()
-				WHERE organization_id = $1
-				  AND left(regexp_replace(cnpj14, '[^0-9]', '', 'g'), 8) = $2`,
+				WHERE organization_id = $1 AND cnpj_root = $2`,
 				orgID, root, decision.State, confenge.CommercialAuthorityPolicyV2, q.CNPJRoot8,
 				q.QualifyingContractID, decision.QualifyingContractDate, q.QualifyingDateField,
 				q.QualifyingContractCount, decision.QualifiedUntil, q.EvidenceHash,

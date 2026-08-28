@@ -56,17 +56,20 @@ type PilotAccountResult struct {
 }
 
 type PilotCohortResult struct {
-	CohortID       string               `json:"cohort_id"`
-	Target         int                  `json:"target"`
-	Selected       int                  `json:"selected"`
-	Prepared       int                  `json:"prepared"`
-	Blocked        int                  `json:"blocked"`
-	ContactNeeded  int                  `json:"contact_needed"`
-	CohortPrepared int                  `json:"cohort_prepared"`
-	Remaining      int                  `json:"remaining"`
-	SnapshotHash   string               `json:"upstream_snapshot_hash,omitempty"`
-	FeedTimestamp  *time.Time           `json:"feed_timestamp,omitempty"`
-	Results        []PilotAccountResult `json:"results"`
+	CohortID       string     `json:"cohort_id"`
+	Target         int        `json:"target"`
+	Selected       int        `json:"selected"`
+	Prepared       int        `json:"prepared"`
+	Blocked        int        `json:"blocked"`
+	ContactNeeded  int        `json:"contact_needed"`
+	CohortPrepared int        `json:"cohort_prepared"`
+	Remaining      int        `json:"remaining"`
+	SnapshotHash   string     `json:"upstream_snapshot_hash,omitempty"`
+	FeedTimestamp  *time.Time `json:"feed_timestamp,omitempty"`
+	// SourceAcquisitionHealth is observability only: "stale" reports that the
+	// crawler went quiet, it never blocks a commercially qualified member.
+	SourceAcquisitionHealth string               `json:"source_acquisition_health,omitempty"`
+	Results                 []PilotAccountResult `json:"results"`
 }
 
 type pilotFeedEvidence struct {
@@ -113,7 +116,8 @@ func (s *service) PreparePilotCohort(ctx context.Context, orgID, userID uuid.UUI
 	result := &PilotCohortResult{
 		CohortID: cohortID, Target: PilotCohortTarget, Selected: len(unique),
 		SnapshotHash: feed.SnapshotHash, FeedTimestamp: feed.Timestamp,
-		Results: make([]PilotAccountResult, 0, len(unique)),
+		SourceAcquisitionHealth: feed.State,
+		Results:                 make([]PilotAccountResult, 0, len(unique)),
 	}
 	for _, accountID := range unique {
 		accountResult := s.preparePilotAccount(ctx, orgID, userID, accountID, operation, requestHash, feed, cohortID)
@@ -163,14 +167,17 @@ func (s *service) preparePilotAccount(
 	result.PreviousState = acc.QueueState
 	result.ContextHash = acc.MessageContextHash
 
-	switch feed.State {
-	case "missing":
+	// Only a missing snapshot blocks. "stale" is acquisition health and is
+	// reported on the result, never a reason to refuse proven commercial work.
+	if feed.State == "missing" {
 		return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, pilotBlock{Code: "feed_missing", Reason: "Nenhum snapshot autoritativo sincronizado está disponível.", Remediation: "Sincronize o feed CONFENGE antes de preparar a coorte."})
-	case "stale":
-		return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, pilotBlock{Code: "feed_stale", Reason: "O snapshot autoritativo está obsoleto.", Remediation: "Sincronize um snapshot atual e tente novamente."})
 	}
+	// Which run last emitted the account is provenance. It excludes the account
+	// only when the account also lost its commercial qualification.
 	if strings.TrimSpace(feed.RunID) == "" || strings.TrimSpace(acc.SourceRunID) != strings.TrimSpace(feed.RunID) {
-		return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, pilotBlock{Code: "account_not_in_current_snapshot", Reason: "A conta não pertence ao snapshot autoritativo atual.", Remediation: "Atualize a seleção após a sincronização; contas removidas não podem ser preparadas."})
+		if AccountCommercialQualification(acc, now).State != CommercialQualified {
+			return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, pilotBlock{Code: "account_not_in_current_snapshot", Reason: "A conta não pertence ao snapshot autoritativo atual e não tem qualificação comercial vigente.", Remediation: "Atualize a seleção após a sincronização; contas sem contrato público vigente não podem ser preparadas."})
+		}
 	}
 	if acc.DoNotContact {
 		return s.finishPilotResult(ctx, orgID, userID, cohortID, operation, result, pilotBlock{Code: "account_do_not_contact", Reason: "A conta está marcada como não contatar.", Remediation: "Mantenha a supressão e escolha outra conta."})

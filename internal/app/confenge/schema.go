@@ -395,7 +395,10 @@ func validateFeedCommercialQualification(leadCNPJ string, q *RootQualification) 
 		return ""
 	}
 	root := digits(leadCNPJ)
-	if len(root) >= 8 && strings.TrimSpace(q.CNPJRoot8) != root[:8] {
+	if len(root) < 8 {
+		return "commercial_qualification requires a full CNPJ on the lead"
+	}
+	if strings.TrimSpace(q.CNPJRoot8) != root[:8] {
 		return "commercial_qualification cnpj_root8 does not match the lead"
 	}
 	if !strings.EqualFold(strings.TrimSpace(q.PartyRole), PartyRoleSupplier) {
@@ -403,6 +406,20 @@ func validateFeedCommercialQualification(leadCNPJ string, q *RootQualification) 
 	}
 	if strings.TrimSpace(q.QualifyingContractID) == "" {
 		return "commercial_qualification is missing its qualifying contract reference"
+	}
+	// These fields are hash inputs. Storing a truncated copy would make the
+	// evidence unprovable forever, so an over-long value is refused outright.
+	if len([]rune(strings.TrimSpace(q.CNPJRoot8))) > 8 {
+		return "commercial_qualification cnpj_root8 is longer than a CNPJ root"
+	}
+	if len([]rune(strings.TrimSpace(q.QualifyingContractID))) > 200 {
+		return "commercial_qualification qualifying_contract_id exceeds 200 characters"
+	}
+	if len([]rune(strings.TrimSpace(q.EvidenceReference))) > 500 {
+		return "commercial_qualification evidence reference exceeds 500 characters"
+	}
+	if len([]rune(strings.TrimSpace(q.Provenance))) > 500 {
+		return "commercial_qualification provenance exceeds 500 characters"
 	}
 	if !containsStr(QualifyingDatePrecedence, strings.TrimSpace(q.QualifyingDateField)) {
 		return "commercial_qualification qualifying_date_field is not a canonical contracting date"

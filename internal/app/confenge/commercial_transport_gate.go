@@ -115,12 +115,11 @@ func commercialBindingV2FromStoredFeed(state *models.OutreachFeedSyncState, payl
 		SnapshotHash:   strings.TrimSpace(state.LastSnapshotHash),
 		MembershipHash: strings.ToLower(strings.TrimSpace(state.TargetMembershipHash)),
 	}
-	if payload != nil {
-		// Semantic hash and producer identity have no independent runtime
-		// source; they are attested and re-proved by the account evidence hash.
-		binding.PublicationSemanticHash = strings.ToLower(strings.TrimSpace(payload.BasisPublicationSemanticHash))
-		binding.ProducerIdentity = strings.ToLower(strings.TrimSpace(payload.ProducerIdentity))
-	}
+	// Read from the stored columns, not from the payload being validated, so
+	// these two dimensions are a real comparison rather than a self-check.
+	binding.PublicationSemanticHash = strings.ToLower(strings.TrimSpace(state.PublicationSemanticHash))
+	binding.ProducerIdentity = strings.ToLower(strings.TrimSpace(state.ProducerIdentity))
+	_ = payload
 	return binding
 }
 

@@ -142,18 +142,33 @@ func WithinQualificationWindow(contractDate, now time.Time) bool {
 
 // HashRootQualification binds every material qualification byte. Any mutation
 // of role, contract identity, date or window fails closed downstream.
+//
+// Dates are normalized to YYYY-MM-DD before hashing. The columns behind this
+// fact are DATE, so a producer that legitimately sent RFC3339 would otherwise
+// sign one string, round-trip through Postgres as another, and fail closed on
+// every read as if it had been tampered with.
 func HashRootQualification(q RootQualification) string {
 	parts := []string{
 		strings.TrimSpace(q.CNPJRoot8),
 		strings.ToUpper(strings.TrimSpace(q.PartyRole)),
 		strings.TrimSpace(q.QualifyingContractID),
-		strings.TrimSpace(q.QualifyingContractDate),
+		normalizeQualifyingDate(q.QualifyingContractDate),
 		strings.TrimSpace(q.QualifyingDateField),
-		strings.TrimSpace(q.QualifiedUntil),
+		normalizeQualifyingDate(q.QualifiedUntil),
 		strings.TrimSpace(q.EvidenceReference),
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(sum[:])
+}
+
+// normalizeQualifyingDate renders any accepted date form as the canonical
+// YYYY-MM-DD. An unparseable value is hashed verbatim so it still fails closed.
+func normalizeQualifyingDate(value string) string {
+	parsed, err := parseQualifyingDate(value)
+	if err != nil {
+		return strings.TrimSpace(value)
+	}
+	return parsed.Format("2006-01-02")
 }
 
 // HashQualificationCorpus is the population-level evidence hash. Sorted by

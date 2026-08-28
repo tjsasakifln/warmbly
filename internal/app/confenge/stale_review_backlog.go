@@ -8,10 +8,20 @@ import (
 
 const staleReviewStopReason = "recipient_not_in_current_snapshot"
 
+// A recipient is retired only on actual invalidity. A candidate whose
+// last_import_run_id merely lags the account's newest import was not re-emitted;
+// that is acquisition provenance and never invalidates a proven first touch.
+const staleReviewRecipientInvalid = `
+			c.id IS NULL
+			OR c.blocked OR c.bounced OR c.do_not_contact
+			OR upper(COALESCE(c.verification_status,'')) IN ('INVALID','BOUNCED','DO_NOT_CONTACT')
+			OR upper(COALESCE(c.route_suppression,'')) NOT IN ('','NONE')
+			OR c.block_reason ILIKE '%superseded%'`
+
 // retireStaleReviewBacklog removes review authority from first-touch drafts
-// whose bound recipient did not survive the account's newest import. Accounts
-// with another current eligible route are returned to asynchronous generation;
-// no approval, queue or transport authority is created here.
+// whose bound recipient is actually invalid. Accounts with another eligible
+// route are returned to asynchronous generation; no approval, queue or
+// transport authority is created here.
 func (s *service) retireStaleReviewBacklog(ctx context.Context, orgID uuid.UUID) (retired, requeued int, err error) {
 	if s == nil || s.humanGateDB == nil {
 		return 0, 0, nil
@@ -32,7 +42,7 @@ func (s *service) retireStaleReviewBacklog(ctx context.Context, orgID uuid.UUID)
 		WHERE t.organization_id=$1
 		  AND t.ordinal=1
 		  AND t.state='NEEDS_REVIEW'
-		  AND (a.last_import_run_id IS NULL OR c.id IS NULL OR c.last_import_run_id IS DISTINCT FROM a.last_import_run_id)
+		  AND (`+staleReviewRecipientInvalid+`)
 		FOR UPDATE OF t,a`, orgID)
 	if err != nil {
 		return 0, 0, err
@@ -108,8 +118,8 @@ func (s *service) retireStaleReviewBacklog(ctx context.Context, orgID uuid.UUID)
 		  AND EXISTS (
 			SELECT 1 FROM outreach_contact_candidates c
 			WHERE c.organization_id=a.organization_id AND c.account_id=a.id
-			  AND a.last_import_run_id IS NOT NULL AND c.last_import_run_id=a.last_import_run_id
 			  AND c.email<>'' AND c.blocked=false AND c.do_not_contact=false AND c.bounced=false
+			  AND upper(COALESCE(c.route_suppression,'')) IN ('','NONE')
 			  AND (
 				(c.email_send_ready=true AND c.mailbox_purpose_send_blocked=false
 				 AND c.verification_status NOT IN ('CANDIDATE_UNVERIFIED','NOT_FOUND','INVALID','BOUNCED','DO_NOT_CONTACT'))

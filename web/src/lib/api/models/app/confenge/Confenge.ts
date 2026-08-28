@@ -15,6 +15,12 @@ export type ConfengeReadiness = {
     target_membership_complete?: boolean;
     target_membership_count?: number;
     supplier_confirmed_count?: number;
+    commercial_qualification_state?: "QUALIFIED" | "EXPIRED" | "REVOKED" | "UNKNOWN";
+    commercial_qualification_known?: boolean;
+    commercial_qualified_count?: number;
+    commercial_expired_count?: number;
+    commercial_revoked_count?: number;
+    commercial_unknown_count?: number;
     outcome_loop: string;
     ai: string;
     governor_cap: number;

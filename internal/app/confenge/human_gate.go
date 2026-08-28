@@ -231,6 +231,28 @@ func (s *service) lockHumanGateIntent(ctx context.Context, orgID uuid.UUID, key 
 	}, nil
 }
 
+// assertCohortMembersCommerciallyQualified proves membership as a commercial
+// fact. A member carrying a COMMERCIAL_AUTHORITY/2.0 decision that is no longer
+// QUALIFIED is refused; an account the producer never stamped falls through to
+// the operational gates, exactly as before V2 rollout.
+func (s *service) assertCohortMembersCommerciallyQualified(ctx context.Context, orgID uuid.UUID, manifest *FrozenCohortSnapshot, now time.Time) *errx.Error {
+	if manifest == nil {
+		return nil
+	}
+	for i := range manifest.Members {
+		acc, err := s.repo.GetAccount(ctx, orgID, manifest.Members[i].AccountID)
+		if err != nil || acc == nil {
+			return humanGateError(errx.Unprocessable, "member_account_unavailable", "a selected member could not be re-read for commercial proof")
+		}
+		qual := AccountCommercialQualification(acc, now)
+		if qual.Present && !qual.AllowsNewAdmission() {
+			return humanGateError(errx.Conflict, "member_commercial_qualification_lost",
+				fmt.Sprintf("account %s is no longer commercially qualified: %s", acc.ID, firstNonEmpty(firstHold(qual.ReasonCodes), ReasonQualificationMissing)))
+		}
+	}
+	return nil
+}
+
 func (s *service) CreateHumanGateCohort(ctx context.Context, orgID, actorID uuid.UUID, in HumanGateCreateInput) (*HumanGateCohort, *errx.Error) {
 	if x := s.requireEnabled(); x != nil {
 		return nil, x
@@ -288,10 +310,18 @@ func (s *service) CreateHumanGateCohort(ctx context.Context, orgID, actorID uuid
 		maxAge = 24 * time.Hour
 	}
 	now := time.Now().UTC()
-	if !now.Before(asOf.Add(maxAge)) {
-		return nil, humanGateError(errx.Conflict, "source_stale", "canonical source evidence is stale")
+	// Crawler age is acquisition provenance. A structurally complete run stays
+	// the last proven truth; membership is decided per account by
+	// COMMERCIAL_AUTHORITY/2.0, never by how long ago the producer ran.
+	if strings.TrimSpace(run.SourceRunID) == "" || strings.TrimSpace(run.SnapshotHash) == "" {
+		return nil, humanGateError(errx.Unprocessable, "source_run_not_provable", "canonical source run has no reproducible identity")
 	}
 	freshness := &FeedSourceFreshness{ContractVersion: AuthoritativeFreshnessContractV1, Status: "FRESH", AsOf: asOf.Format(time.RFC3339Nano), ExpiresAt: asOf.Add(maxAge).Format(time.RFC3339Nano), DeployedSHA: run.RepoSHA, PolicyVersion: run.ProfileVersion, RunID: run.SourceRunID}
+	// PrepareControlledCohort proves this attestation with
+	// ValidateHistoricalSourceFreshness: FRESH at publication, not FRESH now.
+	if err := ValidateHistoricalSourceFreshness(freshness); err != nil {
+		return nil, humanGateError(errx.Unprocessable, "source_attestation_invalid", err.Error())
+	}
 	prepareOpts := CohortPrepareOptions{
 		Now: now, Limit: in.Limit, MaxDailyVolume: in.Limit, TTL: DefaultCohortTTL,
 		RepositorySHA: s.cfg.RepositorySHA, FeedSchemaVersion: firstNonEmpty(s.cfg.FeedSchemaVersion, run.SchemaVersion),
@@ -324,6 +354,9 @@ func (s *service) CreateHumanGateCohort(ctx context.Context, orgID, actorID uuid
 		if x != nil {
 			return nil, x
 		}
+	}
+	if x := s.assertCohortMembersCommerciallyQualified(ctx, orgID, manifest, now); x != nil {
+		return nil, x
 	}
 	cohortID, versionID := uuid.New(), uuid.New()
 	b, _ := json.Marshal(manifest)

@@ -106,6 +106,10 @@ type feedAuthority struct {
 	SupplierConfirmedCount   int
 	Commercial               *FeedCommercialAuthority
 	CommercialV2             *FeedCommercialAuthorityV2
+	// Taken from the manifest itself, so the stored binding has a source
+	// independent of the attestation it later validates.
+	PublicationSemanticHash string
+	ProducerIdentity        string
 }
 
 type manifestChunk struct {
@@ -294,6 +298,9 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 	defer func() { _ = os.RemoveAll(stageDir) }()
 	validatedChunks := make([]validatedManifestChunk, 0, len(man.Chunks))
 	seenCNPJ := make(map[string]string, man.LeadCount)
+	// Collected so the population attestation's central claim, that its
+	// evidence hash binds the qualification corpus, is actually enforced.
+	stagedQualifications := make([]RootQualification, 0, man.LeadCount)
 	seenLeadID := make(map[string]string, man.LeadCount)
 	var stagedBytes int64
 	for index, ch := range man.Chunks {
@@ -342,6 +349,9 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 				break
 			}
 			seenCNPJ[cnpj] = ch.File
+			if lead.CommercialQualification != nil {
+				stagedQualifications = append(stagedQualifications, *lead.CommercialQualification)
+			}
 			leadID := strings.TrimSpace(lead.SourceLeadID)
 			if previous, duplicate := seenLeadID[leadID]; duplicate {
 				partialErrs = append(partialErrs, fmt.Sprintf("%s duplicates source_lead_id from %s", ch.File, previous))
@@ -371,6 +381,13 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 		} else if membershipCount != authority.TargetMembershipCount || membershipCount != man.LeadCount ||
 			membershipHash != authority.TargetMembershipHash {
 			partialErrs = append(partialErrs, "authoritative TARGET_CONFIRMED membership does not match staged chunks")
+		}
+		if v2 := authority.CommercialV2; authorityV2Present(v2) {
+			if len(stagedQualifications) != v2.QualifiedRootCount {
+				partialErrs = append(partialErrs, "commercial authority v2 qualified_root_count does not match staged qualifications")
+			} else if HashQualificationCorpus(stagedQualifications) != strings.ToLower(strings.TrimSpace(v2.QualificationEvidenceHash)) {
+				partialErrs = append(partialErrs, "commercial authority v2 evidence hash does not match staged qualifications")
+			}
 		}
 	}
 
@@ -557,6 +574,8 @@ func validateManifestAuthority(manifest *outreachManifest, now time.Time, requir
 		SupplierConfirmedCount:   membership.SupplierConfirmedCount,
 		Commercial:               commercialPayload,
 		CommercialV2:             v2Payload,
+		PublicationSemanticHash:  strings.ToLower(strings.TrimSpace(manifest.PublicationSemanticHash)),
+		ProducerIdentity:         strings.ToLower(strings.TrimSpace(manifest.ProducerIdentity)),
 	}, nil
 }
 
@@ -936,6 +955,8 @@ func (s *service) persistFeedSync(ctx context.Context, orgID uuid.UUID, snap, ru
 			st.SupplierConfirmedCount = res.authority.SupplierConfirmedCount
 			st.CommercialAuthorityJSON = marshalCommercialAuthority(res.authority.Commercial)
 			st.CommercialAuthorityV2JSON = marshalCommercialAuthorityV2(res.authority.CommercialV2)
+			st.PublicationSemanticHash = res.authority.PublicationSemanticHash
+			st.ProducerIdentity = res.authority.ProducerIdentity
 			if res.authority.CommercialV2 != nil {
 				st.QualificationEvidenceHash = strings.ToLower(strings.TrimSpace(res.authority.CommercialV2.QualificationEvidenceHash))
 				st.QualifiedRootCount = res.authority.CommercialV2.QualifiedRootCount

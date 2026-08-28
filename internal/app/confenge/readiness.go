@@ -40,8 +40,16 @@ type Readiness struct {
 	TargetMembershipComplete bool       `json:"target_membership_complete"`
 	TargetMembershipCount    int        `json:"target_membership_count"`
 	SupplierConfirmedCount   int        `json:"supplier_confirmed_count"`
-	OutcomeLoop              string     `json:"outcome_loop"`
-	AI                       string     `json:"ai"`
+	// COMMERCIAL_AUTHORITY/2.0 population readback. This, never feed age, is
+	// what decides whether the org may do outbound at all.
+	CommercialQualificationState string `json:"commercial_qualification_state"`
+	CommercialQualificationKnown bool   `json:"commercial_qualification_known"`
+	CommercialQualifiedCount     int    `json:"commercial_qualified_count"`
+	CommercialExpiredCount       int    `json:"commercial_expired_count"`
+	CommercialRevokedCount       int    `json:"commercial_revoked_count"`
+	CommercialUnknownCount       int    `json:"commercial_unknown_count"`
+	OutcomeLoop                  string `json:"outcome_loop"`
+	AI                           string `json:"ai"`
 	// GovernorCap is the global rolling-hour outbound cap (email+WhatsApp).
 	// Primary CONFENGE pacing control (~10/h). Not the campaign daily limit.
 	GovernorCap int `json:"governor_cap"`
@@ -143,11 +151,17 @@ type ReadinessInputs struct {
 	TargetMembershipHash     string
 	TargetMembershipCount    int
 	SupplierConfirmedCount   int
-	FeedSnapshot             string
-	Queue                    *models.OutreachQueueSummary
-	AIConfigured             bool
-	WA                       *whatsapp.Config
-	Now                      time.Time
+	// Commercial readback counts. Known is false when the readback could not run.
+	CommercialQualificationKnown bool
+	CommercialQualifiedCount     int
+	CommercialExpiredCount       int
+	CommercialRevokedCount       int
+	CommercialUnknownCount       int
+	FeedSnapshot                 string
+	Queue                        *models.OutreachQueueSummary
+	AIConfigured                 bool
+	WA                           *whatsapp.Config
+	Now                          time.Time
 }
 
 // BuildReadiness aggregates operator-facing readiness without side effects.
@@ -278,10 +292,34 @@ func BuildReadiness(cfg Config, in ReadinessInputs) Readiness {
 		r.FeedAuthorityState = "missing"
 	}
 
+	r.CommercialQualificationKnown = in.CommercialQualificationKnown
+	r.CommercialQualifiedCount = in.CommercialQualifiedCount
+	r.CommercialExpiredCount = in.CommercialExpiredCount
+	r.CommercialRevokedCount = in.CommercialRevokedCount
+	r.CommercialUnknownCount = in.CommercialUnknownCount
+	r.CommercialQualificationState = rollupCommercialQualification(in)
+
 	if in.Queue != nil {
 		r.QueueCount = in.Queue.NeedsReview + in.Queue.ReadyToGenerate + in.Queue.Approved
 	}
 	return r
+}
+
+// rollupCommercialQualification answers the population-level question the
+// operator panel gates on. Feed, crawler and snapshot age are never inputs.
+func rollupCommercialQualification(in ReadinessInputs) string {
+	switch {
+	case !in.CommercialQualificationKnown:
+		return CommercialUnknown
+	case in.CommercialQualifiedCount > 0:
+		return CommercialQualified
+	case in.CommercialExpiredCount > 0:
+		return CommercialExpired
+	case in.CommercialRevokedCount > 0:
+		return CommercialRevoked
+	default:
+		return CommercialUnknown
+	}
 }
 
 func formatAge(seconds int64) string {
@@ -352,6 +390,7 @@ func (s *service) CollectReadiness(ctx context.Context, orgID uuid.UUID, emailRe
 	if sum, err := s.repo.CountByQueueState(ctx, orgID); err == nil {
 		in.Queue = sum
 	}
+	s.loadCommercialQualification(ctx, orgID, &in, time.Now().UTC())
 	readiness := BuildReadiness(s.cfg, in)
 	if store, ok := s.cohortStore.(latestBoundedCohortStore); ok {
 		if auth, grantErr := store.LatestGrant(ctx, orgID); grantErr == nil {
@@ -391,6 +430,43 @@ func (s *service) CollectReadiness(ctx context.Context, orgID uuid.UUID, emailRe
 		}
 	}
 	return readiness
+}
+
+// loadCommercialQualification reads the durable COMMERCIAL_AUTHORITY/2.0
+// columns. It leaves Known false on any failure so the panel never reports an
+// unverified population as qualified.
+func (s *service) loadCommercialQualification(ctx context.Context, orgID uuid.UUID, in *ReadinessInputs, now time.Time) {
+	if s == nil || in == nil || s.humanGateDB == nil {
+		return
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	var qualified, expired, revoked, unknown int
+	err := s.humanGateDB.QueryRow(ctx, `
+		SELECT
+			count(*) FILTER (WHERE commercial_qualification_deactivated = false
+				AND commercial_qualification_state = 'QUALIFIED'
+				AND commercial_qualified_until IS NOT NULL
+				AND commercial_qualified_until > $2::date)::int,
+			count(*) FILTER (WHERE commercial_qualification_deactivated = false
+				AND (commercial_qualification_state = 'EXPIRED'
+					OR (commercial_qualification_state = 'QUALIFIED'
+						AND (commercial_qualified_until IS NULL OR commercial_qualified_until <= $2::date))))::int,
+			count(*) FILTER (WHERE commercial_qualification_deactivated = true
+				OR commercial_qualification_state = 'REVOKED')::int,
+			count(*) FILTER (WHERE commercial_qualification_deactivated = false
+				AND commercial_qualification_state = 'UNKNOWN')::int
+		FROM outreach_accounts WHERE organization_id = $1`,
+		orgID, now).Scan(&qualified, &expired, &revoked, &unknown)
+	if err != nil {
+		return
+	}
+	in.CommercialQualificationKnown = true
+	in.CommercialQualifiedCount = qualified
+	in.CommercialExpiredCount = expired
+	in.CommercialRevokedCount = revoked
+	in.CommercialUnknownCount = unknown
 }
 
 // RedactSecret returns a non-empty secret marker without leaking the value.

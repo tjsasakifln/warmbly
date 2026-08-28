@@ -520,6 +520,13 @@ func (s *service) AssertTransportable(ctx context.Context, orgID uuid.UUID, tp *
 		if err := AssertMessageContextFresh(acc, tp.GeneratedContextHash); err != nil {
 			return err
 		}
+		// A company the producer has stamped and that is no longer qualified
+		// cannot be sent to, even under human approval. An unstamped account
+		// falls through to the human authority rather than failing closed.
+		if qual := AccountCommercialQualification(acc, time.Now().UTC()); qual.Present && !qual.AllowsTransport() {
+			return fmt.Errorf("commercial qualification blocks transport: %s",
+				firstNonEmpty(firstHold(qual.ReasonCodes), ReasonQualificationMissing))
+		}
 		return nil
 	}
 	if linkedHumanGate {

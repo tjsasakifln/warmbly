@@ -788,20 +788,35 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 			contractor_role_match_method = EXCLUDED.contractor_role_match_method,
 			contractor_role_confidence = EXCLUDED.contractor_role_confidence,
 			contractor_role_reason_codes = EXCLUDED.contractor_role_reason_codes,
-			commercial_qualification_state = EXCLUDED.commercial_qualification_state,
-			commercial_qualification_policy_version = EXCLUDED.commercial_qualification_policy_version,
-			commercial_qualifying_contract_id = EXCLUDED.commercial_qualifying_contract_id,
-			commercial_qualifying_contract_date = EXCLUDED.commercial_qualifying_contract_date,
-			commercial_qualifying_date_field = EXCLUDED.commercial_qualifying_date_field,
-			commercial_qualifying_contract_count = EXCLUDED.commercial_qualifying_contract_count,
-			commercial_qualified_until = EXCLUDED.commercial_qualified_until,
-			commercial_qualification_evidence_hash = EXCLUDED.commercial_qualification_evidence_hash,
-			commercial_qualification_evidence_reference = EXCLUDED.commercial_qualification_evidence_reference,
-			commercial_qualification_provenance = EXCLUDED.commercial_qualification_provenance,
-			commercial_qualification_cnpj_root8 = EXCLUDED.commercial_qualification_cnpj_root8,
-			commercial_qualification_observed_at = EXCLUDED.commercial_qualification_observed_at,
-			commercial_qualification_deactivated = EXCLUDED.commercial_qualification_deactivated,
-			commercial_qualification_deactivation_reason = EXCLUDED.commercial_qualification_deactivation_reason,
+			-- A feed without the V2 block must not erase a proven qualification.
+			commercial_qualification_state = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualification_state ELSE outreach_accounts.commercial_qualification_state END,
+			commercial_qualification_policy_version = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualification_policy_version ELSE outreach_accounts.commercial_qualification_policy_version END,
+			commercial_qualifying_contract_id = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualifying_contract_id ELSE outreach_accounts.commercial_qualifying_contract_id END,
+			commercial_qualifying_contract_date = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualifying_contract_date ELSE outreach_accounts.commercial_qualifying_contract_date END,
+			commercial_qualifying_date_field = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualifying_date_field ELSE outreach_accounts.commercial_qualifying_date_field END,
+			commercial_qualifying_contract_count = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualifying_contract_count ELSE outreach_accounts.commercial_qualifying_contract_count END,
+			commercial_qualified_until = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualified_until ELSE outreach_accounts.commercial_qualified_until END,
+			commercial_qualification_evidence_hash = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualification_evidence_hash ELSE outreach_accounts.commercial_qualification_evidence_hash END,
+			commercial_qualification_evidence_reference = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualification_evidence_reference ELSE outreach_accounts.commercial_qualification_evidence_reference END,
+			commercial_qualification_provenance = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualification_provenance ELSE outreach_accounts.commercial_qualification_provenance END,
+			commercial_qualification_cnpj_root8 = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualification_cnpj_root8 ELSE outreach_accounts.commercial_qualification_cnpj_root8 END,
+			commercial_qualification_observed_at = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualification_observed_at ELSE outreach_accounts.commercial_qualification_observed_at END,
+			commercial_qualification_deactivated = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualification_deactivated ELSE outreach_accounts.commercial_qualification_deactivated END,
+			commercial_qualification_deactivation_reason = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
+				THEN EXCLUDED.commercial_qualification_deactivation_reason ELSE outreach_accounts.commercial_qualification_deactivation_reason END,
 			updated_at = EXCLUDED.updated_at,
 			id = outreach_accounts.id
 		RETURNING (xmax = 0) AS inserted, id`,
@@ -1015,7 +1030,8 @@ func (r *outreachRepository) GetFeedSyncState(ctx context.Context, orgID uuid.UU
 			target_membership_complete, COALESCE(target_membership_hash,''),
 			target_membership_count, supplier_confirmed_count, commercial_authority,
 			commercial_authority_v2, COALESCE(qualification_evidence_hash,''),
-			qualified_root_count, qualification_window_years
+			qualified_root_count, qualification_window_years,
+			COALESCE(publication_semantic_hash,''), COALESCE(producer_identity,'')
 		FROM outreach_feed_sync_state WHERE organization_id=$1`, orgID)
 	var st models.OutreachFeedSyncState
 	var counts []byte
@@ -1027,6 +1043,7 @@ func (r *outreachRepository) GetFeedSyncState(ctx context.Context, orgID uuid.UU
 		&st.TargetMembershipHash, &st.TargetMembershipCount, &st.SupplierConfirmedCount,
 		&st.CommercialAuthorityJSON, &st.CommercialAuthorityV2JSON,
 		&st.QualificationEvidenceHash, &st.QualifiedRootCount, &st.QualificationWindowYears,
+		&st.PublicationSemanticHash, &st.ProducerIdentity,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -1056,8 +1073,9 @@ func (r *outreachRepository) UpsertFeedSyncState(ctx context.Context, st *models
 			target_membership_complete, target_membership_hash, target_membership_count,
 			supplier_confirmed_count, commercial_authority,
 			commercial_authority_v2, qualification_evidence_hash,
-			qualified_root_count, qualification_window_years
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+			qualified_root_count, qualification_window_years,
+			publication_semantic_hash, producer_identity
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
 		ON CONFLICT (organization_id) DO UPDATE SET
 			last_snapshot_hash = EXCLUDED.last_snapshot_hash,
 			last_run_id = EXCLUDED.last_run_id,
@@ -1090,6 +1108,10 @@ func (r *outreachRepository) UpsertFeedSyncState(ctx context.Context, st *models
 				THEN outreach_feed_sync_state.qualified_root_count ELSE EXCLUDED.qualified_root_count END,
 			qualification_window_years = CASE WHEN EXCLUDED.last_success_at IS NULL
 				THEN outreach_feed_sync_state.qualification_window_years ELSE EXCLUDED.qualification_window_years END,
+			publication_semantic_hash = CASE WHEN EXCLUDED.last_success_at IS NULL
+				THEN outreach_feed_sync_state.publication_semantic_hash ELSE EXCLUDED.publication_semantic_hash END,
+			producer_identity = CASE WHEN EXCLUDED.last_success_at IS NULL
+				THEN outreach_feed_sync_state.producer_identity ELSE EXCLUDED.producer_identity END,
 			updated_at = EXCLUDED.updated_at`,
 		st.OrganizationID, st.LastSnapshotHash, st.LastRunID, st.LastManifestURI,
 		st.LastSuccessAt, st.LastAttemptAt, st.LastError, st.LastStatus, counts, st.UpdatedAt,
@@ -1098,6 +1120,7 @@ func (r *outreachRepository) UpsertFeedSyncState(ctx context.Context, st *models
 		st.SupplierConfirmedCount, st.CommercialAuthorityJSON,
 		st.CommercialAuthorityV2JSON, st.QualificationEvidenceHash,
 		st.QualifiedRootCount, st.QualificationWindowYears,
+		st.PublicationSemanticHash, st.ProducerIdentity,
 	)
 	return err
 }

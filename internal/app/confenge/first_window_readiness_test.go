@@ -186,6 +186,8 @@ func TestCollectFirstWindowReadinessIndependentAuthorityOnStaleSource(t *testing
 			"run-abc", "snap-abc", strings.Repeat("a", 64),
 			strings.Repeat("s", 64), strings.Repeat("p", 64),
 			[]RootQualification{qualification}),
+		PublicationSemanticHash:   strings.Repeat("s", 64),
+		ProducerIdentity:          strings.Repeat("p", 64),
 		QualificationEvidenceHash: HashQualificationCorpus([]RootQualification{qualification}),
 		QualifiedRootCount:        1,
 		QualificationWindowYears:  QualificationWindowYears,

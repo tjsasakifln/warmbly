@@ -184,10 +184,17 @@ func (s *service) nextDelegatedFirstTouchCandidate(ctx context.Context, orgID uu
 			WHERE t.organization_id=$1
 			  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
 			  AND t.state IN ('DUE','NEEDS_REVIEW') AND t.contact_candidate_id IS NOT NULL
-			  AND feed.last_status='completed' AND a.source_run_id=feed.last_run_id
-			  AND t.source_run_id=feed.last_run_id
+			  AND feed.last_status='completed'
+			  -- Run id is acquisition provenance: a carried-forward QUALIFIED
+			  -- account stays selectable. Mirrors the reservoir in pg_outreach_backlog.
+			  AND (a.source_run_id=feed.last_run_id OR a.commercial_qualification_state='QUALIFIED')
+			  AND (t.source_run_id=feed.last_run_id OR a.commercial_qualification_state='QUALIFIED')
 			  AND a.initial_backlog_reason_code=''
-			  AND a.last_import_run_id IS NOT NULL AND c.last_import_run_id=a.last_import_run_id
+			  AND a.last_import_run_id IS NOT NULL
+			  -- Recipient safety is real invalidity, not run-id equality; a
+			  -- silent drop leaves no evidence the mailbox became unusable.
+			  AND c.email<>'' AND NOT c.blocked AND NOT c.do_not_contact AND NOT c.bounced
+			  AND upper(c.route_suppression) IN ('','NONE')
 			  AND t.delegated_retry_at <= $6
 			  AND (t.delegated_reserved_until IS NULL OR t.delegated_reserved_until <= $6)
 			  AND NOT EXISTS (

@@ -10,6 +10,11 @@ import (
 
 const sourceRunSupersededStopReason = "source_run_superseded"
 
+// Retirement is scoped to accounts that actually lost COMMERCIAL_AUTHORITY/2.0
+// qualification. Producer cadence is acquisition provenance and never dequeues
+// proven work, including members a newer run simply did not re-emit.
+const supersededLostQualification = `AND a.commercial_qualification_state<>'QUALIFIED'`
+
 func (r *outreachRepository) materializeCurrentInitialBacklog(ctx context.Context, orgID uuid.UUID, sourceRunID string) (OutreachInitialBacklogCounts, error) {
 	var out OutreachInitialBacklogCounts
 	sourceRunID = strings.TrimSpace(sourceRunID)
@@ -26,8 +31,9 @@ func (r *outreachRepository) materializeCurrentInitialBacklog(ctx context.Contex
 		UPDATE confenge_dispatch_queue q
 		SET status='cancelled',cancel_reason=$3,last_error=$3,reserved_until=NULL,updated_at=now()
 		FROM outreach_touchpoints t
+		JOIN outreach_accounts a ON a.organization_id=t.organization_id AND a.id=t.account_id
 		WHERE t.organization_id=$1 AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
-		  AND COALESCE(t.source_run_id,'')<>$2 AND t.draft_id=q.draft_id
+		  AND COALESCE(t.source_run_id,'')<>$2 `+supersededLostQualification+` AND t.draft_id=q.draft_id
 		  AND q.organization_id=t.organization_id AND q.status IN ('queued','reserved')`, orgID, sourceRunID, sourceRunSupersededStopReason); err != nil {
 		return out, err
 	}
@@ -37,8 +43,9 @@ func (r *outreachRepository) materializeCurrentInitialBacklog(ctx context.Contex
 			WHEN blocker_codes @> '["source_run_superseded"]'::jsonb THEN blocker_codes
 			ELSE blocker_codes || '["source_run_superseded"]'::jsonb END,updated_at=now()
 		FROM outreach_touchpoints t
+		JOIN outreach_accounts a ON a.organization_id=t.organization_id AND a.id=t.account_id
 		WHERE t.organization_id=$1 AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
-		  AND COALESCE(t.source_run_id,'')<>$2 AND d.organization_id=t.organization_id
+		  AND COALESCE(t.source_run_id,'')<>$2 `+supersededLostQualification+` AND d.organization_id=t.organization_id
 		  AND d.touchpoint_id=t.id AND d.state IN ('APPROVED','QUEUED','APPROVED_NOT_SCHEDULED')`, orgID, sourceRunID); err != nil {
 		return out, err
 	}
@@ -47,8 +54,9 @@ func (r *outreachRepository) materializeCurrentInitialBacklog(ctx context.Contex
 		SET status='BLOCKED',approved_by=NULL,approved_at=NULL,campaign_id=NULL,
 			enrollment_contact_id=NULL,enrolled_at=NULL,updated_at=now()
 		FROM outreach_touchpoints t
+		JOIN outreach_accounts a ON a.organization_id=t.organization_id AND a.id=t.account_id
 		WHERE t.organization_id=$1 AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
-		  AND COALESCE(t.source_run_id,'')<>$2 AND d.organization_id=t.organization_id
+		  AND COALESCE(t.source_run_id,'')<>$2 `+supersededLostQualification+` AND d.organization_id=t.organization_id
 		  AND d.id=t.draft_id AND d.status NOT IN ('SENT','BLOCKED')`, orgID, sourceRunID); err != nil {
 		return out, err
 	}
@@ -58,8 +66,10 @@ func (r *outreachRepository) materializeCurrentInitialBacklog(ctx context.Contex
 			approved_at=NULL,authorization_mode='',campaign_policy_authorization_id=NULL,
 			authorization_policy_hash='',authorization_at=NULL,signature_version='',queued_at=NULL,
 			delegated_reserved_until=NULL,delegated_last_error=$3,updated_at=now()
+		FROM outreach_accounts a
 		WHERE t.organization_id=$1 AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
-		  AND COALESCE(t.source_run_id,'')<>$2
+		  AND a.organization_id=t.organization_id AND a.id=t.account_id
+		  AND COALESCE(t.source_run_id,'')<>$2 `+supersededLostQualification+`
 		  AND t.state IN ('PLANNED','DUE','DRAFTED','AI_REWRITE_PENDING','ENRICHMENT_PENDING',
 			'REJECTED_REWRITE_PENDING','NEEDS_REVIEW','APPROVED','QUEUED')`, orgID, sourceRunID, sourceRunSupersededStopReason)
 	if err != nil {
@@ -132,7 +142,7 @@ func (r *outreachRepository) materializeCurrentInitialBacklog(ctx context.Contex
 				 AND a.supplier_cnpj14=a.cnpj14 AND a.contractor_role_evidence_hash ~ '^[0-9a-f]{64}$'
 				 AND jsonb_array_length(a.contractor_role_evidence_ids)>0) AS supplier_confirmed,
 				(COALESCE(cr.preferred_count,0)=1 AND cr.candidate_id IS NOT NULL) AS candidate_attributed,
-				(a.target_fit_eligible AND a.target_fit_fresh AND a.target_fit_class='TARGET_CONFIRMED'
+				(a.target_fit_eligible AND (a.target_fit_fresh OR a.commercial_qualification_state='QUALIFIED') AND a.target_fit_class='TARGET_CONFIRMED'
 				 AND a.target_fit_version<>'' AND a.target_fit_source_watermark<>''
 				 AND a.target_fit_observed_at IS NOT NULL AND NOT a.blocked AND NOT a.do_not_contact
 				 AND COALESCE(cr.preferred_count,0)=1 AND COALESCE(cr.preferred_eligible,false)) AS initial_prepared,
@@ -140,7 +150,7 @@ func (r *outreachRepository) materializeCurrentInitialBacklog(ctx context.Contex
 				CASE
 					WHEN a.blocked OR a.do_not_contact THEN 'account_suppressed'
 					WHEN NOT a.target_fit_eligible THEN COALESCE(NULLIF(a.target_fit_suppression_reason,''),'target_fit_ineligible')
-					WHEN NOT a.target_fit_fresh OR a.target_fit_class<>'TARGET_CONFIRMED' THEN 'target_fit_not_current_confirmed'
+					WHEN (NOT a.target_fit_fresh AND a.commercial_qualification_state<>'QUALIFIED') OR a.target_fit_class<>'TARGET_CONFIRMED' THEN 'target_fit_not_current_confirmed'
 					WHEN a.target_fit_version='' OR a.target_fit_source_watermark='' OR a.target_fit_observed_at IS NULL THEN 'target_fit_provenance_missing'
 					WHEN COALESCE(cr.preferred_count,0)=0 THEN 'preferred_current_recipient_missing'
 					WHEN cr.preferred_count>1 THEN 'preferred_current_recipient_conflict'

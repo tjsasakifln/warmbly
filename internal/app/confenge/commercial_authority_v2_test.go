@@ -198,3 +198,27 @@ func TestQualificationCorpusHashIsStableAndSensitive(t *testing.T) {
 		t.Fatal("adding a member did not change the corpus hash")
 	}
 }
+
+// A producer may legitimately send RFC3339 dates. The columns behind the fact
+// are DATE, so the signed hash must survive the round-trip: otherwise a valid
+// publication fails closed on every read as if it had been tampered with.
+func TestEvidenceHashSurvivesDateRoundTrip(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	rfc := testRootQualification("11222333", now.AddDate(-1, 0, 0))
+	rfc.QualifyingContractDate = "2025-08-28T00:00:00Z"
+	rfc.QualifiedUntil = "2028-08-28T00:00:00Z"
+	rfc.EvidenceHash = HashRootQualification(rfc)
+
+	plain := rfc
+	plain.QualifyingContractDate = "2025-08-28"
+	plain.QualifiedUntil = "2028-08-28"
+	if HashRootQualification(plain) != rfc.EvidenceHash {
+		t.Fatal("an RFC3339 publication cannot be re-proved after the DATE round-trip")
+	}
+	if got := EvaluateRootQualification(&rfc, now); got.State != CommercialQualified {
+		t.Fatalf("RFC3339 qualification rejected: %+v", got)
+	}
+	if got := EvaluateRootQualification(&plain, now); got.State != CommercialQualified {
+		t.Fatalf("round-tripped qualification rejected: %+v", got)
+	}
+}

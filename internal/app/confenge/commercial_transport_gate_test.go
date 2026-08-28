@@ -182,3 +182,26 @@ func TestMembershipChangesDeterministicallyWithNewEvidence(t *testing.T) {
 		t.Fatal("replaying the same evidence was not idempotent")
 	}
 }
+
+// target_fit_fresh is producer watermark lag, not a commercial fact. A company
+// still inside the three-year window must not be disqualified because the
+// classifier has not re-scored since the datalake moved.
+func TestTargetFitWatermarkLagDoesNotDisqualifyAQualifiedCompany(t *testing.T) {
+	now := time.Now().UTC()
+	acc := qualifiedAccount(now)
+	acc.TargetFitClass = TargetFitConfirmed
+	acc.TargetFitVersion = "confenge-target-fit-v2"
+	acc.TargetFitSourceWatermark = now.Format(time.RFC3339)
+	acc.TargetFitObservedAt = &now
+	acc.TargetFitFresh = false // producer lag
+
+	if err := RequireTargetFit(acc); err != nil {
+		t.Fatalf("watermark lag disqualified a qualified company: %v", err)
+	}
+
+	// Without a live qualification the lag still fails closed.
+	acc.CommercialQualificationState = CommercialUnknown
+	if err := RequireTargetFit(acc); err == nil {
+		t.Fatal("watermark lag stopped failing closed for an unqualified company")
+	}
+}

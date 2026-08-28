@@ -68,6 +68,9 @@ func stampFeedStateWithV2(st *models.OutreachFeedSyncState, roots []RootQualific
 	producer := strings.Repeat("p", 64)
 	st.CommercialAuthorityV2JSON = testCommercialAuthorityV2JSON(
 		st.LastRunID, st.LastSnapshotHash, st.TargetMembershipHash, semantic, producer, roots)
+	// Stored independently of the payload, exactly as feed apply does.
+	st.PublicationSemanticHash = semantic
+	st.ProducerIdentity = producer
 	st.QualificationEvidenceHash = HashQualificationCorpus(roots)
 	st.QualifiedRootCount = len(roots)
 	st.QualificationWindowYears = QualificationWindowYears

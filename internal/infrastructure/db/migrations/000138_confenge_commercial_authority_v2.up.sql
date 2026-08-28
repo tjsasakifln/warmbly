@@ -30,12 +30,22 @@ CREATE INDEX IF NOT EXISTS idx_outreach_accounts_commercial_qualified
     ON outreach_accounts (organization_id, commercial_qualification_state, commercial_qualified_until)
     WHERE commercial_qualification_state = 'QUALIFIED';
 
+-- The qualification backfill and any root-keyed reconciliation match on
+-- cnpj_root, which had no index of its own.
+CREATE INDEX IF NOT EXISTS idx_outreach_accounts_org_cnpj_root
+    ON outreach_accounts (organization_id, cnpj_root);
+
 CREATE INDEX IF NOT EXISTS idx_outreach_accounts_commercial_root8
     ON outreach_accounts (organization_id, commercial_qualification_cnpj_root8)
     WHERE commercial_qualification_cnpj_root8 <> '';
 
 -- Population-level attestation for the applied feed.
+-- publication_semantic_hash and producer_identity are stored independently of
+-- the attestation so the read-time binding check is a real comparison rather
+-- than the payload agreeing with itself.
 ALTER TABLE outreach_feed_sync_state
+    ADD COLUMN IF NOT EXISTS publication_semantic_hash TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS producer_identity TEXT NOT NULL DEFAULT '',
     ADD COLUMN IF NOT EXISTS commercial_authority_v2 JSONB,
     ADD COLUMN IF NOT EXISTS qualification_evidence_hash TEXT NOT NULL DEFAULT '',
     ADD COLUMN IF NOT EXISTS qualified_root_count INTEGER NOT NULL DEFAULT 0,

@@ -1,0 +1,150 @@
+package confenge
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// qualifyDelegatedPGFixture stamps a valid three-year qualification on the
+// account and the matching population attestation on the feed row.
+func qualifyDelegatedPGFixture(t *testing.T, f *delegatedPGFixture) {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Second)
+	account, err := f.repo.GetAccount(f.ctx, f.orgID, f.manifest.Entries[0].AccountID)
+	if err != nil || account == nil {
+		t.Fatalf("account unavailable: account=%+v err=%v", account, err)
+	}
+	qualification := testRootQualification(account.CNPJRoot, now.AddDate(-1, 0, 0))
+	applyCommercialQualificationToAccount(account, &qualification, now)
+	if _, err := f.repo.UpsertAccount(f.ctx, account); err != nil {
+		t.Fatal(err)
+	}
+	stampDelegatedPGFeed(t, f, []RootQualification{qualification})
+}
+
+// stampDelegatedPGFeed re-attests the stored feed row against its own live
+// publication identity.
+func stampDelegatedPGFeed(t *testing.T, f *delegatedPGFixture, roots []RootQualification) {
+	t.Helper()
+	state, err := f.repo.GetFeedSyncState(f.ctx, f.orgID)
+	if err != nil || state == nil {
+		t.Fatalf("feed state unavailable: state=%+v err=%v", state, err)
+	}
+	stampFeedStateWithV2(state, roots)
+	if err := f.repo.UpsertFeedSyncState(f.ctx, state); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A feed refresh moves the run id, the snapshot, the expiry and the freshness
+// hash. None of that is a commercial fact, so an APPROVED/QUEUED decision for a
+// still-QUALIFIED account must survive it.
+func TestDelegatedFeedRefreshKeepsQualifiedCarryForwardPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	qualifyDelegatedPGFixture(t, f)
+	report, xerr := f.svc.ApplyDelegatedFirstTouchManifest(f.ctx, f.orgID, f.manifest, false)
+	if xerr != nil || report == nil || report.Queued != 1 {
+		t.Fatalf("fixture did not queue: report=%+v err=%v", report, xerr)
+	}
+
+	// The producer publishes a new run over the same membership; the account
+	// row stays on the run that first emitted it.
+	newRun, newSnapshot := "run-refreshed-"+uuid.NewString(), strings.Repeat("f", 64)
+	state, err := f.repo.GetFeedSyncState(f.ctx, f.orgID)
+	if err != nil || state == nil {
+		t.Fatalf("feed state unavailable: state=%+v err=%v", state, err)
+	}
+	refreshedAt := time.Now().UTC().Truncate(time.Second)
+	expiresAt := refreshedAt.Add(2 * time.Hour)
+	state.LastRunID, state.LastSnapshotHash = newRun, newSnapshot
+	state.SourceGeneratedAt, state.SourceExpiresAt = &refreshedAt, &expiresAt
+	state.LastSuccessAt, state.LastAttemptAt = &refreshedAt, &refreshedAt
+	state.SourceFreshnessHash = strings.Repeat("9", 64)
+	account, err := f.repo.GetAccount(f.ctx, f.orgID, f.manifest.Entries[0].AccountID)
+	if err != nil || account == nil {
+		t.Fatalf("account unavailable: account=%+v err=%v", account, err)
+	}
+	qualification := testRootQualification(account.CNPJRoot, refreshedAt.AddDate(-1, 0, 0))
+	stampFeedStateWithV2(state, []RootQualification{qualification})
+	if err := f.repo.UpsertFeedSyncState(f.ctx, state); err != nil {
+		t.Fatal(err)
+	}
+
+	retired, err := f.svc.retireStaleDelegatedFirstTouches(f.ctx, f.orgID, newRun, newSnapshot)
+	if err != nil || retired != 0 {
+		t.Fatalf("a feed refresh retired a still-qualified decision: retired=%d err=%v", retired, err)
+	}
+	var decisionState, queueState string
+	if err := f.pool.QueryRow(f.ctx, `
+		SELECT d.state,q.status
+		FROM confenge_delegated_first_touch_decisions d
+		JOIN confenge_dispatch_queue q ON q.organization_id=d.organization_id AND q.message_key=d.queue_message_key
+		WHERE d.organization_id=$1 AND d.touchpoint_id=$2`, f.orgID, report.Items[0].TouchpointID).
+		Scan(&decisionState, &queueState); err != nil {
+		t.Fatal(err)
+	}
+	if decisionState != "QUEUED" || queueState != "queued" {
+		t.Fatalf("qualified decision did not survive the refresh: decision=%s queue=%s", decisionState, queueState)
+	}
+
+	// Losing the commercial fact is what retires the work.
+	if _, err := f.pool.Exec(f.ctx, `
+		UPDATE outreach_accounts SET commercial_qualification_state='EXPIRED'
+		WHERE organization_id=$1 AND id=$2`, f.orgID, f.manifest.Entries[0].AccountID); err != nil {
+		t.Fatal(err)
+	}
+	retired, err = f.svc.retireStaleDelegatedFirstTouches(f.ctx, f.orgID, newRun, newSnapshot)
+	if err != nil || retired != 1 {
+		t.Fatalf("an unqualified account was not retired: retired=%d err=%v", retired, err)
+	}
+	if err := f.pool.QueryRow(f.ctx, `
+		SELECT d.state,q.status
+		FROM confenge_delegated_first_touch_decisions d
+		JOIN confenge_dispatch_queue q ON q.organization_id=d.organization_id AND q.message_key=d.queue_message_key
+		WHERE d.organization_id=$1 AND d.touchpoint_id=$2`, f.orgID, report.Items[0].TouchpointID).
+		Scan(&decisionState, &queueState); err != nil {
+		t.Fatal(err)
+	}
+	if decisionState != "CANCELLED" || queueState != "cancelled" {
+		t.Fatalf("unqualified decision survived retirement: decision=%s queue=%s", decisionState, queueState)
+	}
+}
+
+// The autorun reservoir must still hand back an account whose row was emitted
+// by an earlier run while it stays QUALIFIED.
+func TestDelegatedReservoirServesCarriedForwardAccountPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	qualifyDelegatedPGFixture(t, f)
+	entry := f.manifest.Entries[0]
+	touchpointID := uuid.New()
+	if _, err := f.pool.Exec(f.ctx, `
+		INSERT INTO outreach_touchpoints(id,organization_id,account_id,contact_candidate_id,ordinal,purpose,channel,state,
+			source_run_id,recipient,delegated_retry_at,due_at,created_at,updated_at)
+		VALUES($1,$2,$3,$4,1,'INITIAL','EMAIL','DUE',$5,$6,now()-interval '1 hour',now(),now(),now())`,
+		touchpointID, f.orgID, entry.AccountID, entry.ContactCandidateID, "run-older", entry.Recipient); err != nil {
+		t.Skipf("touchpoint fixture shape unavailable: %v", err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `
+		UPDATE outreach_accounts SET source_run_id='run-older',initial_backlog_reason_code=''
+		WHERE organization_id=$1 AND id=$2`, f.orgID, entry.AccountID); err != nil {
+		t.Fatal(err)
+	}
+	feed, err := f.repo.GetFeedSyncState(f.ctx, f.orgID)
+	if err != nil || feed == nil {
+		t.Fatalf("feed state unavailable: state=%+v err=%v", feed, err)
+	}
+	auth, err := f.svc.policyStore.GetActiveCampaignPolicy(f.ctx, f.orgID, f.campaignID, time.Now().UTC())
+	if err != nil || auth == nil {
+		t.Fatalf("policy authorization unavailable: auth=%+v err=%v", auth, err)
+	}
+	gotTouchpoint, gotAccount, _, err := f.svc.nextDelegatedFirstTouchCandidate(f.ctx, f.orgID, feed, auth)
+	if err != nil {
+		t.Fatalf("carried-forward qualified account was not selectable: %v", err)
+	}
+	if gotTouchpoint != touchpointID || gotAccount != entry.AccountID {
+		t.Fatalf("unexpected reservoir row: touchpoint=%s account=%s", gotTouchpoint, gotAccount)
+	}
+}

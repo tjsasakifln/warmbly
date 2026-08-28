@@ -543,7 +543,10 @@ type OutreachFeedSyncState struct {
 	CommercialAuthorityJSON []byte `json:"commercial_authority,omitempty"`
 	// CommercialAuthorityV2JSON is COMMERCIAL_AUTHORITY/2.0. Evidence-based and
 	// timeless: it is not invalidated by producer age.
-	CommercialAuthorityV2JSON []byte    `json:"commercial_authority_v2,omitempty"`
+	CommercialAuthorityV2JSON []byte `json:"commercial_authority_v2,omitempty"`
+	// Stored independently of the attestation so the binding check is real.
+	PublicationSemanticHash   string    `json:"publication_semantic_hash,omitempty"`
+	ProducerIdentity          string    `json:"producer_identity,omitempty"`
 	QualificationEvidenceHash string    `json:"qualification_evidence_hash,omitempty"`
 	QualifiedRootCount        int       `json:"qualified_root_count,omitempty"`
 	QualificationWindowYears  int       `json:"qualification_window_years,omitempty"`
