@@ -62,4 +62,7 @@ func TestConsumerWiresConfengeDispatchGovernor(t *testing.T) {
 	if !strings.Contains(string(b), "confengeSvc.WireDispatch(primaryDB.Pool)") {
 		t.Fatal("the consumer must wire the CONFENGE dispatch governor to commit provider-accepted sends")
 	}
+	if !strings.Contains(string(b), "confengeSvc.WireDelegatedFirstTouch(primaryDB.Pool)") {
+		t.Fatal("the consumer must wire delegated first-touch state so provider-accepted sends close QUEUED decisions")
+	}
 }

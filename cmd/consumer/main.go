@@ -364,6 +364,8 @@ func main() {
 		// confenge_dispatch_sends. Without the governor, every provider-accepted
 		// CONFENGE send failed to record and retried forever.
 		confengeSvc.WireDispatch(primaryDB.Pool)
+		// Close durable delegated authority in the same process that observes provider results.
+		confengeSvc.WireDelegatedFirstTouch(primaryDB.Pool)
 		confengeSvc.WireCohortAuth(confenge.NewPostgresCohortStore(primaryDB.Pool))
 		if sink, ok := confengeSvc.(confenge.OutcomeSink); ok {
 			confengeSink = sink
