@@ -107,6 +107,57 @@ Rollback is the same switch: pause, set `CONFENGE_FAST_LANE_ENABLED=false`,
 recreate the backend, resume. The queue is untouched by the flag, so no work is
 lost in either direction.
 
+## Steady state
+
+The fast lane runs continuously. Business hours are a scheduling gate inside a
+running process, not an operational pause, so nothing about nights or weekends
+needs an operator.
+
+Normal production state, at every hour of every day:
+
+```
+CONFENGE_FAST_LANE_ENABLED=true
+durable dispatch pause = false
+file kill switch = absent
+backend container up and healthy
+```
+
+Outside 09:00-18:00 America/Sao_Paulo on a business day, `ProcessFastLaneOnce`
+resolves transport state before it claims anything, sees `send_window` blocking,
+and returns having done nothing. No row is claimed, no lease is taken, no
+attempt is consumed, no failure is recorded, and no campaign is auto-paused.
+Queued rows simply stay queued with their `due_at` intact and are claimed on the
+next tick that falls inside the window.
+
+At Friday 18:00 the correct state is therefore "running, window closed, next
+eligible slot Monday 09:00", not "paused". Read it as:
+
+```
+state    = PAUSED
+blockers = ["send_window:outside_send_window"]
+```
+
+`state` is the resolved answer to "may a message leave right now?", and the
+resolver labels any non-sending state `PAUSED`. The single `send_window` blocker
+is what distinguishes automatic window gating from an operator stop: an
+operator stop also lists `durable_control` or `file_kill_switch`. If
+`send_window` is the only blocker, the system is healthy and unattended.
+
+Monday at 09:00 the window source flips to ACTIVE on its own and sending
+resumes with no human action.
+
+### When to actually pause
+
+`pause.sh` and `resume.sh` are for emergency stop, deliberate maintenance or
+cutover, deployment safety, and explicit operator intervention. They are not a
+weekly schedule. Do not add cron jobs, timers, or an evening/weekend pause
+habit around them: doing so replaces an authoritative gate with a manual one
+and creates a Monday morning where sending silently does not start.
+
+After any maintenance pause, clear it as soon as the maintenance is done, even
+if that is outside the business window. Clearing it outside the window produces
+zero sends by construction.
+
 ## Runway
 
 Queue generation is unchanged. The delegated first-touch producer continues to

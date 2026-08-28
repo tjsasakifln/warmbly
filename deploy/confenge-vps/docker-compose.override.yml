@@ -60,6 +60,9 @@ x-confenge-env: &confenge-env
   CONFENGE_SEND_WINDOW_END: ${CONFENGE_SEND_WINDOW_END:-18:00}
   CONFENGE_SEND_TIMEZONE: ${CONFENGE_SEND_TIMEZONE:-America/Sao_Paulo}
   CONFENGE_SEND_BUSINESS_DAYS_ONLY: ${CONFENGE_SEND_BUSINESS_DAYS_ONLY:-true}
+  # Selects the sole first-touch transport owner at boot; without this the .env
+  # setting never reaches the backend and the legacy dispatcher keeps the queue.
+  CONFENGE_FAST_LANE_ENABLED: ${CONFENGE_FAST_LANE_ENABLED:-false}
   CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT: ${CONFENGE_DEFAULT_CAMPAIGN_DAILY_LIMIT:-200}
   # Documentation / inventory only in this PR (governor core unchanged).
   HOSTINGER_PLAN_CLASS: ${HOSTINGER_PLAN_CLASS:-BUSINESS_EMAIL_STARTER}

@@ -238,6 +238,15 @@ deploy/confenge-vps/resume.sh
 
 Independent of extra-cli/AI. UI dispatch pause remains available when logged in.
 
+These are exceptional controls: emergency stop, deliberate maintenance or
+cutover, deployment safety, explicit operator intervention. The steady state is
+the stack running 24/7 with the pause cleared and the kill switch absent, and
+the business window (09:00-18:00 America/Sao_Paulo, business days) gating sends
+automatically from inside the running process. Never use pause/resume as an
+evening or weekend schedule, and never wire them to cron. See
+`docs/confenge/first-touch-fast-lane.md` for what "running, window closed" looks
+like in the transport-state projection.
+
 ## Human approve → later send
 
 1. Message generated/imported on VPS.
