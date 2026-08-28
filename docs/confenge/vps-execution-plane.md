@@ -31,8 +31,52 @@ Directory: `deploy/confenge-vps/`
 | `prove-restart.sh` | Durable state after container restart |
 | `self-smoke.sh` | Requires explicit `CONFENGE_SELF_SMOKE_TO` |
 | `validate.sh` | Offline pack checks |
+| `release-deploy.sh` | Roll onto a release SHA using CI-built images |
+| `disk-guard.sh` | Disk preflight, bounded cleanup, retention |
+| `docker-gc-install.sh` | Daily GC timer + host BuildKit cache cap |
+| `host-disk-report.sh` | Shared-host storage picture, read-only |
 
-Compose: root `docker-compose.yml` + `deploy/confenge-vps/docker-compose.override.yml`, project name `warmbly-confenge`.
+Compose: root `docker-compose.yml` + `deploy/confenge-vps/docker-compose.override.yml`
++ `deploy/confenge-vps/docker-compose.release.yml`, project name `warmbly-confenge`.
+
+## Release model
+
+The VPS does not compile. CI publishes one image per service per commit on main,
+tagged with the commit SHA, and the release overlay pins every application
+service to `ghcr.io/tjsasakifln/warmbly/<service>:<release-sha>` (Go services to
+the `-minprofile` variant). Each `build:` section is reset, so compose cannot
+fall back to building here. Mutable `:dev` and `:latest` are never the
+deployment authority.
+
+`up.sh` order: disk preflight, bounded cleanup if needed, pull, verify each
+image's `org.opencontainers.image.revision`, write the `deploy_preflight` kill
+switch, `up -d --no-build`, backend health, `pg_isready`, `verify-release.sh`
+per service, clear the deploy kill switch, retention sweep. It refuses before
+recreating anything if any step fails, so a bad release leaves the healthy one
+running.
+
+Step 8 clears only a `deploy_preflight` switch. An operator pause from
+`pause.sh` survives a deploy and still needs `resume.sh`.
+
+## Disk safety
+
+The root filesystem is shared with Postgres and with co-tenant stacks. A deploy
+once consumed the last free space, Postgres could not extend files and the
+backend restart-looped on migrations. Guards:
+
+- build context: `.dockerignore` excludes `data`, `ops`, `ops-evidence`,
+  `backups`, archives and dependency trees. CI enforces a 150 MB budget with
+  `scripts/build_context_size.py`.
+- preflight: `disk-guard.sh preflight` needs a 20 GB deploy budget plus a 20 GB
+  Postgres reserve and 12% free, and reclaims only reconstructible artifacts
+  before refusing.
+- retention: `disk-guard.sh retain` runs after every deploy and daily via
+  `confenge-docker-gc.timer`. Builder cache capped at 8 GB / 168 h, dangling
+  images pruned, Warmbly release images beyond the current and previous release
+  removed without `-f`. Named volumes, Postgres data, `confenge_ops`,
+  `confenge_keys` and `blobs` are never touched, and no co-tenant data is.
+- backups: `backup.sh` keeps the newest `CONFENGE_BACKUP_KEEP` (default 10)
+  archives with their manifests, checksums and key bundles.
 
 ## Safety profile (fixed)
 

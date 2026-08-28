@@ -1,0 +1,17 @@
+[Unit]
+Description=CONFENGE bounded Docker GC (build cache, dangling images, superseded releases)
+Documentation=file:/opt/warmbly-confenge/deploy/confenge-vps/README.md
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# Bounded and idempotent. Never touches named volumes, Postgres data, the
+# CONFENGE ops or key volumes, or any image a container references.
+ExecStart=/opt/warmbly-confenge/deploy/confenge-vps/disk-guard.sh retain
+Nice=15
+IOSchedulingClass=idle
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

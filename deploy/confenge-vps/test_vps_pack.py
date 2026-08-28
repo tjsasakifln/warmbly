@@ -53,6 +53,13 @@ class TestConfengeVpsPack(unittest.TestCase):
             "inbound-edge-monitor.sh",
             "asaas-adapter-install.sh",
             "asaas-adapter.env.example",
+            "disk-guard.sh",
+            "docker-gc-install.sh",
+            "host-disk-report.sh",
+            "release-deploy.sh",
+            "docker-compose.release.yml",
+            "systemd/confenge-docker-gc.service",
+            "systemd/confenge-docker-gc.timer",
         ]
         for name in required:
             path = PACK / name
@@ -146,17 +153,23 @@ class TestConfengeVpsPack(unittest.TestCase):
             )
         self.assertIn("VALIDATE=PASS", proc.stdout)
 
-    def test_up_rebuilds_release_images(self) -> None:
-        """A new checkout must not silently reuse the previous app images."""
+    def test_up_deploys_the_pinned_release_images(self) -> None:
+        """A new checkout must not silently reuse the previous app images. The
+        release SHA is bound before the images are pulled and the pull is pinned
+        to that SHA, so the guarantee the old `--build` gave is preserved
+        without compiling on the VPS."""
         text = (PACK / "up.sh").read_text(encoding="utf-8")
-        self.assertIn("compose_cmd up -d --build --remove-orphans", text)
+        self.assertIn("compose_cmd up -d --no-build --remove-orphans", text)
+        self.assertNotIn("up -d --build", text)
         env_load = text.index('set -a; . "$ENVF"; set +a')
         identity_bind = text.index(
             'bind_release_identity "$RELEASE_SHA_RESOLVED"'
         )
-        compose_up = text.index("compose_cmd up -d --build --remove-orphans")
+        pull = text.index("compose_cmd pull")
+        compose_up = text.index("compose_cmd up -d --no-build --remove-orphans")
         self.assertLess(env_load, identity_bind)
-        self.assertLess(identity_bind, compose_up)
+        self.assertLess(identity_bind, pull)
+        self.assertLess(pull, compose_up)
 
     def test_release_identity_binding_overrides_stale_audit_sha(self) -> None:
         release_sha = "a" * 40

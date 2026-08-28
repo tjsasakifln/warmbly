@@ -243,6 +243,31 @@ PY
 fi
 COMPLETE=true
 
+# ── retention ───────────────────────────────────────────────────────────────
+# These archives are Postgres dumps plus sealed key bundles, so loss semantics
+# are real: retention is count-based with a floor, applies only after this
+# backup succeeded, and never deletes the newest archives. It ran unbounded
+# until now, reaching 4.3 GB on ec-prod inside the Docker build context.
+# An archive is only removed together with its manifest, checksum and key
+# bundle, so a surviving backup is never left half-referenced.
+BACKUP_KEEP="${CONFENGE_BACKUP_KEEP:-10}"
+if [[ "$BACKUP_KEEP" =~ ^[0-9]+$ ]] && [[ "$BACKUP_KEEP" -ge 3 ]]; then
+  mapfile -t OLD_ARCHIVES < <(
+    find "$OUT_DIR" -maxdepth 1 -name 'warmbly-confenge-*.tar.gz' -printf '%f\n' 2>/dev/null |
+      sort -r | tail -n "+$((BACKUP_KEEP + 1))"
+  )
+  for old in "${OLD_ARCHIVES[@]:-}"; do
+    [[ -z "$old" ]] && continue
+    stamp="${old#warmbly-confenge-}"
+    stamp="${stamp%.tar.gz}"
+    echo "Retention: removing superseded backup $old (keeping newest $BACKUP_KEEP)"
+    rm -f -- "$OUT_DIR/$old" "$OUT_DIR/$old.manifest.json" "$OUT_DIR/$old.sha256"
+    rm -f -- "$SECRETS_DIR/keys-$stamp.env" "$SECRETS_DIR/keys-$stamp.env.sha256"
+  done
+else
+  echo "Retention: skipped (CONFENGE_BACKUP_KEEP=$BACKUP_KEEP is not an integer >= 3)"
+fi
+
 echo "Backup archive: $ARCHIVE"
 echo "Manifest: $MANIFEST_SIDECAR"
 echo "Archive checksum: $CHECKSUM_SIDECAR"

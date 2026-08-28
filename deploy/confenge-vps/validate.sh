@@ -14,7 +14,10 @@ for f in \
   prove-hostinger-net.sh prove-restart.sh self-smoke.sh post-smtp-unlock.sh validate.sh \
   inbound-edge-install.sh inbound-edge-monitor.sh \
   nginx/http-params.conf nginx/proxy-params.conf nginx/site-http.conf nginx/site-https.conf \
-  systemd/confenge-inbound-edge-monitor.service systemd/confenge-inbound-edge-monitor.timer
+  systemd/confenge-inbound-edge-monitor.service systemd/confenge-inbound-edge-monitor.timer \
+  disk-guard.sh docker-gc-install.sh host-disk-report.sh release-deploy.sh \
+  docker-compose.release.yml \
+  systemd/confenge-docker-gc.service systemd/confenge-docker-gc.timer
 do
   if [[ -f "$PACK/$f" ]]; then
     echo "OK $f"
@@ -23,6 +26,33 @@ do
     fail=1
   fi
 done
+
+echo "== deploy consumes immutable images, never builds here =="
+if grep -qF 'compose_cmd up -d --no-build --remove-orphans' "$PACK/up.sh" &&
+   ! grep -qF 'up -d --build' "$PACK/up.sh"; then
+  echo "OK production deploy does not build on the VPS"
+else
+  echo "FAIL production deploy still builds locally"
+  fail=1
+fi
+if grep -qF 'disk_guard preflight' "$PACK/up.sh"; then
+  echo "OK deploy runs a disk preflight before mutating production"
+else
+  echo "FAIL deploy has no disk preflight"
+  fail=1
+fi
+if grep -qE '^(data|ops|ops-evidence|backups)$' "$ROOT/.dockerignore" >/dev/null; then
+  echo "OK runtime data trees are excluded from the build context"
+else
+  echo "FAIL .dockerignore does not exclude the runtime data trees"
+  fail=1
+fi
+if python3 "$ROOT/scripts/build_context_size.py" "$ROOT" --max-mb "${CONFENGE_MAX_BUILD_CONTEXT_MB:-150}" >/dev/null; then
+  echo "OK build context within budget"
+else
+  echo "FAIL build context exceeds budget"
+  fail=1
+fi
 
 if grep -qF 'reason=deploy_preflight' "$PACK/up.sh" &&
    grep -qF 'chmod 600 /data/kill-switch' "$PACK/up.sh"; then

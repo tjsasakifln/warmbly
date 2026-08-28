@@ -49,3 +49,51 @@ logs/
 docs
 *.md
 !README.md
+
+# ─── runtime / operational data ───────────────────────────────────────────
+#
+# The root-context images (backend, consumer, worker) compile Go from source
+# and copy scripts/install-worker.sh. No Dockerfile reads anything below, but
+# without these rules `docker compose build` shipped the whole runtime tree to
+# BuildKit: on ec-prod that was data/backups at 4.3G inside a 4.7G context, and
+# every rebuild snapshotted it again until the root filesystem hit 100% and
+# Postgres could no longer extend files.
+#
+# Operational data is bind-mounted at runtime (GeoIP db, feed CA, confenge ops),
+# which .dockerignore does not affect. Excluding the whole tree is safe.
+data
+backups
+ops
+ops-evidence
+.worktrees
+
+# Local agent/editor state. Nothing in an image reads these and they grow fast.
+.claude
+.codex
+.cursor
+.agentd
+
+# Backup and release archives, wherever they land.
+*.tar
+*.tar.gz
+*.tar.zst
+*.tgz
+*.zip
+*.dump
+*.sql.gz
+*.bak
+*.bak.*
+
+# Dependency trees. The root pnpm workspace installs into ./node_modules, which
+# no root-context image needs.
+node_modules
+**/node_modules
+**/.vite
+**/dist
+**/.next
+**/.turbo
+**/target
+
+# Private env files (compose reads these from the host via --env-file).
+.env*
+**/.env*
