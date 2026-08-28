@@ -322,11 +322,6 @@ func (s *schedulerService) CalculateNextCampaignTime(ctx context.Context, campai
 		acctLimit := effectiveCap(acct)
 		remaining := acctLimit - sentToday
 
-		// Skip accounts that have reached their daily limit
-		if remaining <= 0 {
-			continue
-		}
-
 		bhv := behaviors[acct.ID]
 
 		// Health-gate cold sends on the SAME warmup health state used for pool
@@ -346,9 +341,6 @@ func (s *schedulerService) CalculateNextCampaignTime(ctx context.Context, campai
 				}
 			case models.WarmupHealthWatch, models.WarmupHealthThrottled:
 				remaining = int(float64(remaining) * adjustmentFor(state).volumeMultiplier)
-				if remaining <= 0 {
-					continue
-				}
 			}
 		}
 
@@ -374,9 +366,6 @@ func (s *schedulerService) CalculateNextCampaignTime(ctx context.Context, campai
 			// only lower a mailbox's remaining sends, never lift it above the
 			// cold cap.
 			remaining = s.behaviorDailyCap(ctx, bhv, remaining, openAt)
-			if remaining <= 0 {
-				continue
-			}
 		} else if acct.Timezone != "" && acct.Timezone != campaign.Timezone {
 			acctTZ := loadLocation(acct.Timezone)
 			acctLocal := candidateTime.In(acctTZ)
@@ -391,6 +380,7 @@ func (s *schedulerService) CalculateNextCampaignTime(ctx context.Context, campai
 			warmupAgeDays = int(time.Since(*acct.Warmup).Hours() / 24)
 		}
 
+		// Keep depleted candidates so tomorrow's recompute can restore their daily cap.
 		cand := AccountCandidate{
 			Account:        acct,
 			RemainingToday: remaining,

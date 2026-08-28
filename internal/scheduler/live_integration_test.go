@@ -53,6 +53,8 @@ type liveFixture struct {
 	org      uuid.UUID
 	mailbox  uuid.UUID
 	campaign uuid.UUID
+	sequence uuid.UUID
+	contact  uuid.UUID
 }
 
 func newLiveFixture(t *testing.T, pool *pgxpool.Pool, timezone string) *liveFixture {
@@ -86,16 +88,16 @@ func newLiveFixture(t *testing.T, pool *pgxpool.Pool, timezone string) *liveFixt
 	      VALUES ($1, $2, $3, 'Live Test', '', 'active', 50, 'UTC', 127, '00:00', '23:59',
 	              'least_recently_used', NOW(), NOW())`, f.campaign, f.user, f.org)
 
-	seq := uuid.New()
+	f.sequence = uuid.New()
 	exec(`INSERT INTO sequences (id, campaign_id, organization_id, name, subject,
 	          body_plain, body_html, wait_after, position, kind)
-	      VALUES ($1, $2, $3, 'Step 1', 'Hi', 'Hello', '<p>Hello</p>', 0, 0, 'email')`, seq, f.campaign, f.org)
+	      VALUES ($1, $2, $3, 'Step 1', 'Hi', 'Hello', '<p>Hello</p>', 0, 0, 'email')`, f.sequence, f.campaign, f.org)
 
-	contact := uuid.New()
+	f.contact = uuid.New()
 	exec(`INSERT INTO contacts (id, user_id, organization_id, email, first_name, last_name, company, phone, custom_fields)
 	      VALUES ($1, $2, $3, $4, 'Live', 'Contact', '', '', '{}')`,
-		contact, f.user, f.org, "lead-"+contact.String()[:8]+"@test.local")
-	exec(`INSERT INTO campaign_leads (campaign_id, contact_id, position) VALUES ($1, $2, 0)`, f.campaign, contact)
+		f.contact, f.user, f.org, "lead-"+f.contact.String()[:8]+"@test.local")
+	exec(`INSERT INTO campaign_leads (campaign_id, contact_id, position) VALUES ($1, $2, 0)`, f.campaign, f.contact)
 
 	// Teardown in FK order, innermost first. Each statement carries ONLY the
 	// argument it uses: pgx rejects a call whose argument count does not match
@@ -447,6 +449,65 @@ func TestLiveDailyCeilingPushesToTheNextDay(t *testing.T) {
 			at.UTC().Format("2006-01-02 15:04"))
 	}
 	t.Logf("today's single slot was spent, next send placed on %s", at.UTC().Format("2006-01-02 15:04"))
+}
+
+func TestLiveCompletedColdCapPushesToNextDayInsteadOfNoAccounts(t *testing.T) {
+	handle, pool := liveDB(t)
+	f := newLiveFixture(t, pool, "UTC")
+
+	// Spend a new mailbox's ten-message cold ceiling with completed campaign tasks.
+	for range 10 {
+		id := uuid.New()
+		if _, err := pool.Exec(context.Background(), `
+			INSERT INTO tasks (id, task_type, email_account_id, status, message_id, scheduled_at, completed_at)
+			VALUES ($1, 'campaign', $2, 'completed', '', NOW(), NOW())`, id, f.mailbox); err != nil {
+			t.Fatalf("seed completed task: %v", err)
+		}
+		if _, err := pool.Exec(context.Background(), `
+			INSERT INTO campaign_tasks (task_id, campaign_id, contact_id, sequence_id)
+			VALUES ($1,$2,$3,$4)`, id, f.campaign, f.contact, f.sequence); err != nil {
+			t.Fatalf("bind completed task: %v", err)
+		}
+	}
+
+	now := time.Now().UTC()
+	at, _, accountID, err := liveScheduler(t, handle, pool).CalculateNextCampaignTime(context.Background(), f.campaign)
+	if err != nil {
+		t.Fatalf("spent daily cap must defer, not report no accounts: %v", err)
+	}
+	if accountID != f.mailbox {
+		t.Fatalf("picked mailbox %s, want %s", accountID, f.mailbox)
+	}
+	if at.UTC().Format("2006-01-02") == now.Format("2006-01-02") {
+		t.Fatalf("scheduled %s on the already-spent day", at.UTC().Format("2006-01-02 15:04"))
+	}
+}
+
+func TestLiveCampaignWakeupsDoNotSpendTheColdCap(t *testing.T) {
+	handle, pool := liveDB(t)
+	f := newLiveFixture(t, pool, "UTC")
+
+	for range 20 {
+		id := uuid.New()
+		if _, err := pool.Exec(context.Background(), `
+			INSERT INTO tasks (id, task_type, email_account_id, status, message_id, scheduled_at, completed_at)
+			VALUES ($1, 'campaign', $2, 'completed', '', NOW(), NOW())`, id, f.mailbox); err != nil {
+			t.Fatalf("seed wakeup task: %v", err)
+		}
+		if _, err := pool.Exec(context.Background(), `
+			INSERT INTO campaign_tasks (task_id, campaign_id) VALUES ($1,$2)`, id, f.campaign); err != nil {
+			t.Fatalf("bind wakeup task: %v", err)
+		}
+	}
+
+	now := time.Now().UTC()
+	at, _, _, err := liveScheduler(t, handle, pool).CalculateNextCampaignTime(context.Background(), f.campaign)
+	if err != nil {
+		t.Fatalf("wakeup tasks must not exhaust the mailbox: %v", err)
+	}
+	if at.UTC().Format("2006-01-02") != now.Format("2006-01-02") {
+		t.Fatalf("wakeup tasks pushed the next send to %s", at.UTC().Format("2006-01-02 15:04"))
+	}
 }
 
 // TestLiveGapIsDrawnFromTheProfile proves the send-to-send spacing comes from
