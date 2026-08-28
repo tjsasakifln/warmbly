@@ -321,6 +321,13 @@ func delegatedSendWindowDuration(start, end string) (time.Duration, bool) {
 	return time.Duration(minutes) * time.Minute, true
 }
 
+// delegatedFirstTouchQueueSnapshot measures how much real sending capacity is
+// already committed. That is a question about scheduled slots, not about which
+// run, snapshot, release or authorization minted them: scoping the count to the
+// current identity hid every carried-forward row, so the planner believed the
+// runway was empty and scheduled a second full runway on top of it. Production
+// reached 40 sends a business day against an intended 20, and would have added
+// another runway on every deploy.
 func (s *service) delegatedFirstTouchQueueSnapshot(
 	ctx context.Context,
 	orgID uuid.UUID,
@@ -328,6 +335,7 @@ func (s *service) delegatedFirstTouchQueueSnapshot(
 	policyAuthorizationID uuid.UUID,
 	plan *delegatedFirstTouchRunwayPlan,
 ) error {
+	_, _ = feed, policyAuthorizationID
 	if plan == nil {
 		return nil
 	}
@@ -339,10 +347,8 @@ func (s *service) delegatedFirstTouchQueueSnapshot(
 		FROM confenge_delegated_first_touch_decisions d
 		JOIN confenge_dispatch_queue q
 		  ON q.organization_id=d.organization_id AND q.draft_id=d.draft_id AND q.message_key=d.queue_message_key
-		WHERE d.organization_id=$1 AND d.state='QUEUED' AND q.status IN ('queued','reserved')
-		  AND d.evidence_source_run_id=$2 AND d.source_snapshot_hash=$3
-		  AND d.runtime_release_sha=$4 AND d.policy_authorization_id=$5`,
-		orgID, feed.LastRunID, feed.LastSnapshotHash, s.cfg.RepositorySHA, policyAuthorizationID).
+		WHERE d.organization_id=$1 AND d.state='QUEUED' AND q.status IN ('queued','reserved')`,
+		orgID).
 		Scan(&plan.QueuedCount, &plan.ReservedCount, &furthest)
 	if err != nil {
 		return err
