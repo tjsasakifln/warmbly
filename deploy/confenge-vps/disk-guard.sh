@@ -98,9 +98,13 @@ report() {
 # contains no `volume rm`, no `volume prune`, and no `system prune`.
 clean_reconstructible() {
   local keep_gb="${1:-$BUILDER_CACHE_MAX_GB}" sha="${2:-}"
-  echo "cleanup: builder cache -> keep ${keep_gb}GB, drop older than ${BUILDER_CACHE_MAX_AGE}"
-  docker builder prune --force --keep-storage "${keep_gb}GB" --filter "until=${BUILDER_CACHE_MAX_AGE}" >/dev/null 2>&1 ||
-    docker builder prune --force --keep-storage "${keep_gb}GB" >/dev/null 2>&1 || true
+  echo "cleanup: builder cache -> drop older than ${BUILDER_CACHE_MAX_AGE}, then cap at ${keep_gb}GB"
+  # Two passes, in this order. Combining them into one call makes the age filter
+  # gate the size cap: entries younger than the age are then exempt from the cap
+  # and the cache sits above it indefinitely, which is what an earlier version
+  # did (17.83 GB against an 8 GB cap after a sweep reported success).
+  docker builder prune --force --filter "until=${BUILDER_CACHE_MAX_AGE}" >/dev/null 2>&1 || true
+  docker builder prune --force --keep-storage "${keep_gb}GB" >/dev/null 2>&1 || true
   echo "cleanup: dangling images (daemon refuses any image a container references)"
   docker image prune --force >/dev/null 2>&1 || true
   prune_stale_release_images "$sha"

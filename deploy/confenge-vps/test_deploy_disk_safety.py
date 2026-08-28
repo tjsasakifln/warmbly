@@ -166,8 +166,19 @@ class TestCleanupSafety(unittest.TestCase):
             prunes = [ln for ln in log.splitlines() if ln.startswith("builder prune")]
             self.assertTrue(prunes, "retention must bound the builder cache")
             for line in prunes:
-                self.assertIn("--keep-storage", line)
                 self.assertNotRegex(line, r"(^|\s)-af(\s|$)")
+
+            # The size cap must not be gated by the age filter: entries younger
+            # than the age would then be exempt and the cache would sit above
+            # the cap forever while the sweep still reported success.
+            capped = [ln for ln in prunes if "--keep-storage" in ln]
+            self.assertTrue(capped, "retention must cap the builder cache size")
+            for line in capped:
+                self.assertNotIn("--filter", line)
+            self.assertTrue(
+                any("--filter" in ln and "until=" in ln for ln in prunes),
+                "retention must also drop stale cache by age",
+            )
 
     def test_dangling_prune_is_never_the_all_variant(self) -> None:
         with tempfile.TemporaryDirectory() as d:
