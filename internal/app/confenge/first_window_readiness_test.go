@@ -108,6 +108,61 @@ func TestEvaluateFirstWindowReadinessUnknownPolicyHolds(t *testing.T) {
 	}
 }
 
+func TestEvaluateFirstWindowReadinessArmsWhenOnlySendWindowRemains(t *testing.T) {
+	now := time.Date(2026, 8, 28, 8, 0, 0, 0, time.UTC)
+	snap := readyFirstWindowSnapshot(now)
+	snap.KillSwitchEngaged = false
+	snap.PauseState = TransportPaused
+	snap.PauseSource = TransportSourceSendWindow
+	snap.Queued = 421
+	got := EvaluateFirstWindowReadiness(snap)
+	if got.Verdict != FirstWindowArmedForNextBusinessWindow {
+		t.Fatalf("outside window after PRE-GO lift: %s blockers=%v", got.Verdict, got.Blockers)
+	}
+	if got.Verdict == FirstWindowGOForControlledPilot || strings.Contains(got.Verdict, "GO_FOR_CONTROLLED_EMAIL_PILOT") {
+		t.Fatal("armed snapshot emitted GO_FOR_CONTROLLED_EMAIL_PILOT")
+	}
+}
+
+func TestEvaluateFirstWindowReadinessStaysPreGOWhileKillSwitchEngaged(t *testing.T) {
+	now := time.Date(2026, 8, 28, 8, 0, 0, 0, time.UTC)
+	snap := readyFirstWindowSnapshot(now)
+	snap.Queued = 421
+	got := EvaluateFirstWindowReadiness(snap)
+	if got.Verdict != FirstWindowReadyForGOAdjudication {
+		t.Fatalf("PRE-GO kill switch still engaged: %s", got.Verdict)
+	}
+}
+
+func TestEvaluateFirstWindowReadinessActiveInWindowWithoutPilotGO(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 30, 0, 0, time.UTC)
+	snap := readyFirstWindowSnapshot(now)
+	snap.KillSwitchEngaged = false
+	snap.PauseState = TransportActive
+	snap.PauseSource = TransportSourceSendWindow
+	snap.Queued = 421
+	got := EvaluateFirstWindowReadiness(snap)
+	if got.Verdict != FirstWindowTransportActiveInWindow {
+		t.Fatalf("in window after PRE-GO lift: %s blockers=%v", got.Verdict, got.Blockers)
+	}
+	if got.Verdict == FirstWindowGOForControlledPilot {
+		t.Fatal("emitted GO_FOR_CONTROLLED_EMAIL_PILOT")
+	}
+}
+
+func TestEvaluateFirstWindowReadinessDoesNotArmOnWorkerGuard(t *testing.T) {
+	now := time.Date(2026, 8, 28, 8, 0, 0, 0, time.UTC)
+	snap := readyFirstWindowSnapshot(now)
+	snap.KillSwitchEngaged = false
+	snap.PauseState = TransportPaused
+	snap.PauseSource = PauseSourceWorkerGuard
+	snap.Queued = 421
+	got := EvaluateFirstWindowReadiness(snap)
+	if got.Verdict != FirstWindowReadyForGOAdjudication {
+		t.Fatalf("independent worker guard must not look armed: %s", got.Verdict)
+	}
+}
+
 func TestCollectFirstWindowReadinessIndependentAuthorityOnStaleSource(t *testing.T) {
 	now := time.Date(2026, 8, 27, 16, 0, 0, 0, time.UTC)
 	orgID := uuid.New()
