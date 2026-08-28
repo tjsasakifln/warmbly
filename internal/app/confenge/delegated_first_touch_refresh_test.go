@@ -139,3 +139,46 @@ func TestNextDelegatedCandidateSkipsCancelledMatchingBinding(t *testing.T) {
 		t.Fatal("a CANCELLED v2 approval with the current binding must not be selected again; that stalls the autorun burst")
 	}
 }
+
+// The transport-time assertion must not treat the runtime release sha as
+// authority either. It cancelled a queued first touch the moment a new release
+// shipped: production cancelled construtoralsg@hotmail.com 16 seconds after it
+// came due, with policy_or_authority_drift, because the decision was stamped by
+// the previous release.
+func TestTransportAssertionIgnoresRuntimeReleaseSHA(t *testing.T) {
+	b, err := os.ReadFile("delegated_first_touch.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if strings.Contains(s, "got.RuntimeReleaseSHA != s.cfg.RepositorySHA") {
+		t.Fatal("a deploy is not authority drift; the release sha must not cancel a queued first touch at transport")
+	}
+	for _, binding := range []string{
+		"got.PolicyHash != expected",
+		"got.AuthorityReference != DelegatedFirstTouchAuthorityRef",
+		"got.EvidenceVersion != DelegatedFirstTouchEvidenceV1",
+	} {
+		if !strings.Contains(s, binding) {
+			t.Fatalf("%s is a real authority binding and must stay", binding)
+		}
+	}
+}
+
+// A republish of the population over the same members must not cancel a queued
+// decision at transport either, for the same reason the retire sweep no longer
+// compares it: revocation is per account, not per attestation revision.
+func TestTransportAssertionIgnoresMembershipRevision(t *testing.T) {
+	b, err := os.ReadFile("delegated_first_touch.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if strings.Contains(s, "source_authority_binding_drift") {
+		t.Fatal("an import revision is not revocation; it must not cancel a queued first touch at transport")
+	}
+	// The per-account commercial fact is what actually gates transport.
+	if !strings.Contains(s, "AccountCommercialQualification(acc, now); !qual.AllowsTransport()") {
+		t.Fatal("the three-year commercial qualification must still gate transport")
+	}
+}

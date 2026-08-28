@@ -2404,9 +2404,14 @@ func (s *service) assertDelegatedFirstTouchDecision(ctx context.Context, orgID u
 	if !stateBound {
 		return fail("delegated_decision_queue_state_drift")
 	}
+	// The runtime release sha is the build that made the decision, not the
+	// authority behind it. Comparing it here cancelled every approved touch the
+	// moment a new release shipped: the policy version, policy hash, authority
+	// reference, actor type and evidence version below are what actually bind
+	// this decision, and copy is bound separately by editorial authority.
 	if expected, ok := expectedFirstTouchPolicyHash(got.PolicyVersion); !ok || got.PolicyHash != expected ||
 		got.AuthorityReference != DelegatedFirstTouchAuthorityRef || got.ActorType != "delegated_agent" || got.Authority != DelegatedFirstTouchAuthority ||
-		got.EvidenceVersion != DelegatedFirstTouchEvidenceV1 || got.RuntimeReleaseSHA != s.cfg.RepositorySHA {
+		got.EvidenceVersion != DelegatedFirstTouchEvidenceV1 {
 		return fail("policy_or_authority_drift")
 	}
 	if s.policyStore == nil {
@@ -2488,12 +2493,11 @@ func (s *service) assertDelegatedFirstTouchDecision(ctx context.Context, orgID u
 	if qual := AccountCommercialQualification(acc, now); !qual.AllowsTransport() {
 		return fail(firstNonEmpty(firstHold(qual.ReasonCodes), ReasonQualificationMissing))
 	}
-	// Membership binding only: snapshot expiry and freshness hash move on every
-	// refresh and are acquisition provenance recorded on the decision.
-	if got.TargetMembershipHash != feedState.TargetMembershipHash ||
-		got.TargetMembershipCount != feedState.TargetMembershipCount {
-		return fail("source_authority_binding_drift")
-	}
+	// The population attestation revision is import provenance, like the run id
+	// and snapshot hash above it. A republish over the same members changes the
+	// membership hash and count, and comparing them here cancelled every queued
+	// decision minted against the previous revision. Revocation is carried per
+	// account by the three-year qualification asserted immediately above.
 	var evidenceIDs, roleReasons []string
 	if json.Unmarshal(got.ContractEvidenceIDs, &evidenceIDs) != nil || json.Unmarshal(got.RoleReasonCodes, &roleReasons) != nil {
 		return fail("contractor_role_audit_decode_failed")
