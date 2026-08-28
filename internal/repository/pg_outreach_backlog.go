@@ -106,8 +106,14 @@ func (r *outreachRepository) materializeCurrentInitialBacklog(ctx context.Contex
 					AND (
 						c.source_url ~* '^https?://'
 						OR (
-							lower(COALESCE(c.source, '')) IN ('company_registry', 'official_registry')
-							AND lower(COALESCE(c.source_type, 'company_registry')) IN ('company_registry', 'real_registry', 'official_registry')
+							lower(COALESCE(NULLIF(c.discovery_json->>'source',''), NULLIF(c.discovery_json->>'source_type',''), ''))
+								IN ('company_registry', 'official_registry')
+							AND lower(COALESCE(NULLIF(c.discovery_json->>'source_type',''), NULLIF(c.discovery_json->>'source',''), 'company_registry'))
+								IN ('company_registry', 'real_registry', 'official_registry')
+						)
+						OR (
+							upper(c.verification_status)='OFFICIAL_SOURCE'
+							AND COALESCE(c.source_url,'')=''
 						)
 					)
 					AND c.source_date BETWEEN CURRENT_DATE - 29 AND CURRENT_DATE

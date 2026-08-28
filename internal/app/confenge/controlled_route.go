@@ -35,6 +35,8 @@ type controlledDiscovery struct {
 	PersonUnknown             *bool  `json:"person_unknown,omitempty"`
 	EmailValidated            *bool  `json:"email_validated,omitempty"`
 	RiskClass                 string `json:"risk_class,omitempty"`
+	Source                    string `json:"source,omitempty"`
+	SourceType                string `json:"source_type,omitempty"`
 	PolicyVersion             string `json:"policy_version,omitempty"`
 	SchemaVersion             string `json:"schema_version,omitempty"`
 }
@@ -83,6 +85,33 @@ func parseControlledDiscovery(c *models.OutreachContactCandidate) controlledDisc
 	}
 	_ = json.Unmarshal(c.DiscoveryJSON, &d)
 	return d
+}
+
+func candidateRegistrySource(c *models.OutreachContactCandidate) string {
+	d := parseControlledDiscovery(c)
+	src := strings.ToLower(strings.TrimSpace(d.Source))
+	if src == "" {
+		src = strings.ToLower(strings.TrimSpace(d.SourceType))
+	}
+	return src
+}
+
+func candidateIsObservedRegistry(c *models.OutreachContactCandidate) bool {
+	if c == nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(c.VerificationStatus), models.OutreachVerifyOfficialSource) {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(c.ChannelEpistemic), "OBSERVED") {
+		return false
+	}
+	switch candidateRegistrySource(c) {
+	case "company_registry", "official_registry", "real_registry":
+		return true
+	}
+	// extra-cli READY company_registry ammo imported before source_type was persisted.
+	return strings.TrimSpace(c.SourceURL) == ""
 }
 
 func CandidateRouteClass(c *models.OutreachContactCandidate) string {
@@ -275,6 +304,18 @@ func mergeControlledDiscovery(existing []byte, fc FeedContact) []byte {
 	}
 	if fc.RiskClass != "" {
 		d.RiskClass = fc.RiskClass
+	}
+	if src := strings.TrimSpace(fc.Source); src != "" {
+		d.Source = src
+	}
+	if st := strings.TrimSpace(fc.SourceType); st != "" {
+		d.SourceType = st
+	}
+	if d.Source == "" && d.SourceType != "" {
+		d.Source = d.SourceType
+	}
+	if d.SourceType == "" && d.Source != "" {
+		d.SourceType = d.Source
 	}
 	if d.RouteClass == "" && d.ControlledEmailEligible == nil {
 		return existing

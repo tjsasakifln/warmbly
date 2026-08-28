@@ -24,21 +24,22 @@ import (
 )
 
 const (
-	DelegatedFirstTouchManifestV1       = "confenge.delegated-first-touch.manifest.v1"
-	DelegatedFirstTouchPolicyV1         = "CFG-FIRST-TOUCH-ROUTING-v1"
-	DelegatedFirstTouchPolicyHashV1     = "3ea77bb047d9db19c061d96c62ae302768f25dbd075db7cccac5fe56d3fe3b99"
-	DelegatedFirstTouchValidatorV1      = "confenge.first-touch.adversarial-qa.v1"
-	DelegatedFirstTouchContactPolicyV1  = "confenge.first-touch-routing.v1"
-	DelegatedFirstTouchEvidenceV1       = "contract-party-role.v1"
-	DelegatedFirstTouchTemplateV1       = "confenge.first-touch-routing.template.v1"
-	DelegatedFirstTouchAuthority        = "founder-approved-first-touch-policy"
-	DelegatedFirstTouchAuthorityRef     = "tjsasakifln/Governance#129"
-	DelegatedFirstTouchApprovalDecision = "DELEGATED_POLICY_APPROVE"
-	ContractorRoleConfirmed             = "CONTRACTOR_ROLE_CONFIRMED"
-	ContractorRoleConflict              = "PARTY_ROLE_CONFLICT"
-	ContractorRoleUnknown               = "UNKNOWN"
-	ReconciliationCorroborated          = "DATALAKE+WEB_CORROBORATED"
-	ReconciliationWebContact            = "DATALAKE_IDENTITY + WEB_CONTACT"
+	DelegatedFirstTouchManifestV1          = "confenge.delegated-first-touch.manifest.v1"
+	DelegatedFirstTouchPolicyV1            = "CFG-FIRST-TOUCH-ROUTING-v1"
+	DelegatedFirstTouchPolicyHashV1        = "3ea77bb047d9db19c061d96c62ae302768f25dbd075db7cccac5fe56d3fe3b99"
+	DelegatedFirstTouchValidatorV1         = "confenge.first-touch.adversarial-qa.v1"
+	DelegatedFirstTouchContactPolicyV1     = "confenge.first-touch-routing.v1"
+	DelegatedFirstTouchEvidenceV1          = "contract-party-role.v1"
+	DelegatedFirstTouchTemplateV1          = "confenge.first-touch-routing.template.v1"
+	DelegatedFirstTouchAuthority           = "founder-approved-first-touch-policy"
+	DelegatedFirstTouchAuthorityRef        = "tjsasakifln/Governance#129"
+	DelegatedFirstTouchApprovalDecision    = "DELEGATED_POLICY_APPROVE"
+	ContractorRoleConfirmed                = "CONTRACTOR_ROLE_CONFIRMED"
+	ContractorRoleConflict                 = "PARTY_ROLE_CONFLICT"
+	ContractorRoleUnknown                  = "UNKNOWN"
+	ReconciliationCorroborated             = "DATALAKE+WEB_CORROBORATED"
+	ReconciliationWebContact               = "DATALAKE_IDENTITY + WEB_CONTACT"
+	DelegatedWebSourceKindOfficialRegistry = "OFFICIAL_COMPANY_REGISTRY"
 )
 
 var delegatedSHA256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -1383,7 +1384,35 @@ func canonicalStringSet(values []string) string {
 	return strings.Join(out, "\x00")
 }
 
+func delegatedWebSourceObservedFresh(source DelegatedWebSource, now time.Time) bool {
+	return !source.ObservedAt.IsZero() && !source.ObservedAt.After(now.Add(5*time.Minute)) && now.Sub(source.ObservedAt) <= 30*24*time.Hour
+}
+
+func delegatedWebSourceSupportsMailbox(source DelegatedWebSource) bool {
+	switch strings.ToUpper(strings.TrimSpace(source.Supports)) {
+	case "COMPANY_IDENTITY", "COMPANY_MAILBOX", "COMPANY_IDENTITY_AND_MAILBOX":
+		return true
+	default:
+		return false
+	}
+}
+
+func delegatedWebSourceIsOfficialRegistry(source DelegatedWebSource) bool {
+	switch strings.ToUpper(strings.TrimSpace(source.Kind)) {
+	case DelegatedWebSourceKindOfficialRegistry, "COMPANY_REGISTRY", "OFFICIAL_REGISTRY":
+		return true
+	default:
+		return false
+	}
+}
+
 func delegatedWebSourceAllowed(source DelegatedWebSource, now time.Time) bool {
+	if !delegatedWebSourceObservedFresh(source, now) || !delegatedWebSourceSupportsMailbox(source) {
+		return false
+	}
+	if delegatedWebSourceIsOfficialRegistry(source) {
+		return strings.TrimSpace(source.URL) == ""
+	}
 	u, err := url.Parse(strings.TrimSpace(source.URL))
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" {
 		return false
@@ -1394,15 +1423,23 @@ func delegatedWebSourceAllowed(source DelegatedWebSource, now time.Time) bool {
 			return false
 		}
 	}
-	if source.ObservedAt.IsZero() || source.ObservedAt.After(now.Add(5*time.Minute)) || now.Sub(source.ObservedAt) > 30*24*time.Hour {
-		return false
-	}
-	supports := strings.ToUpper(strings.TrimSpace(source.Supports))
-	return supports == "COMPANY_IDENTITY" || supports == "COMPANY_MAILBOX" || supports == "COMPANY_IDENTITY_AND_MAILBOX"
+	return true
 }
 
 func candidateSourceCorroborated(cand *models.OutreachContactCandidate, sources []DelegatedWebSource) bool {
-	if cand == nil || strings.TrimSpace(cand.SourceURL) == "" {
+	if cand == nil {
+		return false
+	}
+	if candidateIsObservedRegistry(cand) && strings.TrimSpace(cand.SourceURL) == "" {
+		for i := range sources {
+			if delegatedWebSourceIsOfficialRegistry(sources[i]) {
+				supports := strings.ToUpper(strings.TrimSpace(sources[i].Supports))
+				return supports == "COMPANY_MAILBOX" || supports == "COMPANY_IDENTITY_AND_MAILBOX"
+			}
+		}
+		return false
+	}
+	if strings.TrimSpace(cand.SourceURL) == "" {
 		return false
 	}
 	want := strings.TrimRight(strings.TrimSpace(cand.SourceURL), "/")

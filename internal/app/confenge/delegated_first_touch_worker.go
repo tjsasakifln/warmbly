@@ -245,6 +245,10 @@ func delegatedEntryFromCurrentState(acc *models.OutreachAccount, cand *models.Ou
 		webObservedAt = cand.SourceDate.UTC()
 	}
 	key := delegatedFirstTouchIdempotencyPrefix + acc.SourceRunID + ":" + acc.ID.String()
+	webSources := []DelegatedWebSource{{URL: cand.SourceURL, Kind: "PUBLIC_COMPANY_SOURCE", Supports: "COMPANY_MAILBOX", ObservedAt: webObservedAt}}
+	if candidateIsObservedRegistry(cand) && strings.TrimSpace(cand.SourceURL) == "" {
+		webSources = []DelegatedWebSource{{Kind: DelegatedWebSourceKindOfficialRegistry, Supports: "COMPANY_MAILBOX", ObservedAt: webObservedAt}}
+	}
 	return DelegatedFirstTouchEntry{
 		IdempotencyKey: key, CorrelationID: "touchpoint:" + touchpointID.String(),
 		AccountID: acc.ID, ContactCandidateID: cand.ID, CNPJ14: acc.CNPJ14,
@@ -256,7 +260,7 @@ func delegatedEntryFromCurrentState(acc *models.OutreachAccount, cand *models.Ou
 		RoleMatchMethod: acc.ContractorRoleMatchMethod, RoleConfidence: acc.ContractorRoleConfidence,
 		ContractRoleReasonCodes: append([]string{}, acc.ContractorRoleReasonCodes...), EvidenceObservedAt: observedAt,
 		ReconciliationStatus: ReconciliationWebContact,
-		WebSources:           []DelegatedWebSource{{URL: cand.SourceURL, Kind: "PUBLIC_COMPANY_SOURCE", Supports: "COMPANY_MAILBOX", ObservedAt: webObservedAt}},
+		WebSources:           webSources,
 		Subject:              copy.Subject, BodyText: copy.Body, CopyRulesVersion: DelegatedFirstTouchCopyRulesV1,
 		FactUsed: copy.FactUsed, FactEvidenceIDs: append([]string{}, copy.FactEvidenceIDs...),
 		Practice: copy.Practice, CTA: copy.CTA,

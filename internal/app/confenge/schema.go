@@ -188,6 +188,8 @@ type FeedContact struct {
 	WhatsApp           *FeedWhatsApp `json:"whatsapp,omitempty"`
 	LinkedInURL        string        `json:"linkedin_url"`
 	SourceURL          string        `json:"source_url"`
+	Source             string        `json:"source,omitempty"`
+	SourceType         string        `json:"source_type,omitempty"`
 	SourceDocument     string        `json:"source_document"`
 	SourceDate         string        `json:"source_date"`
 	VerificationStatus string        `json:"verification_status"`

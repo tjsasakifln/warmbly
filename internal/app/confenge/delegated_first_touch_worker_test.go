@@ -190,3 +190,39 @@ func TestDelegatedEntryUsesSourceObservationDateNotImportTimestamp(t *testing.T)
 		t.Fatalf("missing source date must fail closed, got observation %s", got)
 	}
 }
+
+func TestDelegatedEntryUsesOfficialRegistryWhenSourceURLEmpty(t *testing.T) {
+	sourceDate := time.Date(2026, 8, 24, 0, 0, 0, 0, time.UTC)
+	acc := &models.OutreachAccount{ID: uuid.New(), CNPJ14: "12345678000190", SourceRunID: "run-current"}
+	cand := &models.OutreachContactCandidate{
+		ID: uuid.New(), AccountID: acc.ID, SourceURL: "",
+		SourceDate: &sourceDate, VerificationStatus: models.OutreachVerifyOfficialSource,
+		ChannelEpistemic: "OBSERVED", OwnershipStatus: "COMPANY_OWNED", RouteFreshness: "FRESH",
+		DiscoveryJSON: []byte(`{"source":"company_registry","source_type":"company_registry","route_class":"GENERIC_COMPANY","controlled_email_eligible":true,"preferred_initial":true}`),
+	}
+	entry := delegatedEntryFromCurrentState(acc, cand, uuid.New(), delegatedRoutingCopy{Subject: "Assunto", Body: "Corpo"})
+	if len(entry.WebSources) != 1 || entry.WebSources[0].Kind != DelegatedWebSourceKindOfficialRegistry || entry.WebSources[0].URL != "" {
+		t.Fatalf("registry entry must not invent a URL: %+v", entry.WebSources)
+	}
+	now := time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC)
+	if !delegatedWebSourceAllowed(entry.WebSources[0], now) {
+		t.Fatal("official registry source must be allowed without HTTP URL")
+	}
+	if !candidateSourceCorroborated(cand, entry.WebSources) {
+		t.Fatal("official registry mailbox association must corroborate without inventing a URL")
+	}
+}
+
+func TestDelegatedWebSourceAllowedKeepsHTTPGateForPublicPages(t *testing.T) {
+	now := time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC)
+	observed := time.Date(2026, 8, 24, 0, 0, 0, 0, time.UTC)
+	if delegatedWebSourceAllowed(DelegatedWebSource{URL: "", Kind: "PUBLIC_COMPANY_SOURCE", Supports: "COMPANY_MAILBOX", ObservedAt: observed}, now) {
+		t.Fatal("public company source without URL must stay invalid")
+	}
+	if delegatedWebSourceAllowed(DelegatedWebSource{URL: "https://empresa.example/contato", Kind: DelegatedWebSourceKindOfficialRegistry, Supports: "COMPANY_MAILBOX", ObservedAt: observed}, now) {
+		t.Fatal("registry kind must not carry an invented URL")
+	}
+	if !delegatedWebSourceAllowed(DelegatedWebSource{URL: "https://empresa.example/contato", Kind: "PUBLIC_COMPANY_SOURCE", Supports: "COMPANY_MAILBOX", ObservedAt: observed}, now) {
+		t.Fatal("http(s) public company source must remain allowed")
+	}
+}
