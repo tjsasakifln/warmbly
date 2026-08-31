@@ -110,6 +110,38 @@ func TestDelegatedRunwayIdempotencyPreservesPublicationBindingAndAddsCandidate(t
 	}
 }
 
+func TestDelegatedRunwayPreparesExactlyTheClaimedTouchpoint(t *testing.T) {
+	f := newDelegatedValidationFixture(t, RouteClassGenericCompany, "contato@empresa.example")
+	selectedID := uuid.New()
+	for i, state := range []string{models.TouchpointCancelled, models.TouchpointCancelled, models.TouchpointDue} {
+		id := uuid.New()
+		if i == 2 {
+			id = selectedID
+		}
+		f.repo.touchpoints[id] = &models.OutreachTouchpoint{
+			ID: id, OrganizationID: f.orgID, AccountID: f.account.ID,
+			ContactCandidateID: &f.candidate.ID, Ordinal: 1, CadenceStep: "INITIAL",
+			Channel: models.OutreachChannelEmail, Purpose: models.TouchpointPurposeInitial,
+			DueAt: time.Now().UTC(), State: state, SourceRunID: f.manifest.SourceRunID,
+		}
+	}
+	entry := f.entry
+	entry.IdempotencyKey = delegatedFirstTouchIdempotencyPrefix + "runway-v1:binding:" + f.account.ID.String()
+	entry.CorrelationID = "touchpoint:" + selectedID.String()
+	tp, _, err := f.service.prepareDelegatedTouchpoint(context.Background(), f.orgID, f.account, &f.candidate, f.manifest, entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tp == nil || tp.ID != selectedID || tp.State != models.TouchpointNeedsReview {
+		t.Fatalf("prepared wrong touchpoint: %+v", tp)
+	}
+	for id, stored := range f.repo.touchpoints {
+		if id != selectedID && stored.State != models.TouchpointCancelled {
+			t.Fatalf("terminal sibling %s was mutated to %s", id, stored.State)
+		}
+	}
+}
+
 func TestDelegatedPolicyBindsTemplateAndExplicitGreenTemplateAuthority(t *testing.T) {
 	now := time.Now().UTC()
 	orgID, founderID := uuid.New(), uuid.New()
