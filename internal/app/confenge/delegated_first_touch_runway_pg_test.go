@@ -371,6 +371,9 @@ func TestDelegatedFirstTouchRunwayRefreshesBindingsAndStopsOnMailboxPausePostgre
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := f.repo.CommitFeedRun(f.ctx, f.orgID, newRunID, newSnapshot, now); err != nil {
+		t.Fatal(err)
+	}
 	backlog, err := f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, newRunID)
 	if err != nil || backlog.InitialPrepared != 1 || backlog.StaleRetired != 1 {
 		t.Fatalf("feed refresh materialization: counts=%+v err=%v", backlog, err)

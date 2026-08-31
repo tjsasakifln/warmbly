@@ -37,8 +37,8 @@ func TestRetireStaleIgnoresAcquisitionProvenance(t *testing.T) {
 			t.Fatalf("%s is acquisition provenance and must not retire a qualified decision", provenance)
 		}
 	}
-	if !strings.Contains(s, "a.commercial_qualification_state<>'QUALIFIED'") {
-		t.Fatal("retirement must gate on the commercial fact, not on which run emitted the row")
+	if !strings.Contains(s, "confenge_commercially_qualified") {
+		t.Fatal("retirement must use the dynamic commercial fact, not a sticky state")
 	}
 	// A build identity and a population revision are provenance too. Comparing
 	// them retired every approved touch on each deploy and on each republish of

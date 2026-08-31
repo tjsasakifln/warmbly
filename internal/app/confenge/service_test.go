@@ -201,21 +201,33 @@ func (m *memRepo) MaterializeCurrentInitialBacklog(_ context.Context, orgID uuid
 	defer m.mu.Unlock()
 	var out repository.OutreachInitialBacklogCounts
 	for _, tp := range m.touchpoints {
+		acc := m.byID[tp.AccountID]
 		if tp.OrganizationID == orgID && tp.Ordinal == 1 && tp.Purpose == models.TouchpointPurposeInitial &&
-			tp.Channel == models.OutreachChannelEmail && tp.SourceRunID != sourceRunID && models.TouchpointOpenStates[tp.State] {
+			tp.Channel == models.OutreachChannelEmail && tp.SourceRunID != sourceRunID && models.TouchpointOpenStates[tp.State] &&
+			(acc == nil || !AccountCommercialQualification(acc, time.Now().UTC()).AllowsTransport()) {
 			tp.State = models.TouchpointCancelled
 			tp.StopReason = "source_run_superseded"
 			out.StaleRetired++
 		}
 	}
 	for _, acc := range m.byID {
-		if acc.OrganizationID != orgID || acc.SourceRunID != sourceRunID {
+		qualified := AccountCommercialQualification(acc, time.Now().UTC()).AllowsTransport()
+		if acc.OrganizationID != orgID || (acc.SourceRunID != sourceRunID && !qualified) {
 			continue
 		}
-		out.Imported++
-		supplier := acc.ContractorRoleStatus == ContractorRoleConfirmed && acc.TargetPartyRole == "SUPPLIER" && acc.ContractorRoleSourceRunID == sourceRunID
+		manifestMember := acc.SourceRunID == sourceRunID
+		if manifestMember {
+			out.Imported++
+		} else {
+			out.CarryoverImported++
+		}
+		supplier := acc.ContractorRoleStatus == ContractorRoleConfirmed && acc.TargetPartyRole == "SUPPLIER"
 		if supplier {
-			out.SupplierConfirmed++
+			if manifestMember {
+				out.SupplierConfirmed++
+			} else {
+				out.CarryoverSupplierConfirmed++
+			}
 		}
 		preferred := make([]models.OutreachContactCandidate, 0, 1)
 		for i := range m.cands[acc.ID] {
@@ -226,13 +238,29 @@ func (m *memRepo) MaterializeCurrentInitialBacklog(_ context.Context, orgID uuid
 		}
 		attributed := len(preferred) == 1
 		if attributed {
-			out.CandidateAttributed++
+			if manifestMember {
+				out.CandidateAttributed++
+			} else {
+				out.CarryoverCandidateAttributed++
+			}
 		}
 		candidateEligible := attributed && CandidateEnrollable(&preferred[0])
 		delegatedCandidate := candidateEligible && CandidateControlledEligible(&preferred[0]) && ControlledRouteAllowed(&preferred[0], nil)
-		prepared := candidateEligible && acc.TargetFitEligible && acc.TargetFitFresh && acc.TargetFitClass == TargetFitConfirmed && !acc.Blocked && !acc.DoNotContact
+		terminal := isHistoricalTerminalQueue(acc.QueueState) || acc.QueueState == models.OutreachQueueEnrolled
+		for _, tp := range m.touchpoints {
+			if tp.OrganizationID == orgID && tp.AccountID == acc.ID && tp.Ordinal == 1 && tp.Purpose == models.TouchpointPurposeInitial &&
+				tp.Channel == models.OutreachChannelEmail && (tp.State == models.TouchpointSent || tp.State == models.TouchpointReplied || tp.SentAt != nil || tp.ProviderMessageID != "") {
+				terminal = true
+				break
+			}
+		}
+		prepared := !terminal && candidateEligible && acc.TargetFitEligible && (acc.TargetFitFresh || qualified) && acc.TargetFitClass == TargetFitConfirmed && !acc.Blocked && !acc.DoNotContact
 		if prepared {
-			out.InitialPrepared++
+			if manifestMember {
+				out.InitialPrepared++
+			} else {
+				out.CarryoverInitialPrepared++
+			}
 			key := "prepared-initial:" + sourceRunID + ":" + acc.ID.String()
 			found := false
 			for _, tp := range m.touchpoints {
@@ -255,10 +283,16 @@ func (m *memRepo) MaterializeCurrentInitialBacklog(_ context.Context, orgID uuid
 			}
 		}
 		if prepared && supplier && delegatedCandidate {
-			out.DelegatedEligible++
+			if manifestMember {
+				out.DelegatedEligible++
+			} else {
+				out.CarryoverDelegatedEligible++
+			}
 			acc.InitialBacklogReasonCode = ""
 		} else {
 			switch {
+			case terminal:
+				acc.InitialBacklogReasonCode = "initial_already_contacted"
 			case !attributed:
 				acc.InitialBacklogReasonCode = "preferred_current_recipient_missing"
 			case !candidateEligible:
@@ -273,6 +307,7 @@ func (m *memRepo) MaterializeCurrentInitialBacklog(_ context.Context, orgID uuid
 		}
 	}
 	out.HeldException = out.Imported - out.DelegatedEligible
+	out.CarryoverHeldException = out.CarryoverImported - out.CarryoverDelegatedEligible
 	return out, nil
 }
 
@@ -1451,6 +1486,18 @@ func (m *memRepo) UpsertFeedSyncState(ctx context.Context, st *models.OutreachFe
 	cp := *st
 	m.feedSync[st.OrganizationID] = &cp
 	return nil
+}
+
+func (m *memRepo) CommitFeedRun(context.Context, uuid.UUID, string, string, time.Time) error {
+	return nil
+}
+
+func (m *memRepo) HasCommittedFeedRun(_ context.Context, _ uuid.UUID, sourceRunID string) (bool, error) {
+	return strings.TrimSpace(sourceRunID) != "", nil
+}
+
+func (m *memRepo) HasAcceptedInitialForAccount(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
+	return false, nil
 }
 
 func (m *memRepo) ListPilotMemberships(ctx context.Context, orgID uuid.UUID, cohortID string) ([]models.OutreachPilotMembership, error) {

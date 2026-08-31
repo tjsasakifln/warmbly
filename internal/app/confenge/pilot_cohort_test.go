@@ -406,19 +406,27 @@ func TestReadinessDoesNotFallbackWhenAuthoritativeStateReadFails(t *testing.T) {
 	}
 }
 
-func TestPartialFeedStateCannotFallBackToCompletedChunk(t *testing.T) {
+func TestPartialAttemptKeepsLastGoodReadinessWithoutChunkFallback(t *testing.T) {
 	fixture := newPilotFixture(t)
 	fixture.repo.feedSync[fixture.orgID].LastStatus = "partial"
+	fixture.repo.feedSync[fixture.orgID].LastError = "new crawl pagination incomplete"
+	fixture.repo.feedSync[fixture.orgID].LastAttemptAt = &fixture.now
 	completedAt := fixture.now
 	fixture.repo.runs[uuid.New()] = &models.OutreachImportRun{
 		OrganizationID: fixture.orgID, Status: models.OutreachImportCompleted,
 		SourceRunID: "partial-chunk-run", SnapshotHash: "partial-chunk-snapshot", SourceGeneratedAt: &completedAt,
 	}
-	if feed := fixture.service.pilotFeedEvidence(context.Background(), fixture.orgID, fixture.now); feed.State != "missing" {
-		t.Fatalf("partial manifest must block cohort preparation: %+v", feed)
+	if feed := fixture.service.pilotFeedEvidence(context.Background(), fixture.orgID, fixture.now); feed.State == "missing" {
+		t.Fatalf("partial retry erased the last-good feed: %+v", feed)
 	}
+	readiness := fixture.service.CollectReadiness(context.Background(), fixture.orgID, true)
+	if readiness.FeedState == "missing" || readiness.FeedSnapshot != "snapshot-real-20260812" ||
+		readiness.FeedLastAttemptStatus != "partial" || readiness.FeedLastAttemptError == "" {
+		t.Fatalf("last-good or failed-attempt readback was lost: %+v", readiness)
+	}
+	fixture.repo.feedSync[fixture.orgID].LastSuccessAt = nil
 	if readiness := fixture.service.CollectReadiness(context.Background(), fixture.orgID, true); readiness.FeedState != "missing" {
-		t.Fatalf("partial manifest must not appear fresh in readiness: %+v", readiness)
+		t.Fatalf("partial attempt with no prior success appeared usable: %+v", readiness)
 	}
 }
 

@@ -540,7 +540,7 @@ func main() {
 			log.Fatal("Invalid CREDENTIALS_ENCRYPTION_KEY: ", cerr)
 		}
 		emailRepostory := repository.NewEmailRepostory(primaryDB, credEncrypter)
-		campaignRepostory := repository.NewCampaignRepostory(primaryDB)
+		campaignRepostory := repository.NewCampaignRepostory(primaryDB, confenge.LoadConfig().RepositorySHA)
 		sequenceRepostory := repository.NewSequenceRepostory(primaryDB)
 		contactRepostory := repository.NewContactRepostory(primaryDB)
 		attachmentRepoForHandler = repository.NewAttachmentRepository(primaryDB)

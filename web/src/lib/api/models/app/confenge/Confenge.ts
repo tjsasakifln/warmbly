@@ -7,6 +7,9 @@ export type ConfengeReadiness = {
     feed_state?: "fresh" | "stale" | "missing";
     feed_snapshot_hash?: string;
     feed_last_success_at?: string | Date | null;
+    feed_last_attempt_at?: string | Date | null;
+    feed_last_attempt_status?: string;
+    feed_last_attempt_error?: string;
     feed_source_generated_at?: string | Date | null;
     feed_source_expires_at?: string | Date | null;
     feed_synced_at?: string | Date | null;

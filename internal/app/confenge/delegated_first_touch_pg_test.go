@@ -114,6 +114,9 @@ func newDelegatedPGFixtureWithTimeout(t *testing.T, timeout time.Duration) *dele
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := f.repo.CommitFeedRun(ctx, f.orgID, runID, snapshot, now); err != nil {
+		t.Fatal(err)
+	}
 	evidenceHash := strings.Repeat("a", 64)
 	account := &models.OutreachAccount{
 		ID: uuid.New(), OrganizationID: f.orgID, SourceLeadID: "lead-delegated", CNPJ14: "11222333000144", CNPJRoot: "11222333",
@@ -350,7 +353,7 @@ func TestCampaignWakeupDoesNotDuplicateRecentActiveTaskAndRecoversStaleTaskPostg
 	}
 
 	taskRepo := repository.NewTaskRepository(f.pool)
-	campaignRepo := repository.NewCampaignRepostory(&infrastructuredb.DB{Pool: f.pool})
+	campaignRepo := repository.NewCampaignRepostory(&infrastructuredb.DB{Pool: f.pool}, f.svc.cfg.RepositorySHA)
 	activeID := uuid.New()
 	created, err := taskRepo.CreateTaskWithLock(f.ctx, &repository.Task{
 		ID: activeID, TaskType: "campaign", EmailAccountID: mailboxID, Status: "active",
@@ -402,7 +405,7 @@ func TestCampaignReadyAcceptsReadBackDelegatedQueueWithoutContact(t *testing.T) 
 		uuid.New(), f.campaignID, f.orgID); err != nil {
 		t.Fatal(err)
 	}
-	campaignRepo := repository.NewCampaignRepostory(&infrastructuredb.DB{Pool: f.pool})
+	campaignRepo := repository.NewCampaignRepostory(&infrastructuredb.DB{Pool: f.pool}, f.svc.cfg.RepositorySHA)
 	if ready, err := campaignRepo.HasReadyDelegatedFirstTouch(f.ctx, f.campaignID); err != nil || ready {
 		t.Fatalf("ordinary empty campaign unexpectedly has delegated work: ready=%v err=%v", ready, err)
 	}

@@ -122,6 +122,8 @@ SYNTHETIC and is not live inbound/action/outcome proof.
 - `email` ready / not_ready
 - `whatsapp` ready / not_ready / blocked_by_policy / not_configured
 - `feed_age`
+- `feed_last_success_at`, the last completely applied snapshot
+- `feed_last_attempt_at`, `feed_last_attempt_status`, and `feed_last_attempt_error`, the newest sync attempt
 - `outcome_loop`
 - `ai` ready / fallback_template
 - `governor_cap` (hourly global cap, default 10/h)
@@ -130,6 +132,20 @@ SYNTHETIC and is not live inbound/action/outcome proof.
 - `kill_switch` / `sending_allowed`
 
 The dashboard CONFENGE page shows a discrete readiness card with these fields.
+
+A failed or partial newest attempt does not erase a structurally valid last-good
+snapshot. Source age can still report `stale`, but age alone does not revoke a
+valid commercial qualification. Transport remains fail-closed when there is no
+prior successful snapshot or when policy, DNC, suppression, account safety, or
+the kill switch blocks the message.
+
+Warmbly records a committed lineage marker only after every chunk, deactivation,
+backlog check, and publication step completes. A partial run remains visible in
+attempt diagnostics, but its accounts and touchpoints are not selectable. The
+migration backfills only the explicit current last-good run. Older carryovers
+without a committed receipt remain blocked. Do not manually mark an expired or
+partial run committed. Publish a fresh source window and rerun the sync; an
+exact same-snapshot replay can repair a missing marker after a crash.
 
 Inbound handoff (`confenge.inbound.v1`) is separate from send. Preflight now
 prints `inbound_secret` / `inbound_org` / `inbound_ready`. Status readiness

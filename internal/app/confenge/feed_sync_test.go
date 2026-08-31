@@ -26,6 +26,38 @@ func TestSyncFeedManifestIdempotentAndHashFailClosed(t *testing.T) {
 	}, r, nil).(*service)
 
 	lead := sampleLeadWithActivation(70, ActivationActionableNow)
+	carryover := sampleLeadWithActivation(65, ActivationActionableNow)
+	carryover.SourceLeadID = "lead-carryover"
+	carryover.Company.CNPJ14 = "11222333000182"
+	carryover.Contacts[0].SourceContactID = "c-carryover"
+	carryover.Contacts[0].Email = "contato-carryover@acme.com.br"
+	carryoverFeed := Feed{
+		SchemaVersion: models.OutreachSchemaV1,
+		GeneratedAt:   "2026-08-07T10:00:00Z",
+		Source: FeedSource{
+			System: "extra-cli", RunID: "run-carryover", SnapshotHash: "snap-carryover",
+			ProfileID: "p", ProfileVersion: "1",
+		},
+		Pagination: FeedPagination{HasMore: false},
+		Leads:      []FeedLead{carryover},
+	}
+	carryoverRaw, err := json.Marshal(carryoverFeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, xerr := svc.ImportFromBytes(context.Background(), org, &user, carryoverRaw, ImportOptions{IdempotencyKey: "carryover-seed"}); xerr != nil {
+		t.Fatalf("seed carryover: %v", xerr)
+	}
+	carryoverAccount, err := r.GetAccountByCNPJ(context.Background(), org, carryover.Company.CNPJ14)
+	if err != nil || carryoverAccount == nil {
+		t.Fatalf("carryover account unavailable: account=%+v err=%v", carryoverAccount, err)
+	}
+	carryoverQualification := testRootQualification(carryoverAccount.CNPJRoot, time.Now().UTC().AddDate(-1, 0, 0))
+	carryoverAccount.TargetPartyRole = PartyRoleSupplier
+	applyCommercialQualificationToAccount(carryoverAccount, &carryoverQualification, time.Now().UTC())
+	if _, err := r.UpsertAccount(context.Background(), carryoverAccount); err != nil {
+		t.Fatal(err)
+	}
 	chunk := Feed{
 		SchemaVersion: "confenge.outreach.v1",
 		GeneratedAt:   "2026-08-08T10:00:00Z",
@@ -79,6 +111,10 @@ func TestSyncFeedManifestIdempotentAndHashFailClosed(t *testing.T) {
 	if res.Status != "completed" || res.ChunksImported != 1 {
 		t.Fatalf("unexpected res: %+v", res)
 	}
+	if res.Counts["imported"] != 1 || res.Counts["held_exception"] != 1 ||
+		res.Counts["carryover_imported"] != 1 || res.Counts["carryover_held_exception"] != 1 {
+		t.Fatalf("manifest and carryover denominators were mixed: %+v", res.Counts)
+	}
 	acc, _ := r.GetAccountByCNPJ(ctx, org, "11222333000181")
 	if acc == nil || acc.ActivationState != ActivationActionableNow {
 		t.Fatal("account not imported with activation")
@@ -107,7 +143,8 @@ func TestSyncFeedManifestIdempotentAndHashFailClosed(t *testing.T) {
 	if !res2.SkippedSame || res2.Status != "noop" {
 		t.Fatalf("expected noop, got %+v", res2)
 	}
-	if res2.Counts["imported"] != 1 || res2.Counts["held_exception"] != 1 || res2.Counts["chunks_total"] != 0 {
+	if res2.Counts["imported"] != 1 || res2.Counts["held_exception"] != 1 || res2.Counts["carryover_imported"] != 1 ||
+		res2.Counts["carryover_held_exception"] != 1 || res2.Counts["chunks_total"] != 0 {
 		t.Fatalf("noop did not return only persisted stage counts: %+v", res2.Counts)
 	}
 

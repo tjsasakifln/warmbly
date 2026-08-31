@@ -32,6 +32,9 @@ type Readiness struct {
 	FeedState                string     `json:"feed_state"`
 	FeedSnapshot             string     `json:"feed_snapshot_hash,omitempty"`
 	FeedLastSyncAt           *time.Time `json:"feed_last_success_at,omitempty"`
+	FeedLastAttemptAt        *time.Time `json:"feed_last_attempt_at,omitempty"`
+	FeedLastAttemptStatus    string     `json:"feed_last_attempt_status,omitempty"`
+	FeedLastAttemptError     string     `json:"feed_last_attempt_error,omitempty"`
 	FeedSourceAt             *time.Time `json:"feed_source_generated_at,omitempty"`
 	FeedSourceExpiresAt      *time.Time `json:"feed_source_expires_at,omitempty"`
 	FeedSyncedAt             *time.Time `json:"feed_synced_at,omitempty"`
@@ -145,6 +148,9 @@ type ReadinessInputs struct {
 	WhatsAppPolicyBlocked    bool
 	LastImportAt             *time.Time
 	LastSyncAt               *time.Time
+	LastAttemptAt            *time.Time
+	LastAttemptStatus        string
+	LastAttemptError         string
 	SourceExpiresAt          *time.Time
 	SourceFreshnessHash      string
 	TargetMembershipComplete bool
@@ -209,6 +215,9 @@ func BuildReadiness(cfg Config, in ReadinessInputs) Readiness {
 		InboundSecretConfigured: strings.TrimSpace(cfg.InboundWebhookSecret) != "",
 		InboundOrgConfigured:    cfg.InboundOrgID != uuid.Nil || cfg.OperatorOrgID != uuid.Nil,
 	}
+	r.FeedLastAttemptAt = in.LastAttemptAt
+	r.FeedLastAttemptStatus = in.LastAttemptStatus
+	r.FeedLastAttemptError = in.LastAttemptError
 	probe := EvaluateInboundReceive(cfg)
 	switch {
 	case probe.Status == InboundReceiveReady:
@@ -368,7 +377,10 @@ func (s *service) CollectReadiness(ctx context.Context, orgID uuid.UUID, emailRe
 	}
 	state, stateErr := s.repo.GetFeedSyncState(ctx, orgID)
 	if stateErr == nil && state != nil {
-		if state.LastStatus == "completed" && state.SourceGeneratedAt != nil && state.LastSnapshotHash != "" && state.LastRunID != "" {
+		in.LastAttemptAt = state.LastAttemptAt
+		in.LastAttemptStatus = state.LastStatus
+		in.LastAttemptError = state.LastError
+		if validateAuthoritativeFeedStructure(state, s.cfg.DelegatedFirstTouchEnabled) == nil {
 			in.LastImportAt = state.SourceGeneratedAt
 			in.LastSyncAt = state.LastSuccessAt
 			in.FeedSnapshot = state.LastSnapshotHash

@@ -211,9 +211,9 @@ func TestDelegatedReservoirSelectsCarriedForwardQualifiedAccounts(t *testing.T) 
 			t.Fatal(err)
 		}
 		s := string(b)
-		if !strings.Contains(s, "(a.source_run_id=feed.last_run_id OR a.commercial_qualification_state='QUALIFIED')") ||
-			!strings.Contains(s, "(t.source_run_id=feed.last_run_id OR a.commercial_qualification_state='QUALIFIED')") {
-			t.Fatalf("%s: a carried-forward QUALIFIED account is not selectable", file)
+		if !strings.Contains(s, "confenge_commercially_qualified") ||
+			!strings.Contains(s, "outreach_feed_committed_runs") {
+			t.Fatalf("%s: dynamic qualification or committed lineage is missing", file)
 		}
 		if strings.Contains(s, "c.last_import_run_id=a.last_import_run_id") {
 			t.Fatalf("%s: run-id equality drops the recipient with no evidence it became invalid", file)

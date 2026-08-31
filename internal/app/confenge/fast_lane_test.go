@@ -19,6 +19,10 @@ import (
 type fastLaneRepo struct {
 	repository.OutreachRepository
 	touchpoints map[uuid.UUID]*models.OutreachTouchpoint
+	accounts    map[uuid.UUID]*models.OutreachAccount
+	accepted    map[uuid.UUID]bool
+	acceptedErr error
+	committed   map[string]bool
 	suppressed  map[string]*models.SuppressedRecipient
 	suppressErr error
 	updates     int
@@ -27,6 +31,18 @@ type fastLaneRepo struct {
 
 func (f *fastLaneRepo) GetTouchpointByDraft(_ context.Context, _ uuid.UUID, draftID uuid.UUID) (*models.OutreachTouchpoint, error) {
 	return f.touchpoints[draftID], nil
+}
+
+func (f *fastLaneRepo) GetAccount(_ context.Context, _ uuid.UUID, accountID uuid.UUID) (*models.OutreachAccount, error) {
+	return f.accounts[accountID], nil
+}
+
+func (f *fastLaneRepo) HasAcceptedInitialForAccount(_ context.Context, _ uuid.UUID, accountID uuid.UUID) (bool, error) {
+	return f.accepted[accountID], f.acceptedErr
+}
+
+func (f *fastLaneRepo) HasCommittedFeedRun(_ context.Context, _ uuid.UUID, sourceRunID string) (bool, error) {
+	return f.committed[sourceRunID], nil
 }
 
 func (f *fastLaneRepo) UpdateTouchpoint(_ context.Context, tp *models.OutreachTouchpoint) error {
@@ -102,6 +118,9 @@ func newFastLaneHarness(t *testing.T, outcome FirstTouchOutcome, sendErr error) 
 
 	repo := &fastLaneRepo{
 		touchpoints: map[uuid.UUID]*models.OutreachTouchpoint{},
+		accounts:    map[uuid.UUID]*models.OutreachAccount{},
+		accepted:    map[uuid.UUID]bool{},
+		committed:   map[string]bool{"run-committed": true},
 		suppressed:  map[string]*models.SuppressedRecipient{},
 	}
 	transport := &scriptedTransport{outcome: outcome, err: sendErr}
@@ -131,12 +150,18 @@ func (h *fastLaneHarness) enqueue(t *testing.T, recipient string) (uuid.UUID, st
 	}); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
+	accountID := uuid.New()
 	h.repo.touchpoints[draftID] = &models.OutreachTouchpoint{
-		ID: uuid.New(), OrganizationID: h.orgID, AccountID: uuid.New(), DraftID: &draftID,
-		State: models.TouchpointQueued, Recipient: recipient,
+		ID: uuid.New(), OrganizationID: h.orgID, AccountID: accountID, DraftID: &draftID,
+		SourceRunID: "run-committed",
+		State:       models.TouchpointQueued, Recipient: recipient,
 		Subject: "Assunto aprovado", BodyText: "Corpo aprovado.",
 		ContentHash: "hash-a", ApprovedContentHash: "hash-a",
 	}
+	account := &models.OutreachAccount{ID: accountID, OrganizationID: h.orgID, CNPJRoot: "11222333", TargetPartyRole: PartyRoleSupplier}
+	qualification := testRootQualification(account.CNPJRoot, h.clock.Now().AddDate(-1, 0, 0))
+	applyCommercialQualificationToAccount(account, &qualification, h.clock.Now())
+	h.repo.accounts[accountID] = account
 	return draftID, key
 }
 
@@ -179,6 +204,69 @@ func TestFastLaneRecordsAcceptedSendExactlyOnceAndClosesTheRow(t *testing.T) {
 	}
 	if h.transport.attempts != 1 {
 		t.Fatalf("message was handed to the provider %d times", h.transport.attempts)
+	}
+}
+
+func TestFastLaneRechecksQualificationImmediatelyBeforeProvider(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+	draftID, key := h.enqueue(t, "alvo@exemplo.com.br")
+	tp := h.repo.touchpoints[draftID]
+	account := h.repo.accounts[tp.AccountID]
+	qualification := testRootQualification(account.CNPJRoot, h.clock.Now().AddDate(-3, 0, 1))
+	applyCommercialQualificationToAccount(account, &qualification, h.clock.Now())
+	if !AccountCommercialQualification(account, h.clock.Now()).AllowsTransport() {
+		t.Fatal("fixture was not qualified at approval time")
+	}
+	h.clock.T = h.clock.Now().Add(48 * time.Hour)
+
+	progressed, err := h.svc.ProcessFastLaneOnce(context.Background())
+	if err != nil || !progressed {
+		t.Fatalf("expired row was not closed: progressed=%v err=%v", progressed, err)
+	}
+	if h.transport.attempts != 0 {
+		t.Fatalf("expired qualification reached provider: attempts=%d", h.transport.attempts)
+	}
+	if got := h.queueStatus(t, key); got != dispatch.QueueCancelled {
+		t.Fatalf("expired qualification queue state=%q", got)
+	}
+}
+
+func TestFastLaneLedgerOnlyAcceptanceBlocksDifferentMessageKey(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+	draftID, key := h.enqueue(t, "alvo@exemplo.com.br")
+	accountID := h.repo.touchpoints[draftID].AccountID
+	h.repo.accepted[accountID] = true
+
+	progressed, err := h.svc.ProcessFastLaneOnce(context.Background())
+	if err != nil || !progressed {
+		t.Fatalf("ledger duplicate was not closed: progressed=%v err=%v", progressed, err)
+	}
+	if h.transport.attempts != 0 {
+		t.Fatalf("ledger duplicate reached provider: attempts=%d", h.transport.attempts)
+	}
+	if got := h.queueStatus(t, key); got != dispatch.QueueCancelled {
+		t.Fatalf("ledger duplicate queue state=%q", got)
+	}
+}
+
+func TestFastLaneBlocksLegacyQueuedUncommittedLineage(t *testing.T) {
+	for _, sourceRunID := range []string{"", "legacy-uncommitted"} {
+		t.Run(firstNonEmpty(sourceRunID, "empty"), func(t *testing.T) {
+			h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+			draftID, key := h.enqueue(t, "alvo@exemplo.com.br")
+			h.repo.touchpoints[draftID].SourceRunID = sourceRunID
+
+			progressed, err := h.svc.ProcessFastLaneOnce(context.Background())
+			if err != nil || !progressed {
+				t.Fatalf("uncommitted legacy row was not closed: progressed=%v err=%v", progressed, err)
+			}
+			if h.transport.attempts != 0 {
+				t.Fatalf("uncommitted legacy row reached provider: attempts=%d", h.transport.attempts)
+			}
+			if got := h.queueStatus(t, key); got != dispatch.QueueCancelled {
+				t.Fatalf("uncommitted legacy queue state=%q", got)
+			}
+		})
 	}
 }
 

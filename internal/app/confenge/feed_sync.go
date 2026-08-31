@@ -253,7 +253,8 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 		s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "failed", result, false, nil)
 		return result, errx.New(errx.Conflict, "manifest is older than the applied authoritative snapshot")
 	}
-	authority, authorityErr := validateManifestAuthority(&man, now, s.cfg.DelegatedFirstTouchEnabled)
+	authorityClock := feedAuthorityValidationClock(&man, lastSnap, lastRun, now)
+	authority, authorityErr := validateManifestAuthority(&man, authorityClock, s.cfg.DelegatedFirstTouchEnabled)
 	if authorityErr != nil {
 		result.Errors = append(result.Errors, authorityErr.Error())
 		s.persistFeedSync(ctx, orgID, lastSnap, lastRun, uri, "failed", result, false, nil)
@@ -279,6 +280,7 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 		if current != nil {
 			result.Counts = decodeFeedSyncCounts(current.CountsJSON)
 		}
+		result.Counts["feed_lineage_committed"] = 1
 		if persistErr := s.persistFeedSync(ctx, orgID, man.Source.SnapshotHash, lastRun, uri, "completed", result, true, &generatedAt); persistErr != nil {
 			result.Status = "partial"
 			result.Errors = append(result.Errors, "feed state publication failed")
@@ -443,6 +445,13 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 		result.Counts["initial_touchpoint_prepared"] = backlog.InitialPrepared
 		result.Counts["delegated_eligible"] = backlog.DelegatedEligible
 		result.Counts["held_exception"] = backlog.HeldException
+		result.Counts["carryover_imported"] = backlog.CarryoverImported
+		result.Counts["carryover_supplier_confirmed"] = backlog.CarryoverSupplierConfirmed
+		result.Counts["carryover_candidate_attributed"] = backlog.CarryoverCandidateAttributed
+		result.Counts["carryover_initial_touchpoint_prepared"] = backlog.CarryoverInitialPrepared
+		result.Counts["carryover_delegated_eligible"] = backlog.CarryoverDelegatedEligible
+		result.Counts["carryover_held_exception"] = backlog.CarryoverHeldException
+		result.Counts["terminal_initial_retired"] = backlog.TerminalRetired
 		result.Counts["stale_initial_retired"] = backlog.StaleRetired
 		if backlog.Imported != man.LeadCount || backlog.DelegatedEligible+backlog.HeldException != man.LeadCount {
 			result.Status = "partial"
@@ -464,6 +473,7 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 			return result, errx.New(errx.ServiceUnavailable, "feed enrichment recovery wakeup failed; snapshot not committed")
 		}
 		result.Counts["enrichment_recovery_woken"] = woken
+		result.Counts["feed_lineage_committed"] = 1
 		result.Status = "completed"
 		if persistErr := s.persistFeedSync(ctx, orgID, man.Source.SnapshotHash, man.Source.RunID, uri, "completed", result, true, &generatedAt); persistErr != nil {
 			result.Status = "partial"
@@ -579,6 +589,20 @@ func validateManifestAuthority(manifest *outreachManifest, now time.Time, requir
 	}, nil
 }
 
+func feedAuthorityValidationClock(manifest *outreachManifest, lastSnapshot, lastRun string, now time.Time) time.Time {
+	if manifest == nil || manifest.SourceFreshness == nil || lastSnapshot == "" ||
+		lastSnapshot != manifest.Source.SnapshotHash || lastRun != manifest.Source.RunID {
+		return now
+	}
+	expiresAt, err := parseFreshnessTime(manifest.SourceFreshness.ExpiresAt)
+	if err != nil || now.Before(expiresAt) {
+		return now
+	}
+	// Exact last-good replays may repair a missing lineage marker. The caller
+	// still compares every stored authority field before accepting the no-op.
+	return expiresAt.Add(-time.Nanosecond)
+}
+
 // feedBuildRunIDPrefix is the literal prefix the producer prepends to the
 // truncated digest when minting a feed BUILD id.
 const feedBuildRunIDPrefix = "run-"
@@ -683,7 +707,10 @@ func sameFeedAuthority(current *models.OutreachFeedSyncState, authority *feedAut
 		current.TargetMembershipHash == authority.TargetMembershipHash &&
 		current.TargetMembershipCount == authority.TargetMembershipCount &&
 		current.SupplierConfirmedCount == authority.SupplierConfirmedCount &&
-		bytes.Equal(marshalCommercialAuthority(storedCommercialAuthority(current)), marshalCommercialAuthority(authority.Commercial))
+		bytes.Equal(marshalCommercialAuthority(storedCommercialAuthority(current)), marshalCommercialAuthority(authority.Commercial)) &&
+		bytes.Equal(bytes.TrimSpace(current.CommercialAuthorityV2JSON), bytes.TrimSpace(marshalCommercialAuthorityV2(authority.CommercialV2))) &&
+		current.PublicationSemanticHash == authority.PublicationSemanticHash &&
+		current.ProducerIdentity == authority.ProducerIdentity
 }
 
 func hashStagedTargetMembership(cnpjs map[string]string) (string, int, error) {
@@ -977,7 +1004,15 @@ func (s *service) persistFeedSync(ctx context.Context, orgID uuid.UUID, snap, ru
 		b, _ := json.Marshal(counts)
 		st.CountsJSON = b
 	}
-	return s.repo.UpsertFeedSyncState(ctx, st)
+	if err := s.repo.UpsertFeedSyncState(ctx, st); err != nil {
+		return err
+	}
+	if success {
+		// State is written first. If the process dies before this marker, every
+		// selector fails closed; the same-snapshot retry repairs the marker.
+		return s.repo.CommitFeedRun(ctx, orgID, run, snap, now)
+	}
+	return nil
 }
 
 func marshalCommercialAuthorityV2(p *FeedCommercialAuthorityV2) []byte {

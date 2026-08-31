@@ -54,8 +54,8 @@ func TestSupersededRetirementRequiresLostCommercialQualification(t *testing.T) {
 	if got := strings.Count(head, "supersededLostQualification"); got != 5 {
 		t.Fatalf("qualification scope appears %d times; it must define once and gate all four statements", got)
 	}
-	if !strings.Contains(s, `AND a.commercial_qualification_state<>'QUALIFIED'`) {
-		t.Fatal("retirement must gate on the commercial fact, not on which run emitted the row")
+	if !strings.Contains(s, `confenge_commercially_qualified`) {
+		t.Fatal("retirement must use the dynamic commercial fact, not a sticky state")
 	}
 	if strings.Count(head, "outreach_accounts a") != 4 {
 		t.Fatal("all four superseded-run statements must join the account that owns the touchpoint")

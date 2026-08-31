@@ -83,7 +83,7 @@ func (r *confengePolicyRepository) GetActiveCampaignPolicy(ctx context.Context, 
 		WHERE organization_id=$1 AND campaign_id=$2
 		  AND revoked_at IS NULL
 		  AND effective_at <= $3
-		ORDER BY effective_at DESC
+		ORDER BY effective_at DESC, created_at DESC, id DESC
 		LIMIT 1`, orgID, campaignID, now)
 	var a models.CampaignPolicyAuthorization
 	err := row.Scan(

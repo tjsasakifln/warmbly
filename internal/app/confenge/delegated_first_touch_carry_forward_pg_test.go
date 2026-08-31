@@ -1,11 +1,17 @@
 package confenge
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	infrastructuredb "github.com/warmbly/warmbly/internal/infrastructure/db"
+	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/repository"
 )
 
 // qualifyDelegatedPGFixture stamps a valid three-year qualification on the
@@ -132,6 +138,9 @@ func TestDelegatedReservoirServesCarriedForwardAccountPostgres(t *testing.T) {
 		WHERE organization_id=$1 AND id=$2`, f.orgID, entry.AccountID); err != nil {
 		t.Fatal(err)
 	}
+	if err := f.repo.CommitFeedRun(f.ctx, f.orgID, "run-older", strings.Repeat("8", 64), time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
 	feed, err := f.repo.GetFeedSyncState(f.ctx, f.orgID)
 	if err != nil || feed == nil {
 		t.Fatalf("feed state unavailable: state=%+v err=%v", feed, err)
@@ -140,12 +149,226 @@ func TestDelegatedReservoirServesCarriedForwardAccountPostgres(t *testing.T) {
 	if err != nil || auth == nil {
 		t.Fatalf("policy authorization unavailable: auth=%+v err=%v", auth, err)
 	}
+	if _, err := f.pool.Exec(f.ctx, `
+		UPDATE outreach_feed_sync_state
+		SET last_status='partial',last_error='new crawl pagination incomplete',last_attempt_at=now()
+		WHERE organization_id=$1`, f.orgID); err != nil {
+		t.Fatal(err)
+	}
+	feed.LastStatus = "partial"
+	feed.LastError = "new crawl pagination incomplete"
+	if err := validateAuthoritativeFeedStructure(feed, true); err != nil {
+		t.Fatalf("partial retry erased the last-good feed: %v", err)
+	}
+	currentRuntime := f.svc.cfg.RepositorySHA
+	if _, err := f.pool.Exec(f.ctx, `UPDATE outreach_feed_sync_state SET last_success_at=NULL WHERE organization_id=$1`, f.orgID); err != nil {
+		t.Fatal(err)
+	}
+	noSuccessRepo := repository.NewCampaignRepostory(&infrastructuredb.DB{Pool: f.pool}, currentRuntime)
+	if pending, pendingErr := noSuccessRepo.HasPendingDelegatedFirstTouch(f.ctx, f.campaignID); pendingErr != nil || pending {
+		t.Fatalf("feed with no prior success kept campaign pending: pending=%v err=%v", pending, pendingErr)
+	}
+	if _, _, _, err := f.svc.nextDelegatedFirstTouchCandidate(f.ctx, f.orgID, feed, auth); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("feed with no prior success remained selectable: %v", err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `UPDATE outreach_feed_sync_state SET last_success_at=$2 WHERE organization_id=$1`, f.orgID, *feed.LastSuccessAt); err != nil {
+		t.Fatal(err)
+	}
+	f.svc.cfg.RepositorySHA = "sha-previous-runtime"
+	holdManifest := f.manifest
+	holdEntry := holdManifest.Entries[0]
+	holdEntry.IdempotencyKey = "carryover-old-runtime-hold-" + uuid.NewString()
+	if err := f.svc.persistDelegatedHold(f.ctx, f.orgID, holdManifest, holdEntry, []string{"old_runtime_hold"}); err != nil {
+		t.Fatal(err)
+	}
+	previousRuntimeRepo := repository.NewCampaignRepostory(&infrastructuredb.DB{Pool: f.pool}, f.svc.cfg.RepositorySHA)
+	if pending, pendingErr := previousRuntimeRepo.HasPendingDelegatedFirstTouch(f.ctx, f.campaignID); pendingErr != nil || pending {
+		t.Fatalf("same-runtime HOLD remained pending: pending=%v err=%v", pending, pendingErr)
+	}
+	f.svc.cfg.RepositorySHA = currentRuntime
+	campaignRepo := repository.NewCampaignRepostory(&infrastructuredb.DB{Pool: f.pool}, currentRuntime)
+	if pending, pendingErr := campaignRepo.HasPendingDelegatedFirstTouch(f.ctx, f.campaignID); pendingErr != nil || !pending {
+		t.Fatalf("old-runtime HOLD prevented carryover reprocessing: pending=%v err=%v", pending, pendingErr)
+	}
+	if _, err := f.pool.Exec(f.ctx, `UPDATE outreach_contact_candidates SET do_not_contact=true WHERE organization_id=$1 AND id=$2`, f.orgID, entry.ContactCandidateID); err != nil {
+		t.Fatal(err)
+	}
+	if pending, pendingErr := campaignRepo.HasPendingDelegatedFirstTouch(f.ctx, f.campaignID); pendingErr != nil || pending {
+		t.Fatalf("DNC carryover kept the campaign pending: pending=%v err=%v", pending, pendingErr)
+	}
+	if _, err := f.pool.Exec(f.ctx, `UPDATE outreach_contact_candidates SET do_not_contact=false WHERE organization_id=$1 AND id=$2`, f.orgID, entry.ContactCandidateID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `UPDATE outreach_accounts SET commercial_qualification_state='EXPIRED' WHERE organization_id=$1 AND id=$2`, f.orgID, entry.AccountID); err != nil {
+		t.Fatal(err)
+	}
+	if pending, pendingErr := campaignRepo.HasPendingDelegatedFirstTouch(f.ctx, f.campaignID); pendingErr != nil || pending {
+		t.Fatalf("dequalified carryover kept the campaign pending: pending=%v err=%v", pending, pendingErr)
+	}
+	if _, err := f.pool.Exec(f.ctx, `UPDATE outreach_accounts SET commercial_qualification_state='QUALIFIED' WHERE organization_id=$1 AND id=$2`, f.orgID, entry.AccountID); err != nil {
+		t.Fatal(err)
+	}
 	gotTouchpoint, gotAccount, _, err := f.svc.nextDelegatedFirstTouchCandidate(f.ctx, f.orgID, feed, auth)
 	if err != nil {
 		t.Fatalf("carried-forward qualified account was not selectable: %v", err)
 	}
 	if gotTouchpoint != touchpointID || gotAccount != entry.AccountID {
 		t.Fatalf("unexpected reservoir row: touchpoint=%s account=%s", gotTouchpoint, gotAccount)
+	}
+}
+
+func TestMaterializeInitialBacklogSeparatesManifestAndQualifiedCarryoverPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	qualifyDelegatedPGFixture(t, f)
+
+	currentID := f.manifest.Entries[0].AccountID
+	current, err := f.repo.GetAccount(f.ctx, f.orgID, currentID)
+	if err != nil || current == nil {
+		t.Fatalf("current account unavailable: account=%+v err=%v", current, err)
+	}
+	currentCandidate, err := f.repo.GetCandidate(f.ctx, f.orgID, f.manifest.Entries[0].ContactCandidateID)
+	if err != nil || currentCandidate == nil {
+		t.Fatalf("current candidate unavailable: candidate=%+v err=%v", currentCandidate, err)
+	}
+
+	carryover := *current
+	carryover.ID = uuid.New()
+	carryover.SourceLeadID = "qualified-carryover-" + carryover.ID.String()
+	carryover.CNPJ14 = "11222333000262"
+	carryover.SourceRunID = "run-older"
+	carryover.ContractorRoleSourceRunID = "run-older"
+	carryover.SupplierCNPJ14 = carryover.CNPJ14
+	if _, err := f.repo.UpsertAccount(f.ctx, &carryover); err != nil {
+		t.Fatal(err)
+	}
+	carryoverCandidate := *currentCandidate
+	carryoverCandidate.ID = uuid.New()
+	carryoverCandidate.AccountID = carryover.ID
+	carryoverCandidate.SourceContactID = "carryover-contact-" + carryoverCandidate.ID.String()
+	carryoverCandidate.Email = "carryover-" + carryoverCandidate.ID.String() + "@empresa.example"
+	if _, err := f.repo.UpsertCandidate(f.ctx, &carryoverCandidate); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, f.manifest.SourceRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Imported != 1 || first.DelegatedEligible+first.HeldException != 1 ||
+		first.CarryoverImported != 1 || first.CarryoverDelegatedEligible+first.CarryoverHeldException != 1 {
+		t.Fatalf("manifest and carryover counts did not close independently: %+v", first)
+	}
+
+	second, err := f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, f.manifest.SourceRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Imported != first.Imported || second.CarryoverImported != first.CarryoverImported {
+		t.Fatalf("idempotent materialization drifted counts: first=%+v second=%+v", first, second)
+	}
+	var initialTouchpoints int
+	if err := f.pool.QueryRow(f.ctx, `
+		SELECT count(*) FROM outreach_touchpoints
+		WHERE organization_id=$1 AND ordinal=1 AND purpose='INITIAL' AND channel='EMAIL'
+		  AND account_id IN ($2,$3)`, f.orgID, currentID, carryover.ID).Scan(&initialTouchpoints); err != nil {
+		t.Fatal(err)
+	}
+	if initialTouchpoints != 2 {
+		t.Fatalf("idempotent materialization duplicated or dropped work: touchpoints=%d", initialTouchpoints)
+	}
+
+	draft := &models.OutreachDraft{
+		OrganizationID: f.orgID, AccountID: carryover.ID, RecipientEmail: carryoverCandidate.Email,
+		Subject: "Previously accepted", BodyText: "Provider accepted body", Status: models.OutreachDraftNeedsReview,
+	}
+	if err := f.repo.UpsertDraft(f.ctx, draft); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `
+		UPDATE outreach_touchpoints SET draft_id=$3
+		WHERE organization_id=$1 AND account_id=$2 AND ordinal=1 AND purpose='INITIAL' AND channel='EMAIL'`,
+		f.orgID, carryover.ID, draft.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `
+		INSERT INTO confenge_dispatch_sends
+		  (organization_id,channel,message_key,draft_id,sent_at,recipient,provider,provider_message_id)
+		VALUES($1,'EMAIL',$2,$3,now(),$4,'smtp','provider-ledger-only')`,
+		f.orgID, "ledger-only-"+uuid.NewString(), draft.ID, carryoverCandidate.Email); err != nil {
+		t.Fatal(err)
+	}
+	afterSent, err := f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, "run-after-sent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterSent.CarryoverImported != 2 || afterSent.CarryoverHeldException != 1 || afterSent.CarryoverDelegatedEligible != 1 {
+		t.Fatalf("sent carryover did not close as an explicit held terminal: %+v", afterSent)
+	}
+	var terminalReason string
+	if err := f.pool.QueryRow(f.ctx, `SELECT initial_backlog_reason_code FROM outreach_accounts WHERE organization_id=$1 AND id=$2`, f.orgID, carryover.ID).Scan(&terminalReason); err != nil {
+		t.Fatal(err)
+	}
+	if terminalReason != "initial_already_contacted" {
+		t.Fatalf("terminal carryover reason=%q", terminalReason)
+	}
+	if err := f.pool.QueryRow(f.ctx, `
+		SELECT count(*) FROM outreach_touchpoints
+		WHERE organization_id=$1 AND account_id=$2 AND ordinal=1 AND purpose='INITIAL' AND channel='EMAIL'`,
+		f.orgID, carryover.ID).Scan(&initialTouchpoints); err != nil {
+		t.Fatal(err)
+	}
+	if initialTouchpoints != 1 {
+		t.Fatalf("sent carryover received new initial work: touchpoints=%d", initialTouchpoints)
+	}
+	var terminalState, draftStatus string
+	if err := f.pool.QueryRow(f.ctx, `
+		SELECT t.state,d.status FROM outreach_touchpoints t
+		JOIN outreach_drafts d ON d.organization_id=t.organization_id AND d.id=t.draft_id
+		WHERE t.organization_id=$1 AND t.account_id=$2 AND t.ordinal=1 AND t.purpose='INITIAL'`,
+		f.orgID, carryover.ID).Scan(&terminalState, &draftStatus); err != nil {
+		t.Fatal(err)
+	}
+	if terminalState != models.TouchpointCancelled || draftStatus != models.OutreachDraftBlocked {
+		t.Fatalf("ledger terminal cleanup left live work: touchpoint=%s draft=%s", terminalState, draftStatus)
+	}
+}
+
+func TestPartialRunAfterMaterializationIsNotServedUnderLastGoodPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	qualifyDelegatedPGFixture(t, f)
+	if _, err := f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, f.manifest.SourceRunID); err != nil {
+		t.Fatal(err)
+	}
+	partialRun := "run-partial-" + uuid.NewString()
+	if _, err := f.pool.Exec(f.ctx, `UPDATE outreach_accounts SET source_run_id=$2 WHERE organization_id=$1`, f.orgID, partialRun); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `
+		UPDATE outreach_touchpoints SET source_run_id=$2
+		WHERE organization_id=$1 AND ordinal=1 AND purpose='INITIAL' AND channel='EMAIL'`, f.orgID, partialRun); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `
+		UPDATE outreach_feed_sync_state
+		SET last_status='partial',last_error='failure after materialization',last_attempt_at=now()
+		WHERE organization_id=$1`, f.orgID); err != nil {
+		t.Fatal(err)
+	}
+
+	campaignRepo := repository.NewCampaignRepostory(&infrastructuredb.DB{Pool: f.pool}, f.svc.cfg.RepositorySHA)
+	if pending, err := campaignRepo.HasPendingDelegatedFirstTouch(f.ctx, f.campaignID); err != nil || pending {
+		t.Fatalf("uncommitted partial lineage became pending: pending=%v err=%v", pending, err)
+	}
+	feed, err := f.repo.GetFeedSyncState(f.ctx, f.orgID)
+	if err != nil || feed == nil {
+		t.Fatalf("last-good feed unavailable: feed=%+v err=%v", feed, err)
+	}
+	auth, err := f.svc.policyStore.GetActiveCampaignPolicy(f.ctx, f.orgID, f.campaignID, time.Now().UTC())
+	if err != nil || auth == nil {
+		t.Fatalf("policy unavailable: auth=%+v err=%v", auth, err)
+	}
+	if _, _, _, err := f.svc.nextDelegatedFirstTouchCandidate(f.ctx, f.orgID, feed, auth); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("uncommitted partial lineage became selectable: %v", err)
 	}
 }
 
