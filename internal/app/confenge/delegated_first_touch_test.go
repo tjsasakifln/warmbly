@@ -118,11 +118,15 @@ func TestDelegatedRunwayPreparesExactlyTheClaimedTouchpoint(t *testing.T) {
 		if i == 2 {
 			id = selectedID
 		}
+		sourceRunID := f.manifest.SourceRunID
+		if i == 2 {
+			sourceRunID = "committed-carryover-run"
+		}
 		f.repo.touchpoints[id] = &models.OutreachTouchpoint{
 			ID: id, OrganizationID: f.orgID, AccountID: f.account.ID,
 			ContactCandidateID: &f.candidate.ID, Ordinal: 1, CadenceStep: "INITIAL",
 			Channel: models.OutreachChannelEmail, Purpose: models.TouchpointPurposeInitial,
-			DueAt: time.Now().UTC(), State: state, SourceRunID: f.manifest.SourceRunID,
+			DueAt: time.Now().UTC(), State: state, SourceRunID: sourceRunID,
 		}
 	}
 	entry := f.entry
