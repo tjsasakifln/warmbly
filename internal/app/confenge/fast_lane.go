@@ -191,6 +191,41 @@ func (s *service) ProcessFastLaneOnce(ctx context.Context) (bool, error) {
 		return true, nil
 	}
 
+	// Qualification is time-dependent. Re-read it after the reservation and at
+	// the final boundary before the provider, so an approval that expired while
+	// queued cannot leave the system.
+	committedRun, lineageErr := s.repo.HasCommittedFeedRun(ctx, item.OrganizationID, tp.SourceRunID)
+	if lineageErr != nil || !committedRun {
+		reason := "feed_lineage_unavailable"
+		if lineageErr == nil {
+			reason = "feed_lineage_uncommitted"
+		}
+		_ = s.governor.Release(ctx, res.Reservation.ID, reason)
+		_ = s.governor.MarkQueue(ctx, item.ID, dispatch.QueueCancelled, reason)
+		return true, nil
+	}
+	account, accountErr := s.repo.GetAccount(ctx, item.OrganizationID, tp.AccountID)
+	qualification := AccountCommercialQualification(account, s.now())
+	if accountErr != nil || !qualification.AllowsTransport() {
+		reason := "commercial_qualification_unavailable"
+		if accountErr == nil {
+			reason = firstNonEmpty(firstHold(qualification.ReasonCodes), ReasonQualificationMissing)
+		}
+		_ = s.governor.Release(ctx, res.Reservation.ID, reason)
+		_ = s.governor.MarkQueue(ctx, item.ID, dispatch.QueueCancelled, reason)
+		return true, nil
+	}
+	accepted, acceptedErr := s.repo.HasAcceptedInitialForAccount(ctx, item.OrganizationID, tp.AccountID)
+	if acceptedErr != nil || accepted {
+		reason := "accepted_initial_ledger_lookup_failed"
+		if acceptedErr == nil {
+			reason = "accepted_initial_already_recorded"
+		}
+		_ = s.governor.Release(ctx, res.Reservation.ID, reason)
+		_ = s.governor.MarkQueue(ctx, item.ID, dispatch.QueueCancelled, reason)
+		return true, nil
+	}
+
 	acceptance, outcome, sendErr := s.firstTouchTransport.SendFirstTouch(ctx, FirstTouchMessage{
 		OrganizationID: item.OrganizationID,
 		EmailAccountID: mailboxID,

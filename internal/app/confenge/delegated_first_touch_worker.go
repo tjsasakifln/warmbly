@@ -192,14 +192,16 @@ func (s *service) nextDelegatedFirstTouchCandidate(ctx context.Context, orgID uu
 			JOIN outreach_contact_candidates c
 			  ON c.organization_id=t.organization_id AND c.id=t.contact_candidate_id
 			JOIN outreach_feed_sync_state feed ON feed.organization_id=t.organization_id
+			JOIN outreach_feed_committed_runs account_lineage
+			  ON account_lineage.organization_id=a.organization_id AND account_lineage.source_run_id=a.source_run_id
+			JOIN outreach_feed_committed_runs touchpoint_lineage
+			  ON touchpoint_lineage.organization_id=t.organization_id AND touchpoint_lineage.source_run_id=t.source_run_id
 			WHERE t.organization_id=$1
 			  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
 			  AND t.state IN ('DUE','NEEDS_REVIEW') AND t.contact_candidate_id IS NOT NULL
 			  AND `+authoritativeLastGoodFeedSQL+`
-			  -- Run id is acquisition provenance: a carried-forward QUALIFIED
-			  -- account stays selectable. Mirrors the reservoir in pg_outreach_backlog.
-			  AND (a.source_run_id=feed.last_run_id OR a.commercial_qualification_state='QUALIFIED')
-			  AND (t.source_run_id=feed.last_run_id OR a.commercial_qualification_state='QUALIFIED')
+			  AND confenge_commercially_qualified(a.commercial_qualification_state,
+			    a.commercial_qualified_until,a.commercial_qualification_deactivated,$6::date)
 			  AND a.initial_backlog_reason_code=''
 			  AND a.last_import_run_id IS NOT NULL
 			  AND a.queue_state NOT IN ('SENT','REPLIED','MEETING','PROPOSAL','WON','LOST','ENROLLED')

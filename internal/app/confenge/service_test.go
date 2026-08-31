@@ -204,14 +204,15 @@ func (m *memRepo) MaterializeCurrentInitialBacklog(_ context.Context, orgID uuid
 		acc := m.byID[tp.AccountID]
 		if tp.OrganizationID == orgID && tp.Ordinal == 1 && tp.Purpose == models.TouchpointPurposeInitial &&
 			tp.Channel == models.OutreachChannelEmail && tp.SourceRunID != sourceRunID && models.TouchpointOpenStates[tp.State] &&
-			(acc == nil || acc.CommercialQualificationState != CommercialQualified) {
+			(acc == nil || !AccountCommercialQualification(acc, time.Now().UTC()).AllowsTransport()) {
 			tp.State = models.TouchpointCancelled
 			tp.StopReason = "source_run_superseded"
 			out.StaleRetired++
 		}
 	}
 	for _, acc := range m.byID {
-		if acc.OrganizationID != orgID || (acc.SourceRunID != sourceRunID && acc.CommercialQualificationState != CommercialQualified) {
+		qualified := AccountCommercialQualification(acc, time.Now().UTC()).AllowsTransport()
+		if acc.OrganizationID != orgID || (acc.SourceRunID != sourceRunID && !qualified) {
 			continue
 		}
 		manifestMember := acc.SourceRunID == sourceRunID
@@ -253,7 +254,7 @@ func (m *memRepo) MaterializeCurrentInitialBacklog(_ context.Context, orgID uuid
 				break
 			}
 		}
-		prepared := !terminal && candidateEligible && acc.TargetFitEligible && (acc.TargetFitFresh || acc.CommercialQualificationState == CommercialQualified) && acc.TargetFitClass == TargetFitConfirmed && !acc.Blocked && !acc.DoNotContact
+		prepared := !terminal && candidateEligible && acc.TargetFitEligible && (acc.TargetFitFresh || qualified) && acc.TargetFitClass == TargetFitConfirmed && !acc.Blocked && !acc.DoNotContact
 		if prepared {
 			if manifestMember {
 				out.InitialPrepared++
@@ -1485,6 +1486,18 @@ func (m *memRepo) UpsertFeedSyncState(ctx context.Context, st *models.OutreachFe
 	cp := *st
 	m.feedSync[st.OrganizationID] = &cp
 	return nil
+}
+
+func (m *memRepo) CommitFeedRun(context.Context, uuid.UUID, string, string, time.Time) error {
+	return nil
+}
+
+func (m *memRepo) HasCommittedFeedRun(_ context.Context, _ uuid.UUID, sourceRunID string) (bool, error) {
+	return strings.TrimSpace(sourceRunID) != "", nil
+}
+
+func (m *memRepo) HasAcceptedInitialForAccount(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
+	return false, nil
 }
 
 func (m *memRepo) ListPilotMemberships(ctx context.Context, orgID uuid.UUID, cohortID string) ([]models.OutreachPilotMembership, error) {

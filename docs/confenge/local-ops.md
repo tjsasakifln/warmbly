@@ -139,6 +139,14 @@ valid commercial qualification. Transport remains fail-closed when there is no
 prior successful snapshot or when policy, DNC, suppression, account safety, or
 the kill switch blocks the message.
 
+Warmbly records a committed lineage marker only after every chunk, deactivation,
+backlog check, and publication step completes. A partial run remains visible in
+attempt diagnostics, but its accounts and touchpoints are not selectable. The
+migration backfills only the explicit current last-good run. Older carryovers
+without a committed receipt remain blocked. Do not manually mark an expired or
+partial run committed. Publish a fresh source window and rerun the sync; an
+exact same-snapshot replay can repair a missing marker after a crash.
+
 Inbound handoff (`confenge.inbound.v1`) is separate from send. Preflight now
 prints `inbound_secret` / `inbound_org` / `inbound_ready`. Status readiness
 includes `inbound`. Live synthetic POST is **UNPROVEN** until

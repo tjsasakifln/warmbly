@@ -44,6 +44,8 @@ type OutreachRepository interface {
 	// Feed sync durable state (single-flight across replicas via advisory lock + table).
 	GetFeedSyncState(ctx context.Context, orgID uuid.UUID) (*models.OutreachFeedSyncState, error)
 	UpsertFeedSyncState(ctx context.Context, st *models.OutreachFeedSyncState) error
+	CommitFeedRun(ctx context.Context, orgID uuid.UUID, sourceRunID, snapshotHash string, committedAt time.Time) error
+	HasCommittedFeedRun(ctx context.Context, orgID uuid.UUID, sourceRunID string) (bool, error)
 	TryAdvisoryLock(ctx context.Context, key int64) (bool, error)
 	AdvisoryUnlock(ctx context.Context, key int64) error
 	MaterializeCurrentInitialBacklog(ctx context.Context, orgID uuid.UUID, sourceRunID string) (OutreachInitialBacklogCounts, error)
@@ -87,6 +89,7 @@ type OutreachRepository interface {
 	GetTouchpoint(ctx context.Context, orgID, id uuid.UUID) (*models.OutreachTouchpoint, error)
 	GetTouchpointByIdempotency(ctx context.Context, orgID uuid.UUID, key string) (*models.OutreachTouchpoint, error)
 	GetTouchpointByDraft(ctx context.Context, orgID, draftID uuid.UUID) (*models.OutreachTouchpoint, error)
+	HasAcceptedInitialForAccount(ctx context.Context, orgID, accountID uuid.UUID) (bool, error)
 	ListTouchpoints(ctx context.Context, orgID, accountID uuid.UUID, state string, limit, offset int) ([]models.OutreachTouchpoint, error)
 	ListReviewTouchpoints(ctx context.Context, orgID uuid.UUID, limit, offset int) ([]models.OutreachTouchpoint, error)
 	CASQueueTouchpoint(ctx context.Context, orgID, id uuid.UUID, expectedContentHash string) (*models.OutreachTouchpoint, error)
@@ -101,6 +104,24 @@ type OutreachRepository interface {
 	GetOrgOwnerUserID(ctx context.Context, orgID uuid.UUID) (uuid.UUID, error)
 	// Latest handoff/outcome projection for cockpit confidence/snippet/thread.
 	GetLatestOutcomeForLead(ctx context.Context, orgID uuid.UUID, cnpj14, sourceLeadID, contactEmail string) (*models.OutreachOutcome, error)
+}
+
+func (r *outreachRepository) HasAcceptedInitialForAccount(ctx context.Context, orgID, accountID uuid.UUID) (bool, error) {
+	var accepted bool
+	err := r.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM confenge_dispatch_sends sent
+			JOIN outreach_touchpoints t
+			  ON t.organization_id=sent.organization_id AND (
+			    t.draft_id=sent.draft_id OR EXISTS (
+			      SELECT 1 FROM confenge_dispatch_queue q
+			      WHERE q.organization_id=sent.organization_id AND q.id=sent.queue_id AND q.draft_id=t.draft_id
+			    ))
+			WHERE sent.organization_id=$1 AND t.account_id=$2 AND sent.channel='EMAIL'
+			  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
+		)`, orgID, accountID).Scan(&accepted)
+	return accepted, err
 }
 
 // OutreachAccountFilter filters staged accounts.
@@ -160,6 +181,7 @@ type OutreachInitialBacklogCounts struct {
 	CarryoverInitialPrepared     int
 	CarryoverDelegatedEligible   int
 	CarryoverHeldException       int
+	TerminalRetired              int
 	StaleRetired                 int
 }
 
@@ -1129,6 +1151,45 @@ func (r *outreachRepository) UpsertFeedSyncState(ctx context.Context, st *models
 		st.PublicationSemanticHash, st.ProducerIdentity,
 	)
 	return err
+}
+
+// CommitFeedRun publishes lineage only after the complete manifest state is durable.
+// A run id can never be rebound to another snapshot.
+func (r *outreachRepository) CommitFeedRun(ctx context.Context, orgID uuid.UUID, sourceRunID, snapshotHash string, committedAt time.Time) error {
+	sourceRunID, snapshotHash = strings.TrimSpace(sourceRunID), strings.TrimSpace(snapshotHash)
+	if orgID == uuid.Nil || sourceRunID == "" || snapshotHash == "" {
+		return fmt.Errorf("organization_id, source_run_id and snapshot_hash are required")
+	}
+	if committedAt.IsZero() {
+		committedAt = time.Now().UTC()
+	}
+	tag, err := r.db.Exec(ctx, `
+		INSERT INTO outreach_feed_committed_runs (organization_id,source_run_id,snapshot_hash,committed_at)
+		VALUES($1,$2,$3,$4)
+		ON CONFLICT (organization_id,source_run_id) DO UPDATE
+		SET committed_at=LEAST(outreach_feed_committed_runs.committed_at,EXCLUDED.committed_at)
+		WHERE outreach_feed_committed_runs.snapshot_hash=EXCLUDED.snapshot_hash`,
+		orgID, sourceRunID, snapshotHash, committedAt.UTC())
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("source run ID cannot identify more than one committed snapshot")
+	}
+	return nil
+}
+
+func (r *outreachRepository) HasCommittedFeedRun(ctx context.Context, orgID uuid.UUID, sourceRunID string) (bool, error) {
+	if orgID == uuid.Nil || strings.TrimSpace(sourceRunID) == "" {
+		return false, nil
+	}
+	var committed bool
+	err := r.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM outreach_feed_committed_runs
+			WHERE organization_id=$1 AND source_run_id=$2
+		)`, orgID, strings.TrimSpace(sourceRunID)).Scan(&committed)
+	return committed, err
 }
 
 func (r *outreachRepository) ListPilotMemberships(ctx context.Context, orgID uuid.UUID, cohortID string) ([]models.OutreachPilotMembership, error) {

@@ -116,6 +116,7 @@ class TestConfengeVpsPack(unittest.TestCase):
             "supplier_confirmed_count",
             "feed_last_attempt_at",
             "feed_last_attempt_status",
+            "feed_last_attempt_error",
         ):
             self.assertIn(field, status)
 
@@ -141,6 +142,24 @@ test -z "$(json_optional_uint "$payload" target_membership_count)"
             ["bash"], input=probe, capture_output=True, text=True, check=False
         )
         self.assertEqual(optional.returncode, 0, optional.stderr)
+
+        self.assertIn('printenv CONFENGE_REPOSITORY_SHA', status)
+        self.assertIn('if [[ "$SHA_MATCH" != "PASS" ]]; then STATUS_EXIT=1; fi', status)
+        self.assertIn('exit "$STATUS_EXIT"', status)
+        self.assertIn("redact_status_error", status)
+        redactor = status.split("redact_status_error() {", maxsplit=1)[1].split(
+            "\n}", maxsplit=1
+        )[0]
+        probe = "redact_status_error() {" + redactor + "\n}\n" + r"""
+printf '%s' 'fetch https://feed.example/x token=abc lead@example.com' | redact_status_error
+"""
+        redacted = subprocess.run(
+            ["bash"], input=probe, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(redacted.returncode, 0, redacted.stderr)
+        self.assertNotIn("feed.example", redacted.stdout)
+        self.assertNotIn("abc", redacted.stdout)
+        self.assertNotIn("lead@example.com", redacted.stdout)
 
     def test_provider_vs_operational_documented(self) -> None:
         plane = (ROOT / "docs/confenge/vps-execution-plane.md").read_text(

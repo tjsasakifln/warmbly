@@ -151,6 +151,26 @@ func TestManifestAuthorityRequiresContemporaryFreshnessAndCompleteMembership(t *
 	rejects(t, &badMembershipHash, now, "membership_hash is invalid", "invalid membership hash")
 }
 
+func TestExpiredAuthorityClockRecoveryIsLimitedToExactLastGood(t *testing.T) {
+	published := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	now := published.Add(48 * time.Hour)
+	manifest := productionManifest(published)
+	expiresAt, err := parseFreshnessTime(manifest.SourceFreshness.ExpiresAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := feedAuthorityValidationClock(manifest, manifest.Source.SnapshotHash, manifest.Source.RunID, now)
+	if !got.Equal(expiresAt.Add(-time.Nanosecond)) {
+		t.Fatalf("exact last-good did not get historical validation clock: %s", got)
+	}
+	if authority, err := validateManifestAuthority(manifest, got, true); err != nil || authority == nil {
+		t.Fatalf("exact historical last-good cannot repair lineage: authority=%+v err=%v", authority, err)
+	}
+	if got := feedAuthorityValidationClock(manifest, "different-snapshot", manifest.Source.RunID, now); !got.Equal(now) {
+		t.Fatalf("new expired snapshot entered recovery path: %s", got)
+	}
+}
+
 // TestManifestAuthorityBindsFreshnessToProducerRunDerivation pins the real
 // binding. The previous gate compared source.run_id (a feed BUILD id from
 // export.py::_run_id) to authoritative_source_freshness.run_id (a PNCP

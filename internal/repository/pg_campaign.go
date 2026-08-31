@@ -1516,10 +1516,22 @@ func (r *campaignRepository) HasPendingDelegatedFirstTouch(ctx context.Context, 
 			  ON candidate.organization_id=t.organization_id AND candidate.id=t.contact_candidate_id
 			JOIN outreach_feed_sync_state feed
 			  ON feed.organization_id=t.organization_id
+			JOIN outreach_feed_committed_runs account_lineage
+			  ON account_lineage.organization_id=account.organization_id AND account_lineage.source_run_id=account.source_run_id
+			JOIN outreach_feed_committed_runs touchpoint_lineage
+			  ON touchpoint_lineage.organization_id=t.organization_id AND touchpoint_lineage.source_run_id=t.source_run_id
 			JOIN outreach_org_settings settings
 			  ON settings.organization_id=t.organization_id AND settings.campaign_id=$1
-			JOIN confenge_campaign_policy_authorizations auth
-			  ON auth.organization_id=t.organization_id AND auth.campaign_id=$1
+			JOIN LATERAL (
+				SELECT selected.*
+				FROM confenge_campaign_policy_authorizations selected
+				WHERE selected.organization_id=t.organization_id
+				  AND selected.campaign_id=$1
+				  AND selected.revoked_at IS NULL
+				  AND selected.effective_at <= now()
+				ORDER BY selected.effective_at DESC, selected.created_at DESC, selected.id DESC
+				LIMIT 1
+			) auth ON true
 			WHERE t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
 			  AND t.state IN ('DUE','NEEDS_REVIEW') AND t.contact_candidate_id IS NOT NULL
 			  AND feed.last_success_at IS NOT NULL AND feed.source_generated_at IS NOT NULL
@@ -1530,15 +1542,14 @@ func (r *campaignRepository) HasPendingDelegatedFirstTouch(ctx context.Context, 
 			  AND feed.target_membership_hash ~ '^[0-9a-f]{64}$'
 			  AND feed.target_membership_count > 0
 			  AND feed.supplier_confirmed_count BETWEEN 0 AND feed.target_membership_count
-			  AND (account.source_run_id=feed.last_run_id OR account.commercial_qualification_state='QUALIFIED')
-			  AND (t.source_run_id='' OR t.source_run_id=feed.last_run_id OR account.commercial_qualification_state='QUALIFIED')
+			  AND confenge_commercially_qualified(account.commercial_qualification_state,
+			    account.commercial_qualified_until,account.commercial_qualification_deactivated,CURRENT_DATE)
 			  AND account.initial_backlog_reason_code=''
 			  AND account.last_import_run_id IS NOT NULL
 			  AND NOT account.blocked AND NOT account.do_not_contact
 			  AND account.queue_state NOT IN ('SENT','REPLIED','MEETING','PROPOSAL','WON','LOST','ENROLLED')
 			  AND candidate.email<>'' AND NOT candidate.blocked AND NOT candidate.do_not_contact AND NOT candidate.bounced
 			  AND upper(candidate.route_suppression) IN ('','NONE')
-			  AND auth.revoked_at IS NULL AND auth.effective_at <= now()
 			  AND auth.prompt_policy_version='CFG-FIRST-TOUCH-ROUTING-v1'
 			  AND auth.authorized_by_label='founder-approved-first-touch-policy'
 			  AND auth.channel='EMAIL'

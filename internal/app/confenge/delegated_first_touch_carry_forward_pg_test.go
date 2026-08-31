@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	infrastructuredb "github.com/warmbly/warmbly/internal/infrastructure/db"
+	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/repository"
 )
 
@@ -135,6 +136,9 @@ func TestDelegatedReservoirServesCarriedForwardAccountPostgres(t *testing.T) {
 	if _, err := f.pool.Exec(f.ctx, `
 		UPDATE outreach_accounts SET source_run_id='run-older',initial_backlog_reason_code=''
 		WHERE organization_id=$1 AND id=$2`, f.orgID, entry.AccountID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.repo.CommitFeedRun(f.ctx, f.orgID, "run-older", strings.Repeat("8", 64), time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	feed, err := f.repo.GetFeedSyncState(f.ctx, f.orgID)
@@ -273,23 +277,24 @@ func TestMaterializeInitialBacklogSeparatesManifestAndQualifiedCarryoverPostgres
 		t.Fatalf("idempotent materialization duplicated or dropped work: touchpoints=%d", initialTouchpoints)
 	}
 
-	sentManifest := f.manifest
-	sentEntry := sentManifest.Entries[0]
-	sentEntry.AccountID = carryover.ID
-	sentEntry.ContactCandidateID = carryoverCandidate.ID
-	sentEntry.CNPJ14 = carryover.CNPJ14
-	sentEntry.SupplierCNPJ14 = carryover.CNPJ14
-	sentEntry.Recipient = carryoverCandidate.Email
-	sentEntry.IdempotencyKey = "sent-carryover-" + uuid.NewString()
-	if err := f.svc.persistDelegatedHold(f.ctx, f.orgID, sentManifest, sentEntry, []string{"sent-fixture"}); err != nil {
+	draft := &models.OutreachDraft{
+		OrganizationID: f.orgID, AccountID: carryover.ID, RecipientEmail: carryoverCandidate.Email,
+		Subject: "Previously accepted", BodyText: "Provider accepted body", Status: models.OutreachDraftNeedsReview,
+	}
+	if err := f.repo.UpsertDraft(f.ctx, draft); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.pool.Exec(f.ctx, `
-		UPDATE confenge_delegated_first_touch_decisions SET state='SENT',sent_at=now()
-		WHERE organization_id=$1 AND idempotency_key=$2`, f.orgID, sentEntry.IdempotencyKey); err != nil {
+		UPDATE outreach_touchpoints SET draft_id=$3
+		WHERE organization_id=$1 AND account_id=$2 AND ordinal=1 AND purpose='INITIAL' AND channel='EMAIL'`,
+		f.orgID, carryover.ID, draft.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.pool.Exec(f.ctx, `UPDATE outreach_accounts SET queue_state='ENROLLED' WHERE organization_id=$1 AND id=$2`, f.orgID, carryover.ID); err != nil {
+	if _, err := f.pool.Exec(f.ctx, `
+		INSERT INTO confenge_dispatch_sends
+		  (organization_id,channel,message_key,draft_id,sent_at,recipient,provider,provider_message_id)
+		VALUES($1,'EMAIL',$2,$3,now(),$4,'smtp','provider-ledger-only')`,
+		f.orgID, "ledger-only-"+uuid.NewString(), draft.ID, carryoverCandidate.Email); err != nil {
 		t.Fatal(err)
 	}
 	afterSent, err := f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, "run-after-sent")
@@ -314,6 +319,56 @@ func TestMaterializeInitialBacklogSeparatesManifestAndQualifiedCarryoverPostgres
 	}
 	if initialTouchpoints != 1 {
 		t.Fatalf("sent carryover received new initial work: touchpoints=%d", initialTouchpoints)
+	}
+	var terminalState, draftStatus string
+	if err := f.pool.QueryRow(f.ctx, `
+		SELECT t.state,d.status FROM outreach_touchpoints t
+		JOIN outreach_drafts d ON d.organization_id=t.organization_id AND d.id=t.draft_id
+		WHERE t.organization_id=$1 AND t.account_id=$2 AND t.ordinal=1 AND t.purpose='INITIAL'`,
+		f.orgID, carryover.ID).Scan(&terminalState, &draftStatus); err != nil {
+		t.Fatal(err)
+	}
+	if terminalState != models.TouchpointCancelled || draftStatus != models.OutreachDraftBlocked {
+		t.Fatalf("ledger terminal cleanup left live work: touchpoint=%s draft=%s", terminalState, draftStatus)
+	}
+}
+
+func TestPartialRunAfterMaterializationIsNotServedUnderLastGoodPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	qualifyDelegatedPGFixture(t, f)
+	if _, err := f.repo.MaterializeCurrentInitialBacklog(f.ctx, f.orgID, f.manifest.SourceRunID); err != nil {
+		t.Fatal(err)
+	}
+	partialRun := "run-partial-" + uuid.NewString()
+	if _, err := f.pool.Exec(f.ctx, `UPDATE outreach_accounts SET source_run_id=$2 WHERE organization_id=$1`, f.orgID, partialRun); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `
+		UPDATE outreach_touchpoints SET source_run_id=$2
+		WHERE organization_id=$1 AND ordinal=1 AND purpose='INITIAL' AND channel='EMAIL'`, f.orgID, partialRun); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `
+		UPDATE outreach_feed_sync_state
+		SET last_status='partial',last_error='failure after materialization',last_attempt_at=now()
+		WHERE organization_id=$1`, f.orgID); err != nil {
+		t.Fatal(err)
+	}
+
+	campaignRepo := repository.NewCampaignRepostory(&infrastructuredb.DB{Pool: f.pool}, f.svc.cfg.RepositorySHA)
+	if pending, err := campaignRepo.HasPendingDelegatedFirstTouch(f.ctx, f.campaignID); err != nil || pending {
+		t.Fatalf("uncommitted partial lineage became pending: pending=%v err=%v", pending, err)
+	}
+	feed, err := f.repo.GetFeedSyncState(f.ctx, f.orgID)
+	if err != nil || feed == nil {
+		t.Fatalf("last-good feed unavailable: feed=%+v err=%v", feed, err)
+	}
+	auth, err := f.svc.policyStore.GetActiveCampaignPolicy(f.ctx, f.orgID, f.campaignID, time.Now().UTC())
+	if err != nil || auth == nil {
+		t.Fatalf("policy unavailable: auth=%+v err=%v", auth, err)
+	}
+	if _, _, _, err := f.svc.nextDelegatedFirstTouchCandidate(f.ctx, f.orgID, feed, auth); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("uncommitted partial lineage became selectable: %v", err)
 	}
 }
 

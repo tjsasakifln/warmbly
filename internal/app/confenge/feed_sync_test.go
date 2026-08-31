@@ -52,7 +52,9 @@ func TestSyncFeedManifestIdempotentAndHashFailClosed(t *testing.T) {
 	if err != nil || carryoverAccount == nil {
 		t.Fatalf("carryover account unavailable: account=%+v err=%v", carryoverAccount, err)
 	}
-	carryoverAccount.CommercialQualificationState = CommercialQualified
+	carryoverQualification := testRootQualification(carryoverAccount.CNPJRoot, time.Now().UTC().AddDate(-1, 0, 0))
+	carryoverAccount.TargetPartyRole = PartyRoleSupplier
+	applyCommercialQualificationToAccount(carryoverAccount, &carryoverQualification, time.Now().UTC())
 	if _, err := r.UpsertAccount(context.Background(), carryoverAccount); err != nil {
 		t.Fatal(err)
 	}

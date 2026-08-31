@@ -11,6 +11,7 @@ DEPLOYED_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 DEPLOYED_DIRTY="$(git -C "$ROOT" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
 echo "DEPLOYED_SHA=$DEPLOYED_SHA"
 echo "DEPLOYED_DIRTY=$DEPLOYED_DIRTY"
+STATUS_EXIT=0
 
 API="$(api_base)"
 SMTP_HOST="${CONFENGE_SMTP_HOST:-smtp.hostinger.com}"
@@ -40,6 +41,14 @@ json_optional_uint() {
   printf '%s' "$match" | cut -d: -f2
 }
 
+redact_status_error() {
+  sed -E \
+    -e 's#https?://[^[:space:]"\\]+#[redacted-url]#g' \
+    -e 's/[[:alnum:]._%+-]+@[[:alnum:].-]+\.[[:alpha:]]{2,}/[redacted-email]/g' \
+    -e 's/((token|secret|password|authorization)[=:][[:space:]]*)[^[:space:]"\\]+/\1[redacted]/Ig' \
+    | cut -c1-240
+}
+
 # BACKEND
 if svc_running backend && http_ok "${API}/health"; then
   pass_fail BACKEND PASS
@@ -50,6 +59,17 @@ fi
 # WORKER / CONSUMER
 if svc_running worker; then pass_fail WORKER PASS; else pass_fail WORKER FAIL; fi
 if svc_running consumer; then pass_fail CONSUMER PASS; else pass_fail CONSUMER FAIL; fi
+
+SHA_MATCH=PASS
+for svc in backend consumer worker; do
+  runtime_sha="$(compose_cmd exec -T "$svc" printenv CONFENGE_REPOSITORY_SHA 2>/dev/null | tr -d '\r\n' || true)"
+  echo "${svc^^}_RUNTIME_SHA=${runtime_sha:-unknown}"
+  if [[ ! "$DEPLOYED_SHA" =~ ^[0-9a-f]{40}$ || "$runtime_sha" != "$DEPLOYED_SHA" ]]; then
+    SHA_MATCH=FAIL
+  fi
+done
+pass_fail "RUNTIME SHA" "$SHA_MATCH"
+if [[ "$SHA_MATCH" != "PASS" ]]; then STATUS_EXIT=1; fi
 
 # Infra
 if svc_running postgres && compose_cmd exec -T postgres pg_isready -U warmbly >/dev/null 2>&1; then
@@ -86,6 +106,7 @@ FEED_TARGET_COUNT=""
 FEED_SUPPLIER_COUNT=""
 FEED_LAST_ATTEMPT_AT=""
 FEED_LAST_ATTEMPT_STATUS=""
+FEED_LAST_ATTEMPT_ERROR=""
 if TOKEN="$(ops_access_token 2>/dev/null)"; then
   STATUS_JSON="$(curl -sS --max-time 5 "${API}/v1/confenge/status" -H "Authorization: Bearer $TOKEN" 2>/dev/null || true)"
   FEED_API_STATE="$(json_optional_string "$STATUS_JSON" feed_state)"
@@ -97,6 +118,7 @@ if TOKEN="$(ops_access_token 2>/dev/null)"; then
   FEED_SUPPLIER_COUNT="$(json_optional_uint "$STATUS_JSON" supplier_confirmed_count)"
   FEED_LAST_ATTEMPT_AT="$(json_optional_string "$STATUS_JSON" feed_last_attempt_at)"
   FEED_LAST_ATTEMPT_STATUS="$(json_optional_string "$STATUS_JSON" feed_last_attempt_status)"
+  FEED_LAST_ATTEMPT_ERROR="$(json_optional_string "$STATUS_JSON" feed_last_attempt_error)"
   case "$FEED_API_STATE" in
     fresh) FEED_STATE=PASS ;;
     stale) FEED_STATE=STALE ;;
@@ -114,6 +136,11 @@ echo "EXTRA_FEED_TARGET_MEMBERSHIP=${FEED_TARGET_COUNT:-unknown}"
 echo "EXTRA_FEED_SUPPLIER_CONFIRMED=${FEED_SUPPLIER_COUNT:-unknown}"
 echo "EXTRA_FEED_LAST_ATTEMPT_AT=${FEED_LAST_ATTEMPT_AT:-unknown}"
 echo "EXTRA_FEED_LAST_ATTEMPT_STATUS=${FEED_LAST_ATTEMPT_STATUS:-unknown}"
+if [[ -n "$FEED_LAST_ATTEMPT_ERROR" ]]; then
+  echo "EXTRA_FEED_LAST_ATTEMPT_ERROR=$(printf '%s' "$FEED_LAST_ATTEMPT_ERROR" | redact_status_error)"
+else
+  echo "EXTRA_FEED_LAST_ATTEMPT_ERROR=unknown"
+fi
 
 # Outcome loop: receptor on host loopback 8790 via nginx 8443
 if curl -sk --max-time 5 -o /dev/null -w '%{http_code}' -X POST "https://127.0.0.1:8443/webhooks/warmbly/outcome" \
@@ -188,3 +215,4 @@ fi
 
 echo "HOSTINGER_PLAN_CLASS=${HOSTINGER_PLAN_CLASS:-unset}"
 echo "RATE_MAX_PER_HOUR=${CONFENGE_RATE_MAX_PER_HOUR:-20} (operational; not Hostinger technical ceiling)"
+exit "$STATUS_EXIT"

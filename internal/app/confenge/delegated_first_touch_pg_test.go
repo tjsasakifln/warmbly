@@ -114,6 +114,9 @@ func newDelegatedPGFixtureWithTimeout(t *testing.T, timeout time.Duration) *dele
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := f.repo.CommitFeedRun(ctx, f.orgID, runID, snapshot, now); err != nil {
+		t.Fatal(err)
+	}
 	evidenceHash := strings.Repeat("a", 64)
 	account := &models.OutreachAccount{
 		ID: uuid.New(), OrganizationID: f.orgID, SourceLeadID: "lead-delegated", CNPJ14: "11222333000144", CNPJRoot: "11222333",

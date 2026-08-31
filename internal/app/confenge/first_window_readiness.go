@@ -361,9 +361,8 @@ func (s *service) commercialQualificationFromAccounts(ctx context.Context, orgID
 	err := s.delegatedDB.QueryRow(ctx, `
 		SELECT count(*)::int FROM outreach_accounts
 		WHERE organization_id=$1
-		  AND commercial_qualification_state='QUALIFIED'
-		  AND NOT commercial_qualification_deactivated
-		  AND commercial_qualified_until > $2::date`, orgID, now).Scan(&qualified)
+		  AND confenge_commercially_qualified(commercial_qualification_state,
+		    commercial_qualified_until,commercial_qualification_deactivated,$2::date)`, orgID, now).Scan(&qualified)
 	if err != nil || qualified <= 0 {
 		return out
 	}

@@ -64,7 +64,9 @@ func (s *service) retireStaleDelegatedFirstTouches(ctx context.Context, orgID uu
 		WHERE d.organization_id=$1
 		  AND d.state IN ('APPROVED','QUEUED','APPROVED_NOT_SCHEDULED')
 		  AND d.touchpoint_id IS NOT NULL
-		  AND (a.id IS NULL OR a.commercial_qualification_state<>'QUALIFIED'
+		  AND (a.id IS NULL OR NOT confenge_commercially_qualified(
+		    a.commercial_qualification_state,a.commercial_qualified_until,
+		    a.commercial_qualification_deactivated,CURRENT_DATE)
 		    OR d.policy_version NOT IN ($2,$3,$8)
 		    OR d.policy_hash<>CASE d.policy_version WHEN $2 THEN $4 WHEN $3 THEN $5 WHEN $8 THEN $9 ELSE '' END
 		    OR ($7 AND ($6::uuid IS NULL OR d.policy_authorization_id<>$6))
