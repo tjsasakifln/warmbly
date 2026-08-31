@@ -96,15 +96,17 @@ func TestDelegatedFeedRefreshKeepsQualifiedCarryForwardPostgres(t *testing.T) {
 		t.Fatalf("qualified decision did not survive the refresh: decision=%s queue=%s", decisionState, queueState)
 	}
 
-	// Losing the commercial fact is what retires the work.
+	// Temporal qualification expiry after queue admission is drift, not an
+	// explicit commercial revocation. The transport assertion owns its own
+	// send-time gates; refresh must not destructively unwind the queue.
 	if _, err := f.pool.Exec(f.ctx, `
 		UPDATE outreach_accounts SET commercial_qualification_state='EXPIRED'
 		WHERE organization_id=$1 AND id=$2`, f.orgID, f.manifest.Entries[0].AccountID); err != nil {
 		t.Fatal(err)
 	}
 	retired, err = f.svc.retireStaleDelegatedFirstTouches(f.ctx, f.orgID, newRun, newSnapshot)
-	if err != nil || retired != 1 {
-		t.Fatalf("an unqualified account was not retired: retired=%d err=%v", retired, err)
+	if err != nil || retired != 0 {
+		t.Fatalf("qualification expiry retired queued work: retired=%d err=%v", retired, err)
 	}
 	if err := f.pool.QueryRow(f.ctx, `
 		SELECT d.state,q.status
@@ -114,8 +116,8 @@ func TestDelegatedFeedRefreshKeepsQualifiedCarryForwardPostgres(t *testing.T) {
 		Scan(&decisionState, &queueState); err != nil {
 		t.Fatal(err)
 	}
-	if decisionState != "CANCELLED" || queueState != "cancelled" {
-		t.Fatalf("unqualified decision survived retirement: decision=%s queue=%s", decisionState, queueState)
+	if decisionState != "QUEUED" || queueState != "queued" {
+		t.Fatalf("qualification expiry unwound admission: decision=%s queue=%s", decisionState, queueState)
 	}
 }
 
@@ -416,16 +418,16 @@ func TestDelegatedUnattestedPopulationKeepsQualifiedApprovalsPostgres(t *testing
 		t.Fatalf("qualified decision did not survive an unattested population: decision=%s queue=%s", decisionState, queueState)
 	}
 
-	// Losing the per-account commercial fact still retires the work, so the
-	// fallback is an authority substitution and not a bypass.
+	// Expiry is temporal drift after admission and therefore does not unwind the
+	// durable queue, even when the population attestation is absent.
 	if _, err := f.pool.Exec(f.ctx, `
 		UPDATE outreach_accounts SET commercial_qualification_state='EXPIRED'
 		WHERE organization_id=$1 AND id=$2`, f.orgID, f.manifest.Entries[0].AccountID); err != nil {
 		t.Fatal(err)
 	}
 	retired, err = f.svc.retireStaleDelegatedFirstTouches(f.ctx, f.orgID, state.LastRunID, state.LastSnapshotHash)
-	if err != nil || retired != 1 {
-		t.Fatalf("an unqualified account survived an unattested population: retired=%d err=%v", retired, err)
+	if err != nil || retired != 0 {
+		t.Fatalf("qualification expiry retired queued work without explicit deactivation: retired=%d err=%v", retired, err)
 	}
 }
 
@@ -509,5 +511,105 @@ func TestDelegatedMembershipRepublishKeepsQueuedWorkPostgres(t *testing.T) {
 	}
 	if queueState != "queued" {
 		t.Fatalf("queued work did not survive the republish: queue=%s", queueState)
+	}
+}
+
+func TestDelegatedQueuedWorkSurvivesPolicyAndQualificationExpiryDriftPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	qualifyDelegatedPGFixture(t, f)
+	report, xerr := f.svc.ApplyDelegatedFirstTouchManifest(f.ctx, f.orgID, f.manifest, false)
+	if xerr != nil || report == nil || report.Queued != 1 {
+		t.Fatalf("fixture did not queue: report=%+v err=%v", report, xerr)
+	}
+	if _, err := f.pool.Exec(f.ctx, `
+		UPDATE confenge_delegated_first_touch_decisions
+		SET policy_version='policy-after-admission',policy_hash='hash-after-admission',source_expires_at=now()-interval '1 day'
+		WHERE organization_id=$1 AND touchpoint_id=$2`, f.orgID, report.Items[0].TouchpointID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `
+		UPDATE outreach_accounts
+		SET commercial_qualification_state='EXPIRED',commercial_qualified_until=CURRENT_DATE-1
+		WHERE organization_id=$1 AND id=$2`, f.orgID, f.manifest.Entries[0].AccountID); err != nil {
+		t.Fatal(err)
+	}
+	feed, err := f.repo.GetFeedSyncState(f.ctx, f.orgID)
+	if err != nil || feed == nil {
+		t.Fatalf("feed unavailable: feed=%+v err=%v", feed, err)
+	}
+	retired, err := f.svc.retireStaleDelegatedFirstTouches(f.ctx, f.orgID, feed.LastRunID, feed.LastSnapshotHash)
+	if err != nil || retired != 0 {
+		t.Fatalf("post-admission policy/expiry drift retired queue: retired=%d err=%v", retired, err)
+	}
+	var decisionState, queueState string
+	if err := f.pool.QueryRow(f.ctx, `
+		SELECT d.state,q.status FROM confenge_delegated_first_touch_decisions d
+		JOIN confenge_dispatch_queue q ON q.organization_id=d.organization_id AND q.message_key=d.queue_message_key
+		WHERE d.organization_id=$1 AND d.touchpoint_id=$2`, f.orgID, report.Items[0].TouchpointID).Scan(&decisionState, &queueState); err != nil {
+		t.Fatal(err)
+	}
+	if decisionState != "QUEUED" || queueState != "queued" {
+		t.Fatalf("post-admission drift unwound queue: decision=%s queue=%s", decisionState, queueState)
+	}
+}
+
+func TestDelegatedQueuedWorkCancelsOnlyOnExplicitRevocationPostgres(t *testing.T) {
+	tests := []struct {
+		name   string
+		revoke func(*testing.T, *delegatedPGFixture)
+	}{
+		{"commercial_deactivation", func(t *testing.T, f *delegatedPGFixture) {
+			_, err := f.pool.Exec(f.ctx, `UPDATE outreach_accounts SET commercial_qualification_deactivated=true WHERE organization_id=$1 AND id=$2`, f.orgID, f.manifest.Entries[0].AccountID)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"account_dnc", func(t *testing.T, f *delegatedPGFixture) {
+			_, err := f.pool.Exec(f.ctx, `UPDATE outreach_accounts SET do_not_contact=true WHERE organization_id=$1 AND id=$2`, f.orgID, f.manifest.Entries[0].AccountID)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"recipient_dnc", func(t *testing.T, f *delegatedPGFixture) {
+			_, err := f.pool.Exec(f.ctx, `UPDATE outreach_contact_candidates SET do_not_contact=true WHERE organization_id=$1 AND id=$2`, f.orgID, f.manifest.Entries[0].ContactCandidateID)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"supplier_role_conflict", func(t *testing.T, f *delegatedPGFixture) {
+			_, err := f.pool.Exec(f.ctx, `UPDATE outreach_accounts SET target_party_role='BUYER' WHERE organization_id=$1 AND id=$2`, f.orgID, f.manifest.Entries[0].AccountID)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDelegatedPGFixture(t)
+			qualifyDelegatedPGFixture(t, f)
+			report, xerr := f.svc.ApplyDelegatedFirstTouchManifest(f.ctx, f.orgID, f.manifest, false)
+			if xerr != nil || report == nil || report.Queued != 1 {
+				t.Fatalf("fixture did not queue: report=%+v err=%v", report, xerr)
+			}
+			tc.revoke(t, f)
+			feed, err := f.repo.GetFeedSyncState(f.ctx, f.orgID)
+			if err != nil || feed == nil {
+				t.Fatalf("feed unavailable: feed=%+v err=%v", feed, err)
+			}
+			retired, err := f.svc.retireStaleDelegatedFirstTouches(f.ctx, f.orgID, feed.LastRunID, feed.LastSnapshotHash)
+			if err != nil || retired != 1 {
+				t.Fatalf("explicit revocation did not retire queue: retired=%d err=%v", retired, err)
+			}
+			var decisionState, queueState string
+			if err := f.pool.QueryRow(f.ctx, `
+				SELECT d.state,q.status FROM confenge_delegated_first_touch_decisions d
+				JOIN confenge_dispatch_queue q ON q.organization_id=d.organization_id AND q.message_key=d.queue_message_key
+				WHERE d.organization_id=$1 AND d.touchpoint_id=$2`, f.orgID, report.Items[0].TouchpointID).Scan(&decisionState, &queueState); err != nil {
+				t.Fatal(err)
+			}
+			if decisionState != "CANCELLED" || queueState != "cancelled" {
+				t.Fatalf("explicit revocation survived: decision=%s queue=%s", decisionState, queueState)
+			}
+		})
 	}
 }

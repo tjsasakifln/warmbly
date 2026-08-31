@@ -166,6 +166,45 @@ func CandidateControlledEligible(c *models.OutreachContactCandidate) bool {
 	return defaultPilotRouteClasses[class]
 }
 
+// CandidateDelegatedControlledEligible is the admission contract for the
+// delegated first-touch lane. The upstream controlled flag authorizes an
+// observed institutional mailbox even when the separate named-person ESR
+// projection is false. No other outreach lane inherits this exception.
+func CandidateDelegatedControlledEligible(c *models.OutreachContactCandidate) bool {
+	if c == nil || c.Blocked || c.DoNotContact || c.Bounced ||
+		!c.EnrollableIgnoringVerification() || !validExactEmail(c.Email) {
+		return false
+	}
+	d := parseControlledDiscovery(c)
+	if d.ControlledEmailEligible == nil || !*d.ControlledEmailEligible ||
+		d.PreferredInitial == nil || !*d.PreferredInitial {
+		return false
+	}
+	class := CandidateRouteClass(c)
+	if class == RouteClassDirectPerson {
+		return c.EmailSendReady && provenPersonName(c) &&
+			CandidateControlledEligible(c) && CandidateEnrollable(c)
+	}
+	switch class {
+	case RouteClassRoleOrDepartment, RouteClassGenericCompany, RouteClassPublicCompanyFreemail:
+	default:
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(c.OwnershipStatus), "COMPANY_OWNED") ||
+		!strings.EqualFold(strings.TrimSpace(c.ChannelEpistemic), "OBSERVED") ||
+		!strings.EqualFold(strings.TrimSpace(c.RouteFreshness), "FRESH") ||
+		!strings.EqualFold(strings.TrimSpace(c.VerificationStatus), models.OutreachVerifyOfficialSource) ||
+		!strings.EqualFold(strings.TrimSpace(d.MailboxCompanyEvidence), "OBSERVED") ||
+		strings.EqualFold(strings.TrimSpace(c.EmailDerivation), "INFERRED") {
+		return false
+	}
+	suppression := strings.TrimSpace(c.RouteSuppression)
+	if suppression != "" && !strings.EqualFold(suppression, "NONE") {
+		return false
+	}
+	return candidateIsObservedRegistry(c) || strings.TrimSpace(c.SourceURL) != ""
+}
+
 // legacyControlledPublicRoute bridges pre-contract institutional candidates
 // whose imported fields already prove a public company-owned route.
 func legacyControlledPublicRoute(c *models.OutreachContactCandidate, class string) bool {

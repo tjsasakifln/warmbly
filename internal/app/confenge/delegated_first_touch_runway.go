@@ -372,6 +372,7 @@ func (s *service) delegatedFirstTouchReadyReservoirCount(
 		SELECT count(*)::int
 		FROM outreach_touchpoints t
 		JOIN outreach_accounts a ON a.organization_id=t.organization_id AND a.id=t.account_id
+		`+delegatedFirstTouchSafeCandidateLateralSQL+`
 		JOIN outreach_feed_sync_state feed ON feed.organization_id=t.organization_id
 		JOIN outreach_feed_committed_runs account_lineage
 		  ON account_lineage.organization_id=a.organization_id AND account_lineage.source_run_id=a.source_run_id
@@ -379,26 +380,19 @@ func (s *service) delegatedFirstTouchReadyReservoirCount(
 		  ON touchpoint_lineage.organization_id=t.organization_id AND touchpoint_lineage.source_run_id=t.source_run_id
 		WHERE t.organization_id=$1
 		  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
-		  AND t.state IN ('DUE','NEEDS_REVIEW') AND t.contact_candidate_id IS NOT NULL
+		  AND t.state IN ('DUE','NEEDS_REVIEW')
 		  AND `+authoritativeLastGoodFeedSQL+`
 		  -- Same reservoir predicate as nextDelegatedFirstTouchCandidate.
 		  AND confenge_commercially_qualified(a.commercial_qualification_state,
-		    a.commercial_qualified_until,a.commercial_qualification_deactivated,CURRENT_DATE)
+		    a.commercial_qualified_until,a.commercial_qualification_deactivated,$6::date)
 		  AND a.initial_backlog_reason_code=''
 		  AND a.queue_state NOT IN ('SENT','REPLIED','MEETING','PROPOSAL','WON','LOST','ENROLLED')
-		  AND a.last_import_run_id IS NOT NULL AND EXISTS (
-		    SELECT 1 FROM outreach_contact_candidates c
-		    WHERE c.organization_id=t.organization_id AND c.id=t.contact_candidate_id
-		      AND c.email<>'' AND NOT c.blocked AND NOT c.do_not_contact AND NOT c.bounced
-		      AND upper(c.route_suppression) IN ('','NONE')
-		  )
+		  AND a.last_import_run_id IS NOT NULL
 		  AND NOT EXISTS (
 		    SELECT 1 FROM confenge_delegated_first_touch_decisions d
 		    WHERE d.organization_id=t.organization_id AND d.account_id=t.account_id
-		      AND (d.state='SENT' OR (
-		        d.evidence_source_run_id=$2 AND d.source_snapshot_hash=$3
-		        AND d.runtime_release_sha=$4 AND d.policy_authorization_id=$5))
-		  )`, orgID, feed.LastRunID, feed.LastSnapshotHash, s.cfg.RepositorySHA, auth.ID).Scan(&count)
+		      AND d.state IN ('SENT','APPROVED','QUEUED','APPROVED_NOT_SCHEDULED')
+		  )`, orgID, feed.LastRunID, feed.LastSnapshotHash, s.cfg.RepositorySHA, auth.ID, time.Now().UTC()).Scan(&count)
 	return count, err
 }
 

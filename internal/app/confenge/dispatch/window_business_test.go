@@ -60,3 +60,17 @@ func TestGovernorDefersWeekend(t *testing.T) {
 		t.Fatalf("reason=%s", res.Reason)
 	}
 }
+
+func TestMessageKeyFirstTouchUsesAccountNotDraftIdentity(t *testing.T) {
+	accountID, otherAccountID := uuid.New(), uuid.New()
+	firstDraft, replacementDraft := uuid.New(), uuid.New()
+	if MessageKeyEmail(firstDraft) == MessageKeyEmail(replacementDraft) {
+		t.Fatal("draft keys must remain distinct for non-initial compatibility")
+	}
+	if got, want := MessageKeyFirstTouch(accountID), MessageKeyFirstTouch(accountID); got != want {
+		t.Fatalf("same account must retain first-touch identity: %q != %q", got, want)
+	}
+	if MessageKeyFirstTouch(accountID) == MessageKeyFirstTouch(otherAccountID) {
+		t.Fatal("different accounts must not share a first-touch identity")
+	}
+}

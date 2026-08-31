@@ -184,6 +184,16 @@ func (g *Governor) Commit(ctx context.Context, reservationID uuid.UUID) error {
 	return g.store.CommitReservation(ctx, reservationID, g.clock.Now().UTC())
 }
 
+// StartHandoff creates the durable no-resend fence immediately before the
+// transport enters SMTP DATA.
+func (g *Governor) StartHandoff(ctx context.Context, reservationID, queueID uuid.UUID) error {
+	return g.store.StartHandoff(ctx, reservationID, queueID, g.clock.Now().UTC())
+}
+
+func (g *Governor) FinalizeHandoff(ctx context.Context, reservationID uuid.UUID, errText string) (bool, error) {
+	return g.store.FinalizeHandoff(ctx, reservationID, StateFailed, errText)
+}
+
 // CommitByMessageKey records provider-confirmed delivery for an async transport.
 func (g *Governor) CommitByMessageKey(ctx context.Context, messageKey string) error {
 	if g == nil {

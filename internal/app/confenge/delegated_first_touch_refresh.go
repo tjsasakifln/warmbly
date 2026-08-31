@@ -9,13 +9,11 @@ import (
 
 const delegatedBindingRefreshReason = "delegated_authority_or_source_binding_advanced"
 
-// retireStaleDelegatedFirstTouches revokes approvals whose account is no longer
-// commercially QUALIFIED, whose policy binding moved, or whose campaign policy
-// authorization is gone. Acquisition and build provenance never retire a
-// still-qualified decision: source run id, snapshot expiry, freshness hash, the
-// population attestation revision and the runtime release sha are all import or
-// build identity rather than authority, so sourceRunID and snapshotHash are
-// accepted for call-site symmetry and deliberately not compared.
+// retireStaleDelegatedFirstTouches applies admission gates to work that has not
+// reached the queue. Once queue admission has succeeded, temporal qualification
+// and policy/source/build drift cannot revoke that durable commitment. A queued
+// row is cancelled only by positive commercial deactivation, an explicit DNC or
+// recipient suppression, or a positive supplier-role conflict.
 //
 // Retirement is destructive and irreversible for a queued touch, so it requires
 // positive proof of revocation. Doubt (an unreadable feed, a structurally
@@ -61,16 +59,44 @@ func (s *service) retireStaleDelegatedFirstTouches(ctx context.Context, orgID uu
 		FROM confenge_delegated_first_touch_decisions d
 		LEFT JOIN outreach_accounts a
 		  ON a.organization_id=d.organization_id AND a.id=d.account_id
+		LEFT JOIN outreach_contact_candidates c
+		  ON c.organization_id=d.organization_id AND c.id=d.contact_candidate_id
 		WHERE d.organization_id=$1
 		  AND d.state IN ('APPROVED','QUEUED','APPROVED_NOT_SCHEDULED')
 		  AND d.touchpoint_id IS NOT NULL
-		  AND (a.id IS NULL OR NOT confenge_commercially_qualified(
-		    a.commercial_qualification_state,a.commercial_qualified_until,
-		    a.commercial_qualification_deactivated,CURRENT_DATE)
-		    OR d.policy_version NOT IN ($2,$3,$8)
-		    OR d.policy_hash<>CASE d.policy_version WHEN $2 THEN $4 WHEN $3 THEN $5 WHEN $8 THEN $9 ELSE '' END
-		    OR ($7 AND ($6::uuid IS NULL OR d.policy_authorization_id<>$6))
-		    OR $10)
+		  AND NOT EXISTS (
+		    SELECT 1 FROM confenge_dispatch_queue handoff
+		    WHERE handoff.organization_id=d.organization_id
+		      AND handoff.status='attempted'
+		      AND (handoff.draft_id=d.draft_id OR handoff.message_key=d.queue_message_key)
+		  )
+		  AND (
+		    -- Positive revocations apply after admission too. Empty or aged
+		    -- provenance is drift, not proof that a recipient became unsafe.
+		    a.commercial_qualification_deactivated
+		    OR a.do_not_contact OR a.blocked
+		    OR c.do_not_contact OR c.blocked OR c.bounced
+		    OR upper(COALESCE(c.route_suppression,'')) NOT IN ('','NONE')
+		    OR upper(COALESCE(a.contractor_role_status,'')) IN
+		      ('CONFLICT','CONFLICTED','REJECTED','INVALID','BUYER_CONFIRMED')
+		    OR (upper(COALESCE(a.target_party_role,'')) NOT IN ('','UNKNOWN','SUPPLIER'))
+		    OR (a.buyer_cnpj14<>'' AND regexp_replace(a.cnpj14,'[^0-9]','','g')=
+		      regexp_replace(a.buyer_cnpj14,'[^0-9]','','g'))
+		    OR (
+		      d.state<>'QUEUED' AND (
+		        a.id IS NULL OR c.id IS NULL OR c.account_id<>a.id
+		        OR c.mailbox_purpose_send_blocked
+		        OR upper(COALESCE(c.recipient_commercial_suitability,''))='UNSUITABLE_MAILBOX'
+		        OR NOT confenge_commercially_qualified(
+		          a.commercial_qualification_state,a.commercial_qualified_until,
+		          a.commercial_qualification_deactivated,CURRENT_DATE)
+		        OR d.policy_version NOT IN ($2,$3,$8)
+		        OR d.policy_hash<>CASE d.policy_version WHEN $2 THEN $4 WHEN $3 THEN $5 WHEN $8 THEN $9 ELSE '' END
+		        OR ($7 AND ($6::uuid IS NULL OR d.policy_authorization_id<>$6))
+		        OR $10
+		      )
+		    )
+		  )
 		FOR UPDATE OF d`, orgID,
 		DelegatedFirstTouchPolicyV1, DelegatedFirstTouchPolicyV2,
 		DelegatedFirstTouchPolicyHashV1, DelegatedFirstTouchPolicyHashV2,

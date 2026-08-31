@@ -42,6 +42,15 @@ type Store interface {
 	GetSendByKey(ctx context.Context, messageKey string) (sentAt time.Time, ok bool, err error)
 
 	RefreshReservation(ctx context.Context, id uuid.UUID, leaseUntil time.Time, workerToken string) error
+	// StartHandoff durably fences a message immediately before the transport's
+	// irreversible DATA phase. The reservation attempt timestamp and terminal
+	// queue state are changed atomically: once this succeeds, lease recovery may
+	// never make the message sendable again without provider evidence.
+	StartHandoff(ctx context.Context, reservationID, queueID uuid.UUID, attemptedAt time.Time) error
+	// FinalizeHandoff closes an attempted reservation without making it
+	// retryable. It returns false when DATA was never fenced and ordinary
+	// pre-handoff release/retry semantics still apply.
+	FinalizeHandoff(ctx context.Context, reservationID uuid.UUID, state, errText string) (bool, error)
 	CommitReservation(ctx context.Context, id uuid.UUID, sentAt time.Time) error
 	// CommitReservationWithEvidence commits the send and records what the
 	// provider reported in the same transaction, so an accepted message can

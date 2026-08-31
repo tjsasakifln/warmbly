@@ -220,11 +220,11 @@ func TestDelegatedFirstTouchSupportedSpecificFactPassesAllDeterministicGates(t *
 func TestDelegatedFirstTouchControlledInstitutionalRouteDoesNotRequireNamedHumanReadiness(t *testing.T) {
 	f := newDelegatedValidationFixture(t, RouteClassGenericCompany, "contato@empresa.example")
 	f.candidate.EmailSendReady = false
-	f.candidate.VerificationStatus = models.OutreachVerifyInstitutionalGeneric
-	f.candidate.RecipientCommercialSuitability = "UNSUITABLE_HUMAN_EVIDENCE"
+	f.candidate.MailboxPurposeSendBlocked = true
+	f.candidate.RecipientCommercialSuitability = "UNSUITABLE_MAILBOX"
 	f.storeCandidate()
 	if blockers := f.validate(); len(blockers) != 0 {
-		t.Fatalf("typed controlled route inherited named-human readiness: %v", blockers)
+		t.Fatalf("explicit controlled route inherited named-person projections: %v", blockers)
 	}
 }
 
@@ -269,15 +269,6 @@ func TestDelegatedFirstTouchFailsClosedOnRecipientComplianceAndSourceDrift(t *te
 		{"suppression", func(f *delegatedValidationFixture) { f.account.DoNotContact = true }, "account_suppressed_or_interacted"},
 		{"opt_out", func(f *delegatedValidationFixture) { f.candidate.DoNotContact = true; f.storeCandidate() }, "recipient_not_controlled_eligible"},
 		{"hard_bounce", func(f *delegatedValidationFixture) { f.candidate.Bounced = true; f.storeCandidate() }, "recipient_not_controlled_eligible"},
-		{"mailbox_purpose_blocked", func(f *delegatedValidationFixture) {
-			f.candidate.MailboxPurpose = "ORCAMENTO"
-			f.candidate.MailboxPurposeSendBlocked = true
-			f.storeCandidate()
-		}, "recipient_not_controlled_eligible"},
-		{"mailbox_commercially_unsuitable", func(f *delegatedValidationFixture) {
-			f.candidate.RecipientCommercialSuitability = "UNSUITABLE_MAILBOX"
-			f.storeCandidate()
-		}, "recipient_not_controlled_eligible"},
 		{"copy_editorial", func(f *delegatedValidationFixture) {
 			f.entry.BodyText += " Espero que este e-mail o encontre bem."
 			f.entry.BodyHash = hashText(f.entry.BodyText)

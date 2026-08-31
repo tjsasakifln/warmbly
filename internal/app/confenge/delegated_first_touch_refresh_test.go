@@ -112,6 +112,22 @@ func TestLedgerReconcilerTreatsAttemptedAsValidTransit(t *testing.T) {
 	}
 }
 
+func TestRetireStaleNeverReopensAttemptedHandoffProjection(t *testing.T) {
+	b, err := os.ReadFile("delegated_first_touch_refresh.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	for _, binding := range []string{
+		"handoff.status='attempted'",
+		"handoff.draft_id=d.draft_id OR handoff.message_key=d.queue_message_key",
+	} {
+		if !strings.Contains(s, binding) {
+			t.Fatalf("attempted handoff projection is not protected by %q", binding)
+		}
+	}
+}
+
 // An attempted row whose touchpoint lost approval can never receive an outcome,
 // and Enqueue treats 'attempted' as terminal, so it would block that draft
 // forever.

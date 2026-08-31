@@ -92,6 +92,24 @@ func TestDelegatedDraftIdentityIsStableWithinRunAndDistinctAcrossRuns(t *testing
 	}
 }
 
+func TestDelegatedRunwayIdempotencyPreservesPublicationBindingAndAddsCandidate(t *testing.T) {
+	accountID, oldCandidateID, safeCandidateID := uuid.New(), uuid.New(), uuid.New()
+	old := DelegatedFirstTouchEntry{
+		IdempotencyKey: "delegated-first-touch:runway-v1:old-binding:" + accountID.String(),
+		AccountID:      accountID, ContactCandidateID: oldCandidateID,
+	}
+	safe := old
+	safe.ContactCandidateID = safeCandidateID
+	oldKey := delegatedFirstTouchEffectiveIdempotencyKey(old)
+	safeKey := delegatedFirstTouchEffectiveIdempotencyKey(safe)
+	if oldKey == safeKey {
+		t.Fatalf("old HOLD would still block safe replacement candidate: %q", oldKey)
+	}
+	if !strings.HasPrefix(oldKey, old.IdempotencyKey+":candidate:") || !strings.Contains(oldKey, oldCandidateID.String()) {
+		t.Fatalf("runway key must preserve publication binding and identify candidate: %q", oldKey)
+	}
+}
+
 func TestDelegatedPolicyBindsTemplateAndExplicitGreenTemplateAuthority(t *testing.T) {
 	now := time.Now().UTC()
 	orgID, founderID := uuid.New(), uuid.New()

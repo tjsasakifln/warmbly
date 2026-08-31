@@ -134,6 +134,13 @@ func MessageKeyEmail(draftID uuid.UUID) string {
 	return "email:draft:" + draftID.String()
 }
 
+// MessageKeyFirstTouch is the delivery identity of an account's initial email.
+// A draft is an editable rendering of that message, so it must not affect
+// exactly-once delivery.
+func MessageKeyFirstTouch(accountID uuid.UUID) string {
+	return "email:first-touch:account:" + accountID.String()
+}
+
 func MessageKeyWhatsApp(draftID uuid.UUID) string {
 	return "wa:draft:" + draftID.String()
 }

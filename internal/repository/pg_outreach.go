@@ -110,8 +110,7 @@ func (r *outreachRepository) HasAcceptedInitialForAccount(ctx context.Context, o
 	var accepted bool
 	err := r.db.QueryRow(ctx, `
 		SELECT EXISTS (
-			SELECT 1
-			FROM confenge_dispatch_sends sent
+			SELECT 1 FROM confenge_dispatch_sends sent
 			JOIN outreach_touchpoints t
 			  ON t.organization_id=sent.organization_id AND (
 			    t.draft_id=sent.draft_id OR EXISTS (
@@ -120,6 +119,26 @@ func (r *outreachRepository) HasAcceptedInitialForAccount(ctx context.Context, o
 			    ))
 			WHERE sent.organization_id=$1 AND t.account_id=$2 AND sent.channel='EMAIL'
 			  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
+			UNION ALL
+			-- Old sends predate the authoritative ledger. Treat them as accepted
+			-- only with all three independent provider-evidence fields present;
+			-- a queued/enrolled or attempted row is never enough to suppress work.
+			SELECT 1 FROM outreach_touchpoints t
+			WHERE t.organization_id=$1 AND t.account_id=$2
+			  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
+			  AND t.state='SENT' AND COALESCE(t.provider_message_id,'') <> ''
+			  AND t.sent_at IS NOT NULL
+			UNION ALL
+			-- An old draft-scoped queue can predate the account-scoped message
+			-- key. Attempted is an ambiguous external handoff and failed is an
+			-- exhausted/permanent terminal outcome; neither may be auto-resendable
+			-- through a replacement draft.
+			SELECT 1 FROM confenge_dispatch_queue q
+			JOIN outreach_touchpoints t
+			  ON t.organization_id=q.organization_id AND t.draft_id=q.draft_id
+			WHERE q.organization_id=$1 AND t.account_id=$2
+			  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
+			  AND q.status IN ('attempted','failed','sent')
 		)`, orgID, accountID).Scan(&accepted)
 	return accepted, err
 }

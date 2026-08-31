@@ -90,7 +90,7 @@ func (m *MemoryStore) SetPaused(ctx context.Context, paused bool, reason string,
 
 func (m *MemoryStore) expireLocked(now time.Time) {
 	for _, r := range m.reservations {
-		if r.State == StateReserved && !r.LeaseUntil.After(now) {
+		if r.State == StateReserved && r.AttemptedAt == nil && !r.LeaseUntil.After(now) {
 			r.State = StateReleased
 			r.LastError = "lease_expired"
 		}
@@ -110,13 +110,19 @@ func (m *MemoryStore) occupiedLocked(now time.Time, window time.Duration) ([]tim
 		}
 	}
 	for _, r := range m.reservations {
-		if r.State != StateReserved || !r.LeaseUntil.After(now) {
+		attempted := r.AttemptedAt != nil && r.State != StateCommitted
+		reserved := r.State == StateReserved && r.AttemptedAt == nil && r.LeaseUntil.After(now)
+		if !attempted && !reserved {
 			continue
 		}
-		if !r.ReservedAt.Before(cutoff) && !r.ReservedAt.After(now) {
-			times = append(times, r.ReservedAt)
-			if r.ReservedAt.After(last) {
-				last = r.ReservedAt
+		observed := r.ReservedAt
+		if r.AttemptedAt != nil {
+			observed = *r.AttemptedAt
+		}
+		if !observed.Before(cutoff) && !observed.After(now) {
+			times = append(times, observed)
+			if observed.After(last) {
+				last = observed
 			}
 		}
 	}
@@ -148,6 +154,10 @@ func (m *MemoryStore) TryReserveAtomic(ctx context.Context, in AtomicReserveInpu
 
 	if existing := m.reservations[in.Req.MessageKey]; existing != nil &&
 		existing.State == StateReserved && existing.LeaseUntil.After(now) {
+		if existing.AttemptedAt != nil {
+			out.Reason = "handoff_already_started"
+			return out, nil
+		}
 		mailboxConflict := in.Req.Channel == ChannelEmail && in.Req.EmailAccountID != nil &&
 			(existing.EmailAccountID == nil || *existing.EmailAccountID != *in.Req.EmailAccountID)
 		taskConflict := in.Req.TaskID != nil && (existing.TaskID == nil || *existing.TaskID != *in.Req.TaskID)
@@ -164,6 +174,10 @@ func (m *MemoryStore) TryReserveAtomic(ctx context.Context, in AtomicReserveInpu
 		out.SentLastHour = countTimes(m.sendTimes, now.Add(-window), now)
 		return out, nil
 	}
+	if existing := m.reservations[in.Req.MessageKey]; existing != nil && existing.AttemptedAt != nil {
+		out.Reason = "handoff_already_started"
+		return out, nil
+	}
 
 	if in.Req.Channel == ChannelEmail && in.Mailbox != nil {
 		var mailboxTimes []time.Time
@@ -177,8 +191,9 @@ func (m *MemoryStore) TryReserveAtomic(ctx context.Context, in AtomicReserveInpu
 			}
 		}
 		for _, reservation := range m.reservations {
-			if reservation.EmailAccountID == nil || *reservation.EmailAccountID != in.Mailbox.EmailAccountID ||
-				reservation.State != StateReserved || !reservation.LeaseUntil.After(now) {
+			attempted := reservation.AttemptedAt != nil && reservation.State != StateCommitted
+			reserved := reservation.State == StateReserved && reservation.AttemptedAt == nil && reservation.LeaseUntil.After(now)
+			if reservation.EmailAccountID == nil || *reservation.EmailAccountID != in.Mailbox.EmailAccountID || (!attempted && !reserved) {
 				continue
 			}
 			observed := reservation.ReservedAt
@@ -311,19 +326,63 @@ func (m *MemoryStore) RefreshReservation(ctx context.Context, id uuid.UUID, leas
 	return nil
 }
 
+func (m *MemoryStore) StartHandoff(_ context.Context, reservationID, queueID uuid.UUID, attemptedAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r := m.byResID[reservationID]
+	q := m.queueByID[queueID]
+	if r == nil || q == nil || r.MessageKey != q.MessageKey {
+		return fmt.Errorf("dispatch handoff binding not found")
+	}
+	if r.State == StateCommitted || q.Status == QueueSent {
+		return nil
+	}
+	if r.State != StateReserved || q.Status != QueueReserved {
+		return fmt.Errorf("dispatch handoff is not reserved")
+	}
+	value := attemptedAt.UTC()
+	if value.IsZero() {
+		value = time.Now().UTC()
+	}
+	r.AttemptedAt = &value
+	q.Status = QueueAttempted
+	q.ReservedUntil = nil
+	return nil
+}
+
+func (m *MemoryStore) FinalizeHandoff(_ context.Context, reservationID uuid.UUID, state, errText string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r := m.byResID[reservationID]
+	if r == nil {
+		return false, fmt.Errorf("dispatch reservation not found")
+	}
+	if r.AttemptedAt == nil || r.State == StateCommitted {
+		return false, nil
+	}
+	if state == "" {
+		state = StateFailed
+	}
+	r.State = state
+	r.LastError = errText
+	return true, nil
+}
+
 func (m *MemoryStore) CommitReservation(ctx context.Context, id uuid.UUID, sentAt time.Time) error {
 	return m.CommitReservationWithEvidence(ctx, id, sentAt, SendEvidence{})
 }
 
 // CommitReservationWithEvidence mirrors the PG behaviour; the in-memory store
 // keeps no evidence columns, so the evidence is accepted and ignored.
-func (m *MemoryStore) CommitReservationWithEvidence(ctx context.Context, id uuid.UUID, sentAt time.Time, _ SendEvidence) error {
-	m.closeQueueForKey(id)
+func (m *MemoryStore) CommitReservationWithEvidence(ctx context.Context, id uuid.UUID, sentAt time.Time, ev SendEvidence) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	r := m.byResID[id]
 	if r == nil {
 		return fmt.Errorf("reservation not found")
+	}
+	if ev.QueueID != nil && r.AttemptedAt == nil {
+		return fmt.Errorf("provider acceptance cannot commit before durable handoff")
 	}
 	if r.State == StateCommitted {
 		current, sent := m.sends[r.MessageKey]
@@ -354,6 +413,13 @@ func (m *MemoryStore) CommitReservationWithEvidence(ctx context.Context, id uuid
 		m.sendMailboxes[r.MessageKey] = *r.EmailAccountID
 	}
 	m.sendTimes = append(m.sendTimes, sentAt)
+	if q := m.queue[r.MessageKey]; q != nil {
+		switch q.Status {
+		case QueueQueued, QueueReserved, QueueAttempted:
+			q.Status = QueueSent
+			q.ReservedUntil = nil
+		}
+	}
 	return nil
 }
 
@@ -365,6 +431,9 @@ func (m *MemoryStore) ReleaseReservation(ctx context.Context, id uuid.UUID, stat
 		return fmt.Errorf("reservation not found")
 	}
 	if r.State == StateCommitted {
+		return nil
+	}
+	if r.AttemptedAt != nil {
 		return nil
 	}
 	if state == "" {
@@ -389,7 +458,7 @@ func (m *MemoryStore) ExpireStaleReservations(ctx context.Context, now time.Time
 	defer m.mu.Unlock()
 	n := 0
 	for _, r := range m.reservations {
-		if r.State == StateReserved && !r.LeaseUntil.After(now) {
+		if r.State == StateReserved && r.AttemptedAt == nil && !r.LeaseUntil.After(now) {
 			r.State = StateReleased
 			r.LastError = "lease_expired"
 			n++
@@ -405,7 +474,7 @@ func (m *MemoryStore) Enqueue(ctx context.Context, item *QueueItem) error {
 		// 'attempted' is terminal for enqueue: the message is already with the
 		// transport and its acceptance is merely unobserved. Re-queueing it would
 		// dispatch the same message a second time.
-		if existing.Status == QueueAttempted || existing.Status == QueueSent || existing.Status == QueueCancelled {
+		if existing.Status == QueueAttempted || existing.Status == QueueSent || existing.Status == QueueCancelled || existing.Status == QueueFailed {
 			return nil
 		}
 		existing.DueAt = item.DueAt
@@ -487,6 +556,13 @@ func (m *MemoryStore) CountQueued(ctx context.Context, orgID *uuid.UUID) (int, e
 func (m *MemoryStore) ClaimNextQueued(ctx context.Context, now time.Time) (*QueueItem, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for _, q := range m.queue {
+		if q.Status == QueueReserved && q.ReservedUntil != nil && !q.ReservedUntil.After(now) {
+			q.Status = QueueQueued
+			q.ReservedUntil = nil
+			q.LastError = "claim_lease_expired"
+		}
+	}
 	var candidates []*QueueItem
 	for _, q := range m.queue {
 		if q.Status != QueueQueued || q.DueAt.After(now) {
@@ -510,6 +586,8 @@ func (m *MemoryStore) ClaimNextQueued(ctx context.Context, now time.Time) (*Queu
 	chosen := candidates[0]
 	chosen.Status = QueueReserved
 	chosen.Attempts++
+	leaseUntil := now.Add(DefaultLeaseTTL)
+	chosen.ReservedUntil = &leaseUntil
 	cp := *chosen
 	return &cp, nil
 }
@@ -521,7 +599,14 @@ func (m *MemoryStore) UpdateQueueStatus(ctx context.Context, id uuid.UUID, statu
 	if q == nil {
 		return fmt.Errorf("queue item not found")
 	}
+	if (q.Status == QueueAttempted || q.Status == QueueSent || q.Status == QueueFailed) &&
+		(status == QueueQueued || status == QueueReserved) {
+		return nil
+	}
 	q.Status = status
+	if status != QueueReserved {
+		q.ReservedUntil = nil
+	}
 	if errText != "" {
 		q.LastError = errText
 	}
@@ -530,25 +615,6 @@ func (m *MemoryStore) UpdateQueueStatus(ctx context.Context, id uuid.UUID, statu
 
 // GetQueueByKey returns a copy of the queue row for a message key. It exists
 // for inspection and tests; the Store interface does not expose it.
-// closeQueueForKey mirrors the PG commit transaction, which closes the queue
-// row sharing the reservation's message key.
-func (m *MemoryStore) closeQueueForKey(reservationID uuid.UUID) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	r := m.byResID[reservationID]
-	if r == nil {
-		return
-	}
-	q := m.queue[r.MessageKey]
-	if q == nil {
-		return
-	}
-	switch q.Status {
-	case QueueQueued, QueueReserved, QueueAttempted:
-		q.Status = QueueSent
-	}
-}
-
 func (m *MemoryStore) GetQueueByKey(_ context.Context, messageKey string) (*QueueItem, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -596,9 +662,13 @@ func (m *MemoryStore) RetryQueue(ctx context.Context, id uuid.UUID, dueAt time.T
 	if q == nil {
 		return fmt.Errorf("queue item not found")
 	}
+	if q.Status != QueueReserved {
+		return nil
+	}
 	q.Status = QueueQueued
 	q.DueAt = dueAt.UTC()
 	q.LastError = errText
+	q.ReservedUntil = nil
 	return nil
 }
 
@@ -635,7 +705,7 @@ func (m *MemoryStore) CountActiveLeases(ctx context.Context, now time.Time) (int
 	defer m.mu.Unlock()
 	n := 0
 	for _, r := range m.reservations {
-		if r.State == StateReserved && r.LeaseUntil.After(now) {
+		if r.State == StateReserved && (r.AttemptedAt != nil || r.LeaseUntil.After(now)) {
 			n++
 		}
 	}

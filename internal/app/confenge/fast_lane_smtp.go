@@ -2,6 +2,7 @@ package confenge
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"strings"
 	"time"
@@ -67,7 +68,7 @@ func (t *SMTPFirstTouchTransport) SendFirstTouch(ctx context.Context, msg FirstT
 	// We mint the Message-ID and write it as a header, so the id recorded in the
 	// ledger is the id the recipient's provider will quote back in a bounce or a
 	// reply. Without it there is nothing to correlate an ambiguous result to.
-	messageID := firstTouchMessageID(account.Email)
+	messageID := firstTouchMessageID(msg.OrganizationID, msg.MessageKey, account.Email)
 
 	client := &smtpclient.Client{
 		FirstName: account.Name,
@@ -79,6 +80,7 @@ func (t *SMTPFirstTouchTransport) SendFirstTouch(ctx context.Context, msg FirstT
 			Username: creds.SMTPUser,
 			Password: creds.SMTPPassword,
 		},
+		BeforeData: msg.BeforeHandoff,
 	}
 
 	mailErr := client.Send(ctx, []string{to}, nil, nil, messageID, msg.Subject, msg.BodyText, "", "", nil)
@@ -105,12 +107,15 @@ func (t *SMTPFirstTouchTransport) SendFirstTouch(ctx context.Context, msg FirstT
 }
 
 // firstTouchMessageID mints an RFC 5322 Message-ID in the sender's own domain.
-func firstTouchMessageID(from string) string {
+func firstTouchMessageID(orgID uuid.UUID, messageKey, from string) string {
 	domain := "confenge.com.br"
 	if at := strings.LastIndex(from, "@"); at >= 0 && at+1 < len(from) {
 		if d := strings.TrimSpace(from[at+1:]); d != "" {
-			domain = d
+			domain = strings.ToLower(d)
 		}
 	}
-	return fmt.Sprintf("<%s@%s>", uuid.New().String(), domain)
+	identity := strings.ToLower(strings.TrimSpace(orgID.String())) + "\x00" +
+		strings.TrimSpace(messageKey) + "\x00" + strings.ToLower(strings.TrimSpace(from))
+	digest := sha256.Sum256([]byte(identity))
+	return fmt.Sprintf("<confenge-%x@%s>", digest[:20], domain)
 }

@@ -73,9 +73,11 @@ func (s *PGStore) ListOccupied(ctx context.Context, now time.Time, window time.D
 		SELECT sent_at FROM confenge_dispatch_sends
 		WHERE sent_at >= $1 AND sent_at <= $2
 		UNION ALL
-		SELECT reserved_at FROM confenge_dispatch_reservations
-		WHERE state = 'reserved' AND lease_until > $2
-		  AND reserved_at >= $1 AND reserved_at <= $2`,
+		SELECT COALESCE(attempted_at, reserved_at) FROM confenge_dispatch_reservations
+		WHERE ((attempted_at IS NOT NULL AND state <> 'committed')
+		       OR (attempted_at IS NULL AND state = 'reserved' AND lease_until > $2))
+		  AND COALESCE(attempted_at, reserved_at) >= $1
+		  AND COALESCE(attempted_at, reserved_at) <= $2`,
 		cutoff, now,
 	)
 	if err != nil {
@@ -158,7 +160,7 @@ func (s *PGStore) TryReserveAtomic(ctx context.Context, in AtomicReserveInput) (
 	_, _ = tx.Exec(ctx, `
 		UPDATE confenge_dispatch_reservations
 		SET state = 'released', last_error = 'lease_expired'
-			WHERE state = 'reserved' AND lease_until <= $1`, now)
+			WHERE state = 'reserved' AND attempted_at IS NULL AND lease_until <= $1`, now)
 
 	// Provider-confirmed replays remain final after later mailbox disablement.
 	var sentAt time.Time
@@ -216,6 +218,13 @@ func (s *PGStore) TryReserveAtomic(ctx context.Context, in AtomicReserveInput) (
 	).Scan(&existing.ID, &existing.OrganizationID, &existing.EmailAccountID, &existing.TaskID, &existing.Channel, &existing.MessageKey,
 		&draftID, &existing.State, &existing.ReservedAt, &existing.AttemptedAt, &existing.LeaseUntil)
 	if err == nil && existing.State == StateReserved && existing.LeaseUntil.After(now) {
+		if existing.AttemptedAt != nil {
+			out.Reason = "handoff_already_started"
+			if err := tx.Commit(ctx); err != nil {
+				return out, err
+			}
+			return out, nil
+		}
 		mailboxConflict := in.Req.Channel == ChannelEmail && in.Req.EmailAccountID != nil &&
 			(existing.EmailAccountID == nil || *existing.EmailAccountID != *in.Req.EmailAccountID)
 		taskConflict := in.Req.TaskID != nil && (existing.TaskID == nil || *existing.TaskID != *in.Req.TaskID)
@@ -242,6 +251,13 @@ func (s *PGStore) TryReserveAtomic(ctx context.Context, in AtomicReserveInput) (
 	}
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return out, err
+	}
+	if err == nil && existing.AttemptedAt != nil {
+		out.Reason = "handoff_already_started"
+		if err := tx.Commit(ctx); err != nil {
+			return out, err
+		}
+		return out, nil
 	}
 
 	if in.Req.Channel == ChannelEmail && in.Mailbox != nil {
@@ -285,9 +301,11 @@ func (s *PGStore) TryReserveAtomic(ctx context.Context, in AtomicReserveInput) (
 		SELECT sent_at FROM confenge_dispatch_sends
 		WHERE sent_at >= $1 AND sent_at <= $2
 		UNION ALL
-		SELECT reserved_at FROM confenge_dispatch_reservations
-		WHERE state = 'reserved' AND lease_until > $2
-		  AND reserved_at >= $1 AND reserved_at <= $2`,
+		SELECT COALESCE(attempted_at, reserved_at) FROM confenge_dispatch_reservations
+		WHERE ((attempted_at IS NOT NULL AND state <> 'committed')
+		       OR (attempted_at IS NULL AND state = 'reserved' AND lease_until > $2))
+		  AND COALESCE(attempted_at, reserved_at) >= $1
+		  AND COALESCE(attempted_at, reserved_at) <= $2`,
 		now.Add(-window), now,
 	)
 	if err != nil {
@@ -330,8 +348,8 @@ func (s *PGStore) TryReserveAtomic(ctx context.Context, in AtomicReserveInput) (
 	_, _ = tx.Exec(ctx, `
 		DELETE FROM confenge_dispatch_reservations
 		WHERE message_key = $1 AND (
-			state IN ('released', 'failed')
-			OR (state = 'reserved' AND lease_until <= $2)
+			(state IN ('released', 'failed') AND attempted_at IS NULL)
+			OR (state = 'reserved' AND attempted_at IS NULL AND lease_until <= $2)
 		)`, in.Req.MessageKey, now)
 
 	resID := uuid.New()
@@ -365,8 +383,55 @@ func (s *PGStore) RefreshReservation(ctx context.Context, id uuid.UUID, leaseUnt
 	_, err := s.db.Exec(ctx, `
 		UPDATE confenge_dispatch_reservations
 		SET lease_until = $2, worker_token = COALESCE(NULLIF($3,''), worker_token)
-		WHERE id = $1 AND state = 'reserved'`, id, leaseUntil, workerToken)
+		WHERE id = $1 AND state = 'reserved' AND attempted_at IS NULL`, id, leaseUntil, workerToken)
 	return err
+}
+
+func (s *PGStore) StartHandoff(ctx context.Context, reservationID, queueID uuid.UUID, attemptedAt time.Time) error {
+	if attemptedAt.IsZero() {
+		attemptedAt = time.Now().UTC()
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var messageKey string
+	err = tx.QueryRow(ctx, `
+		UPDATE confenge_dispatch_reservations
+		SET attempted_at = COALESCE(attempted_at, $2)
+		WHERE id = $1 AND state = 'reserved'
+		RETURNING message_key`, reservationID, attemptedAt.UTC()).Scan(&messageKey)
+	if err != nil {
+		return fmt.Errorf("start dispatch handoff reservation: %w", err)
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE confenge_dispatch_queue
+		SET status='attempted', reserved_until=NULL,
+		    last_error='handoff_started', updated_at=now()
+		WHERE id=$1 AND message_key=$2 AND status IN ('reserved','attempted')`, queueID, messageKey)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("start dispatch handoff queue binding not found")
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *PGStore) FinalizeHandoff(ctx context.Context, reservationID uuid.UUID, state, errText string) (bool, error) {
+	if state == "" {
+		state = StateFailed
+	}
+	tag, err := s.db.Exec(ctx, `
+		UPDATE confenge_dispatch_reservations
+		SET state=$2, last_error=$3
+		WHERE id=$1 AND attempted_at IS NOT NULL AND state <> 'committed'`,
+		reservationID, state, errText)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 func (s *PGStore) CommitReservation(ctx context.Context, id uuid.UUID, sentAt time.Time) error {
@@ -383,13 +448,16 @@ func (s *PGStore) CommitReservationWithEvidence(ctx context.Context, id uuid.UUI
 	var r Reservation
 	var draftID *uuid.UUID
 	err = tx.QueryRow(ctx, `
-		SELECT id, organization_id, email_account_id, task_id, channel, message_key, draft_id, state
+		SELECT id, organization_id, email_account_id, task_id, channel, message_key, draft_id, state, attempted_at
 		FROM confenge_dispatch_reservations WHERE id = $1 FOR UPDATE`, id,
-	).Scan(&r.ID, &r.OrganizationID, &r.EmailAccountID, &r.TaskID, &r.Channel, &r.MessageKey, &draftID, &r.State)
+	).Scan(&r.ID, &r.OrganizationID, &r.EmailAccountID, &r.TaskID, &r.Channel, &r.MessageKey, &draftID, &r.State, &r.AttemptedAt)
 	if err != nil {
 		return err
 	}
 	r.DraftID = draftID
+	if ev.QueueID != nil && r.AttemptedAt == nil {
+		return fmt.Errorf("provider acceptance cannot commit before durable handoff")
+	}
 	if r.State == StateCommitted {
 		_, err = tx.Exec(ctx, `
 			UPDATE confenge_dispatch_sends
@@ -425,9 +493,11 @@ func (s *PGStore) CommitReservationWithEvidence(ctx context.Context, id uuid.UUI
 	if err != nil {
 		return err
 	}
-	_, _ = tx.Exec(ctx, `
+	if _, err = tx.Exec(ctx, `
 		UPDATE confenge_dispatch_queue SET status = 'sent', updated_at = now()
-		WHERE message_key = $1 AND status IN ('queued','reserved','attempted')`, r.MessageKey)
+		WHERE message_key = $1 AND status IN ('queued','reserved','attempted')`, r.MessageKey); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
 }
 
@@ -445,7 +515,7 @@ func (s *PGStore) ReleaseReservation(ctx context.Context, id uuid.UUID, state, e
 	var channel, messageKey string
 	err = tx.QueryRow(ctx, `
 		UPDATE confenge_dispatch_reservations SET state = $2, last_error = $3
-		WHERE id = $1 AND state = 'reserved'
+		WHERE id = $1 AND state = 'reserved' AND attempted_at IS NULL
 		RETURNING organization_id, email_account_id, task_id, channel, message_key, draft_id`,
 		id, state, errText).Scan(&orgID, &emailAccountID, &taskID, &channel, &messageKey, &draftID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -471,7 +541,7 @@ func (s *PGStore) ExpireStaleReservations(ctx context.Context, now time.Time) (i
 	tag, err := s.db.Exec(ctx, `
 		UPDATE confenge_dispatch_reservations
 		SET state = 'released', last_error = 'lease_expired'
-		WHERE state = 'reserved' AND lease_until <= $1`, now)
+		WHERE state = 'reserved' AND attempted_at IS NULL AND lease_until <= $1`, now)
 	if err != nil {
 		return 0, err
 	}
@@ -500,7 +570,7 @@ func (s *PGStore) Enqueue(ctx context.Context, item *QueueItem) error {
 				-- 'attempted' is terminal for enqueue: the message is already with the
 				-- transport and its acceptance is merely unobserved. Re-queueing it
 				-- would dispatch the same message a second time.
-				WHEN confenge_dispatch_queue.status IN ('attempted','sent','cancelled') THEN confenge_dispatch_queue.status
+				WHEN confenge_dispatch_queue.status IN ('attempted','sent','cancelled','failed') THEN confenge_dispatch_queue.status
 				ELSE 'queued'
 			END,
 			cancel_reason = CASE
@@ -613,7 +683,8 @@ func (s *PGStore) UpdateQueueStatus(ctx context.Context, id uuid.UUID, status, e
 			last_error = CASE WHEN $3 <> '' THEN $3 ELSE last_error END,
 			reserved_until = CASE WHEN $2 = 'reserved' THEN reserved_until ELSE NULL END,
 			updated_at = now()
-		WHERE id = $1`, id, status, errText)
+		WHERE id = $1
+		  AND NOT (status IN ('attempted','sent','failed') AND $2 IN ('queued','reserved'))`, id, status, errText)
 	return err
 }
 
@@ -687,7 +758,7 @@ func firstNonEmptyString(value, fallback string) string {
 
 func (s *PGStore) CountActiveLeases(ctx context.Context, now time.Time) (int, error) {
 	var n int
-	err := s.db.QueryRow(ctx, `SELECT count(*) FROM confenge_dispatch_reservations WHERE state = 'reserved' AND lease_until > $1`, now).Scan(&n)
+	err := s.db.QueryRow(ctx, `SELECT count(*) FROM confenge_dispatch_reservations WHERE state = 'reserved' AND (attempted_at IS NOT NULL OR lease_until > $1)`, now).Scan(&n)
 	return n, err
 }
 

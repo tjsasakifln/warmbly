@@ -176,6 +176,7 @@ type QueueItem struct {
 	Status         string
 	CancelReason   string
 	LastError      string
+	ReservedUntil  *time.Time
 	CreatedAt      time.Time
 }
 
