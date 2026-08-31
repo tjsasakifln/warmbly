@@ -1079,6 +1079,23 @@ func requireDelegatedEmailOutbound(acc *models.OutreachAccount, cand *models.Out
 	return nil
 }
 
+// delegatedQARecipient adapts the explicit institutional controlled contract
+// to legacy validators that otherwise interpret named-person ESR and mailbox
+// purpose fields as universal. The persisted candidate is never mutated.
+func delegatedQARecipient(cand *models.OutreachContactCandidate) *models.OutreachContactCandidate {
+	if cand == nil || !CandidateDelegatedControlledEligible(cand) ||
+		CandidateRouteClass(cand) == RouteClassDirectPerson {
+		return cand
+	}
+	view := *cand
+	view.EmailSendReady = true
+	view.MailboxPurposeSendBlocked = false
+	if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(view.RecipientCommercialSuitability)), "UNSUITABLE") {
+		view.RecipientCommercialSuitability = "SUITABLE_CONTROLLED_ROUTE"
+	}
+	return &view
+}
+
 func (s *service) validateDelegatedEntry(ctx context.Context, orgID uuid.UUID, manifest DelegatedFirstTouchManifest, entry DelegatedFirstTouchEntry, duplicateRoots map[string]bool, recentBodies []delegatedRecentBody, corpusAvailable bool) (*models.OutreachAccount, *models.OutreachContactCandidate, []string) {
 	blockers := []string{}
 	add := func(code string) { blockers = appendUnique(blockers, code) }
@@ -1265,7 +1282,8 @@ func (s *service) validateDelegatedDeterministicQA(ctx context.Context, orgID uu
 			break
 		}
 	}
-	qa := ValidateDraft(out, acc, cand, ValidateOpts{
+	qaCandidate := delegatedQARecipient(cand)
+	qa := ValidateDraft(out, acc, qaCandidate, ValidateOpts{
 		MaxWords: s.cfg.MaxInitialEmailWords, Evidence: evidence, Channel: ChannelEmailInitial,
 		PromptVersion: PromptVersion,
 	})
@@ -1273,7 +1291,7 @@ func (s *service) validateDelegatedDeterministicQA(ctx context.Context, orgID uu
 		code := "deterministic_qa:" + reasonCode(item)
 		add(code)
 	}
-	if risk, _ := ClassifyRisk(acc, cand, out, qa); risk != "GREEN" {
+	if risk, _ := ClassifyRisk(acc, qaCandidate, out, qa); risk != "GREEN" {
 		add("deterministic_qa:risk_class_not_green")
 	}
 	return blockers

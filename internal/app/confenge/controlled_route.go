@@ -180,7 +180,12 @@ func CandidateDelegatedControlledEligible(c *models.OutreachContactCandidate) bo
 		d.PreferredInitial == nil || !*d.PreferredInitial {
 		return false
 	}
-	switch CandidateRouteClass(c) {
+	class := CandidateRouteClass(c)
+	if class == RouteClassDirectPerson {
+		return c.EmailSendReady && provenPersonName(c) &&
+			CandidateControlledEligible(c) && CandidateEnrollable(c)
+	}
+	switch class {
 	case RouteClassRoleOrDepartment, RouteClassGenericCompany, RouteClassPublicCompanyFreemail:
 	default:
 		return false
