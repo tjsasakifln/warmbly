@@ -202,6 +202,7 @@ type Service interface {
 	TruthScoreboard(ctx context.Context, orgID uuid.UUID, month string, includeSynthetic bool) (*intel.Scoreboard, *errx.Error)
 	OrganicScoreboard(ctx context.Context, orgID uuid.UUID, includeSynthetic bool) (*intel.OrganicScoreboard, *errx.Error)
 	OrganicFeedback(ctx context.Context, orgID uuid.UUID, includeSynthetic bool) (*intel.OrganicFeedbackExport, *errx.Error)
+	AcquisitionOutcomeFeedback(ctx context.Context, orgID uuid.UUID, period intel.OutcomeFeedbackPeriod, includeSynthetic bool) (*intel.AcquisitionOutcomeFeedback, *errx.Error)
 	RegisterHumanOutcome(ctx context.Context, orgID uuid.UUID, in intel.HumanOutcomeEntry) (intel.JoinResult, *errx.Error)
 	HumanOutcomeEnvelopes() []intel.HumanOutcomeEnvelope
 }

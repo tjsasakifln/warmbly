@@ -302,6 +302,20 @@ func (s *service) OrganicFeedback(ctx context.Context, orgID uuid.UUID, includeS
 	return &exp, nil
 }
 
+// AcquisitionOutcomeFeedback returns a period-bounded, small-cell-suppressed
+// acquisition-to-outcome export. It reads the existing chain only.
+func (s *service) AcquisitionOutcomeFeedback(_ context.Context, orgID uuid.UUID, period intel.OutcomeFeedbackPeriod, includeSynthetic bool) (*intel.AcquisitionOutcomeFeedback, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return nil, xerr
+	}
+	chains, err := s.intelStore().ListChains(orgID.String())
+	if err != nil {
+		return nil, errx.New(errx.Internal, "outcome feedback list: "+err.Error())
+	}
+	report := intel.ProjectAcquisitionOutcomeFeedback(chains, period, time.Now().UTC(), includeSynthetic)
+	return &report, nil
+}
+
 func (s *service) observeExisting(ctx context.Context, orgID uuid.UUID) {
 	st := s.intelStore()
 	seenActions := map[string]bool{}

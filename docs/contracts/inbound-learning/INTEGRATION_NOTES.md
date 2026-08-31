@@ -47,6 +47,17 @@ narrative, revenue, or causal attribution. Learning verdicts
 (`REPEAT` / `CHANGE` / `STOP` / `NEED_MORE_DATA`) stay local.
 `upstream_writes` is always empty.
 
+## Future outcome-feedback fields
+
+The current read-only consumer contract is documented in
+[`outcome-feedback.md`](./outcome-feedback.md). Route attribution is partial.
+The existing receipt preserves raw route/asset/CTA/intent strings, but they are
+not safe aggregate dimensions without closed, versioned registries. Do not
+overload query, UTM, form message, or another free-text field. A future producer
+must use versioned route, asset, CTA, intent, and public-family buyer-job IDs
+after Warmbly explicitly versions and persists the same fields. Until then,
+those dimensions stay `UNKNOWN` / `UNJOINABLE`.
+
 ## Swap fixture for real event
 
 1. Keep `CONFENGE_AUTO_SEND_ENABLED=false`.
