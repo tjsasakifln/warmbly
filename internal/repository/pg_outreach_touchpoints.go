@@ -344,21 +344,50 @@ func (r *outreachRepository) CASScheduleTouchpoint(ctx context.Context, orgID, i
 	if tp.DraftID == nil {
 		return nil, errors.New("approved touchpoint has no draft")
 	}
-	_, err = tx.Exec(ctx, `
+	var queueStatus string
+	var queueDraftID uuid.UUID
+	var queueRecipient string
+	err = tx.QueryRow(ctx, `
 		INSERT INTO confenge_dispatch_queue (
 			organization_id, channel, draft_id, message_key, recipient_ref,
 			due_at, priority, status, created_at, updated_at
 		) VALUES ($1,$2,$3,$4,$5,$6,0,'queued',$7,$7)
 		ON CONFLICT (message_key) DO UPDATE SET
-			due_at=EXCLUDED.due_at, recipient_ref=EXCLUDED.recipient_ref,
+			draft_id=CASE
+				WHEN confenge_dispatch_queue.status='cancelled'
+				  AND confenge_dispatch_queue.cancel_reason IN (
+					'delegated_authority_or_source_binding_advanced',
+					'source_run_superseded'
+				  ) THEN EXCLUDED.draft_id
+				ELSE confenge_dispatch_queue.draft_id
+			END,
+			due_at=CASE
+				WHEN confenge_dispatch_queue.status='cancelled'
+				  AND confenge_dispatch_queue.cancel_reason IN (
+					'delegated_authority_or_source_binding_advanced',
+					'source_run_superseded'
+				  ) THEN EXCLUDED.due_at
+				WHEN confenge_dispatch_queue.status IN ('queued','reserved')
+				  AND confenge_dispatch_queue.draft_id=EXCLUDED.draft_id
+				  AND COALESCE(confenge_dispatch_queue.recipient_ref,'')=COALESCE(EXCLUDED.recipient_ref,'')
+				  THEN EXCLUDED.due_at
+				ELSE confenge_dispatch_queue.due_at
+			END,
+			recipient_ref=CASE
+				WHEN confenge_dispatch_queue.status='cancelled'
+				  AND confenge_dispatch_queue.cancel_reason IN (
+					'delegated_authority_or_source_binding_advanced',
+					'source_run_superseded'
+				  ) THEN EXCLUDED.recipient_ref
+				ELSE confenge_dispatch_queue.recipient_ref
+			END,
 			status=CASE
 				WHEN confenge_dispatch_queue.status='cancelled'
 				  AND confenge_dispatch_queue.cancel_reason IN (
 					'delegated_authority_or_source_binding_advanced',
 					'source_run_superseded'
 				  ) THEN 'queued'
-				WHEN confenge_dispatch_queue.status IN ('sent','cancelled') THEN confenge_dispatch_queue.status
-				ELSE 'queued'
+				ELSE confenge_dispatch_queue.status
 			END,
 			cancel_reason=CASE
 				WHEN confenge_dispatch_queue.status='cancelled'
@@ -374,10 +403,39 @@ func (r *outreachRepository) CASScheduleTouchpoint(ctx context.Context, orgID, i
 					'source_run_superseded'
 				  )
 				  THEN confenge_dispatch_queue.last_error ELSE '' END,
-			reserved_until=NULL, updated_at=EXCLUDED.updated_at`,
-		orgID, tp.Channel, *tp.DraftID, messageKey, strings.ToLower(strings.TrimSpace(tp.Recipient)), dueAt.UTC(), now)
+			reserved_until=CASE
+				WHEN confenge_dispatch_queue.status='cancelled'
+				  AND confenge_dispatch_queue.cancel_reason IN (
+					'delegated_authority_or_source_binding_advanced',
+					'source_run_superseded'
+				  ) THEN NULL
+				ELSE confenge_dispatch_queue.reserved_until
+			END,
+			updated_at=CASE
+				WHEN confenge_dispatch_queue.status='cancelled'
+				  AND confenge_dispatch_queue.cancel_reason IN (
+					'delegated_authority_or_source_binding_advanced',
+					'source_run_superseded'
+				  ) THEN EXCLUDED.updated_at
+				WHEN confenge_dispatch_queue.status IN ('queued','reserved')
+				  AND confenge_dispatch_queue.draft_id=EXCLUDED.draft_id
+				  AND COALESCE(confenge_dispatch_queue.recipient_ref,'')=COALESCE(EXCLUDED.recipient_ref,'')
+				  THEN EXCLUDED.updated_at
+				ELSE confenge_dispatch_queue.updated_at
+			END
+		RETURNING status,draft_id,COALESCE(recipient_ref,'')`,
+		orgID, tp.Channel, *tp.DraftID, messageKey, strings.ToLower(strings.TrimSpace(tp.Recipient)), dueAt.UTC(), now).
+		Scan(&queueStatus, &queueDraftID, &queueRecipient)
 	if err != nil {
 		return nil, err
+	}
+	wantRecipient := strings.ToLower(strings.TrimSpace(tp.Recipient))
+	if (queueStatus != "queued" && queueStatus != "reserved") ||
+		queueDraftID != *tp.DraftID || queueRecipient != wantRecipient {
+		// Roll back the touchpoint's QUEUED transition as well. Attempted,
+		// failed, sent and safety-cancelled work is terminal unless an explicit
+		// audited recovery operation reopens it.
+		return nil, nil
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err

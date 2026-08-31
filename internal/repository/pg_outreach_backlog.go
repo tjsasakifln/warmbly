@@ -101,6 +101,14 @@ func (r *outreachRepository) materializeCurrentInitialBacklog(ctx context.Contex
 			    ))
 			WHERE sent.organization_id=$1 AND sent.channel='EMAIL'
 			UNION
+			SELECT t.account_id
+			FROM confenge_dispatch_queue q
+			JOIN outreach_touchpoints t
+			  ON t.organization_id=q.organization_id AND t.draft_id=q.draft_id
+			WHERE q.organization_id=$1 AND q.channel='EMAIL'
+			  AND q.status IN ('attempted','failed','sent')
+			  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
+			UNION
 			SELECT account_id
 			FROM outreach_touchpoints
 			WHERE organization_id=$1 AND ordinal=1 AND purpose='INITIAL' AND channel='EMAIL'

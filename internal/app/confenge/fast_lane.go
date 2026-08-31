@@ -275,6 +275,36 @@ func (s *service) ProcessFastLaneOnce(ctx context.Context) (bool, error) {
 		Subject:        tp.Subject,
 		BodyText:       tp.BodyText,
 		BeforeHandoff: func(handoffCtx context.Context) error {
+			if transport := s.ResolveTransportState(handoffCtx, nil); !transport.Active {
+				return fmt.Errorf("transport blocked immediately before SMTP DATA")
+			}
+			liveTP, liveErr := s.repo.GetTouchpointByDraft(handoffCtx, item.OrganizationID, item.DraftID)
+			if liveErr != nil {
+				return fmt.Errorf("touchpoint safety lookup before SMTP DATA: %w", liveErr)
+			}
+			if liveTP == nil {
+				return fmt.Errorf("touchpoint missing before SMTP DATA")
+			}
+			if TouchpointBindingHash(liveTP) != TouchpointBindingHash(tp) {
+				return fmt.Errorf("approved payload changed before SMTP DATA")
+			}
+			if reason, ok, _ := s.fastLaneBlock(handoffCtx, item, liveTP); !ok {
+				return fmt.Errorf("safety blocked before SMTP DATA: %s", reason)
+			}
+			lastMailboxID, mailboxErr := s.fastLaneMailbox(handoffCtx, item)
+			if mailboxErr != nil {
+				return fmt.Errorf("mailbox changed before SMTP DATA: %w", mailboxErr)
+			}
+			if lastMailboxID != mailboxID {
+				return fmt.Errorf("mailbox identity changed before SMTP DATA")
+			}
+			terminal, terminalErr := s.repo.HasAcceptedInitialForAccount(handoffCtx, item.OrganizationID, tp.AccountID)
+			if terminalErr != nil {
+				return fmt.Errorf("terminal initial appeared before SMTP DATA: %w", terminalErr)
+			}
+			if terminal {
+				return fmt.Errorf("terminal initial appeared before SMTP DATA")
+			}
 			return s.governor.StartHandoff(handoffCtx, res.Reservation.ID, item.ID)
 		},
 	})

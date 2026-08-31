@@ -64,6 +64,12 @@ func (s *service) retireStaleDelegatedFirstTouches(ctx context.Context, orgID uu
 		WHERE d.organization_id=$1
 		  AND d.state IN ('APPROVED','QUEUED','APPROVED_NOT_SCHEDULED')
 		  AND d.touchpoint_id IS NOT NULL
+		  AND NOT EXISTS (
+		    SELECT 1 FROM confenge_dispatch_queue handoff
+		    WHERE handoff.organization_id=d.organization_id
+		      AND handoff.status='attempted'
+		      AND (handoff.draft_id=d.draft_id OR handoff.message_key=d.queue_message_key)
+		  )
 		  AND (
 		    -- Positive revocations apply after admission too. Empty or aged
 		    -- provenance is drift, not proof that a recipient became unsafe.

@@ -128,6 +128,17 @@ func (r *outreachRepository) HasAcceptedInitialForAccount(ctx context.Context, o
 			  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
 			  AND t.state='SENT' AND COALESCE(t.provider_message_id,'') <> ''
 			  AND t.sent_at IS NOT NULL
+			UNION ALL
+			-- An old draft-scoped queue can predate the account-scoped message
+			-- key. Attempted is an ambiguous external handoff and failed is an
+			-- exhausted/permanent terminal outcome; neither may be auto-resendable
+			-- through a replacement draft.
+			SELECT 1 FROM confenge_dispatch_queue q
+			JOIN outreach_touchpoints t
+			  ON t.organization_id=q.organization_id AND t.draft_id=q.draft_id
+			WHERE q.organization_id=$1 AND t.account_id=$2
+			  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
+			  AND q.status IN ('attempted','failed','sent')
 		)`, orgID, accountID).Scan(&accepted)
 	return accepted, err
 }
