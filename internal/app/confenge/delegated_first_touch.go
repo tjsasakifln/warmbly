@@ -1672,6 +1672,14 @@ func (s *service) prepareDelegatedTouchpoint(ctx context.Context, orgID uuid.UUI
 			all[i].Channel != models.OutreachChannelEmail {
 			continue
 		}
+		if runwayEntry {
+			// The selector already proved committed lineage for this exact row.
+			// Carryover may legitimately come from an older run; admission below
+			// rebinds it to the current manifest before queue commit.
+			row := all[i]
+			tp = &row
+			break
+		}
 		if all[i].SourceRunID == "" {
 			row := all[i]
 			legacy = &row
