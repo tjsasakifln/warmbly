@@ -88,7 +88,8 @@ func (s *service) ProcessDraftGenerationOnce(ctx context.Context) (bool, error) 
 			  AND review_backlog.state='NEEDS_REVIEW'
 			  AND ($5::uuid='00000000-0000-0000-0000-000000000000'::uuid
 			    OR review_backlog.organization_id=$5)
-			  AND review_feed.last_status='completed'
+			  AND review_feed.last_success_at IS NOT NULL AND review_feed.source_generated_at IS NOT NULL
+			  AND review_feed.last_snapshot_hash<>'' AND review_feed.last_run_id<>''
 			  AND review_account.source_run_id=review_feed.last_run_id
 			  AND NOT EXISTS (
 				SELECT 1
@@ -108,7 +109,8 @@ func (s *service) ProcessDraftGenerationOnce(ctx context.Context) (bool, error) 
 			WHERE a.queue_state = 'READY_TO_GENERATE'
 			  AND ($5::uuid='00000000-0000-0000-0000-000000000000'::uuid
 			    OR a.organization_id=$5)
-			  AND feed.last_status='completed'
+			  AND feed.last_success_at IS NOT NULL AND feed.source_generated_at IS NOT NULL
+			  AND feed.last_snapshot_hash<>'' AND feed.last_run_id<>''
 			  AND a.source_run_id=feed.last_run_id
 			  AND COALESCE(capacity.review_count,0) < $3
 			  AND a.target_fit_eligible = true

@@ -100,6 +100,48 @@ class TestConfengeVpsPack(unittest.TestCase):
         self.assertIn("DELEGATED FIRST TOUCH ENABLED", proc.stdout)
         self.assertNotIn("FAIL", proc.stdout)
 
+    def test_status_optional_feed_fields_cannot_abort_the_pack(self) -> None:
+        status = (PACK / "status.sh").read_text(encoding="utf-8")
+        for helper in ("json_optional_string", "json_optional_uint"):
+            body = status.split(f"{helper}() {{", maxsplit=1)[1].split(
+                "\n}", maxsplit=1
+            )[0]
+            self.assertIn("|| true", body)
+        for field in (
+            "feed_last_success_at",
+            "feed_snapshot_hash",
+            "feed_authority_state",
+            "feed_source_expires_at",
+            "target_membership_count",
+            "supplier_confirmed_count",
+            "feed_last_attempt_at",
+            "feed_last_attempt_status",
+        ):
+            self.assertIn(field, status)
+
+        syntax = subprocess.run(
+            ["bash", "-n"],
+            input=status,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(syntax.returncode, 0, syntax.stderr)
+
+        helpers = status.split("json_optional_string() {", maxsplit=1)[1].split(
+            "# BACKEND", maxsplit=1
+        )[0]
+        probe = "set -euo pipefail\njson_optional_string() {" + helpers + """
+payload='{"feed_state":"fresh"}'
+test "$(json_optional_string "$payload" feed_state)" = fresh
+test -z "$(json_optional_string "$payload" feed_snapshot_hash)"
+test -z "$(json_optional_uint "$payload" target_membership_count)"
+"""
+        optional = subprocess.run(
+            ["bash"], input=probe, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(optional.returncode, 0, optional.stderr)
+
     def test_provider_vs_operational_documented(self) -> None:
         plane = (ROOT / "docs/confenge/vps-execution-plane.md").read_text(
             encoding="utf-8"

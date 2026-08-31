@@ -409,7 +409,7 @@ func (s *service) WorkingQueueOverview(ctx context.Context, orgID uuid.UUID) (*W
 	if slots > 0 {
 		out.CapacityLoad = float64(out.DueNext24h) / float64(slots)
 	}
-	if st, err := s.repo.GetFeedSyncState(ctx, orgID); err == nil && st != nil && st.LastStatus == "completed" {
+	if st, err := s.repo.GetFeedSyncState(ctx, orgID); err == nil && st != nil && st.LastSuccessAt != nil {
 		out.LastFeedSyncAt = st.SourceGeneratedAt
 		if st.SourceGeneratedAt != nil {
 			age := int64(time.Since(*st.SourceGeneratedAt).Seconds())

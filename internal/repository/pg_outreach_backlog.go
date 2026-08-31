@@ -79,7 +79,21 @@ func (r *outreachRepository) materializeCurrentInitialBacklog(ctx context.Contex
 
 	if _, err = tx.Exec(ctx, `
 		CREATE TEMP TABLE confenge_current_initial_backlog ON COMMIT DROP AS
-		WITH candidate_rollup AS (
+		WITH terminal_accounts AS MATERIALIZED (
+			SELECT id AS account_id
+			FROM outreach_accounts
+			WHERE organization_id=$1
+			  AND queue_state IN ('SENT','REPLIED','MEETING','PROPOSAL','WON','LOST','ENROLLED')
+			UNION
+			SELECT account_id
+			FROM confenge_delegated_first_touch_decisions
+			WHERE organization_id=$1 AND state='SENT' AND account_id IS NOT NULL
+			UNION
+			SELECT account_id
+			FROM outreach_touchpoints
+			WHERE organization_id=$1 AND ordinal=1 AND purpose='INITIAL' AND channel='EMAIL'
+			  AND (state IN ('SENT','REPLIED') OR sent_at IS NOT NULL OR provider_message_id<>'')
+		), candidate_rollup AS (
 			SELECT a.id AS account_id,
 				count(*) FILTER (WHERE c.discovery_json->>'preferred_initial'='true')::int AS preferred_count,
 				(array_agg(c.id ORDER BY c.id) FILTER (WHERE c.discovery_json->>'preferred_initial'='true'))[1] AS candidate_id,
@@ -136,18 +150,19 @@ func (r *outreachRepository) materializeCurrentInitialBacklog(ctx context.Contex
 			  AND (a.source_run_id=$2 OR a.commercial_qualification_state='QUALIFIED')
 			GROUP BY a.id
 		), classified AS (
-			SELECT a.id AS account_id,cr.candidate_id,
+			SELECT a.id AS account_id,cr.candidate_id,(a.source_run_id=$2) AS manifest_member,
 				(a.contractor_role_status='CONTRACTOR_ROLE_CONFIRMED'
 				 AND a.target_party_role='SUPPLIER'
 				 AND a.supplier_cnpj14=a.cnpj14 AND a.contractor_role_evidence_hash ~ '^[0-9a-f]{64}$'
 				 AND jsonb_array_length(a.contractor_role_evidence_ids)>0) AS supplier_confirmed,
 				(COALESCE(cr.preferred_count,0)=1 AND cr.candidate_id IS NOT NULL) AS candidate_attributed,
-				(a.target_fit_eligible AND (a.target_fit_fresh OR a.commercial_qualification_state='QUALIFIED') AND a.target_fit_class='TARGET_CONFIRMED'
+				(terminal.account_id IS NULL AND a.target_fit_eligible AND (a.target_fit_fresh OR a.commercial_qualification_state='QUALIFIED') AND a.target_fit_class='TARGET_CONFIRMED'
 				 AND a.target_fit_version<>'' AND a.target_fit_source_watermark<>''
 				 AND a.target_fit_observed_at IS NOT NULL AND NOT a.blocked AND NOT a.do_not_contact
 				 AND COALESCE(cr.preferred_count,0)=1 AND COALESCE(cr.preferred_eligible,false)) AS initial_prepared,
 				(COALESCE(cr.preferred_count,0)=1 AND COALESCE(cr.preferred_delegated_eligible,false)) AS delegated_candidate,
 				CASE
+					WHEN terminal.account_id IS NOT NULL THEN 'initial_already_contacted'
 					WHEN a.blocked OR a.do_not_contact THEN 'account_suppressed'
 					WHEN NOT a.target_fit_eligible THEN COALESCE(NULLIF(a.target_fit_suppression_reason,''),'target_fit_ineligible')
 					WHEN (NOT a.target_fit_fresh AND a.commercial_qualification_state<>'QUALIFIED') OR a.target_fit_class<>'TARGET_CONFIRMED' THEN 'target_fit_not_current_confirmed'
@@ -166,10 +181,11 @@ func (r *outreachRepository) materializeCurrentInitialBacklog(ctx context.Contex
 				END AS reason_code
 			FROM outreach_accounts a
 			LEFT JOIN candidate_rollup cr ON cr.account_id=a.id
+			LEFT JOIN terminal_accounts terminal ON terminal.account_id=a.id
 			WHERE a.organization_id=$1
 			  AND (a.source_run_id=$2 OR a.commercial_qualification_state='QUALIFIED')
 		)
-		SELECT account_id,candidate_id,supplier_confirmed,candidate_attributed,initial_prepared,
+		SELECT account_id,candidate_id,manifest_member,supplier_confirmed,candidate_attributed,initial_prepared,
 			(initial_prepared AND supplier_confirmed AND delegated_candidate AND reason_code='') AS delegated_eligible,reason_code
 		FROM classified`, orgID, sourceRunID); err != nil {
 		return out, err
@@ -202,15 +218,23 @@ func (r *outreachRepository) materializeCurrentInitialBacklog(ctx context.Contex
 	}
 
 	if err = tx.QueryRow(ctx, `
-		SELECT count(*)::int,
-			count(*) FILTER (WHERE supplier_confirmed)::int,
-			count(*) FILTER (WHERE candidate_attributed)::int,
-			count(*) FILTER (WHERE initial_prepared)::int,
-			count(*) FILTER (WHERE delegated_eligible)::int,
-			count(*) FILTER (WHERE NOT delegated_eligible)::int
+		SELECT count(*) FILTER (WHERE manifest_member)::int,
+			count(*) FILTER (WHERE manifest_member AND supplier_confirmed)::int,
+			count(*) FILTER (WHERE manifest_member AND candidate_attributed)::int,
+			count(*) FILTER (WHERE manifest_member AND initial_prepared)::int,
+			count(*) FILTER (WHERE manifest_member AND delegated_eligible)::int,
+			count(*) FILTER (WHERE manifest_member AND NOT delegated_eligible)::int,
+			count(*) FILTER (WHERE NOT manifest_member)::int,
+			count(*) FILTER (WHERE NOT manifest_member AND supplier_confirmed)::int,
+			count(*) FILTER (WHERE NOT manifest_member AND candidate_attributed)::int,
+			count(*) FILTER (WHERE NOT manifest_member AND initial_prepared)::int,
+			count(*) FILTER (WHERE NOT manifest_member AND delegated_eligible)::int,
+			count(*) FILTER (WHERE NOT manifest_member AND NOT delegated_eligible)::int
 		FROM confenge_current_initial_backlog`).Scan(
 		&out.Imported, &out.SupplierConfirmed, &out.CandidateAttributed,
 		&out.InitialPrepared, &out.DelegatedEligible, &out.HeldException,
+		&out.CarryoverImported, &out.CarryoverSupplierConfirmed, &out.CarryoverCandidateAttributed,
+		&out.CarryoverInitialPrepared, &out.CarryoverDelegatedEligible, &out.CarryoverHeldException,
 	); err != nil {
 		return out, err
 	}

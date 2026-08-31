@@ -28,6 +28,18 @@ http_ok() {
   curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$url" 2>/dev/null | grep -qE '^(200|204)$'
 }
 
+json_optional_string() {
+  local payload="$1" key="$2" match
+  match="$(printf '%s' "$payload" | grep -o "\"${key}\":\"[^\"]*\"" | head -1 || true)"
+  printf '%s' "$match" | cut -d'"' -f4
+}
+
+json_optional_uint() {
+  local payload="$1" key="$2" match
+  match="$(printf '%s' "$payload" | grep -o "\"${key}\":[0-9]*" | head -1 || true)"
+  printf '%s' "$match" | cut -d: -f2
+}
+
 # BACKEND
 if svc_running backend && http_ok "${API}/health"; then
   pass_fail BACKEND PASS
@@ -72,15 +84,19 @@ FEED_AUTHORITY_STATE=""
 FEED_SOURCE_EXPIRES_AT=""
 FEED_TARGET_COUNT=""
 FEED_SUPPLIER_COUNT=""
+FEED_LAST_ATTEMPT_AT=""
+FEED_LAST_ATTEMPT_STATUS=""
 if TOKEN="$(ops_access_token 2>/dev/null)"; then
   STATUS_JSON="$(curl -sS --max-time 5 "${API}/v1/confenge/status" -H "Authorization: Bearer $TOKEN" 2>/dev/null || true)"
-  FEED_API_STATE="$(printf '%s' "$STATUS_JSON" | grep -o '"feed_state":"[^"]*"' | head -1 | cut -d'"' -f4)"
-  FEED_TIMESTAMP="$(printf '%s' "$STATUS_JSON" | grep -o '"feed_last_success_at":"[^"]*"' | head -1 | cut -d'"' -f4)"
-  FEED_SNAPSHOT="$(printf '%s' "$STATUS_JSON" | grep -o '"feed_snapshot_hash":"[^"]*"' | head -1 | cut -d'"' -f4)"
-  FEED_AUTHORITY_STATE="$(printf '%s' "$STATUS_JSON" | grep -o '"feed_authority_state":"[^"]*"' | head -1 | cut -d'"' -f4)"
-  FEED_SOURCE_EXPIRES_AT="$(printf '%s' "$STATUS_JSON" | grep -o '"feed_source_expires_at":"[^"]*"' | head -1 | cut -d'"' -f4)"
-  FEED_TARGET_COUNT="$(printf '%s' "$STATUS_JSON" | grep -o '"target_membership_count":[0-9]*' | head -1 | cut -d: -f2)"
-  FEED_SUPPLIER_COUNT="$(printf '%s' "$STATUS_JSON" | grep -o '"supplier_confirmed_count":[0-9]*' | head -1 | cut -d: -f2)"
+  FEED_API_STATE="$(json_optional_string "$STATUS_JSON" feed_state)"
+  FEED_TIMESTAMP="$(json_optional_string "$STATUS_JSON" feed_last_success_at)"
+  FEED_SNAPSHOT="$(json_optional_string "$STATUS_JSON" feed_snapshot_hash)"
+  FEED_AUTHORITY_STATE="$(json_optional_string "$STATUS_JSON" feed_authority_state)"
+  FEED_SOURCE_EXPIRES_AT="$(json_optional_string "$STATUS_JSON" feed_source_expires_at)"
+  FEED_TARGET_COUNT="$(json_optional_uint "$STATUS_JSON" target_membership_count)"
+  FEED_SUPPLIER_COUNT="$(json_optional_uint "$STATUS_JSON" supplier_confirmed_count)"
+  FEED_LAST_ATTEMPT_AT="$(json_optional_string "$STATUS_JSON" feed_last_attempt_at)"
+  FEED_LAST_ATTEMPT_STATUS="$(json_optional_string "$STATUS_JSON" feed_last_attempt_status)"
   case "$FEED_API_STATE" in
     fresh) FEED_STATE=PASS ;;
     stale) FEED_STATE=STALE ;;
@@ -96,6 +112,8 @@ echo "EXTRA_FEED_AUTHORITY_STATE=${FEED_AUTHORITY_STATE:-unknown}"
 echo "EXTRA_FEED_SOURCE_EXPIRES_AT=${FEED_SOURCE_EXPIRES_AT:-unknown}"
 echo "EXTRA_FEED_TARGET_MEMBERSHIP=${FEED_TARGET_COUNT:-unknown}"
 echo "EXTRA_FEED_SUPPLIER_CONFIRMED=${FEED_SUPPLIER_COUNT:-unknown}"
+echo "EXTRA_FEED_LAST_ATTEMPT_AT=${FEED_LAST_ATTEMPT_AT:-unknown}"
+echo "EXTRA_FEED_LAST_ATTEMPT_STATUS=${FEED_LAST_ATTEMPT_STATUS:-unknown}"
 
 # Outcome loop: receptor on host loopback 8790 via nginx 8443
 if curl -sk --max-time 5 -o /dev/null -w '%{http_code}' -X POST "https://127.0.0.1:8443/webhooks/warmbly/outcome" \

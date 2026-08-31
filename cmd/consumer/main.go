@@ -189,7 +189,7 @@ func main() {
 	subscriptionRepoConsumer := repository.NewSubscriptionRepository(primaryDB.Pool)
 	planRepoConsumer := repository.NewPlanRepository(primaryDB.Pool)
 	workerAssignmentSvc := workerapp.NewAssignmentService(workerRepo, subscriptionRepoConsumer, planRepoConsumer)
-	campaignRepo := repository.NewCampaignRepostory(primaryDB)
+	campaignRepo := repository.NewCampaignRepostory(primaryDB, confenge.LoadConfig().RepositorySHA)
 	taskRepo := repository.NewTaskRepository(primaryDB.Pool)
 	contactRepo := repository.NewContactRepostory(primaryDB)
 	campaignProgressRepo := repository.NewCampaignProgressRepository(primaryDB.Pool)

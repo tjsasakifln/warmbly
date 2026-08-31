@@ -265,7 +265,7 @@ func TestAuthoritativeFeedAgeIsIngestOnlyAndStructureSurvivesExpiry(t *testing.T
 	expiresAt := now.Add(-time.Second)
 	state := &models.OutreachFeedSyncState{
 		LastStatus: "completed", LastSnapshotHash: "snapshot", LastRunID: "run",
-		SourceGeneratedAt: &generatedAt, SourceExpiresAt: &expiresAt,
+		LastSuccessAt: &now, SourceGeneratedAt: &generatedAt, SourceExpiresAt: &expiresAt,
 		SourceFreshnessHash: strings.Repeat("a", 64), TargetMembershipComplete: true,
 		TargetMembershipHash: strings.Repeat("b", 64), TargetMembershipCount: 10,
 		SupplierConfirmedCount: 8,
@@ -286,6 +286,25 @@ func TestAuthoritativeFeedAgeIsIngestOnlyAndStructureSurvivesExpiry(t *testing.T
 	state.SourceGeneratedAt = &stale
 	if err := validateAuthoritativeFeedStructure(state, true); err != nil {
 		t.Fatalf("a three-day-old snapshot lost structural validity: %v", err)
+	}
+}
+
+func TestAuthoritativeFeedStructureUsesLastGoodNotLatestAttemptStatus(t *testing.T) {
+	now := time.Now().UTC()
+	expiresAt := now.Add(time.Hour)
+	state := &models.OutreachFeedSyncState{
+		LastStatus: "partial", LastSuccessAt: &now, LastAttemptAt: &now,
+		LastSnapshotHash: "snapshot", LastRunID: "run", SourceGeneratedAt: &now,
+		SourceExpiresAt: &expiresAt, SourceFreshnessHash: strings.Repeat("a", 64),
+		TargetMembershipComplete: true, TargetMembershipHash: strings.Repeat("b", 64),
+		TargetMembershipCount: 2, SupplierConfirmedCount: 1,
+	}
+	if err := validateAuthoritativeFeedStructure(state, true); err != nil {
+		t.Fatalf("partial retry erased the last-good snapshot: %v", err)
+	}
+	state.LastSuccessAt = nil
+	if err := validateAuthoritativeFeedStructure(state, true); err == nil {
+		t.Fatal("feed with no successful snapshot passed the structural gate")
 	}
 }
 

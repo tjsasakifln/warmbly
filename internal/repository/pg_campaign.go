@@ -97,12 +97,18 @@ type CampaignRepository interface {
 }
 
 type campaignRepository struct {
-	DB *db.DB
+	DB                *db.DB
+	runtimeReleaseSHA string
 }
 
-func NewCampaignRepostory(db *db.DB) CampaignRepository {
+func NewCampaignRepostory(db *db.DB, runtimeReleaseSHA ...string) CampaignRepository {
+	sha := ""
+	if len(runtimeReleaseSHA) > 0 {
+		sha = strings.TrimSpace(runtimeReleaseSHA[0])
+	}
 	return &campaignRepository{
-		DB: db,
+		DB:                db,
+		runtimeReleaseSHA: sha,
 	}
 }
 
@@ -1516,10 +1522,22 @@ func (r *campaignRepository) HasPendingDelegatedFirstTouch(ctx context.Context, 
 			  ON auth.organization_id=t.organization_id AND auth.campaign_id=$1
 			WHERE t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
 			  AND t.state IN ('DUE','NEEDS_REVIEW') AND t.contact_candidate_id IS NOT NULL
-			  AND feed.last_status='completed' AND account.source_run_id=feed.last_run_id
-			  AND (t.source_run_id='' OR t.source_run_id=feed.last_run_id)
+			  AND feed.last_success_at IS NOT NULL AND feed.source_generated_at IS NOT NULL
+			  AND feed.last_snapshot_hash<>'' AND feed.last_run_id<>''
+			  AND feed.source_expires_at IS NOT NULL
+			  AND feed.source_freshness_hash ~ '^[0-9a-f]{64}$'
+			  AND feed.target_membership_complete
+			  AND feed.target_membership_hash ~ '^[0-9a-f]{64}$'
+			  AND feed.target_membership_count > 0
+			  AND feed.supplier_confirmed_count BETWEEN 0 AND feed.target_membership_count
+			  AND (account.source_run_id=feed.last_run_id OR account.commercial_qualification_state='QUALIFIED')
+			  AND (t.source_run_id='' OR t.source_run_id=feed.last_run_id OR account.commercial_qualification_state='QUALIFIED')
 			  AND account.initial_backlog_reason_code=''
-			  AND account.last_import_run_id IS NOT NULL AND candidate.last_import_run_id=account.last_import_run_id
+			  AND account.last_import_run_id IS NOT NULL
+			  AND NOT account.blocked AND NOT account.do_not_contact
+			  AND account.queue_state NOT IN ('SENT','REPLIED','MEETING','PROPOSAL','WON','LOST','ENROLLED')
+			  AND candidate.email<>'' AND NOT candidate.blocked AND NOT candidate.do_not_contact AND NOT candidate.bounced
+			  AND upper(candidate.route_suppression) IN ('','NONE')
 			  AND auth.revoked_at IS NULL AND auth.effective_at <= now()
 			  AND auth.prompt_policy_version='CFG-FIRST-TOUCH-ROUTING-v1'
 			  AND auth.authorized_by_label='founder-approved-first-touch-policy'
@@ -1529,12 +1547,14 @@ func (r *campaignRepository) HasPendingDelegatedFirstTouch(ctx context.Context, 
 				FROM confenge_delegated_first_touch_decisions decision
 				WHERE decision.organization_id=t.organization_id
 				  AND decision.account_id=t.account_id
-				  AND (
-					decision.evidence_source_run_id=account.source_run_id
-					OR decision.idempotency_key='delegated-first-touch:' || account.source_run_id || ':' || account.id::text
-				  )
+				  AND (decision.state='SENT' OR (
+					decision.evidence_source_run_id=feed.last_run_id
+					AND decision.source_snapshot_hash=feed.last_snapshot_hash
+					AND decision.policy_authorization_id=auth.id
+					AND decision.runtime_release_sha=$2
+				  ))
 			  )
-		)`, campaignID).Scan(&pending)
+		)`, campaignID, r.runtimeReleaseSHA).Scan(&pending)
 	return pending, err
 }
 

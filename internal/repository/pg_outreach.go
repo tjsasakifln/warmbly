@@ -148,13 +148,19 @@ type TargetFitInvalidationCounts struct {
 
 // OutreachInitialBacklogCounts is the current-run funnel published with a feed sync.
 type OutreachInitialBacklogCounts struct {
-	Imported            int
-	SupplierConfirmed   int
-	CandidateAttributed int
-	InitialPrepared     int
-	DelegatedEligible   int
-	HeldException       int
-	StaleRetired        int
+	Imported                     int
+	SupplierConfirmed            int
+	CandidateAttributed          int
+	InitialPrepared              int
+	DelegatedEligible            int
+	HeldException                int
+	CarryoverImported            int
+	CarryoverSupplierConfirmed   int
+	CarryoverCandidateAttributed int
+	CarryoverInitialPrepared     int
+	CarryoverDelegatedEligible   int
+	CarryoverHeldException       int
+	StaleRetired                 int
 }
 
 // MaterializeCurrentInitialBacklog reconciles the canonical INITIAL backlog for one source run.
@@ -1332,7 +1338,7 @@ func (r *outreachRepository) ClaimPilotMembership(ctx context.Context, membershi
 		WHERE a.id=$2 AND a.organization_id=$1 AND a.cnpj14=$6
 		  AND (
 			(fs.organization_id IS NOT NULL
-			  AND fs.last_status='completed' AND fs.last_snapshot_hash=$8 AND fs.last_run_id=$9
+			  AND fs.last_success_at IS NOT NULL AND fs.last_snapshot_hash=$8 AND fs.last_run_id=$9
 			  AND fs.source_generated_at=$10)
 			OR
 			(fs.organization_id IS NULL

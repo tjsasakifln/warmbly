@@ -85,7 +85,7 @@ func (s *service) ProcessDelegatedFirstTouchOnce(ctx context.Context) (processed
 	if err != nil || feed == nil {
 		return false, err
 	}
-	if feed.LastStatus != "completed" {
+	if validateAuthoritativeFeedStructure(feed, true) != nil {
 		return false, nil
 	}
 	settings, err := s.repo.GetOrgSettings(ctx, orgID)
@@ -195,13 +195,14 @@ func (s *service) nextDelegatedFirstTouchCandidate(ctx context.Context, orgID uu
 			WHERE t.organization_id=$1
 			  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
 			  AND t.state IN ('DUE','NEEDS_REVIEW') AND t.contact_candidate_id IS NOT NULL
-			  AND feed.last_status='completed'
+			  AND `+authoritativeLastGoodFeedSQL+`
 			  -- Run id is acquisition provenance: a carried-forward QUALIFIED
 			  -- account stays selectable. Mirrors the reservoir in pg_outreach_backlog.
 			  AND (a.source_run_id=feed.last_run_id OR a.commercial_qualification_state='QUALIFIED')
 			  AND (t.source_run_id=feed.last_run_id OR a.commercial_qualification_state='QUALIFIED')
 			  AND a.initial_backlog_reason_code=''
 			  AND a.last_import_run_id IS NOT NULL
+			  AND a.queue_state NOT IN ('SENT','REPLIED','MEETING','PROPOSAL','WON','LOST','ENROLLED')
 			  -- Recipient safety is real invalidity, not run-id equality; a
 			  -- silent drop leaves no evidence the mailbox became unusable.
 			  AND c.email<>'' AND NOT c.blocked AND NOT c.do_not_contact AND NOT c.bounced

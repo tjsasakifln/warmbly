@@ -122,6 +122,8 @@ SYNTHETIC and is not live inbound/action/outcome proof.
 - `email` ready / not_ready
 - `whatsapp` ready / not_ready / blocked_by_policy / not_configured
 - `feed_age`
+- `feed_last_success_at`, the last completely applied snapshot
+- `feed_last_attempt_at`, `feed_last_attempt_status`, and `feed_last_attempt_error`, the newest sync attempt
 - `outcome_loop`
 - `ai` ready / fallback_template
 - `governor_cap` (hourly global cap, default 10/h)
@@ -130,6 +132,12 @@ SYNTHETIC and is not live inbound/action/outcome proof.
 - `kill_switch` / `sending_allowed`
 
 The dashboard CONFENGE page shows a discrete readiness card with these fields.
+
+A failed or partial newest attempt does not erase a structurally valid last-good
+snapshot. Source age can still report `stale`, but age alone does not revoke a
+valid commercial qualification. Transport remains fail-closed when there is no
+prior successful snapshot or when policy, DNC, suppression, account safety, or
+the kill switch blocks the message.
 
 Inbound handoff (`confenge.inbound.v1`) is separate from send. Preflight now
 prints `inbound_secret` / `inbound_org` / `inbound_ready`. Status readiness

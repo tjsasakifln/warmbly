@@ -443,6 +443,12 @@ func (s *service) SyncFeedManifest(ctx context.Context, orgID uuid.UUID, userID 
 		result.Counts["initial_touchpoint_prepared"] = backlog.InitialPrepared
 		result.Counts["delegated_eligible"] = backlog.DelegatedEligible
 		result.Counts["held_exception"] = backlog.HeldException
+		result.Counts["carryover_imported"] = backlog.CarryoverImported
+		result.Counts["carryover_supplier_confirmed"] = backlog.CarryoverSupplierConfirmed
+		result.Counts["carryover_candidate_attributed"] = backlog.CarryoverCandidateAttributed
+		result.Counts["carryover_initial_touchpoint_prepared"] = backlog.CarryoverInitialPrepared
+		result.Counts["carryover_delegated_eligible"] = backlog.CarryoverDelegatedEligible
+		result.Counts["carryover_held_exception"] = backlog.CarryoverHeldException
 		result.Counts["stale_initial_retired"] = backlog.StaleRetired
 		if backlog.Imported != man.LeadCount || backlog.DelegatedEligible+backlog.HeldException != man.LeadCount {
 			result.Status = "partial"

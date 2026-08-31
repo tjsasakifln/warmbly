@@ -34,7 +34,7 @@ func newDelegatedValidationFixture(t *testing.T, routeClass, email string) deleg
 	expiresAt := now.Add(time.Hour)
 	repo.feedSync = map[uuid.UUID]*models.OutreachFeedSyncState{orgID: {
 		OrganizationID: orgID, LastRunID: runID, LastSnapshotHash: snapshot,
-		LastStatus: "completed", SourceGeneratedAt: &now, SourceExpiresAt: &expiresAt,
+		LastStatus: "completed", LastSuccessAt: &now, SourceGeneratedAt: &now, SourceExpiresAt: &expiresAt,
 		SourceFreshnessHash: strings.Repeat("d", 64), TargetMembershipComplete: true,
 		TargetMembershipHash: strings.Repeat("e", 64), TargetMembershipCount: 1, SupplierConfirmedCount: 1,
 	}}

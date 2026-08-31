@@ -350,7 +350,7 @@ func TestCampaignWakeupDoesNotDuplicateRecentActiveTaskAndRecoversStaleTaskPostg
 	}
 
 	taskRepo := repository.NewTaskRepository(f.pool)
-	campaignRepo := repository.NewCampaignRepostory(&infrastructuredb.DB{Pool: f.pool})
+	campaignRepo := repository.NewCampaignRepostory(&infrastructuredb.DB{Pool: f.pool}, f.svc.cfg.RepositorySHA)
 	activeID := uuid.New()
 	created, err := taskRepo.CreateTaskWithLock(f.ctx, &repository.Task{
 		ID: activeID, TaskType: "campaign", EmailAccountID: mailboxID, Status: "active",
@@ -402,7 +402,7 @@ func TestCampaignReadyAcceptsReadBackDelegatedQueueWithoutContact(t *testing.T) 
 		uuid.New(), f.campaignID, f.orgID); err != nil {
 		t.Fatal(err)
 	}
-	campaignRepo := repository.NewCampaignRepostory(&infrastructuredb.DB{Pool: f.pool})
+	campaignRepo := repository.NewCampaignRepostory(&infrastructuredb.DB{Pool: f.pool}, f.svc.cfg.RepositorySHA)
 	if ready, err := campaignRepo.HasReadyDelegatedFirstTouch(f.ctx, f.campaignID); err != nil || ready {
 		t.Fatalf("ordinary empty campaign unexpectedly has delegated work: ready=%v err=%v", ready, err)
 	}

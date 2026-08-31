@@ -106,7 +106,7 @@ func ValidateHistoricalSourceFreshness(f *FeedSourceFreshness) error {
 }
 
 func validateAuthoritativeFeedStructure(state *models.OutreachFeedSyncState, requireAttestation bool) error {
-	if state == nil || state.LastStatus != "completed" || state.SourceGeneratedAt == nil ||
+	if state == nil || state.LastSuccessAt == nil || state.SourceGeneratedAt == nil ||
 		strings.TrimSpace(state.LastSnapshotHash) == "" || strings.TrimSpace(state.LastRunID) == "" {
 		return fmt.Errorf("authoritative feed is not completely applied")
 	}
@@ -121,6 +121,18 @@ func validateAuthoritativeFeedStructure(state *models.OutreachFeedSyncState, req
 	}
 	return nil
 }
+
+// authoritativeLastGoodFeedSQL is the SQL equivalent of
+// validateAuthoritativeFeedStructure(..., true). The alias must be `feed`.
+const authoritativeLastGoodFeedSQL = `feed.last_success_at IS NOT NULL
+	AND feed.source_generated_at IS NOT NULL
+	AND feed.last_snapshot_hash<>'' AND feed.last_run_id<>''
+	AND feed.source_expires_at IS NOT NULL
+	AND feed.source_freshness_hash ~ '^[0-9a-f]{64}$'
+	AND feed.target_membership_complete
+	AND feed.target_membership_hash ~ '^[0-9a-f]{64}$'
+	AND feed.target_membership_count > 0
+	AND feed.supplier_confirmed_count BETWEEN 0 AND feed.target_membership_count`
 
 // validateAuthoritativeFeedAge is SOURCE ACQUISITION HEALTH ONLY. It answers
 // "are we still acquiring facts?" and must never be part of an admission,

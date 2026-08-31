@@ -376,12 +376,13 @@ func (s *service) delegatedFirstTouchReadyReservoirCount(
 		WHERE t.organization_id=$1
 		  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
 		  AND t.state IN ('DUE','NEEDS_REVIEW') AND t.contact_candidate_id IS NOT NULL
-		  AND feed.last_status='completed'
+		  AND `+authoritativeLastGoodFeedSQL+`
 		  -- Same reservoir predicate as nextDelegatedFirstTouchCandidate; the
 		  -- readback must not report a reservoir the selector cannot serve.
 		  AND (a.source_run_id=feed.last_run_id OR a.commercial_qualification_state='QUALIFIED')
 		  AND (t.source_run_id=feed.last_run_id OR a.commercial_qualification_state='QUALIFIED')
 		  AND a.initial_backlog_reason_code=''
+		  AND a.queue_state NOT IN ('SENT','REPLIED','MEETING','PROPOSAL','WON','LOST','ENROLLED')
 		  AND a.last_import_run_id IS NOT NULL AND EXISTS (
 		    SELECT 1 FROM outreach_contact_candidates c
 		    WHERE c.organization_id=t.organization_id AND c.id=t.contact_candidate_id
@@ -391,8 +392,8 @@ func (s *service) delegatedFirstTouchReadyReservoirCount(
 		  AND NOT EXISTS (
 		    SELECT 1 FROM confenge_delegated_first_touch_decisions d
 		    WHERE d.organization_id=t.organization_id AND d.account_id=t.account_id
-		      AND (d.state='SENT' OR (d.state<>'CANCELLED'
-		        AND d.evidence_source_run_id=$2 AND d.source_snapshot_hash=$3
+		      AND (d.state='SENT' OR (
+		        d.evidence_source_run_id=$2 AND d.source_snapshot_hash=$3
 		        AND d.runtime_release_sha=$4 AND d.policy_authorization_id=$5))
 		  )`, orgID, feed.LastRunID, feed.LastSnapshotHash, s.cfg.RepositorySHA, auth.ID).Scan(&count)
 	return count, err
