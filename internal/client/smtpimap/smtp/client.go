@@ -37,6 +37,10 @@ type Client struct {
 	// When nil, WORKER_BIND_IP is consulted; when still unset, the OS default
 	// route is used.
 	BindIP *net.TCPAddr
+
+	// BeforeData is an optional durable handoff hook. It runs after every RCPT
+	// succeeds and immediately before SMTP DATA. An error aborts before DATA.
+	BeforeData func(context.Context) error
 }
 
 // Attachment is a fully-resolved file to encode into an outbound message. Data
@@ -260,6 +264,8 @@ func (c *Client) sendRaw(ctx context.Context, from string, to []string, data []b
 		return errx.ErrMailServerUnreachable
 	}
 	defer conn.Close()
+	stopDeadlineWatch := applyContextDeadline(ctx, conn)
+	defer stopDeadlineWatch()
 
 	// Use the resolved host: c.Credentials is nil for OAuth2-configured clients.
 	client, err := smtp.NewClient(conn, host)
@@ -316,11 +322,32 @@ func (c *Client) sendRaw(ctx context.Context, from string, to []string, data []b
 			return classifySMTPFailure(err, true)
 		}
 	}
+	return sendSMTPData(ctx, client, data, c.BeforeData)
+}
+
+type smtpDataClient interface {
+	Data() (io.WriteCloser, error)
+}
+
+func sendSMTPData(ctx context.Context, client smtpDataClient, data []byte, beforeData func(context.Context) error) *errx.MailError {
+	handoffStarted := false
+	if beforeData != nil {
+		if err := beforeData(ctx); err != nil {
+			return errx.ErrMailServerUnreachable
+		}
+		handoffStarted = true
+	}
 	w, err := client.Data()
 	if err != nil {
+		if handoffStarted {
+			return errx.ErrMailDeliveryUnknown
+		}
 		return classifySMTPFailure(err, false)
 	}
 	if _, err := w.Write(data); err != nil {
+		if handoffStarted {
+			return errx.ErrMailDeliveryUnknown
+		}
 		return classifySMTPFailure(err, false)
 	}
 	if err := w.Close(); err != nil {
@@ -328,6 +355,24 @@ func (c *Client) sendRaw(ctx context.Context, from string, to []string, data []b
 	}
 
 	return nil
+}
+
+// applyContextDeadline extends DialContext cancellation to the rest of the
+// SMTP conversation, whose standard-library methods do not accept a context.
+// The caller-supplied fast-lane timeout is shorter than its durable lease.
+func applyContextDeadline(ctx context.Context, conn net.Conn) func() {
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	}
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.SetDeadline(time.Now())
+		case <-done:
+		}
+	}()
+	return func() { close(done) }
 }
 
 func classifySMTPFailure(err error, recipientStage bool) *errx.MailError {

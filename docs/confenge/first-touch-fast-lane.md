@@ -9,12 +9,10 @@ worker opened the SMTP session, and a consumer finally recorded the result.
 Every one of those steps could fail independently, and several of them could
 turn a message the provider had already accepted back into pending work.
 
-The queue row and the send ledger did not even share an identity. Queue rows are
-keyed `email:draft:<draft_id>`; the reservation and ledger rows written by the
-campaign path are keyed `email:campaign:<c>:contact:<c>:seq:<s>`. The commit
-transaction closed the queue `WHERE message_key = <campaign key>`, which never
-matched a first-touch row, so the two idempotency domains could not check each
-other.
+The queue row and the send ledger did not even share an identity. First-touch
+work is now keyed `email:first-touch:account:<account_id>` through queue,
+reservation, SMTP handoff and ledger. Replacing a draft cannot create a second
+logical initial email for the same account.
 
 The fast lane keeps two authoritative concepts and nothing else:
 
@@ -30,11 +28,16 @@ The fast lane keeps two authoritative concepts and nothing else:
 3. close the row from the ledger if that key was already sent;
 4. apply the pre-send gates that protect a recipient or a mailbox;
 5. reserve under the queue's own message key (cap, min-gap, mailbox envelope);
-6. send synchronously over the mailbox's authenticated SMTP session;
-7. commit the send, the reservation and the queue row in one transaction;
-8. reconcile the legacy projections, best effort.
+6. after `MAIL` and `RCPT` succeed, atomically mark the reservation and queue as
+   handed off immediately before SMTP `DATA`;
+7. send synchronously over the mailbox's authenticated SMTP session;
+8. commit the send, the reservation and the queue row in one transaction;
+9. reconcile the legacy projections, best effort.
 
-Step 7 is the only authority. Step 8 cannot undo it.
+Step 8 is the only acceptance authority. Step 9 cannot undo it. If the process
+dies after step 6, the row remains `attempted` and is never made sendable by a
+lease timeout. This chooses at-most-once behavior for the interval SMTP cannot
+make transactional with PostgreSQL.
 
 ## What the transport path no longer consults
 
@@ -57,9 +60,11 @@ single day in production, in four bursts, all with the reason
 
 Kill switch and durable pause, business window and business days, per-mailbox
 daily cap, hourly cap and min-gap, mailbox enabled with SMTP configured,
-approved-content-hash binding, recipient present and syntactically usable,
-non-empty approved payload, and hard-bounce / complaint / opt-out suppression.
-An unreadable suppression list fails closed.
+approved-content binding recomputed from the live payload, recipient present
+and syntactically usable, explicit commercial deactivation or party-role
+conflict, live account/candidate DNC and bounce flags, non-empty approved
+payload, and hard-bounce / complaint / opt-out suppression. An unreadable
+safety source defers the row fail-closed instead of cancelling durable work.
 
 ## Failure model
 
@@ -71,7 +76,8 @@ An unreadable suppression list fails closed.
 | Ambiguous | failure at end of `DATA` | park as `attempted`, never resend |
 
 Ambiguous is the one case that stays deliberately unresolved. The message may
-already be in flight, so it is correlated by `Message-ID` rather than retried.
+already be in flight, so it is correlated by a deterministic `Message-ID`
+derived from the logical message key rather than retried.
 
 A cap, min-gap or window deferral is scheduling, not failure: `DeferQueue`
 returns the row without consuming a retry attempt.
@@ -79,9 +85,10 @@ returns the row without consuming a retry attempt.
 ## Duplicate prevention
 
 `confenge_dispatch_sends` has a `UNIQUE (message_key)` index, and the fast lane
-reserves and commits under the queue row's own key. One logical first touch
-therefore cannot be recorded twice, at the database level rather than by
-application check. The insert is `ON CONFLICT (message_key) DO NOTHING`.
+reserves and commits under the account-scoped initial key. `attempted` and
+`failed` rows are terminal on producer upsert. Legacy `SENT` touchpoints count
+as accepted only when both `sent_at` and `provider_message_id` provide external
+evidence.
 
 ## Cutover
 
@@ -160,6 +167,10 @@ zero sends by construction.
 
 ## Runway
 
-Queue generation is unchanged. The delegated first-touch producer continues to
-materialise approved work and assign `due_at`, spread across business days. The
-fast lane only consumes.
+The delegated producer selects only candidates from the account's current,
+completely applied import. Institutional mailboxes require the explicit
+`controlled_email_eligible` and `preferred_initial` contract plus observed,
+fresh, company-owned provenance and the allowed route classes. The separate
+named-person `email_send_ready` projection is not substituted for that
+institutional contract. The producer materialises to the configured runway
+horizon and assigns `due_at` across business days; the fast lane only consumes.

@@ -1149,10 +1149,7 @@ func (s *service) scheduleApprovedTouchpointAt(ctx context.Context, orgID uuid.U
 		}
 		due = dispatch.NextEligibleSlot(candidate, cfg.Timezone, cfg.WindowStart, cfg.WindowEnd, cfg.BusinessDaysOnly)
 	}
-	messageKey := dispatch.MessageKeyEmail(*tp.DraftID)
-	if tp.Channel == models.OutreachChannelWhatsApp {
-		messageKey = dispatch.MessageKeyWhatsApp(*tp.DraftID)
-	}
+	messageKey := messageKeyForTouchpoint(tp)
 	queued, err := s.repo.CASScheduleTouchpoint(ctx, orgID, tp.ID, tp.ContentHash, messageKey, due)
 	if err != nil {
 		return nil, errx.New(errx.Internal, "schedule approved touchpoint: "+err.Error())
@@ -1165,6 +1162,19 @@ func (s *service) scheduleApprovedTouchpointAt(ctx context.Context, orgID uuid.U
 		return nil, errx.New(errx.Conflict, "touchpoint not schedulable (state or approved hash mismatch)")
 	}
 	return queued, nil
+}
+
+func messageKeyForTouchpoint(tp *models.OutreachTouchpoint) string {
+	if tp == nil || tp.DraftID == nil {
+		return ""
+	}
+	if tp.Channel == models.OutreachChannelWhatsApp {
+		return dispatch.MessageKeyWhatsApp(*tp.DraftID)
+	}
+	if tp.Channel == models.OutreachChannelEmail && tp.Ordinal == 1 && tp.Purpose == models.TouchpointPurposeInitial {
+		return dispatch.MessageKeyFirstTouch(tp.AccountID)
+	}
+	return dispatch.MessageKeyEmail(*tp.DraftID)
 }
 
 func (s *service) dispatchEmailTouch(ctx context.Context, orgID, userID uuid.UUID, tp *models.OutreachTouchpoint) *errx.Error {

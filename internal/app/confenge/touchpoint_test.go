@@ -38,6 +38,24 @@ func TestSendWithoutApprovalBlocked(t *testing.T) {
 	}
 }
 
+func TestMessageKeyForTouchpointUsesLogicalInitialIdentity(t *testing.T) {
+	accountID, firstDraft, secondDraft := uuid.New(), uuid.New(), uuid.New()
+	initial := func(draftID uuid.UUID) *models.OutreachTouchpoint {
+		return &models.OutreachTouchpoint{
+			AccountID: accountID, DraftID: &draftID, Ordinal: 1,
+			Channel: models.OutreachChannelEmail, Purpose: models.TouchpointPurposeInitial,
+		}
+	}
+	if got, want := messageKeyForTouchpoint(initial(firstDraft)), messageKeyForTouchpoint(initial(secondDraft)); got != want {
+		t.Fatalf("replacement draft changed initial identity: %q != %q", got, want)
+	}
+	nonInitial := initial(firstDraft)
+	nonInitial.Ordinal, nonInitial.Purpose = 2, "FOLLOW_UP"
+	if got := messageKeyForTouchpoint(nonInitial); got != "email:draft:"+firstDraft.String() {
+		t.Fatalf("non-initial email lost draft compatibility key: %q", got)
+	}
+}
+
 func TestEditAfterApproveInvalidates(t *testing.T) {
 	tp := sampleTouch(models.OutreachChannelEmail, "lead@example.com", "Hi", "Hello")
 	if err := ApplyHumanApproval(tp, uuid.New(), time.Now().UTC()); err != nil {

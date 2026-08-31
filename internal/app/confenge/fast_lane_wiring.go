@@ -55,6 +55,7 @@ func (s *service) resolveConfengeMailbox(ctx context.Context, orgID uuid.UUID) (
 		if err != pgx.ErrNoRows {
 			return uuid.Nil, err
 		}
+		return uuid.Nil, fmt.Errorf("configured CONFENGE mailbox %q is not active with SMTP configured", want)
 	}
 	rows, err := s.fastLaneDB.Query(ctx, `
 		SELECT ea.id
@@ -119,6 +120,26 @@ func (s *service) reconcileFastLaneCompat(ctx context.Context, item *dispatch.Qu
 // fastLaneSuppress records a definitive provider rejection so the same address
 // cannot be attempted again by any path.
 func (s *service) fastLaneSuppress(ctx context.Context, item *dispatch.QueueItem, tp *models.OutreachTouchpoint, cause error) {
+	if suppressions, ok := s.repo.(interface {
+		UpsertOutreachRecipientSuppression(context.Context, *models.SuppressedRecipient) error
+	}); ok {
+		if err := suppressions.UpsertOutreachRecipientSuppression(ctx, &models.SuppressedRecipient{
+			OrganizationID: item.OrganizationID,
+			Email:          strings.ToLower(strings.TrimSpace(tp.Recipient)),
+			Reason:         firstNonEmpty(errText(cause), "permanent provider rejection"),
+			Source:         models.DeliverabilityEventBounce,
+			Metadata: map[string]interface{}{
+				"message_key": item.MessageKey,
+				"source":      "confenge_fast_lane_smtp",
+			},
+		}); err != nil {
+			log.Error().Err(err).Str("message_key", item.MessageKey).
+				Msg("confenge fast lane: durable recipient suppression failed")
+		}
+	} else {
+		log.Error().Str("message_key", item.MessageKey).
+			Msg("confenge fast lane: repository cannot persist recipient suppression")
+	}
 	if s.governor != nil && tp.Recipient != "" {
 		if _, err := s.governor.CancelByRecipient(ctx, item.OrganizationID, tp.Recipient,
 			"permanent_provider_rejection"); err != nil {

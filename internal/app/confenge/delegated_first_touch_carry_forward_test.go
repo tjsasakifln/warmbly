@@ -202,26 +202,32 @@ func TestDelegatedFirstTouchGatesCarryNoRunIDRevocation(t *testing.T) {
 	}
 }
 
-// The autorun reservoir must agree with pg_outreach_backlog and must never drop
-// an account silently for a run-id mismatch.
+// Account qualification may carry forward across feed runs, but recipient
+// attribution must come from the account's current completely applied import.
 func TestDelegatedReservoirSelectsCarriedForwardQualifiedAccounts(t *testing.T) {
+	contents := map[string]string{}
 	for _, file := range []string{"delegated_first_touch_worker.go", "delegated_first_touch_runway.go"} {
 		b, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatal(err)
 		}
-		s := string(b)
+		contents[file] = string(b)
+		s := contents[file]
 		if !strings.Contains(s, "confenge_commercially_qualified") ||
 			!strings.Contains(s, "outreach_feed_committed_runs") {
 			t.Fatalf("%s: dynamic qualification or committed lineage is missing", file)
 		}
-		if strings.Contains(s, "c.last_import_run_id=a.last_import_run_id") {
-			t.Fatalf("%s: run-id equality drops the recipient with no evidence it became invalid", file)
+	}
+	worker := contents["delegated_first_touch_worker.go"]
+	if !strings.Contains(worker, "c.last_import_run_id=a.last_import_run_id") {
+		t.Fatal("worker recipient is not bound to the current applied import")
+	}
+	for _, safety := range []string{"NOT c.blocked", "NOT c.do_not_contact", "NOT c.bounced", "route_suppression"} {
+		if !strings.Contains(worker, safety) {
+			t.Fatalf("worker recipient safety predicate %s was weakened", safety)
 		}
-		for _, safety := range []string{"NOT c.blocked", "NOT c.do_not_contact", "NOT c.bounced", "upper(c.route_suppression) IN ('','NONE')"} {
-			if !strings.Contains(s, safety) {
-				t.Fatalf("%s: recipient safety predicate %s was weakened", file, safety)
-			}
-		}
+	}
+	if !strings.Contains(contents["delegated_first_touch_runway.go"], "delegatedFirstTouchSafeCandidateLateralSQL") {
+		t.Fatal("runway does not reuse the worker's authoritative recipient predicate")
 	}
 }

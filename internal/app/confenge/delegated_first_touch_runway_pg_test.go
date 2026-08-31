@@ -1,6 +1,7 @@
 package confenge
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -8,10 +9,44 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
 	"github.com/warmbly/warmbly/internal/models"
 )
+
+func delegatedRunwayAuthority(t *testing.T, f *delegatedPGFixture) (*models.OutreachFeedSyncState, *models.CampaignPolicyAuthorization) {
+	t.Helper()
+	feed, err := f.repo.GetFeedSyncState(f.ctx, f.orgID)
+	if err != nil || feed == nil {
+		t.Fatalf("feed unavailable: feed=%+v err=%v", feed, err)
+	}
+	auth, err := f.svc.policyStore.GetCampaignPolicyByID(f.ctx, f.orgID, f.manifest.PolicyAuthorizationID)
+	if err != nil || auth == nil {
+		t.Fatalf("policy unavailable: auth=%+v err=%v", auth, err)
+	}
+	return feed, auth
+}
+
+func insertDelegatedAlternateCandidate(t *testing.T, f *delegatedPGFixture, mutate func(*models.OutreachContactCandidate)) *models.OutreachContactCandidate {
+	t.Helper()
+	base, err := f.repo.GetCandidate(f.ctx, f.orgID, f.manifest.Entries[0].ContactCandidateID)
+	if err != nil || base == nil {
+		t.Fatalf("base candidate unavailable: candidate=%+v err=%v", base, err)
+	}
+	alternate := *base
+	alternate.ID = uuid.New()
+	alternate.SourceContactID = "alternate-" + alternate.ID.String()
+	alternate.Email = "alternate-" + alternate.ID.String() + "@empresa.example"
+	alternate.SourceURL = "https://empresa.example/alternate/" + alternate.ID.String()
+	if mutate != nil {
+		mutate(&alternate)
+	}
+	if _, err := f.repo.UpsertCandidate(f.ctx, &alternate); err != nil {
+		t.Fatal(err)
+	}
+	return &alternate
+}
 
 func enableDelegatedRunwayFixture(t *testing.T, f *delegatedPGFixture, days, dailyLimit int) {
 	t.Helper()
@@ -467,5 +502,97 @@ func TestDelegatedFirstTouchRunwayNeverSelectsFollowupsPostgres(t *testing.T) {
 	}
 	if touchpointID != base.ID {
 		t.Fatalf("runway selected non-first-touch row: got=%s first=%s followup=%s", touchpointID, base.ID, followup.ID)
+	}
+}
+
+func TestDelegatedFirstTouchRunwayRebindsOnlyToCurrentControlledCandidatePostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	qualifyDelegatedPGFixture(t, f)
+	prepareDelegatedRunwayCandidates(t, f, 1)
+
+	// Institutional controlled routes intentionally do not inherit the strict
+	// named-person EMAIL_SEND_READY bit.
+	alternate := insertDelegatedAlternateCandidate(t, f, func(c *models.OutreachContactCandidate) {
+		c.EmailSendReady = false
+	})
+	if _, err := f.pool.Exec(f.ctx, `
+		UPDATE outreach_contact_candidates SET blocked=true
+		WHERE organization_id=$1 AND id=$2`, f.orgID, f.manifest.Entries[0].ContactCandidateID); err != nil {
+		t.Fatal(err)
+	}
+	feed, auth := delegatedRunwayAuthority(t, f)
+	touchpointID, _, candidateID, err := f.svc.nextDelegatedFirstTouchCandidate(f.ctx, f.orgID, feed, auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidateID != alternate.ID {
+		t.Fatalf("selected candidate=%s want current controlled alternate=%s", candidateID, alternate.ID)
+	}
+	reserved, err := f.repo.GetTouchpoint(f.ctx, f.orgID, touchpointID)
+	if err != nil || reserved == nil || reserved.ContactCandidateID == nil {
+		t.Fatalf("reserved touchpoint unavailable: touchpoint=%+v err=%v", reserved, err)
+	}
+	if *reserved.ContactCandidateID != f.manifest.Entries[0].ContactCandidateID {
+		t.Fatalf("reservation rebound recipient before prepare: got=%s want old=%s", *reserved.ContactCandidateID, f.manifest.Entries[0].ContactCandidateID)
+	}
+}
+
+func TestDelegatedFirstTouchRunwayRejectsHistoricalAndUnsafeAlternatesPostgres(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*models.OutreachContactCandidate)
+	}{
+		{"historical_import", func(c *models.OutreachContactCandidate) { id := uuid.New(); c.LastImportRunID = &id }},
+		{"not_controlled", func(c *models.OutreachContactCandidate) {
+			c.DiscoveryJSON = []byte(`{"route_class":"GENERIC_COMPANY","preferred_initial":true}`)
+		}},
+		{"company_evidence_missing", func(c *models.OutreachContactCandidate) {
+			c.DiscoveryJSON = []byte(`{"route_class":"GENERIC_COMPANY","controlled_email_eligible":true,"preferred_initial":true}`)
+		}},
+		{"inferred", func(c *models.OutreachContactCandidate) { c.EmailDerivation = "INFERRED" }},
+		{"suppressed", func(c *models.OutreachContactCandidate) { c.RouteSuppression = "DNC" }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDelegatedPGFixture(t)
+			qualifyDelegatedPGFixture(t, f)
+			prepareDelegatedRunwayCandidates(t, f, 1)
+			if _, err := f.pool.Exec(f.ctx, `
+				UPDATE outreach_contact_candidates SET blocked=true
+				WHERE organization_id=$1 AND id=$2`, f.orgID, f.manifest.Entries[0].ContactCandidateID); err != nil {
+				t.Fatal(err)
+			}
+			insertDelegatedAlternateCandidate(t, f, tc.mutate)
+			feed, auth := delegatedRunwayAuthority(t, f)
+			if _, _, _, err := f.svc.nextDelegatedFirstTouchCandidate(f.ctx, f.orgID, feed, auth); !errors.Is(err, pgx.ErrNoRows) {
+				t.Fatalf("unsafe alternate became selectable: %v", err)
+			}
+			ready, err := f.svc.delegatedFirstTouchReadyReservoirCount(f.ctx, f.orgID, feed, auth)
+			if err != nil || ready != 0 {
+				t.Fatalf("reservoir drifted from selector: ready=%d err=%v", ready, err)
+			}
+		})
+	}
+}
+
+func TestDelegatedFirstTouchRunwayHoldConsumesCandidateNotAccountPostgres(t *testing.T) {
+	f := newDelegatedPGFixture(t)
+	qualifyDelegatedPGFixture(t, f)
+	prepareDelegatedRunwayCandidates(t, f, 1)
+	alternate := insertDelegatedAlternateCandidate(t, f, nil)
+
+	manifest := f.manifest
+	entry := manifest.Entries[0]
+	entry.IdempotencyKey = "old-candidate-hold-" + uuid.NewString()
+	if err := f.svc.persistDelegatedHold(f.ctx, f.orgID, manifest, entry, []string{"recipient_not_controlled_eligible"}); err != nil {
+		t.Fatal(err)
+	}
+	feed, auth := delegatedRunwayAuthority(t, f)
+	_, _, candidateID, err := f.svc.nextDelegatedFirstTouchCandidate(f.ctx, f.orgID, feed, auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidateID != alternate.ID {
+		t.Fatalf("old candidate HOLD blocked safe alternate: got=%s want=%s", candidateID, alternate.ID)
 	}
 }

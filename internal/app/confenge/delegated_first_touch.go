@@ -621,6 +621,7 @@ func (s *service) applyDelegatedFirstTouchManifest(ctx context.Context, orgID uu
 	}
 	for i := range manifest.Entries {
 		entry := manifest.Entries[i]
+		entry.IdempotencyKey = delegatedFirstTouchEffectiveIdempotencyKey(entry)
 		unlock, lockErr := s.lockDelegatedAccount(ctx, orgID, entry.CNPJ14)
 		var item DelegatedFirstTouchItemResult
 		var qaPass, repaired bool
@@ -1065,6 +1066,19 @@ func schedulingBlocker(xerr *errx.Error) string {
 	}
 }
 
+func requireDelegatedEmailOutbound(acc *models.OutreachAccount, cand *models.OutreachContactCandidate) error {
+	if err := RequireTargetFit(acc); err != nil {
+		return err
+	}
+	if acc == nil || acc.Blocked || acc.DoNotContact {
+		return fmt.Errorf("account blocked or DNC")
+	}
+	if !CandidateDelegatedControlledEligible(cand) {
+		return fmt.Errorf("recipient is not delegated controlled-eligible")
+	}
+	return nil
+}
+
 func (s *service) validateDelegatedEntry(ctx context.Context, orgID uuid.UUID, manifest DelegatedFirstTouchManifest, entry DelegatedFirstTouchEntry, duplicateRoots map[string]bool, recentBodies []delegatedRecentBody, corpusAvailable bool) (*models.OutreachAccount, *models.OutreachContactCandidate, []string) {
 	blockers := []string{}
 	add := func(code string) { blockers = appendUnique(blockers, code) }
@@ -1168,7 +1182,7 @@ func (s *service) validateDelegatedEntry(ctx context.Context, orgID uuid.UUID, m
 	if !strings.EqualFold(strings.TrimSpace(cand.Email), strings.TrimSpace(entry.Recipient)) {
 		add("recipient_candidate_mismatch")
 	}
-	if !CandidateControlledEligible(cand) || !ControlledRouteAllowed(cand, nil) || !CandidateEnrollable(cand) {
+	if !CandidateDelegatedControlledEligible(cand) {
 		add("recipient_not_controlled_eligible")
 	}
 	// Public application requires delegatedDB before entering this validator.
@@ -1193,7 +1207,7 @@ func (s *service) validateDelegatedEntry(ctx context.Context, orgID uuid.UUID, m
 	if !candidateSourceCorroborated(cand, entry.WebSources) {
 		add("mailbox_company_association_unproven")
 	}
-	if err := RequireEmailOutbound(acc, cand); err != nil {
+	if err := requireDelegatedEmailOutbound(acc, cand); err != nil {
 		add("email_outbound_gate_failed")
 	}
 	blockers = append(blockers, validateDelegatedCopy(entry, acc, cand)...)
@@ -2016,7 +2030,7 @@ func (s *service) delegatedQueueReadback(ctx context.Context, orgID uuid.UUID, t
 	if tp == nil || tp.DraftID == nil {
 		return nil, "", false
 	}
-	key := dispatch.MessageKeyEmail(*tp.DraftID)
+	key := messageKeyForTouchpoint(tp)
 	var touchState, queueState, queueKey string
 	var touchDue, queueDue time.Time
 	err := s.delegatedDB.QueryRow(ctx, `
@@ -2029,6 +2043,18 @@ func (s *service) delegatedQueueReadback(ctx context.Context, orgID uuid.UUID, t
 		return &queueDue, key, false
 	}
 	return &queueDue, key, true
+}
+
+// delegatedFirstTouchEffectiveIdempotencyKey extends the runway producer's
+// publication-bound key with the exact recipient candidate. A HOLD for one
+// recipient must not consume a safe replacement, while a later publication or
+// release can still re-evaluate a previously held candidate.
+func delegatedFirstTouchEffectiveIdempotencyKey(entry DelegatedFirstTouchEntry) string {
+	if !strings.HasPrefix(entry.IdempotencyKey, delegatedFirstTouchIdempotencyPrefix+"runway-") ||
+		entry.AccountID == uuid.Nil || entry.ContactCandidateID == uuid.Nil {
+		return entry.IdempotencyKey
+	}
+	return entry.IdempotencyKey + ":candidate:" + entry.ContactCandidateID.String()
 }
 
 func (s *service) updateDelegatedScheduling(ctx context.Context, orgID uuid.UUID, key, state, messageKey string, due *time.Time, readback bool, blockers []string) error {
@@ -2441,8 +2467,7 @@ func (s *service) assertDelegatedFirstTouchDecision(ctx context.Context, orgID u
 	if accErr != nil || candErr != nil || acc == nil || cand == nil || cand.AccountID != tp.AccountID {
 		return fail("account_or_recipient_missing")
 	}
-	if err := RequireEmailOutbound(acc, cand); err != nil || !CandidateControlledEligible(cand) ||
-		!ControlledRouteAllowed(cand, nil) || !CandidateEnrollable(cand) {
+	if err := requireDelegatedEmailOutbound(acc, cand); err != nil || !CandidateDelegatedControlledEligible(cand) {
 		return fail("compliance_or_recipient_gate_drift")
 	}
 	if strings.TrimSpace(acc.MessageContextHash) != "" && strings.TrimSpace(tp.GeneratedContextHash) == "" {

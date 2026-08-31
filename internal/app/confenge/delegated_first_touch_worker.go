@@ -21,6 +21,65 @@ const (
 	delegatedFirstTouchRetryDelay        = 15 * time.Minute
 )
 
+// delegatedFirstTouchSafeCandidateLateralSQL is the authoritative recipient
+// selector shared by the worker and the runway readback. It deliberately does
+// not trust the candidate currently attached to an unadmitted touchpoint: a
+// later import may have replaced that route with a safer one. Conversely, a
+// historical candidate can never be revived merely because its email still
+// looks usable; current import lineage and the complete controlled-route
+// provenance are required.
+const delegatedFirstTouchSafeCandidateLateralSQL = `
+		JOIN LATERAL (
+			SELECT c.id
+			FROM outreach_contact_candidates c
+			WHERE c.organization_id=t.organization_id AND c.account_id=t.account_id
+			  AND a.last_import_run_id IS NOT NULL
+			  AND c.last_import_run_id=a.last_import_run_id
+			  AND c.email<>'' AND c.email ~* '^[^[:space:]@]+@[^[:space:]@]+[.][^[:space:]@]+$'
+			  AND NOT c.blocked AND NOT c.do_not_contact AND NOT c.bounced
+			  AND upper(COALESCE(c.ownership_status,''))='COMPANY_OWNED'
+			  AND upper(COALESCE(c.channel_epistemic_class,''))='OBSERVED'
+			  AND upper(COALESCE(c.route_freshness,''))='FRESH'
+			  AND upper(COALESCE(c.email_derivation,''))<>'INFERRED'
+			  AND upper(COALESCE(c.route_suppression,'')) IN ('','NONE')
+			  AND c.discovery_json @> '{"controlled_email_eligible":true}'::jsonb
+			  AND c.discovery_json @> '{"preferred_initial":true}'::jsonb
+			  AND upper(COALESCE(c.discovery_json->>'mailbox_company_evidence',''))='OBSERVED'
+			  AND upper(COALESCE(c.discovery_json->>'route_class','')) IN
+			    ('ROLE_OR_DEPARTMENT','GENERIC_COMPANY','PUBLIC_COMPANY_FREEMAIL')
+			  AND upper(COALESCE(c.verification_status,''))='OFFICIAL_SOURCE'
+			  AND c.source_date IS NOT NULL
+			  AND (
+			    (c.source_url ~* '^https?://[^/[:space:]]+' AND lower(c.source_url) !~
+			      'google[.]|bing[.]|duckduckgo[.]|search[.]yahoo[.]')
+			    OR (c.source_url='' AND upper(c.verification_status)='OFFICIAL_SOURCE')
+			  )
+			  AND lower(btrim(c.email)) NOT LIKE 'fixture@%'
+			  AND lower(btrim(c.email)) NOT LIKE 'synthetic@%'
+			  AND NOT (lower(btrim(c.email)) LIKE '%@demo%' AND lower(btrim(c.email)) LIKE '%obra.com.br')
+			  AND lower(COALESCE(c.block_reason,'')) NOT LIKE '%provenance_taint%'
+			  AND lower(COALESCE(c.block_reason,'')) NOT LIKE '%provenance_chain%'
+			  AND upper(COALESCE(c.block_reason,'')) NOT LIKE '%PROVENANCE_CONTAMINATION%'
+			  -- A terminal HOLD/CANCELLED consumes this recipient binding, not
+			  -- every other current-safe recipient on the same account.
+			  AND NOT EXISTS (
+			    SELECT 1 FROM confenge_delegated_first_touch_decisions candidate_decision
+			    WHERE candidate_decision.organization_id=c.organization_id
+			      AND candidate_decision.account_id=c.account_id
+			      AND candidate_decision.contact_candidate_id=c.id
+			      AND candidate_decision.evidence_source_run_id=$2
+			      AND candidate_decision.source_snapshot_hash=$3
+			      AND candidate_decision.runtime_release_sha=$4
+			      AND candidate_decision.policy_authorization_id=$5
+			  )
+			ORDER BY
+			  CASE WHEN c.recommended THEN 0 ELSE 1 END,
+			  CASE upper(COALESCE(c.discovery_json->>'route_class',''))
+			    WHEN 'ROLE_OR_DEPARTMENT' THEN 0 WHEN 'GENERIC_COMPANY' THEN 1 ELSE 2 END,
+			  lower(btrim(c.email)),c.id
+			LIMIT 1
+		) selected_candidate ON true`
+
 type delegatedFirstTouchProcessor interface {
 	ProcessDelegatedFirstTouchOnce(context.Context) (bool, error)
 }
@@ -186,11 +245,10 @@ func (s *service) nextDelegatedFirstTouchCandidate(ctx context.Context, orgID uu
 	now := time.Now().UTC()
 	err := s.delegatedDB.QueryRow(ctx, `
 		WITH next AS (
-			SELECT t.id
+			SELECT t.id,selected_candidate.id AS candidate_id
 			FROM outreach_touchpoints t
 			JOIN outreach_accounts a ON a.organization_id=t.organization_id AND a.id=t.account_id
-			JOIN outreach_contact_candidates c
-			  ON c.organization_id=t.organization_id AND c.id=t.contact_candidate_id
+			`+delegatedFirstTouchSafeCandidateLateralSQL+`
 			JOIN outreach_feed_sync_state feed ON feed.organization_id=t.organization_id
 			JOIN outreach_feed_committed_runs account_lineage
 			  ON account_lineage.organization_id=a.organization_id AND account_lineage.source_run_id=a.source_run_id
@@ -198,25 +256,19 @@ func (s *service) nextDelegatedFirstTouchCandidate(ctx context.Context, orgID uu
 			  ON touchpoint_lineage.organization_id=t.organization_id AND touchpoint_lineage.source_run_id=t.source_run_id
 			WHERE t.organization_id=$1
 			  AND t.ordinal=1 AND t.purpose='INITIAL' AND t.channel='EMAIL'
-			  AND t.state IN ('DUE','NEEDS_REVIEW') AND t.contact_candidate_id IS NOT NULL
+			  AND t.state IN ('DUE','NEEDS_REVIEW')
 			  AND `+authoritativeLastGoodFeedSQL+`
 			  AND confenge_commercially_qualified(a.commercial_qualification_state,
 			    a.commercial_qualified_until,a.commercial_qualification_deactivated,$6::date)
 			  AND a.initial_backlog_reason_code=''
 			  AND a.last_import_run_id IS NOT NULL
 			  AND a.queue_state NOT IN ('SENT','REPLIED','MEETING','PROPOSAL','WON','LOST','ENROLLED')
-			  -- Recipient safety is real invalidity, not run-id equality; a
-			  -- silent drop leaves no evidence the mailbox became unusable.
-			  AND c.email<>'' AND NOT c.blocked AND NOT c.do_not_contact AND NOT c.bounced
-			  AND upper(c.route_suppression) IN ('','NONE')
 			  AND t.delegated_retry_at <= $6
 			  AND (t.delegated_reserved_until IS NULL OR t.delegated_reserved_until <= $6)
 			  AND NOT EXISTS (
 			    SELECT 1 FROM confenge_delegated_first_touch_decisions d
 			    WHERE d.organization_id=t.organization_id AND d.account_id=t.account_id
-			      AND (d.state='SENT'
-			        OR (d.evidence_source_run_id=$2 AND d.source_snapshot_hash=$3
-			          AND d.runtime_release_sha=$4 AND d.policy_authorization_id=$5))
+			      AND d.state IN ('SENT','APPROVED','QUEUED','APPROVED_NOT_SCHEDULED')
 			  )
 			ORDER BY t.delegated_retry_at,t.due_at,t.created_at,t.id
 			LIMIT 1 FOR UPDATE OF t SKIP LOCKED
@@ -225,7 +277,7 @@ func (s *service) nextDelegatedFirstTouchCandidate(ctx context.Context, orgID uu
 		SET delegated_reserved_until=$7,delegated_attempts=t.delegated_attempts+1,
 			delegated_last_error='',updated_at=$6
 		FROM next WHERE t.id=next.id
-		RETURNING t.id,t.account_id,t.contact_candidate_id`, orgID, feed.LastRunID, feed.LastSnapshotHash,
+		RETURNING t.id,t.account_id,next.candidate_id`, orgID, feed.LastRunID, feed.LastSnapshotHash,
 		s.cfg.RepositorySHA, auth.ID, now, now.Add(delegatedFirstTouchLease)).Scan(&touchpointID, &accountID, &candidateID)
 	return touchpointID, accountID, candidateID, err
 }

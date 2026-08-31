@@ -49,6 +49,9 @@ type FirstTouchMessage struct {
 	To             string
 	Subject        string
 	BodyText       string
+	// BeforeHandoff is invoked by the transport after MAIL/RCPT succeed and
+	// immediately before SMTP DATA. Success creates the durable no-resend fence.
+	BeforeHandoff func(context.Context) error
 }
 
 // FirstTouchAcceptance is what the provider reported back.
@@ -128,6 +131,12 @@ func (s *service) ProcessFastLaneOnce(ctx context.Context) (bool, error) {
 		_ = s.governor.RetryQueue(ctx, item.ID, s.now().Add(time.Minute), "not_email_channel")
 		return true, nil
 	}
+	// Attempts is incremented by claim. A row whose prior failures already used
+	// the budget must become terminal without touching the provider again.
+	if item.Attempts > fastLaneMaxAttempts {
+		_ = s.governor.MarkQueue(ctx, item.ID, dispatch.QueueFailed, "retries_exhausted_before_provider")
+		return true, nil
+	}
 
 	// The ledger is the only authority on whether this already went out. A row
 	// that survived a crash between provider acceptance and queue close is
@@ -151,8 +160,12 @@ func (s *service) ProcessFastLaneOnce(ctx context.Context) (bool, error) {
 	// -- is deliberately absent: it was already authoritative when this row was
 	// approved into the queue, and re-deciding it at transport time is what
 	// cancelled thousands of approved rows on every deploy.
-	if reason, ok := s.fastLaneBlock(ctx, item, tp); !ok {
-		_ = s.governor.MarkQueue(ctx, item.ID, dispatch.QueueCancelled, reason)
+	if reason, ok, retryable := s.fastLaneBlock(ctx, item, tp); !ok {
+		if retryable {
+			_ = s.governor.DeferQueue(ctx, item.ID, s.fastLaneBackoff(item), reason)
+		} else {
+			_ = s.governor.MarkQueue(ctx, item.ID, dispatch.QueueCancelled, reason)
+		}
 		return true, nil
 	}
 
@@ -191,48 +204,79 @@ func (s *service) ProcessFastLaneOnce(ctx context.Context) (bool, error) {
 		return true, nil
 	}
 
-	// Qualification is time-dependent. Re-read it after the reservation and at
-	// the final boundary before the provider, so an approval that expired while
-	// queued cannot leave the system.
-	committedRun, lineageErr := s.repo.HasCommittedFeedRun(ctx, item.OrganizationID, tp.SourceRunID)
-	if lineageErr != nil || !committedRun {
-		reason := "feed_lineage_unavailable"
-		if lineageErr == nil {
-			reason = "feed_lineage_uncommitted"
-		}
+	// Re-read every live safety fact after capacity reservation. Admission facts
+	// stay committed, but a DNC/suppression/content mutation racing the claim must
+	// still win before the irreversible handoff.
+	liveTouchpoint, liveTouchpointErr := s.repo.GetTouchpointByDraft(ctx, item.OrganizationID, item.DraftID)
+	if liveTouchpointErr != nil || liveTouchpoint == nil {
+		reason := "touchpoint_safety_recheck_failed"
 		_ = s.governor.Release(ctx, res.Reservation.ID, reason)
-		_ = s.governor.MarkQueue(ctx, item.ID, dispatch.QueueCancelled, reason)
+		_ = s.governor.DeferQueue(ctx, item.ID, s.fastLaneBackoff(item), reason)
 		return true, nil
 	}
-	account, accountErr := s.repo.GetAccount(ctx, item.OrganizationID, tp.AccountID)
-	qualification := AccountCommercialQualification(account, s.now())
-	if accountErr != nil || !qualification.AllowsTransport() {
-		reason := "commercial_qualification_unavailable"
-		if accountErr == nil {
-			reason = firstNonEmpty(firstHold(qualification.ReasonCodes), ReasonQualificationMissing)
-		}
+	tp = liveTouchpoint
+	if reason, ok, retryable := s.fastLaneBlock(ctx, item, tp); !ok {
 		_ = s.governor.Release(ctx, res.Reservation.ID, reason)
-		_ = s.governor.MarkQueue(ctx, item.ID, dispatch.QueueCancelled, reason)
+		if retryable {
+			_ = s.governor.DeferQueue(ctx, item.ID, s.fastLaneBackoff(item), reason)
+		} else {
+			_ = s.governor.MarkQueue(ctx, item.ID, dispatch.QueueCancelled, reason)
+		}
 		return true, nil
 	}
+	if transport := s.ResolveTransportState(ctx, nil); !transport.Active {
+		reason := "transport_blocked_after_reservation"
+		_ = s.governor.Release(ctx, res.Reservation.ID, reason)
+		_ = s.governor.DeferQueue(ctx, item.ID, s.now().Add(fastLaneDeferFallback), reason)
+		return true, nil
+	}
+	liveMailboxID, mailboxErr := s.fastLaneMailbox(ctx, item)
+	if mailboxErr != nil || liveMailboxID != mailboxID {
+		reason := "mailbox_changed_after_reservation"
+		if mailboxErr != nil {
+			reason = "mailbox_unavailable_after_reservation: " + mailboxErr.Error()
+		}
+		_ = s.governor.Release(ctx, res.Reservation.ID, reason)
+		_ = s.governor.DeferQueue(ctx, item.ID, s.fastLaneBackoff(item), reason)
+		return true, nil
+	}
+
+	// Feed lineage and temporal qualification were consumed at queue admission.
+	// Rechecking either here makes a durable authorization disappear on a feed
+	// pointer change or on the mere passage of time. Explicit live deactivation,
+	// role, recipient and content safety are enforced by fastLaneBlock above.
 	accepted, acceptedErr := s.repo.HasAcceptedInitialForAccount(ctx, item.OrganizationID, tp.AccountID)
-	if acceptedErr != nil || accepted {
+	if acceptedErr != nil {
 		reason := "accepted_initial_ledger_lookup_failed"
-		if acceptedErr == nil {
-			reason = "accepted_initial_already_recorded"
-		}
+		_ = s.governor.Release(ctx, res.Reservation.ID, reason)
+		_ = s.governor.DeferQueue(ctx, item.ID, s.fastLaneBackoff(item), reason)
+		return true, nil
+	}
+	if accepted {
+		reason := "accepted_initial_already_recorded"
 		_ = s.governor.Release(ctx, res.Reservation.ID, reason)
 		_ = s.governor.MarkQueue(ctx, item.ID, dispatch.QueueCancelled, reason)
 		return true, nil
 	}
 
-	acceptance, outcome, sendErr := s.firstTouchTransport.SendFirstTouch(ctx, FirstTouchMessage{
+	sendBudget := res.Reservation.LeaseUntil.Sub(s.now()) - fastLaneSMTPLeaseMargin
+	if sendBudget <= 0 {
+		_ = s.governor.Release(ctx, res.Reservation.ID, "smtp_budget_exhausted_before_handoff")
+		_ = s.governor.RetryQueue(ctx, item.ID, s.fastLaneBackoff(item), "smtp_budget_exhausted_before_handoff")
+		return true, nil
+	}
+	sendCtx, cancelSend := context.WithTimeout(ctx, sendBudget)
+	defer cancelSend()
+	acceptance, outcome, sendErr := s.firstTouchTransport.SendFirstTouch(sendCtx, FirstTouchMessage{
 		OrganizationID: item.OrganizationID,
 		EmailAccountID: mailboxID,
 		MessageKey:     item.MessageKey,
 		To:             tp.Recipient,
 		Subject:        tp.Subject,
 		BodyText:       tp.BodyText,
+		BeforeHandoff: func(handoffCtx context.Context) error {
+			return s.governor.StartHandoff(handoffCtx, res.Reservation.ID, item.ID)
+		},
 	})
 
 	switch outcome {
@@ -253,6 +297,7 @@ func (s *service) ProcessFastLaneOnce(ctx context.Context) (bool, error) {
 			// attempted so reconciliation owns it; never re-send from here.
 			log.Error().Err(err).Str("message_key", item.MessageKey).
 				Msg("confenge fast lane could not record an accepted send")
+			_, _ = s.governor.FinalizeHandoff(ctx, res.Reservation.ID, "commit_failed_after_acceptance")
 			_ = s.governor.MarkQueue(ctx, item.ID, dispatch.QueueAttempted, "commit_failed_after_acceptance")
 			return true, err
 		}
@@ -272,10 +317,17 @@ func (s *service) ProcessFastLaneOnce(ctx context.Context) (bool, error) {
 		// row be claimed again, so it stays parked for human/reconciler review.
 		log.Warn().Str("message_key", item.MessageKey).Err(sendErr).
 			Msg("confenge fast lane got an ambiguous provider result; not resending")
+		_, _ = s.governor.FinalizeHandoff(ctx, res.Reservation.ID, "ambiguous_provider_result: "+errText(sendErr))
 		_ = s.governor.MarkQueue(ctx, item.ID, dispatch.QueueAttempted, "ambiguous_provider_result: "+errText(sendErr))
 		return true, nil
 
 	default: // FirstTouchTransient
+		if finalized, finalizeErr := s.governor.FinalizeHandoff(ctx, res.Reservation.ID, "transient_after_handoff: "+errText(sendErr)); finalizeErr != nil {
+			return true, finalizeErr
+		} else if finalized {
+			_ = s.governor.MarkQueue(ctx, item.ID, dispatch.QueueAttempted, "transient_after_handoff: "+errText(sendErr))
+			return true, nil
+		}
 		_ = s.governor.Release(ctx, res.Reservation.ID, errText(sendErr))
 		if item.Attempts >= fastLaneMaxAttempts {
 			_ = s.governor.MarkQueue(ctx, item.ID, dispatch.QueueFailed, "retries_exhausted: "+errText(sendErr))
@@ -289,6 +341,9 @@ func (s *service) ProcessFastLaneOnce(ctx context.Context) (bool, error) {
 const (
 	fastLaneMaxAttempts   = 5
 	fastLaneDeferFallback = 5 * time.Minute
+	// The socket deadline must fire while the reservation still belongs to this
+	// worker. This margin leaves time for the accepted-ledger transaction.
+	fastLaneSMTPLeaseMargin = 10 * time.Second
 )
 
 func errText(err error) string {
@@ -313,20 +368,82 @@ func (s *service) fastLaneBackoff(item *dispatch.QueueItem) time.Time {
 
 // fastLaneBlock holds the gates that protect a recipient or a mailbox. It
 // returns false with a reason when the row must not be sent at all.
-func (s *service) fastLaneBlock(ctx context.Context, item *dispatch.QueueItem, tp *models.OutreachTouchpoint) (string, bool) {
+func (s *service) fastLaneBlock(ctx context.Context, item *dispatch.QueueItem, tp *models.OutreachTouchpoint) (string, bool, bool) {
 	// The approved content must still be the content we are about to send.
-	if tp.State != models.TouchpointQueued || tp.ContentHash == "" || tp.ApprovedContentHash != tp.ContentHash {
-		return "approval or content hash changed", false
+	liveHash := TouchpointBindingHash(tp)
+	if tp.State != models.TouchpointQueued || liveHash == "" || tp.ContentHash != liveHash || tp.ApprovedContentHash != liveHash {
+		return "approval or content binding hash changed", false, false
 	}
 	if tp.State == models.TouchpointSent {
-		return "already_sent", false
+		return "already_sent", false, false
 	}
 	recipient := strings.ToLower(strings.TrimSpace(tp.Recipient))
 	if recipient == "" || !strings.Contains(recipient, "@") || strings.ContainsAny(recipient, " \t\r\n") {
-		return "recipient_not_usable", false
+		return "recipient_not_usable", false, false
 	}
 	if strings.TrimSpace(tp.Subject) == "" || strings.TrimSpace(tp.BodyText) == "" {
-		return "approved_payload_empty", false
+		return "approved_payload_empty", false, false
+	}
+	queueRecipient := strings.ToLower(strings.TrimSpace(item.RecipientRef))
+	if queueRecipient == "" || queueRecipient != recipient {
+		return "recipient_binding_drift", false, false
+	}
+	account, err := s.repo.GetAccount(ctx, item.OrganizationID, tp.AccountID)
+	if err != nil || account == nil {
+		return "account_safety_lookup_failed", false, true
+	}
+	if account.Blocked || account.DoNotContact {
+		return "account_blocked_or_dnc", false, false
+	}
+	switch account.QueueState {
+	case models.OutreachQueueBlocked, models.OutreachQueueBounced, models.OutreachQueueDoNotContact,
+		models.OutreachQueueSent, models.OutreachQueueReplied, models.OutreachQueueMeeting,
+		models.OutreachQueueProposal, models.OutreachQueueWon, models.OutreachQueueLost:
+		return "account_terminal:" + account.QueueState, false, false
+	}
+	qualificationState := strings.ToUpper(strings.TrimSpace(account.CommercialQualificationState))
+	if account.CommercialQualificationDeactivated || qualificationState == CommercialRevoked {
+		return "commercial_qualification_deactivated", false, false
+	}
+	role := strings.ToUpper(strings.TrimSpace(account.TargetPartyRole))
+	leadCNPJ := NormalizeCNPJ14(account.CNPJ14)
+	buyerCNPJ := NormalizeCNPJ14(account.BuyerCNPJ14)
+	roleStatus := strings.ToUpper(strings.TrimSpace(account.ContractorRoleStatus))
+	roleConflict := role == ContractorRoleConflict || role == "BUYER_CONFLICT" || role == "BUYER" ||
+		roleStatus == ContractorRoleConflict || roleStatus == "PARTY_ROLE_CONFLICT"
+	identityConflict := leadCNPJ != "" && buyerCNPJ == leadCNPJ
+	if account.SupplierIdentityRef != "" && account.SupplierIdentityRef == account.BuyerIdentityRef {
+		identityConflict = true
+	}
+	if roleConflict || identityConflict {
+		return "target_party_role_conflict", false, false
+	}
+	if tp.ContactCandidateID != nil {
+		candidate, candidateErr := s.repo.GetCandidate(ctx, item.OrganizationID, *tp.ContactCandidateID)
+		if candidateErr != nil {
+			return "candidate_safety_lookup_failed", false, true
+		}
+		// A missing historical candidate is provenance loss, not a new safety
+		// fact. Positive live flags or a concrete binding drift still revoke.
+		if candidate != nil {
+			if candidate.OrganizationID != item.OrganizationID || candidate.AccountID != tp.AccountID {
+				return "candidate_account_binding_drift", false, false
+			}
+			candidateEmail := strings.ToLower(strings.TrimSpace(candidate.Email))
+			if candidateEmail != "" && candidateEmail != recipient {
+				return "candidate_recipient_binding_drift", false, false
+			}
+			if candidate.Blocked || candidate.DoNotContact || candidate.Bounced {
+				return "candidate_blocked_dnc_or_bounced", false, false
+			}
+			switch candidate.VerificationStatus {
+			case models.OutreachVerifyInvalid, models.OutreachVerifyBounced, models.OutreachVerifyDoNotContact:
+				return "candidate_terminal:" + candidate.VerificationStatus, false, false
+			}
+			if suppression := strings.ToUpper(strings.TrimSpace(candidate.RouteSuppression)); suppression != "" && suppression != "NONE" {
+				return "candidate_route_suppressed:" + suppression, false, false
+			}
+		}
 	}
 	// Hard bounce, complaint and opt-out suppression.
 	if suppressions, ok := s.repo.(interface {
@@ -335,22 +452,29 @@ func (s *service) fastLaneBlock(ctx context.Context, item *dispatch.QueueItem, t
 		suppression, err := suppressions.GetOutreachRecipientSuppression(ctx, item.OrganizationID, tp.Recipient)
 		if err != nil {
 			// Fail closed: an unreadable suppression list is not permission.
-			return "suppression_lookup_failed", false
+			return "suppression_lookup_failed", false, true
 		}
 		if suppression != nil {
-			return "recipient_suppressed:" + string(suppression.Source), false
+			return "recipient_suppressed:" + string(suppression.Source), false, false
 		}
+	} else {
+		return "suppression_lookup_unavailable", false, true
 	}
-	return "", true
+	return "", true, false
 }
 
 // fastLaneMailbox resolves the sending mailbox for a queued row.
 func (s *service) fastLaneMailbox(ctx context.Context, item *dispatch.QueueItem) (uuid.UUID, error) {
-	if item.EmailAccountID != nil && *item.EmailAccountID != uuid.Nil {
-		return *item.EmailAccountID, nil
-	}
+	// Resolve the configured/live sender every time. The queue binding is an
+	// admission hint, not permission to keep using a mailbox after configuration
+	// changed. The resolver fails closed on a missing explicit mailbox.
 	id, err := s.resolveConfengeMailbox(ctx, item.OrganizationID)
 	if err != nil {
+		// Unit/in-memory services have no live mailbox database. Production does,
+		// and must never turn a resolver error into permission to use a stale row.
+		if s.fastLaneDB == nil && item.EmailAccountID != nil && *item.EmailAccountID != uuid.Nil {
+			return *item.EmailAccountID, nil
+		}
 		return uuid.Nil, err
 	}
 	if id == uuid.Nil {

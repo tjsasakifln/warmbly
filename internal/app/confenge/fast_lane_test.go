@@ -3,6 +3,7 @@ package confenge
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ type fastLaneRepo struct {
 	repository.OutreachRepository
 	touchpoints map[uuid.UUID]*models.OutreachTouchpoint
 	accounts    map[uuid.UUID]*models.OutreachAccount
+	candidates  map[uuid.UUID]*models.OutreachContactCandidate
 	accepted    map[uuid.UUID]bool
 	acceptedErr error
 	committed   map[string]bool
@@ -35,6 +37,10 @@ func (f *fastLaneRepo) GetTouchpointByDraft(_ context.Context, _ uuid.UUID, draf
 
 func (f *fastLaneRepo) GetAccount(_ context.Context, _ uuid.UUID, accountID uuid.UUID) (*models.OutreachAccount, error) {
 	return f.accounts[accountID], nil
+}
+
+func (f *fastLaneRepo) GetCandidate(_ context.Context, _ uuid.UUID, candidateID uuid.UUID) (*models.OutreachContactCandidate, error) {
+	return f.candidates[candidateID], nil
 }
 
 func (f *fastLaneRepo) HasAcceptedInitialForAccount(_ context.Context, _ uuid.UUID, accountID uuid.UUID) (bool, error) {
@@ -65,6 +71,15 @@ func (f *fastLaneRepo) GetOutreachRecipientSuppression(_ context.Context, _ uuid
 	return f.suppressed[recipient], nil
 }
 
+func (f *fastLaneRepo) UpsertOutreachRecipientSuppression(_ context.Context, value *models.SuppressedRecipient) error {
+	if value == nil {
+		return errors.New("suppression required")
+	}
+	copyValue := *value
+	f.suppressed[strings.ToLower(strings.TrimSpace(value.Email))] = &copyValue
+	return nil
+}
+
 // scriptedTransport returns a fixed outcome and counts real send attempts, so a
 // test can prove a message was never handed to a provider twice.
 type scriptedTransport struct {
@@ -72,9 +87,21 @@ type scriptedTransport struct {
 	err      error
 	attempts int
 	sentTo   []string
+	deadline time.Time
 }
 
-func (s *scriptedTransport) SendFirstTouch(_ context.Context, msg FirstTouchMessage) (FirstTouchAcceptance, FirstTouchOutcome, error) {
+func (s *scriptedTransport) SendFirstTouch(ctx context.Context, msg FirstTouchMessage) (FirstTouchAcceptance, FirstTouchOutcome, error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		s.deadline = deadline
+	}
+	if s.outcome == FirstTouchAccepted || s.outcome == FirstTouchAmbiguous {
+		if msg.BeforeHandoff == nil {
+			return FirstTouchAcceptance{}, FirstTouchTransient, errors.New("missing handoff hook")
+		}
+		if err := msg.BeforeHandoff(context.Background()); err != nil {
+			return FirstTouchAcceptance{}, FirstTouchTransient, err
+		}
+	}
 	s.attempts++
 	s.sentTo = append(s.sentTo, msg.To)
 	if s.outcome == FirstTouchAccepted {
@@ -119,6 +146,7 @@ func newFastLaneHarness(t *testing.T, outcome FirstTouchOutcome, sendErr error) 
 	repo := &fastLaneRepo{
 		touchpoints: map[uuid.UUID]*models.OutreachTouchpoint{},
 		accounts:    map[uuid.UUID]*models.OutreachAccount{},
+		candidates:  map[uuid.UUID]*models.OutreachContactCandidate{},
 		accepted:    map[uuid.UUID]bool{},
 		committed:   map[string]bool{"run-committed": true},
 		suppressed:  map[string]*models.SuppressedRecipient{},
@@ -138,6 +166,32 @@ func newFastLaneHarness(t *testing.T, outcome FirstTouchOutcome, sendErr error) 
 
 // enqueue creates one approved, queued, due first touch.
 func (h *fastLaneHarness) enqueue(t *testing.T, recipient string) (uuid.UUID, string) {
+	return h.enqueueWithAttempts(t, recipient, 0)
+}
+
+type commitFailStore struct {
+	*dispatch.MemoryStore
+	err error
+}
+
+func (s *commitFailStore) CommitReservationWithEvidence(context.Context, uuid.UUID, time.Time, dispatch.SendEvidence) error {
+	return s.err
+}
+
+func TestFirstTouchMessageIDIsStableForLogicalSend(t *testing.T) {
+	orgID := uuid.New()
+	a := firstTouchMessageID(orgID, "email:draft:stable", "Sender@Confenge.COM.BR")
+	b := firstTouchMessageID(orgID, "email:draft:stable", "sender@confenge.com.br")
+	c := firstTouchMessageID(orgID, "email:draft:different", "sender@confenge.com.br")
+	if a != b {
+		t.Fatalf("same logical send produced different ids: %q != %q", a, b)
+	}
+	if a == c {
+		t.Fatal("different message keys produced the same Message-ID")
+	}
+}
+
+func (h *fastLaneHarness) enqueueWithAttempts(t *testing.T, recipient string, attempts int) (uuid.UUID, string) {
 	t.Helper()
 	draftID := uuid.New()
 	key := dispatch.MessageKeyEmail(draftID)
@@ -146,23 +200,42 @@ func (h *fastLaneHarness) enqueue(t *testing.T, recipient string) (uuid.UUID, st
 		ID: uuid.New(), OrganizationID: h.orgID, EmailAccountID: &mailbox,
 		Channel: dispatch.ChannelEmail, DraftID: draftID, MessageKey: key,
 		RecipientRef: recipient, DueAt: h.clock.Now().Add(-time.Minute),
-		Status: dispatch.QueueQueued, CreatedAt: h.clock.Now(),
+		Attempts: attempts, Status: dispatch.QueueQueued, CreatedAt: h.clock.Now(),
 	}); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
 	accountID := uuid.New()
-	h.repo.touchpoints[draftID] = &models.OutreachTouchpoint{
+	tp := &models.OutreachTouchpoint{
 		ID: uuid.New(), OrganizationID: h.orgID, AccountID: accountID, DraftID: &draftID,
 		SourceRunID: "run-committed",
-		State:       models.TouchpointQueued, Recipient: recipient,
+		State:       models.TouchpointQueued, Channel: models.OutreachChannelEmail,
+		Purpose: "INITIAL", Ordinal: 1, Recipient: recipient,
 		Subject: "Assunto aprovado", BodyText: "Corpo aprovado.",
-		ContentHash: "hash-a", ApprovedContentHash: "hash-a",
 	}
+	tp.ContentHash = TouchpointBindingHash(tp)
+	tp.ApprovedContentHash = tp.ContentHash
+	h.repo.touchpoints[draftID] = tp
 	account := &models.OutreachAccount{ID: accountID, OrganizationID: h.orgID, CNPJRoot: "11222333", TargetPartyRole: PartyRoleSupplier}
 	qualification := testRootQualification(account.CNPJRoot, h.clock.Now().AddDate(-1, 0, 0))
 	applyCommercialQualificationToAccount(account, &qualification, h.clock.Now())
 	h.repo.accounts[accountID] = account
 	return draftID, key
+}
+
+func (h *fastLaneHarness) claimAndReserve(t *testing.T) (*dispatch.QueueItem, *dispatch.Reservation) {
+	t.Helper()
+	item, err := h.svc.governor.ClaimNextQueued(context.Background())
+	if err != nil || item == nil {
+		t.Fatalf("claim: item=%+v err=%v", item, err)
+	}
+	res, err := h.svc.governor.TryReserve(context.Background(), dispatch.ReserveRequest{
+		OrganizationID: item.OrganizationID, EmailAccountID: item.EmailAccountID,
+		Channel: item.Channel, MessageKey: item.MessageKey, DraftID: &item.DraftID,
+	})
+	if err != nil || !res.Allowed || res.Reservation == nil {
+		t.Fatalf("reserve: result=%+v err=%v", res, err)
+	}
+	return item, res.Reservation
 }
 
 func (h *fastLaneHarness) queueStatus(t *testing.T, key string) string {
@@ -207,7 +280,7 @@ func TestFastLaneRecordsAcceptedSendExactlyOnceAndClosesTheRow(t *testing.T) {
 	}
 }
 
-func TestFastLaneRechecksQualificationImmediatelyBeforeProvider(t *testing.T) {
+func TestFastLaneDoesNotRevokeAdmissionWhenQualificationTimeElapses(t *testing.T) {
 	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
 	draftID, key := h.enqueue(t, "alvo@exemplo.com.br")
 	tp := h.repo.touchpoints[draftID]
@@ -223,11 +296,11 @@ func TestFastLaneRechecksQualificationImmediatelyBeforeProvider(t *testing.T) {
 	if err != nil || !progressed {
 		t.Fatalf("expired row was not closed: progressed=%v err=%v", progressed, err)
 	}
-	if h.transport.attempts != 0 {
-		t.Fatalf("expired qualification reached provider: attempts=%d", h.transport.attempts)
+	if h.transport.attempts != 1 {
+		t.Fatalf("temporal expiry revoked durable admission: attempts=%d", h.transport.attempts)
 	}
-	if got := h.queueStatus(t, key); got != dispatch.QueueCancelled {
-		t.Fatalf("expired qualification queue state=%q", got)
+	if got := h.queueStatus(t, key); got != dispatch.QueueSent {
+		t.Fatalf("admitted row should send despite temporal expiry, state=%q", got)
 	}
 }
 
@@ -249,7 +322,7 @@ func TestFastLaneLedgerOnlyAcceptanceBlocksDifferentMessageKey(t *testing.T) {
 	}
 }
 
-func TestFastLaneBlocksLegacyQueuedUncommittedLineage(t *testing.T) {
+func TestFastLaneDoesNotRecheckFeedLineageAfterAdmission(t *testing.T) {
 	for _, sourceRunID := range []string{"", "legacy-uncommitted"} {
 		t.Run(firstNonEmpty(sourceRunID, "empty"), func(t *testing.T) {
 			h := newFastLaneHarness(t, FirstTouchAccepted, nil)
@@ -260,38 +333,39 @@ func TestFastLaneBlocksLegacyQueuedUncommittedLineage(t *testing.T) {
 			if err != nil || !progressed {
 				t.Fatalf("uncommitted legacy row was not closed: progressed=%v err=%v", progressed, err)
 			}
-			if h.transport.attempts != 0 {
-				t.Fatalf("uncommitted legacy row reached provider: attempts=%d", h.transport.attempts)
+			if h.transport.attempts != 1 {
+				t.Fatalf("lineage drift revoked durable admission: attempts=%d", h.transport.attempts)
 			}
-			if got := h.queueStatus(t, key); got != dispatch.QueueCancelled {
-				t.Fatalf("uncommitted legacy queue state=%q", got)
+			if got := h.queueStatus(t, key); got != dispatch.QueueSent {
+				t.Fatalf("admitted row should send after lineage drift, state=%q", got)
 			}
 		})
 	}
 }
 
-// A restart that re-queues an already-recorded key must close the row from the
-// ledger instead of sending a second copy.
-func TestFastLaneNeverResendsAKeyTheLedgerAlreadyHolds(t *testing.T) {
+// A producer replay after an accepted send must not reopen the terminal row.
+func TestFastLaneNeverRequeuesAKeyTheLedgerAlreadyHolds(t *testing.T) {
 	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
-	_, key := h.enqueue(t, "alvo@exemplo.com.br")
+	draftID, key := h.enqueue(t, "alvo@exemplo.com.br")
 	if _, err := h.svc.ProcessFastLaneOnce(context.Background()); err != nil {
 		t.Fatalf("initial send: %v", err)
 	}
 
-	// Simulate a crash-recovery that puts the row back to queued.
-	if err := h.store.RetryQueue(context.Background(), h.mustQueueID(t, key), h.clock.Now().Add(-time.Minute), "replayed"); err != nil {
-		// RetryQueue only moves reserved rows; force the state directly.
-		_ = err
+	mailbox := h.mailbox
+	if err := h.store.Enqueue(context.Background(), &dispatch.QueueItem{
+		OrganizationID: h.orgID, EmailAccountID: &mailbox, Channel: dispatch.ChannelEmail,
+		DraftID: draftID, MessageKey: key, RecipientRef: "alvo@exemplo.com.br",
+		DueAt: h.clock.Now().Add(-time.Minute), Status: dispatch.QueueQueued,
+	}); err != nil {
+		t.Fatalf("producer replay: %v", err)
 	}
-	h.forceQueued(t, key)
 
 	progressed, err := h.svc.ProcessFastLaneOnce(context.Background())
 	if err != nil {
 		t.Fatalf("replay pass: %v", err)
 	}
-	if !progressed {
-		t.Fatal("replayed row was not handled")
+	if progressed {
+		t.Fatal("accepted row became claimable after producer replay")
 	}
 	if h.transport.attempts != 1 {
 		t.Fatalf("replay resent the message: %d provider attempts", h.transport.attempts)
@@ -311,6 +385,9 @@ func TestFastLanePermanentRejectionDoesNotHeadOfLineBlock(t *testing.T) {
 	}
 	if got := h.queueStatus(t, badKey); got != dispatch.QueueFailed {
 		t.Fatalf("permanent rejection should be terminal 'failed', got %q", got)
+	}
+	if suppression := h.repo.suppressed["invalido@exemplo.com.br"]; suppression == nil || suppression.Source != models.DeliverabilityEventBounce {
+		t.Fatalf("permanent rejection did not persist suppression: %+v", suppression)
 	}
 
 	// The next valid row must still send.
@@ -377,8 +454,8 @@ func TestFastLaneFailsClosedWhenSuppressionUnreadable(t *testing.T) {
 	if h.transport.attempts != 0 {
 		t.Fatal("sent while the suppression list was unreadable")
 	}
-	if got := h.queueStatus(t, key); got != dispatch.QueueCancelled {
-		t.Fatalf("expected cancelled, got %q", got)
+	if got := h.queueStatus(t, key); got != dispatch.QueueQueued {
+		t.Fatalf("transient lookup failure should defer durable work, got %q", got)
 	}
 }
 
@@ -430,6 +507,167 @@ func TestFastLaneTransientFailureRetriesAndIsBounded(t *testing.T) {
 	item, _ := h.store.GetQueueByKey(context.Background(), key)
 	if !item.DueAt.After(h.clock.Now()) {
 		t.Fatal("retry was not backed off into the future")
+	}
+}
+
+func TestFastLaneAcceptedCommitFailureParksAndNeverResends(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+	draftID, key := h.enqueue(t, "alvo@exemplo.com.br")
+	failing := &commitFailStore{MemoryStore: h.store, err: errors.New("ledger transaction unavailable")}
+	cfg := dispatch.DefaultConfig()
+	cfg.SendsPerHour = 100
+	cfg.MinGap = 0
+	cfg.RateMode = "fixed"
+	h.svc.governor = dispatch.NewGovernor(cfg, failing, h.clock)
+
+	progressed, err := h.svc.ProcessFastLaneOnce(context.Background())
+	if !progressed || err == nil {
+		t.Fatalf("accepted commit failure not surfaced: progressed=%v err=%v", progressed, err)
+	}
+	if h.transport.attempts != 1 || h.queueStatus(t, key) != dispatch.QueueAttempted {
+		t.Fatalf("accepted failure was not parked: attempts=%d status=%s", h.transport.attempts, h.queueStatus(t, key))
+	}
+	reservation, _ := h.store.GetReservationByKey(context.Background(), key)
+	if reservation == nil || reservation.AttemptedAt == nil || reservation.State != dispatch.StateFailed {
+		t.Fatalf("handoff reservation not terminal: %+v", reservation)
+	}
+	h.clock.Advance(dispatch.DefaultLeaseTTL + time.Second)
+	_, _ = h.store.ExpireStaleReservations(context.Background(), h.clock.Now())
+	mailbox := h.mailbox
+	_ = h.store.Enqueue(context.Background(), &dispatch.QueueItem{
+		OrganizationID: h.orgID, EmailAccountID: &mailbox, Channel: dispatch.ChannelEmail,
+		DraftID: draftID, MessageKey: key, RecipientRef: "alvo@exemplo.com.br", DueAt: h.clock.Now(),
+	})
+	progressed, err = h.svc.ProcessFastLaneOnce(context.Background())
+	if err != nil || progressed || h.transport.attempts != 1 {
+		t.Fatalf("parked acceptance was retried: progressed=%v attempts=%d err=%v", progressed, h.transport.attempts, err)
+	}
+}
+
+func TestFastLaneSMTPDeadlineIsShorterThanReservationLease(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+	h.enqueue(t, "alvo@exemplo.com.br")
+	started := time.Now()
+	if _, err := h.svc.ProcessFastLaneOnce(context.Background()); err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if h.transport.deadline.IsZero() {
+		t.Fatal("transport context had no deadline")
+	}
+	if budget := h.transport.deadline.Sub(started); budget <= 0 || budget >= dispatch.DefaultLeaseTTL {
+		t.Fatalf("SMTP budget must be positive and shorter than lease: %s", budget)
+	}
+}
+
+func TestFastLaneCrashRecoveryBeforeHandoffRequeues(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+	_, key := h.enqueue(t, "alvo@exemplo.com.br")
+	h.claimAndReserve(t) // worker crashes before the transport invokes the hook
+	h.clock.Advance(dispatch.DefaultLeaseTTL + time.Second)
+
+	progressed, err := h.svc.ProcessFastLaneOnce(context.Background())
+	if err != nil || !progressed {
+		t.Fatalf("pre-handoff recovery did not resume: progressed=%v err=%v", progressed, err)
+	}
+	if h.transport.attempts != 1 || h.queueStatus(t, key) != dispatch.QueueSent {
+		t.Fatalf("pre-handoff recovery result attempts=%d status=%s", h.transport.attempts, h.queueStatus(t, key))
+	}
+}
+
+func TestFastLaneCrashRecoveryAfterHandoffNeverRequeues(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+	draftID, key := h.enqueue(t, "alvo@exemplo.com.br")
+	item, reservation := h.claimAndReserve(t)
+	if err := h.svc.governor.StartHandoff(context.Background(), reservation.ID, item.ID); err != nil {
+		t.Fatalf("start handoff: %v", err)
+	}
+	h.clock.Advance(dispatch.DefaultLeaseTTL + time.Second)
+	if expired, err := h.store.ExpireStaleReservations(context.Background(), h.clock.Now()); err != nil || expired != 0 {
+		t.Fatalf("post-handoff reservation expired: count=%d err=%v", expired, err)
+	}
+	mailbox := h.mailbox
+	_ = h.store.Enqueue(context.Background(), &dispatch.QueueItem{
+		OrganizationID: h.orgID, EmailAccountID: &mailbox, Channel: dispatch.ChannelEmail,
+		DraftID: draftID, MessageKey: key, RecipientRef: "alvo@exemplo.com.br", DueAt: h.clock.Now(),
+	})
+	progressed, err := h.svc.ProcessFastLaneOnce(context.Background())
+	if err != nil || progressed {
+		t.Fatalf("post-handoff row became work again: progressed=%v err=%v", progressed, err)
+	}
+	if h.transport.attempts != 0 || h.queueStatus(t, key) != dispatch.QueueAttempted {
+		t.Fatalf("post-handoff recovery attempts=%d status=%s", h.transport.attempts, h.queueStatus(t, key))
+	}
+}
+
+func TestFastLaneLiveAccountAndCandidateSafety(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*models.OutreachAccount, *models.OutreachContactCandidate)
+	}{
+		{"account_dnc", func(a *models.OutreachAccount, _ *models.OutreachContactCandidate) { a.DoNotContact = true }},
+		{"account_blocked", func(a *models.OutreachAccount, _ *models.OutreachContactCandidate) { a.Blocked = true }},
+		{"account_bounced", func(a *models.OutreachAccount, _ *models.OutreachContactCandidate) {
+			a.QueueState = models.OutreachQueueBounced
+		}},
+		{"qualification_deactivated", func(a *models.OutreachAccount, _ *models.OutreachContactCandidate) {
+			a.CommercialQualificationDeactivated = true
+		}},
+		{"buyer_role_conflict", func(a *models.OutreachAccount, _ *models.OutreachContactCandidate) {
+			a.TargetPartyRole = "BUYER_CONFLICT"
+		}},
+		{"candidate_dnc", func(_ *models.OutreachAccount, c *models.OutreachContactCandidate) { c.DoNotContact = true }},
+		{"candidate_bounced", func(_ *models.OutreachAccount, c *models.OutreachContactCandidate) { c.Bounced = true }},
+		{"candidate_recipient_drift", func(_ *models.OutreachAccount, c *models.OutreachContactCandidate) { c.Email = "outro@exemplo.com.br" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+			draftID, key := h.enqueue(t, "alvo@exemplo.com.br")
+			tp := h.repo.touchpoints[draftID]
+			candidateID := uuid.New()
+			tp.ContactCandidateID = &candidateID
+			candidate := &models.OutreachContactCandidate{
+				ID: candidateID, OrganizationID: h.orgID, AccountID: tp.AccountID,
+				Email: "alvo@exemplo.com.br", VerificationStatus: models.OutreachVerifyVerified,
+			}
+			h.repo.candidates[candidateID] = candidate
+			tt.mutate(h.repo.accounts[tp.AccountID], candidate)
+			if _, err := h.svc.ProcessFastLaneOnce(context.Background()); err != nil {
+				t.Fatalf("process: %v", err)
+			}
+			if h.transport.attempts != 0 || h.queueStatus(t, key) != dispatch.QueueCancelled {
+				t.Fatalf("unsafe binding reached provider: attempts=%d status=%s", h.transport.attempts, h.queueStatus(t, key))
+			}
+		})
+	}
+}
+
+func TestFastLaneRetryBudgetIsCheckedBeforeProvider(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+	_, key := h.enqueueWithAttempts(t, "alvo@exemplo.com.br", fastLaneMaxAttempts)
+	if _, err := h.svc.ProcessFastLaneOnce(context.Background()); err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if h.transport.attempts != 0 || h.queueStatus(t, key) != dispatch.QueueFailed {
+		t.Fatalf("exhausted row reached provider: attempts=%d status=%s", h.transport.attempts, h.queueStatus(t, key))
+	}
+}
+
+func TestFastLaneFailedRowCannotBeReenqueued(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchPermanent, errors.New("550 permanent"))
+	draftID, key := h.enqueue(t, "invalido@exemplo.com.br")
+	if _, err := h.svc.ProcessFastLaneOnce(context.Background()); err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	mailbox := h.mailbox
+	if err := h.store.Enqueue(context.Background(), &dispatch.QueueItem{
+		OrganizationID: h.orgID, EmailAccountID: &mailbox, Channel: dispatch.ChannelEmail,
+		DraftID: draftID, MessageKey: key, RecipientRef: "invalido@exemplo.com.br", DueAt: h.clock.Now(),
+	}); err != nil {
+		t.Fatalf("re-enqueue: %v", err)
+	}
+	if h.queueStatus(t, key) != dispatch.QueueFailed {
+		t.Fatalf("failed row was reopened: %s", h.queueStatus(t, key))
 	}
 }
 
