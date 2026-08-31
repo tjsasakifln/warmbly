@@ -1653,9 +1653,21 @@ func (s *service) prepareDelegatedTouchpoint(ctx context.Context, orgID uuid.UUI
 	if err != nil {
 		return nil, nil, fmt.Errorf("first_touch_lookup_failed")
 	}
+	var selectedTouchpointID uuid.UUID
+	runwayEntry := strings.HasPrefix(entry.IdempotencyKey, delegatedFirstTouchIdempotencyPrefix+"runway-")
+	if runwayEntry {
+		raw := strings.TrimPrefix(strings.TrimSpace(entry.CorrelationID), "touchpoint:")
+		selectedTouchpointID, err = uuid.Parse(raw)
+		if err != nil || selectedTouchpointID == uuid.Nil {
+			return nil, nil, fmt.Errorf("selected_first_touch_binding_invalid")
+		}
+	}
 	var tp *models.OutreachTouchpoint
 	var legacy *models.OutreachTouchpoint
 	for i := range all {
+		if runwayEntry && all[i].ID != selectedTouchpointID {
+			continue
+		}
 		if all[i].Ordinal != 1 || all[i].Purpose != models.TouchpointPurposeInitial ||
 			all[i].Channel != models.OutreachChannelEmail {
 			continue
@@ -1673,6 +1685,9 @@ func (s *service) prepareDelegatedTouchpoint(ctx context.Context, orgID uuid.UUI
 		}
 		row := all[i]
 		tp = &row
+	}
+	if runwayEntry && tp == nil {
+		return nil, nil, fmt.Errorf("selected_first_touch_missing")
 	}
 	if tp == nil {
 		tp = legacy
