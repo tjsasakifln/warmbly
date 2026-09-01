@@ -235,7 +235,8 @@ func TestCommercialReconciliationE2E(t *testing.T) {
 		t.Fatal("extra leaked into catalog json")
 	}
 
-	view := Rollup(mustList(st, reconOrg), "2026-08", true)
+	rollupMonth := last.Chain.CreatedAt.UTC().Format("2006-01")
+	view := Rollup(mustList(st, reconOrg), rollupMonth, true)
 	if view.Commercial.ReceivedCents <= 0 {
 		t.Fatal("synthetic received_revenue missing")
 	}
@@ -245,7 +246,7 @@ func TestCommercialReconciliationE2E(t *testing.T) {
 	if len(view.ByOfferVersion) == 0 {
 		t.Fatal("by_offer_version empty")
 	}
-	real := Rollup(mustList(st, reconOrg), "2026-08", false)
+	real := Rollup(mustList(st, reconOrg), rollupMonth, false)
 	if !real.RealEmpty && real.Commercial.ReceivedCents != 0 {
 		t.Fatalf("include_synthetic=0 counted cash=%d chains=%d", real.Commercial.ReceivedCents, real.ChainCount)
 	}
