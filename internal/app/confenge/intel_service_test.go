@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/warmbly/warmbly/internal/app/confenge/intel"
+	"github.com/warmbly/warmbly/internal/app/confenge/proposal"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
 )
@@ -29,6 +30,20 @@ func TestCommercialExecutiveViewEmptyReal(t *testing.T) {
 func TestAcquisitionOutcomeFeedbackDoesNotMaterializeReadModel(t *testing.T) {
 	svc, _, org := inboundTestService(t)
 	now := time.Date(2026, 8, 31, 15, 0, 0, 0, time.UTC)
+	proposalStore := proposal.NewMemoryStore()
+	proposalID := uuid.MustParse("11111111-2222-4333-8444-555555555555")
+	if _, _, err := proposalStore.Apply(context.Background(), proposal.Mutation{
+		OrganizationID: org, IdempotencyKey: "feedback-readonly-proposal", PayloadHash: "hash", Insert: true,
+		Proposal: proposal.Proposal{
+			SchemaVersion: proposal.ProposalSchemaVersion, ProposalID: proposalID, ProposalVersion: 1,
+			OrganizationID: org, AccountID: "extra-account-readonly-1", OpportunityID: "opportunity-readonly-1",
+			SourceLeadID: "webcfg-feedback-readonly-1", CorrelationID: "corr-feedback-readonly-1",
+			DecisionState: proposal.StateSent, Amount: 100_000, Currency: "BRL", SentAt: &now,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc.proposalFacts = proposalStore
 	body := []byte(`{
 		"lead_id":"webcfg-feedback-readonly-1","receipt_id":"rcpt-feedback-readonly-1",
 		"created_at":"2026-08-20T12:00:00Z","source":"CONFENGE_WEB","route_family":"inbound",
@@ -44,6 +59,14 @@ func TestAcquisitionOutcomeFeedbackDoesNotMaterializeReadModel(t *testing.T) {
 		t.Fatalf("precondition chains=%d err=%v", len(before), err)
 	}
 	beforeRaw, err := json.Marshal(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposalsBefore, err := proposalStore.ListOutcomeFeedback(context.Background(), org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposalsBeforeRaw, err := json.Marshal(proposalsBefore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,6 +91,17 @@ func TestAcquisitionOutcomeFeedbackDoesNotMaterializeReadModel(t *testing.T) {
 	}
 	if string(beforeRaw) != string(afterRaw) {
 		t.Fatalf("read-only endpoint changed durable chains\nbefore=%s\nafter=%s", beforeRaw, afterRaw)
+	}
+	proposalsAfter, err := proposalStore.ListOutcomeFeedback(context.Background(), org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposalsAfterRaw, err := json.Marshal(proposalsAfter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(proposalsBeforeRaw) != string(proposalsAfterRaw) {
+		t.Fatalf("read-only endpoint changed native proposals\nbefore=%s\nafter=%s", proposalsBeforeRaw, proposalsAfterRaw)
 	}
 }
 

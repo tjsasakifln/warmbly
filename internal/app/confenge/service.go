@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
 	"github.com/warmbly/warmbly/internal/app/confenge/intel"
+	"github.com/warmbly/warmbly/internal/app/confenge/proposal"
 	"github.com/warmbly/warmbly/internal/app/whatsapp"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
@@ -244,6 +245,7 @@ type service struct {
 	orgRisk        OrgRiskPolicy
 	dossierStore   DossierReferenceStore
 	intel          intel.Store
+	proposalFacts  proposal.OutcomeFeedbackStore
 	operatorMail   func(to, subject, body string) error
 	observedEvents []intel.CommercialEvent
 	// Serializes the preparation workers so their shared NEEDS_REVIEW ceiling
@@ -284,8 +286,9 @@ func NewService(cfg Config, repo repository.OutreachRepository, audit AuditLogge
 			AllowFile:    !prod,
 			RequireHTTPS: prod,
 		},
-		cohortStore:  NewMemoryCohortStore(), // tests/unit only; production boot wires NewPostgresCohortStore
-		dossierStore: NewMemoryDossierStore(),
+		cohortStore:   NewMemoryCohortStore(), // tests/unit only; production boot wires NewPostgresCohortStore
+		dossierStore:  NewMemoryDossierStore(),
+		proposalFacts: proposal.NewMemoryStore(),
 	}
 }
 
@@ -303,9 +306,10 @@ func NewServiceWithAI(cfg Config, repo repository.OutreachRepository, audit Audi
 			AllowFile:    !prod,
 			RequireHTTPS: prod,
 		},
-		ai:           ai,
-		cohortStore:  NewMemoryCohortStore(), // tests/unit only; production boot wires NewPostgresCohortStore
-		dossierStore: NewMemoryDossierStore(),
+		ai:            ai,
+		cohortStore:   NewMemoryCohortStore(), // tests/unit only; production boot wires NewPostgresCohortStore
+		dossierStore:  NewMemoryDossierStore(),
+		proposalFacts: proposal.NewMemoryStore(),
 	}
 	return svc
 }

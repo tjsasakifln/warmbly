@@ -99,7 +99,7 @@ func TestAcquisitionOutcomeFeedbackWithholdsSensitiveSubcellsBelowFive(t *testin
 	if row.Outcomes.Won != nil || row.Outcomes.Lost != nil || row.Outcomes.Unknown != nil || row.Outcomes.Status != FeedbackStatusWithheld {
 		t.Fatalf("outcomes=%+v", row.Outcomes)
 	}
-	if row.KnownValue.ContractedCents != nil || row.KnownValue.ReceivedCents != nil ||
+	if len(row.KnownValue.ByCurrency) != 0 ||
 		row.KnownValue.KnownRecords != nil || row.KnownValue.UnknownRecords != nil || row.KnownValue.Status != FeedbackStatusWithheld {
 		t.Fatalf("value=%+v", row.KnownValue)
 	}
@@ -155,9 +155,9 @@ func TestAcquisitionOutcomeFeedbackReleasesSensitiveMetricsAtFiveContributors(t 
 	if row.Outcomes.Won == nil || *row.Outcomes.Won != 5 || row.Outcomes.Status != FeedbackStatusPartial {
 		t.Fatalf("outcomes=%+v", row.Outcomes)
 	}
-	if row.KnownValue.ContractedCents == nil || *row.KnownValue.ContractedCents != 500_000 ||
-		row.KnownValue.ReceivedCents == nil || *row.KnownValue.ReceivedCents != 250_000 ||
-		row.KnownValue.Status != FeedbackStatusPartial {
+	value := knownFeedbackCurrency(t, row.KnownValue, "BRL")
+	if value.ContractedCents == nil || *value.ContractedCents != 500_000 ||
+		value.ReceivedCents == nil || *value.ReceivedCents != 250_000 || row.KnownValue.Status != FeedbackStatusPartial {
 		t.Fatalf("value=%+v", row.KnownValue)
 	}
 }
@@ -179,9 +179,21 @@ func TestAcquisitionOutcomeFeedbackSuppressesContractedAndReceivedContributorsIn
 				chains = append(chains, chain)
 			}
 			report := ProjectAcquisitionOutcomeFeedback(chains, period, now, false)
-			if len(report.Rows) != 1 || report.Rows[0].KnownValue.Status != FeedbackStatusWithheld ||
-				report.Rows[0].KnownValue.ContractedCents != nil || report.Rows[0].KnownValue.ReceivedCents != nil {
-				t.Fatalf("asymmetric contributors leaked value: %+v", report.Rows)
+			if len(report.Rows) != 1 || report.Rows[0].KnownValue.Status != FeedbackStatusPartial {
+				t.Fatalf("asymmetric value status=%+v", report.Rows)
+			}
+			knownValue := report.Rows[0].KnownValue
+			value := knownFeedbackCurrency(t, knownValue, "BRL")
+			if asymmetric == "received" {
+				if value.ContractedCents == nil || *value.ContractedCents != 500_000 ||
+					value.ContractedStatus != FeedbackStatusObserved || value.ReceivedCents != nil ||
+					value.ReceivedStatus != FeedbackStatusWithheld {
+					t.Fatalf("safe contracted stage was not independent: %+v", knownValue)
+				}
+			} else if value.ReceivedCents == nil || *value.ReceivedCents != 250_000 ||
+				value.ReceivedStatus != FeedbackStatusObserved || value.ContractedCents != nil ||
+				value.ContractedStatus != FeedbackStatusWithheld {
+				t.Fatalf("safe received stage was not independent: %+v", knownValue)
 			}
 		})
 	}
@@ -205,8 +217,95 @@ func TestAcquisitionOutcomeFeedbackValueThresholdCountsContributorsNotPayments(t
 	}
 	report := ProjectAcquisitionOutcomeFeedback(chains, period, now, false)
 	if len(report.Rows) != 1 || report.Rows[0].KnownValue.Status != FeedbackStatusWithheld ||
-		report.Rows[0].KnownValue.ContractedCents != nil {
+		len(report.Rows[0].KnownValue.ByCurrency) != 0 {
 		t.Fatalf("one contributor unsuppressed value through multiple payments: %+v", report.Rows)
+	}
+}
+
+func TestAcquisitionOutcomeFeedbackSeparatesKnownValueCurrencyAndPrivacy(t *testing.T) {
+	now := time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC)
+	period := OutcomeFeedbackPeriod{From: now.AddDate(0, 0, -30), To: now}
+	var chains []Chain
+	for i := 0; i < 10; i++ {
+		chain := feedbackTestChain(i, now.AddDate(0, 0, -10), "/defesa-margem", "reequilibrio")
+		chain.Commercial.Payment.ContractedCents = 100_000
+		chain.Commercial.Payment.ReceivedCents = 50_000
+		if i < 5 {
+			chain.Commercial.Offer.Currency = "BRL"
+		} else {
+			chain.Commercial.Offer.Currency = "USD"
+		}
+		chains = append(chains, chain)
+	}
+	report := ProjectAcquisitionOutcomeFeedback(chains, period, now, false)
+	if len(report.Rows) != 1 || report.Rows[0].KnownValue.Status != FeedbackStatusObserved ||
+		len(report.Rows[0].KnownValue.ByCurrency) != 2 {
+		t.Fatalf("mixed currency value=%+v", report.Rows)
+	}
+	for _, currency := range []string{"BRL", "USD"} {
+		value := knownFeedbackCurrency(t, report.Rows[0].KnownValue, currency)
+		if value.ContractedCents == nil || *value.ContractedCents != 500_000 ||
+			value.ReceivedCents == nil || *value.ReceivedCents != 250_000 {
+			t.Fatalf("%s value=%+v", currency, value)
+		}
+	}
+
+	chains = nil
+	for i := 0; i < 5; i++ {
+		chain := feedbackTestChain(i, now.AddDate(0, 0, -10), "/defesa-margem", "reequilibrio")
+		chain.Commercial.Payment.ContractedCents = 100_000
+		if i < 4 {
+			chain.Commercial.Offer.Currency = "BRL"
+		} else {
+			chain.Commercial.Offer.Currency = "USD"
+		}
+		chains = append(chains, chain)
+	}
+	report = ProjectAcquisitionOutcomeFeedback(chains, period, now, false)
+	if report.Rows[0].KnownValue.Status != FeedbackStatusWithheld ||
+		len(report.Rows[0].KnownValue.ByCurrency) != 0 || !report.Rows[0].KnownValue.WithheldSmallCell {
+		t.Fatalf("currencies pooled to satisfy k=5: %+v", report.Rows[0].KnownValue)
+	}
+}
+
+func TestAcquisitionOutcomeFeedbackValueOverflowFailsClosed(t *testing.T) {
+	now := time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC)
+	period := OutcomeFeedbackPeriod{From: now.AddDate(0, 0, -30), To: now}
+	const maxInt64 = int64(^uint64(0) >> 1)
+	var chains []Chain
+	var proposals []NativeProposalFact
+	for i := 0; i < 5; i++ {
+		chain := feedbackTestChain(i, now.AddDate(0, 0, -5), "/same-route", "same-intent")
+		chain.CorrelationID = fmt.Sprintf("corr-native-%d", i)
+		chain.Keys.CorrelationID = chain.CorrelationID
+		chain.OpportunityID = fmt.Sprintf("opportunity-native-%d", i)
+		chain.Keys.OpportunityID = chain.OpportunityID
+		chain.Commercial.Offer.Currency = "BRL"
+		chain.PaymentID = fmt.Sprintf("payment-overflow-%d", i)
+		chain.Keys.PaymentID = chain.PaymentID
+		chain.Commercial.Payment.ContractedCents = 1
+		chain.Commercial.Payment.ReceivedCents = 1
+		if i == 0 {
+			chain.Commercial.Payment.ContractedCents = maxInt64
+			chain.Commercial.Payment.ReceivedCents = maxInt64
+		}
+		chains = append(chains, chain)
+		proposal := feedbackNativeProposal(i, 1, now.AddDate(0, 0, -2))
+		proposal.AmountMinor = 1
+		if i == 0 {
+			proposal.AmountMinor = maxInt64
+		}
+		proposals = append(proposals, proposal)
+	}
+	report := ProjectAcquisitionOutcomeFeedbackWithNativeProposals(chains, proposals, period, now, false)
+	if len(report.Rows) != 1 {
+		t.Fatalf("rows=%+v", report.Rows)
+	}
+	row := report.Rows[0]
+	if row.ProposedValue.Status != FeedbackStatusUnknown || len(row.ProposedValue.ByCurrency) != 0 ||
+		row.ProposedValue.KnownRecords != nil || row.KnownValue.Status != FeedbackStatusUnknown ||
+		len(row.KnownValue.ByCurrency) != 0 || row.KnownValue.KnownRecords != nil {
+		t.Fatalf("overflow was published: proposed=%+v known=%+v", row.ProposedValue, row.KnownValue)
 	}
 }
 
@@ -432,6 +531,295 @@ func TestAcquisitionOutcomeFeedbackNeverUsesSyntheticSubjectsToUnsuppressReal(t 
 	}
 }
 
+func TestAcquisitionOutcomeFeedbackJoinsNativeProposalsAndDeduplicatesVersions(t *testing.T) {
+	now := time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC)
+	period := OutcomeFeedbackPeriod{From: now.AddDate(0, 0, -30), To: now}
+	var chains []Chain
+	var proposals []NativeProposalFact
+	for i := 0; i < 5; i++ {
+		chain := feedbackTestChain(i, now.AddDate(0, 0, -5), "/same-route", "same-intent")
+		chain.CorrelationID = fmt.Sprintf("corr-native-%d", i)
+		chain.Keys.CorrelationID = chain.CorrelationID
+		chain.OpportunityID = fmt.Sprintf("opportunity-native-%d", i)
+		chain.Keys.OpportunityID = chain.OpportunityID
+		chain.OutcomeType = OutcomeQualifiedConversation
+		if i == 0 {
+			chain.ProposalID = "proposal-native-0"
+			chain.Keys.ProposalID = chain.ProposalID
+		}
+		chains = append(chains, chain)
+		first := feedbackNativeProposal(i, 1, now.AddDate(0, 0, -3))
+		first.AmountMinor = 100_000
+		second := feedbackNativeProposal(i, 2, now.AddDate(0, 0, -2))
+		second.DecisionState = "ACCEPTED"
+		second.AcceptedSnapshotHash = "sha256:" + strings.Repeat("a", 64)
+		second.AmountMinor = 120_000
+		proposals = append(proposals, second, first)
+	}
+	report := ProjectAcquisitionOutcomeFeedbackWithNativeProposals(chains, proposals, period, now, false)
+	if len(report.Rows) != 1 {
+		t.Fatalf("rows=%+v", report.Rows)
+	}
+	row := report.Rows[0]
+	assertFeedbackMetric(t, "native proposals", row.Proposals, 5, 0, FeedbackStatusObserved)
+	if row.ProposalStates.Status != FeedbackStatusObserved || len(row.ProposalStates.States) != 1 ||
+		row.ProposalStates.States[0].State != "ACCEPTED" || row.ProposalStates.States[0].Observed != 5 ||
+		row.ProposalStates.KnownRecords == nil || *row.ProposalStates.KnownRecords != 5 ||
+		row.ProposalStates.UnknownRecords == nil || *row.ProposalStates.UnknownRecords != 0 ||
+		row.ProposalStates.WithheldSmallCell {
+		t.Fatalf("proposal states=%+v", row.ProposalStates)
+	}
+	if row.ProposedValue.Status != FeedbackStatusObserved || len(row.ProposedValue.ByCurrency) != 1 ||
+		row.ProposedValue.ByCurrency[0].Currency != "BRL" || row.ProposedValue.ByCurrency[0].AmountMinor != 600_000 ||
+		row.ProposedValue.ByCurrency[0].ProposalCount != 5 || row.ProposedValue.KnownRecords == nil ||
+		*row.ProposedValue.KnownRecords != 5 || row.ProposedValue.UnknownRecords == nil ||
+		*row.ProposedValue.UnknownRecords != 0 {
+		t.Fatalf("proposed value=%+v", row.ProposedValue)
+	}
+	if row.Contracts.Status != FeedbackStatusUnjoinable || len(row.KnownValue.ByCurrency) != 0 ||
+		row.KnownMargin.Status != FeedbackStatusUnknown {
+		t.Fatalf("proposal was promoted into contract/value/margin: %+v", row)
+	}
+}
+
+func TestAcquisitionOutcomeFeedbackNativeProposalJoinFailsClosed(t *testing.T) {
+	now := time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC)
+	base := feedbackTestChain(0, now.AddDate(0, 0, -5), "/same-route", "same-intent")
+	base.CorrelationID = "corr-native-0"
+	base.Keys.CorrelationID = base.CorrelationID
+	base.OpportunityID = "opportunity-native-0"
+	base.Keys.OpportunityID = base.OpportunityID
+	base.OutcomeType = OutcomeQualifiedConversation
+	valid := feedbackNativeProposal(0, 1, now.AddDate(0, 0, -2))
+	if _, ok := matchNativeProposalChain(valid, []Chain{base}); !ok {
+		t.Fatal("exact opaque proposal did not join")
+	}
+	checks := map[string]func(*NativeProposalFact, *[]Chain){
+		"unsafe correlation":         func(f *NativeProposalFact, _ *[]Chain) { f.CorrelationID = "email=a@example.test" },
+		"wrong account":              func(f *NativeProposalFact, _ *[]Chain) { f.AccountID = "account-other" },
+		"wrong opportunity":          func(f *NativeProposalFact, _ *[]Chain) { f.OpportunityID = "opportunity-other" },
+		"wrong source lead":          func(f *NativeProposalFact, _ *[]Chain) { f.SourceLeadID = "lead-other" },
+		"receipt is not source lead": func(f *NativeProposalFact, _ *[]Chain) { f.SourceLeadID = "receipt-0" },
+		"synthetic mismatch":         func(f *NativeProposalFact, _ *[]Chain) { f.Synthetic = true },
+		"draft": func(f *NativeProposalFact, _ *[]Chain) {
+			f.DecisionState = "DRAFT"
+			f.SentAt = nil
+		},
+		"held chain": func(_ *NativeProposalFact, chains *[]Chain) { (*chains)[0].Held = true },
+		"ambiguous correlation": func(_ *NativeProposalFact, chains *[]Chain) {
+			duplicate := (*chains)[0]
+			duplicate.Identity = "another-chain"
+			*chains = append(*chains, duplicate)
+		},
+	}
+	for name, mutate := range checks {
+		t.Run(name, func(t *testing.T) {
+			fact := valid
+			chains := []Chain{base}
+			mutate(&fact, &chains)
+			facts := latestEmittedNativeProposals([]NativeProposalFact{fact})
+			if len(facts) == 0 {
+				return
+			}
+			if _, ok := matchNativeProposalChain(facts[0], chains); ok {
+				t.Fatalf("unsafe/ambiguous fact joined: %+v", fact)
+			}
+		})
+	}
+	other := valid
+	other.ProposalID = "proposal-native-other"
+	if facts := latestEmittedNativeProposals([]NativeProposalFact{valid, other}); len(facts) != 0 {
+		t.Fatalf("multiple proposal IDs shared one canonical correlation: %+v", facts)
+	}
+}
+
+func TestAcquisitionOutcomeFeedbackSuppressesNativeProposalSubstagesBelowFive(t *testing.T) {
+	now := time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC)
+	period := OutcomeFeedbackPeriod{From: now.AddDate(0, 0, -30), To: now}
+	var chains []Chain
+	var proposals []NativeProposalFact
+	for i := 0; i < 5; i++ {
+		chain := feedbackTestChain(i, now.AddDate(0, 0, -5), "/same-route", "same-intent")
+		chain.CorrelationID = fmt.Sprintf("corr-native-%d", i)
+		chain.Keys.CorrelationID = chain.CorrelationID
+		chain.OpportunityID = fmt.Sprintf("opportunity-native-%d", i)
+		chain.Keys.OpportunityID = chain.OpportunityID
+		chains = append(chains, chain)
+		if i < 4 {
+			proposals = append(proposals, feedbackNativeProposal(i, 1, now.AddDate(0, 0, -2)))
+		}
+	}
+	report := ProjectAcquisitionOutcomeFeedbackWithNativeProposals(chains, proposals, period, now, false)
+	if len(report.Rows) != 1 {
+		t.Fatalf("rows=%+v", report.Rows)
+	}
+	row := report.Rows[0]
+	if row.Proposals.Status != FeedbackStatusWithheld || row.Proposals.Observed != nil || row.Proposals.Unknown != nil ||
+		row.ProposalStates.Status != FeedbackStatusWithheld || !row.ProposalStates.WithheldSmallCell ||
+		len(row.ProposalStates.States) != 0 || row.ProposedValue.Status != FeedbackStatusWithheld ||
+		!row.ProposedValue.WithheldSmallCell || len(row.ProposedValue.ByCurrency) != 0 ||
+		!report.Privacy.SensitiveMetricsWithheld {
+		t.Fatalf("native proposal small cell leaked: %+v privacy=%+v", row, report.Privacy)
+	}
+}
+
+func TestAcquisitionOutcomeFeedbackExcludesHeldEconomicFacts(t *testing.T) {
+	now := time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC)
+	period := OutcomeFeedbackPeriod{From: now.AddDate(0, 0, -30), To: now}
+	var chains []Chain
+	var proposals []NativeProposalFact
+	for i := 0; i < 5; i++ {
+		chain := feedbackTestChain(i, now.AddDate(0, 0, -5), "/same-route", "same-intent")
+		chain.CorrelationID = fmt.Sprintf("corr-native-%d", i)
+		chain.Keys.CorrelationID = chain.CorrelationID
+		chain.OpportunityID = fmt.Sprintf("opportunity-native-%d", i)
+		chain.Keys.OpportunityID = chain.OpportunityID
+		chain.OutcomeType = OutcomeWon
+		chain.HumanConfirmed = true
+		chain.ProposalID = fmt.Sprintf("chain-proposal-%d", i)
+		chain.Keys.ProposalID = chain.ProposalID
+		chain.Commercial.Payment.ContractedCents = 100_000
+		chain.Commercial.Payment.ReceivedCents = 50_000
+		chain.Held = true
+		chains = append(chains, chain)
+		proposals = append(proposals, feedbackNativeProposal(i, 1, now.AddDate(0, 0, -2)))
+	}
+	report := ProjectAcquisitionOutcomeFeedbackWithNativeProposals(chains, proposals, period, now, false)
+	if len(report.Rows) != 1 {
+		t.Fatalf("rows=%+v", report.Rows)
+	}
+	row := report.Rows[0]
+	if row.QualifiedOpportunities.Observed != nil || row.Proposals.Observed != nil ||
+		row.Outcomes.Won != nil || row.Outcomes.Lost != nil || len(row.KnownValue.ByCurrency) != 0 ||
+		len(row.ProposedValue.ByCurrency) != 0 {
+		t.Fatalf("held economic fact escaped: %+v", row)
+	}
+}
+
+func TestAcquisitionOutcomeFeedbackRequiresConfengeWebInboundIntersection(t *testing.T) {
+	now := time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC)
+	period := OutcomeFeedbackPeriod{From: now.AddDate(0, 0, -30), To: now}
+	var chains []Chain
+	for i := 0; i < 5; i++ {
+		chains = append(chains, feedbackTestChain(i, now.AddDate(0, 0, -2), "/same-route", "same-intent"))
+	}
+	outbound := feedbackTestChain(20, now.AddDate(0, 0, -2), "/same-route", "same-intent")
+	outbound.RouteFamily = FamilyOutbound
+	outbound.Keys.RouteFamily = FamilyOutbound
+	chains = append(chains, outbound)
+	unknownSource := feedbackTestChain(21, now.AddDate(0, 0, -2), "/same-route", "same-intent")
+	unknownSource.Source = Unknown
+	unknownSource.Keys.Source = Unknown
+	chains = append(chains, unknownSource)
+	report := ProjectAcquisitionOutcomeFeedback(chains, period, now, false)
+	if len(report.Rows) != 1 || report.Rows[0].PrivacyUnits == nil || *report.Rows[0].PrivacyUnits != 5 {
+		t.Fatalf("non-CONFENGE_WEB/outbound chain contaminated feedback: %+v", report)
+	}
+}
+
+func TestAcquisitionOutcomeFeedbackUsesAccountContributorsForUnknown(t *testing.T) {
+	now := time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC)
+	period := OutcomeFeedbackPeriod{From: now.AddDate(0, 0, -30), To: now}
+	var chains []Chain
+	for i := 0; i < 5; i++ {
+		chain := feedbackTestChain(i, now.AddDate(0, 0, -2), "/same-route", "same-intent")
+		chain.AccountID = "account-0"
+		chain.Keys.AccountID = "account-0"
+		chains = append(chains, chain)
+	}
+	for i := 1; i < 5; i++ {
+		chain := feedbackTestChain(20+i, now.AddDate(0, 0, -2), "/same-route", "same-intent")
+		chain.AccountID = fmt.Sprintf("account-%d", i)
+		chain.Keys.AccountID = chain.AccountID
+		chain.ReceiptID = Unknown
+		chain.Keys.ReceiptID = Unknown
+		chains = append(chains, chain)
+	}
+	report := ProjectAcquisitionOutcomeFeedback(chains, period, now, false)
+	if len(report.Rows) != 1 || report.Rows[0].Receipts.Status != FeedbackStatusWithheld ||
+		report.Rows[0].Receipts.Observed != nil || report.Rows[0].Receipts.Unknown != nil {
+		t.Fatalf("receipt IDs substituted for account contributors: %+v", report.Rows)
+	}
+
+	chains = nil
+	for i := 0; i < 10; i++ {
+		chain := feedbackTestChain(i, now.AddDate(0, 0, -2), "/same-route", "same-intent")
+		if i < 5 {
+			for event := 0; event < 2; event++ {
+				copy := chain
+				copy.Identity = fmt.Sprintf("identity-outcome-%d-%d", i, event)
+				copy.LeadID = fmt.Sprintf("lead-outcome-%d-%d", i, event)
+				copy.Keys.LeadID = copy.LeadID
+				copy.ReceiptID = fmt.Sprintf("receipt-outcome-%d-%d", i, event)
+				copy.Keys.ReceiptID = copy.ReceiptID
+				copy.OutcomeID = fmt.Sprintf("outcome-%d-%d", i, event)
+				copy.Keys.OutcomeID = copy.OutcomeID
+				copy.OutcomeType = OutcomeWon
+				copy.HumanConfirmed = true
+				chains = append(chains, copy)
+			}
+			continue
+		}
+		chains = append(chains, chain)
+	}
+	report = ProjectAcquisitionOutcomeFeedback(chains, period, now, false)
+	row := report.Rows[0]
+	if row.Outcomes.Won == nil || *row.Outcomes.Won != 10 || row.Outcomes.Unknown == nil ||
+		*row.Outcomes.Unknown != 5 || row.Outcomes.Status != FeedbackStatusPartial {
+		t.Fatalf("outcome IDs substituted for account contributors: %+v", row.Outcomes)
+	}
+}
+
+func TestAcquisitionOutcomeFeedbackSuppressesWonLostIndependently(t *testing.T) {
+	now := time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC)
+	period := OutcomeFeedbackPeriod{From: now.AddDate(0, 0, -30), To: now}
+	var chains []Chain
+	for i := 0; i < 10; i++ {
+		chain := feedbackTestChain(i, now.AddDate(0, 0, -2), "/same-route", "same-intent")
+		switch {
+		case i < 5:
+			chain.OutcomeType = OutcomeWon
+			chain.HumanConfirmed = true
+		case i == 5:
+			chain.OutcomeType = OutcomeLost
+			chain.HumanConfirmed = true
+		}
+		chains = append(chains, chain)
+	}
+	report := ProjectAcquisitionOutcomeFeedback(chains, period, now, false)
+	states := report.Rows[0].Outcomes
+	if states.Won == nil || *states.Won != 5 || states.WonStatus != FeedbackStatusPartial ||
+		states.Lost != nil || states.LostStatus != FeedbackStatusWithheld || states.Unknown != nil ||
+		states.UnknownStatus != FeedbackStatusWithheld || states.Status != FeedbackStatusPartial {
+		t.Fatalf("won/lost suppression was not independent: %+v", states)
+	}
+}
+
+func TestAcquisitionOutcomeFeedbackRealEmptyWithSyntheticOnly(t *testing.T) {
+	now := time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC)
+	period := OutcomeFeedbackPeriod{From: now.AddDate(0, 0, -30), To: now}
+	var chains []Chain
+	for i := 0; i < 5; i++ {
+		chain := feedbackTestChain(i, now.AddDate(0, 0, -2), "/same-route", "same-intent")
+		chain.Synthetic = true
+		chain.Label = LabelSynthetic
+		chains = append(chains, chain)
+	}
+	report := ProjectAcquisitionOutcomeFeedback(chains, period, now, true)
+	if !report.RealEmpty || len(report.Rows) != 1 || report.Rows[0].RecordKind != RecordKindSynthetic {
+		t.Fatalf("synthetic-only report claimed real evidence: %+v", report)
+	}
+}
+
+func feedbackNativeProposal(i, version int, sentAt time.Time) NativeProposalFact {
+	return NativeProposalFact{
+		ProposalID: fmt.Sprintf("proposal-native-%d", i), ProposalVersion: version,
+		AccountID: fmt.Sprintf("account-%d", i), OpportunityID: fmt.Sprintf("opportunity-native-%d", i),
+		SourceLeadID: fmt.Sprintf("lead-%d", i), CorrelationID: fmt.Sprintf("corr-native-%d", i),
+		DecisionState: "SENT", AmountMinor: 100_000, Currency: "BRL", SentAt: &sentAt,
+	}
+}
+
 func feedbackTestChain(i int, at time.Time, route, intent string) Chain {
 	receipt := fmt.Sprintf("receipt-%d", i)
 	lead := fmt.Sprintf("lead-%d", i)
@@ -472,6 +860,17 @@ func assertWithheldFeedbackMetric(t *testing.T, name string, metric OutcomeFeedb
 	if metric.Observed != nil || metric.Unknown != nil || metric.Status != FeedbackStatusWithheld {
 		t.Fatalf("%s=%+v", name, metric)
 	}
+}
+
+func knownFeedbackCurrency(t *testing.T, value OutcomeFeedbackValue, currency string) OutcomeFeedbackKnownCurrencyValue {
+	t.Helper()
+	for _, candidate := range value.ByCurrency {
+		if candidate.Currency == currency {
+			return candidate
+		}
+	}
+	t.Fatalf("known value missing currency %s: %+v", currency, value)
+	return OutcomeFeedbackKnownCurrencyValue{}
 }
 
 func feedbackHasGap(gaps []OutcomeFeedbackGap, field, status string) bool {
