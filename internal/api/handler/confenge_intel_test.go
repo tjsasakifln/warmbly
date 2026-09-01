@@ -305,8 +305,10 @@ func jsonHasKey(body, key string) bool {
 
 type scoreboardHTTPStub struct {
 	confenge.Service
-	board intel.Scoreboard
-	join  intel.JoinResult
+	board         intel.Scoreboard
+	join          intel.JoinResult
+	outcomePeriod intel.OutcomeFeedbackPeriod
+	outcomeCalled bool
 }
 
 func (s *scoreboardHTTPStub) Enabled() bool { return true }
@@ -324,6 +326,12 @@ func (s *scoreboardHTTPStub) OrganicScoreboard(_ context.Context, _ uuid.UUID, i
 func (s *scoreboardHTTPStub) OrganicFeedback(_ context.Context, _ uuid.UUID, includeSynthetic bool) (*intel.OrganicFeedbackExport, *errx.Error) {
 	exp := intel.ExportOrganicFeedback(intel.NewMemoryStore(), "org", time.Date(2026, 8, 19, 15, 0, 0, 0, time.UTC), includeSynthetic)
 	return &exp, nil
+}
+func (s *scoreboardHTTPStub) AcquisitionOutcomeFeedback(_ context.Context, _ uuid.UUID, period intel.OutcomeFeedbackPeriod, includeSynthetic bool) (*intel.AcquisitionOutcomeFeedback, *errx.Error) {
+	s.outcomePeriod = period
+	s.outcomeCalled = true
+	report := intel.ProjectAcquisitionOutcomeFeedback(nil, period, time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC), includeSynthetic)
+	return &report, nil
 }
 func (s *scoreboardHTTPStub) HumanOutcomeEnvelopes() []intel.HumanOutcomeEnvelope {
 	return intel.EmptyEnvelopes()
@@ -428,6 +436,45 @@ func TestGetConfengeOrganicScoreboardAndFeedbackBody(t *testing.T) {
 	}
 	fmt.Printf("HTTP_ORGANIC scoreboard=%s windows=%d feedback=%s verdict=%s unknown=%v\n",
 		boardWrap.Data.SchemaVersion, len(boardWrap.Data.Windows), fbWrap.Data.SchemaVersion, fbWrap.Data.Rows[0].Verdict, unknownVisible)
+}
+
+func TestGetConfengeAcquisitionOutcomeFeedbackPeriodAndValidation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	org := uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+	stub := &scoreboardHTTPStub{}
+	h := &Handler{ConfengeService: stub}
+	req := httptest.NewRequest(http.MethodGet, "/confenge/intel/outcome-feedback?from=2026-08&to=2026-08&include_synthetic=0", nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Set(middleware.OrganizationIDKey, org)
+	h.GetConfengeAcquisitionOutcomeFeedback(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !stub.outcomeCalled || stub.outcomePeriod.From.Format("2006-01-02") != "2026-08-01" || stub.outcomePeriod.To.Format("2006-01-02") != "2026-09-01" {
+		t.Fatalf("period=%+v called=%v", stub.outcomePeriod, stub.outcomeCalled)
+	}
+	var wrap struct {
+		Data intel.AcquisitionOutcomeFeedback `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &wrap); err != nil {
+		t.Fatal(err)
+	}
+	if wrap.Data.SchemaVersion != intel.OutcomeFeedbackSchemaV1 || wrap.Data.Privacy.PIIExported || wrap.Data.CausalProof {
+		t.Fatalf("feedback=%+v", wrap.Data)
+	}
+
+	stub.outcomeCalled = false
+	req = httptest.NewRequest(http.MethodGet, "/confenge/intel/outcome-feedback?from=2026-09&to=2026-08", nil)
+	w = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(w)
+	c.Request = req
+	c.Set(middleware.OrganizationIDKey, org)
+	h.GetConfengeAcquisitionOutcomeFeedback(c)
+	if w.Code != http.StatusBadRequest || stub.outcomeCalled {
+		t.Fatalf("invalid status=%d called=%v body=%s", w.Code, stub.outcomeCalled, w.Body.String())
+	}
 }
 
 func TestListConfengeHumanEnvelopes(t *testing.T) {

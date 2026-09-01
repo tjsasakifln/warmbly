@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -48,6 +49,78 @@ func (s *PGStore) Latest(ctx context.Context, orgID, proposalID uuid.UUID) (*Pro
 		return nil, err
 	}
 	return &p, nil
+}
+
+func (s *PGStore) ListOutcomeFeedback(ctx context.Context, orgID uuid.UUID) ([]OutcomeFeedbackFact, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("proposal pg store unavailable")
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT proposal_id, proposal_version, account_id, opportunity_id,
+			correlation_id, decision_state, synthetic, payload
+		FROM (
+			SELECT DISTINCT ON (proposal_id)
+				proposal_id, proposal_version, account_id, opportunity_id,
+				correlation_id, decision_state, synthetic, payload
+			FROM confenge_proposals
+			WHERE organization_id = $1
+				AND decision_state IN ('SENT', 'NEGOTIATING', 'ACCEPTED', 'REJECTED', 'EXPIRED', 'UNKNOWN')
+				AND COALESCE(payload ->> 'sent_at', '') <> ''
+			ORDER BY proposal_id, proposal_version DESC
+		) latest
+		ORDER BY proposal_id`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []OutcomeFeedbackFact{}
+	for rows.Next() {
+		var (
+			proposalID      uuid.UUID
+			proposalVersion int
+			accountID       string
+			opportunityID   string
+			correlationID   string
+			decisionState   State
+			synthetic       bool
+			payload         []byte
+		)
+		if err := rows.Scan(&proposalID, &proposalVersion, &accountID, &opportunityID,
+			&correlationID, &decisionState, &synthetic, &payload); err != nil {
+			return nil, err
+		}
+		fact, ok := decodeOutcomeFeedbackFact(
+			orgID, proposalID, proposalVersion, accountID, opportunityID,
+			correlationID, decisionState, synthetic, payload,
+		)
+		if !ok {
+			continue
+		}
+		out = append(out, fact)
+	}
+	return out, rows.Err()
+}
+
+func decodeOutcomeFeedbackFact(
+	orgID, proposalID uuid.UUID,
+	proposalVersion int,
+	accountID, opportunityID, correlationID string,
+	decisionState State,
+	synthetic bool,
+	payload []byte,
+) (OutcomeFeedbackFact, bool) {
+	var p Proposal
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return OutcomeFeedbackFact{}, false
+	}
+	if p.SchemaVersion != ProposalSchemaVersion || p.OrganizationID != orgID || p.ProposalID != proposalID ||
+		p.ProposalVersion != proposalVersion || strings.TrimSpace(p.AccountID) != strings.TrimSpace(accountID) ||
+		strings.TrimSpace(p.OpportunityID) != strings.TrimSpace(opportunityID) ||
+		strings.TrimSpace(p.CorrelationID) != strings.TrimSpace(correlationID) ||
+		p.DecisionState != decisionState || p.Synthetic != synthetic || p.SentAt == nil || p.SentAt.IsZero() {
+		return OutcomeFeedbackFact{}, false
+	}
+	return outcomeFeedbackFact(p), true
 }
 
 func (s *PGStore) Receipt(ctx context.Context, orgID uuid.UUID, key string) (*CommandReceipt, error) {

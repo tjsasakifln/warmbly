@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -45,6 +47,30 @@ type CommandReceipt struct {
 	Proposal       Proposal                `json:"proposal"`
 	Events         []ProposalEvent         `json:"events"`
 	Handoff        *DeliveryOrderRequested `json:"handoff,omitempty"`
+}
+
+// OutcomeFeedbackFact is the minimum persisted proposal projection needed by
+// the acquisition feedback reader. Candidate join IDs are validated by the
+// projector and none of them are returned by the endpoint.
+type OutcomeFeedbackFact struct {
+	ProposalID           uuid.UUID
+	ProposalVersion      int
+	OrganizationID       uuid.UUID
+	AccountID            string
+	OpportunityID        string
+	SourceLeadID         string
+	CorrelationID        string
+	DecisionState        State
+	AmountMinor          int64
+	Currency             string
+	SentAt               *time.Time
+	Synthetic            bool
+	AcceptedSnapshotHash string
+}
+
+// OutcomeFeedbackStore is a SELECT-only view over native proposal facts.
+type OutcomeFeedbackStore interface {
+	ListOutcomeFeedback(context.Context, uuid.UUID) ([]OutcomeFeedbackFact, error)
 }
 
 type Store interface {
@@ -106,6 +132,28 @@ func (m *MemoryStore) Receipt(_ context.Context, orgID uuid.UUID, key string) (*
 	}
 	cloned := cloneReceipt(receipt)
 	return &cloned, nil
+}
+
+func (m *MemoryStore) ListOutcomeFeedback(_ context.Context, orgID uuid.UUID) ([]OutcomeFeedbackFact, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rows := make([]Proposal, 0, len(m.rows))
+	for _, row := range m.rows {
+		if row.OrganizationID == orgID {
+			rows = append(rows, row)
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].ProposalID != rows[j].ProposalID {
+			return rows[i].ProposalID.String() < rows[j].ProposalID.String()
+		}
+		return rows[i].ProposalVersion < rows[j].ProposalVersion
+	})
+	out := make([]OutcomeFeedbackFact, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, outcomeFeedbackFact(row))
+	}
+	return out, nil
 }
 
 func (m *MemoryStore) Apply(_ context.Context, mutation Mutation) (CommandReceipt, bool, error) {
@@ -172,4 +220,15 @@ func cloneStrings(value []string) []string {
 		return nil
 	}
 	return append(make([]string, 0, len(value)), value...)
+}
+
+func outcomeFeedbackFact(p Proposal) OutcomeFeedbackFact {
+	return OutcomeFeedbackFact{
+		ProposalID: p.ProposalID, ProposalVersion: p.ProposalVersion,
+		OrganizationID: p.OrganizationID, AccountID: p.AccountID,
+		OpportunityID: p.OpportunityID, SourceLeadID: p.SourceLeadID,
+		CorrelationID: p.CorrelationID, DecisionState: p.DecisionState,
+		AmountMinor: p.Amount, Currency: p.Currency, SentAt: p.SentAt,
+		Synthetic: p.Synthetic, AcceptedSnapshotHash: p.AcceptedSnapshotHash,
+	}
 }

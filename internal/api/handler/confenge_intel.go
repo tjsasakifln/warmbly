@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -313,6 +314,27 @@ func (h *Handler) GetConfengeOrganicFeedback(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": exp})
+}
+
+// GetConfengeAcquisitionOutcomeFeedback — GET /confenge/intel/outcome-feedback
+// Period-bounded, privacy-safe aggregate. No lead identity or upstream write.
+func (h *Handler) GetConfengeAcquisitionOutcomeFeedback(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	period, err := intel.ParseOutcomeFeedbackPeriod(c.Query("from"), c.Query("to"), time.Now().UTC())
+	if err != nil {
+		errx.JSON(c, errx.New(errx.BadRequest, err.Error()))
+		return
+	}
+	includeSynthetic := queryBool(c, "include_synthetic")
+	report, xerr := h.ConfengeService.AcquisitionOutcomeFeedback(c.Request.Context(), orgID, period, includeSynthetic)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": report})
 }
 
 // GetConfengeTruthScoreboard — GET /confenge/intel/scoreboard

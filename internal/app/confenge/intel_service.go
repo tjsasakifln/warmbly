@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/warmbly/warmbly/internal/app/confenge/intel"
+	"github.com/warmbly/warmbly/internal/app/confenge/proposal"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
 )
@@ -18,9 +19,11 @@ import (
 func (s *service) WireIntel(db *pgxpool.Pool) {
 	if db != nil {
 		s.intel = intel.NewPGStore(db, "")
+		s.proposalFacts = proposal.NewPGStore(db)
 		return
 	}
 	s.intel = intel.NewMemoryStore()
+	s.proposalFacts = proposal.NewMemoryStore()
 }
 
 func (s *service) intelStore() intel.Store {
@@ -300,6 +303,38 @@ func (s *service) OrganicFeedback(ctx context.Context, orgID uuid.UUID, includeS
 	s.observeExisting(ctx, orgID)
 	exp := intel.ExportOrganicFeedback(s.intelStore(), orgID.String(), time.Now().UTC(), includeSynthetic)
 	return &exp, nil
+}
+
+// AcquisitionOutcomeFeedback returns a period-bounded, small-cell-suppressed
+// acquisition-to-outcome export. It reads existing chains and proposals only.
+func (s *service) AcquisitionOutcomeFeedback(ctx context.Context, orgID uuid.UUID, period intel.OutcomeFeedbackPeriod, includeSynthetic bool) (*intel.AcquisitionOutcomeFeedback, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return nil, xerr
+	}
+	chains, err := s.intelStore().ListChains(orgID.String())
+	if err != nil {
+		return nil, errx.New(errx.Internal, "outcome feedback list: "+err.Error())
+	}
+	var nativeFacts []intel.NativeProposalFact
+	if s.proposalFacts != nil {
+		facts, err := s.proposalFacts.ListOutcomeFeedback(ctx, orgID)
+		if err != nil {
+			return nil, errx.New(errx.Internal, "outcome feedback proposals: "+err.Error())
+		}
+		nativeFacts = make([]intel.NativeProposalFact, 0, len(facts))
+		for _, fact := range facts {
+			nativeFacts = append(nativeFacts, intel.NativeProposalFact{
+				ProposalID: fact.ProposalID.String(), ProposalVersion: fact.ProposalVersion,
+				AccountID: fact.AccountID, OpportunityID: fact.OpportunityID,
+				SourceLeadID: fact.SourceLeadID, CorrelationID: fact.CorrelationID,
+				DecisionState: string(fact.DecisionState), AmountMinor: fact.AmountMinor,
+				Currency: fact.Currency, SentAt: fact.SentAt, Synthetic: fact.Synthetic,
+				AcceptedSnapshotHash: fact.AcceptedSnapshotHash,
+			})
+		}
+	}
+	report := intel.ProjectAcquisitionOutcomeFeedbackWithNativeProposals(chains, nativeFacts, period, time.Now().UTC(), includeSynthetic)
+	return &report, nil
 }
 
 func (s *service) observeExisting(ctx context.Context, orgID uuid.UUID) {
