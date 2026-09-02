@@ -428,11 +428,14 @@ func EvaluateOutboundEligibility(
 	return out
 }
 
-// RecognizeFirstTouchPolicy is exact. Partial names and fuzzy prefixes HOLD.
+// RecognizeFirstTouchPolicy is exact. v1/v2 remain readable only so callers
+// can report a precise supersession reason; neither can activate a new flow.
 func RecognizeFirstTouchPolicy(policyID string) (known bool, hold bool, reason string) {
 	switch strings.TrimSpace(policyID) {
-	case DelegatedFirstTouchPolicyV1, DelegatedFirstTouchPolicyV2, DelegatedFirstTouchPolicyV3:
+	case DelegatedFirstTouchPolicyV3:
 		return true, false, ""
+	case DelegatedFirstTouchPolicyV1, DelegatedFirstTouchPolicyV2:
+		return true, true, ReasonPolicyHold
 	case "":
 		return false, true, ReasonPolicyUnknown
 	default:
