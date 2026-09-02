@@ -89,6 +89,13 @@ type FeedLead struct {
 	// CommercialQualification is COMMERCIAL_AUTHORITY/2.0: the qualifying
 	// public-engineering contracting fact inside the rolling three-year window.
 	CommercialQualification *RootQualification `json:"commercial_qualification,omitempty"`
+	// ClaimAttestation is CONTRACT_CLAIM_ATTESTATION/1.0 (additive; absence is
+	// claim_mode NONE and preserves all prior behavior). v1 supports at most
+	// one current-contract claim per message; the JSON shape is a single
+	// object, not an array, so a producer that emits a plural/array envelope
+	// fails structural parse and the lead is not admitted, rather than being
+	// silently coerced to NONE.
+	ClaimAttestation *ContractClaimAttestation `json:"claim_attestation,omitempty"`
 }
 
 // FeedContractorRole is the fail-closed extra-cli projection of the target's
