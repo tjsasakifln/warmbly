@@ -7,6 +7,7 @@ allowBuilds:
   unrs-resolver: true
 
 overrides:
+  browserslist: 4.28.7
   picomatch: ^4.0.4
   path-to-regexp: ^8.4.0
   # Clear CVE-2026-59869 (DoS via crafted YAML) and GHSA-5p4m-2wfm-xmqj
