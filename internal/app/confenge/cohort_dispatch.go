@@ -190,27 +190,6 @@ func DispatchBoundedCohort(
 			out.Failures = append(out.Failures, CohortMemberFail{AccountRef: m.AccountRef, Mailbox: m.Mailbox, Reason: err.Error()})
 			continue
 		}
-		// CONTRACT_CLAIM_ATTESTATION/1.0 guard: additional to the structural
-		// CanTransportCohort binding check below, never a substitute for it.
-		// The bounded cohort's approved copy is frozen at compose time (no
-		// per-send spintax/AI variation), so tp.Subject/tp.BodyText IS the
-		// pre-decoration copy. A hold here skips this member without
-		// consuming the daily cap slot; it never permanently blocks them.
-		if repo != nil {
-			if acc, aerr := repo.GetAccount(ctx, auth.OrganizationID, m.AccountID); aerr == nil && acc != nil {
-				verdict := EvaluateClaimGuard(
-					AccountClaimAttestation(acc),
-					ClaimCopyHash(tp.Subject, "", tp.BodyText),
-					DetectLegacyCurrentContractClaim(tp.Subject, "", tp.BodyText),
-					now,
-				)
-				if !verdict.Allowed {
-					out.Blocked++
-					out.Failures = append(out.Failures, CohortMemberFail{AccountRef: m.AccountRef, Mailbox: m.Mailbox, Reason: verdict.Reason})
-					continue
-				}
-			}
-		}
 		in := dispatchTransportInput(auth, m, tp, now)
 		providerID, err := TransportOneCohortMessage(ctx, store, auth, tp, in, func(tp *models.OutreachTouchpoint) (string, error) {
 			return send(m, tp)

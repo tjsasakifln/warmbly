@@ -60,26 +60,12 @@ type CampaignGateResult struct {
 	NextSlot      time.Time
 	Reason        string
 	Err           error // only meaningful for GateTransient
-	// ClaimReason carries the CONTRACT_CLAIM_ATTESTATION/1.0 guard's outcome
-	// label (allowed_safe_current / allowed_safe_historical) on a GateProceed
-	// result. Deferred/blocked claim-guard outcomes are surfaced through the
-	// regular Reason field instead, since GateDeferred already logs Reason.
-	ClaimReason string
 }
 
 // CampaignTransportBinding binds a reservation to the scheduler-selected mailbox and task.
 type CampaignTransportBinding struct {
 	EmailAccountID uuid.UUID
 	TaskID         uuid.UUID
-	// PreDecorationCopyHash is ClaimCopyHash(subject, bodyHTML, bodyPlain)
-	// snapshotted BEFORE tracking pixel/link wrapping/signature/unsubscribe
-	// headers are applied. Required to validate a CURRENT_CONTRACT claim's
-	// copy_hash; ignored for HISTORICAL_CONTRACT/NONE.
-	PreDecorationCopyHash string
-	// LegacyClaimDetected is the conservative rule-6 phrase-detector result,
-	// evaluated by the caller against the same pre-decoration body, used only
-	// when the lead carries no claim attestation at all.
-	LegacyClaimDetected bool
 }
 
 // PermanentSuppress reports whether the campaign task may org-wide suppress / bounce-mark.
@@ -206,19 +192,6 @@ func (s *service) gateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 	}
 	if acc == nil {
 		return CampaignGateResult{Kind: GateCommercialBlock, Reason: TargetFitReasonMissing}
-	}
-	// CONTRACT_CLAIM_ATTESTATION/1.0 guard: additional to every gate above,
-	// never a substitute for DNC/bounce/target-fit. A hold here is always
-	// recoverable (GateDeferred), never a permanent suppress — a corrected
-	// feed or copy can pass on a later attempt (rule 9).
-	claimVerdict := EvaluateClaimGuard(
-		AccountClaimAttestation(acc),
-		binding.PreDecorationCopyHash,
-		binding.LegacyClaimDetected,
-		time.Now().UTC(),
-	)
-	if !claimVerdict.Allowed {
-		return CampaignGateResult{Kind: GateDeferred, Reason: claimVerdict.Reason, NextSlot: time.Now().UTC().Add(time.Minute)}
 	}
 	if err := s.assertAuthoritativeFeedForTransport(ctx, orgID, acc); err != nil {
 		return CampaignGateResult{Kind: GateCommercialBlock, Reason: "authoritative_feed_invalid", Err: err}
@@ -347,7 +320,6 @@ func (s *service) gateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 		Kind:          GateProceed,
 		ReservationID: res.Reservation.ID,
 		Reason:        res.Reason,
-		ClaimReason:   claimVerdict.Reason,
 	}
 }
 

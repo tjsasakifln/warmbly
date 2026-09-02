@@ -507,8 +507,7 @@ const outreachAccountSelect = `
 		commercial_qualified_until, COALESCE(commercial_qualification_evidence_hash,''),
 		COALESCE(commercial_qualification_evidence_reference,''), COALESCE(commercial_qualification_provenance,''),
 		COALESCE(commercial_qualification_cnpj_root8,''), commercial_qualification_observed_at,
-		COALESCE(commercial_qualification_deactivated,false), COALESCE(commercial_qualification_deactivation_reason,''),
-		claim_attestation_json `
+		COALESCE(commercial_qualification_deactivated,false), COALESCE(commercial_qualification_deactivation_reason,'') `
 
 func scanAccount(row scannable) (*models.OutreachAccount, error) {
 	var a models.OutreachAccount
@@ -546,7 +545,6 @@ func scanAccount(row scannable) (*models.OutreachAccount, error) {
 		&a.CommercialQualificationEvidenceReference, &a.CommercialQualificationProvenance,
 		&a.CommercialQualificationCNPJRoot8, &a.CommercialQualificationObservedAt,
 		&a.CommercialQualificationDeactivated, &a.CommercialQualificationDeactivationReason,
-		&a.ClaimAttestationJSON,
 	)
 	if err != nil {
 		return nil, err
@@ -606,10 +604,6 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 	if len(contracts) == 0 {
 		contracts = []byte("[]")
 	}
-	var claimAttestation []byte
-	if len(acc.ClaimAttestationJSON) > 0 {
-		claimAttestation = acc.ClaimAttestationJSON
-	}
 	reasonCodes, _ := json.Marshal(acc.ActivationReasonCodes)
 	if reasonCodes == nil {
 		reasonCodes = []byte("[]")
@@ -666,8 +660,7 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 			commercial_qualified_until, commercial_qualification_evidence_hash,
 			commercial_qualification_evidence_reference, commercial_qualification_provenance,
 			commercial_qualification_cnpj_root8, commercial_qualification_observed_at,
-			commercial_qualification_deactivated, commercial_qualification_deactivation_reason,
-			claim_attestation_json
+			commercial_qualification_deactivated, commercial_qualification_deactivation_reason
 		) VALUES (
 			$1,$2,$3,$4,$5,
 			$6,$7,$8,$9,$10,
@@ -684,8 +677,7 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 			$51,$52,$53,
 			$54,$55,$56,$57,$58,$59,$60,$61,$62,$63,$64,$65,
 			$66,$67,$68,$69,$70,$71,$72,$73,$74,$75,$76,$77,$78,$79,$80,$81,
-			$82,$83,$84,$85,$86,$87,$88,$89,$90,$91,$92,$93,$94,$95,
-			$96
+			$82,$83,$84,$85,$86,$87,$88,$89,$90,$91,$92,$93,$94,$95
 		)
 		ON CONFLICT (organization_id, cnpj14) DO UPDATE SET
 			source_lead_id = EXCLUDED.source_lead_id,
@@ -872,7 +864,6 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 				THEN EXCLUDED.commercial_qualification_deactivated ELSE outreach_accounts.commercial_qualification_deactivated END,
 			commercial_qualification_deactivation_reason = CASE WHEN EXCLUDED.commercial_qualification_state <> 'UNKNOWN'
 				THEN EXCLUDED.commercial_qualification_deactivation_reason ELSE outreach_accounts.commercial_qualification_deactivation_reason END,
-			claim_attestation_json = EXCLUDED.claim_attestation_json,
 			updated_at = EXCLUDED.updated_at,
 			id = outreach_accounts.id
 		RETURNING (xmax = 0) AS inserted, id`,
@@ -905,7 +896,6 @@ func (r *outreachRepository) UpsertAccount(ctx context.Context, acc *models.Outr
 		acc.CommercialQualificationEvidenceReference, acc.CommercialQualificationProvenance,
 		acc.CommercialQualificationCNPJRoot8, acc.CommercialQualificationObservedAt,
 		acc.CommercialQualificationDeactivated, acc.CommercialQualificationDeactivationReason,
-		claimAttestation,
 	).Scan(&created, &acc.ID)
 	return created, err
 }

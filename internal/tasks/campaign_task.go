@@ -501,14 +501,6 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 		}
 	}
 
-	// STEP 10.6: Snapshot the approved copy for CONTRACT_CLAIM_ATTESTATION/1.0
-	// BEFORE any transport decoration (tracking pixel, link wrapping,
-	// signature, unsubscribe headers) is applied below. This is the exact
-	// body a CURRENT_CONTRACT claim's copy_hash must match; decorations added
-	// after this point must never affect the hash.
-	preDecorationCopyHash := confenge.ClaimCopyHash(subject, bodyHTML, bodyPlain)
-	legacyClaimDetected := confenge.DetectLegacyCurrentContractClaim(subject, bodyHTML, bodyPlain)
-
 	contentScore := warmlint.ScoreWithOptions(subject, bodyHTML, bodyPlain, warmlint.ScoreOptions{AttachmentCount: len(attachmentRefs)})
 	if len(contentScore.Issues) > 0 && s.campaignLogRepo != nil {
 		_ = s.campaignLogRepo.CreateLog(ctx, &repository.CampaignLogEntry{
@@ -645,12 +637,7 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 		gate := s.confengeGate.GateCampaignEmailForTransport(
 			ctx, *campaign.OrganizationID, campaign.Name, contact.Email,
 			campaign.ID, contact.ID, sequence.ID,
-			confenge.CampaignTransportBinding{
-				EmailAccountID:        accountID,
-				TaskID:                taskID,
-				PreDecorationCopyHash: preDecorationCopyHash,
-				LegacyClaimDetected:   legacyClaimDetected,
-			},
+			confenge.CampaignTransportBinding{EmailAccountID: accountID, TaskID: taskID},
 		)
 		switch gate.Kind {
 		case confenge.GateHardBlock:
@@ -724,13 +711,6 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 				when = time.Now().UTC().Add(time.Minute)
 			}
 			log.Info().Str("campaign_id", campaign.ID.String()).Str("reason", gate.Reason).Time("next_slot", when).Msg("confenge gate deferred send")
-			if isClaimGuardReason(gate.Reason) && s.campaignLogRepo != nil {
-				_ = s.campaignLogRepo.CreateLog(ctx, &repository.CampaignLogEntry{
-					CampaignID: campaign.ID, EventType: gate.Reason,
-					Message:  fmt.Sprintf("CONFENGE claim guard held %s: %s", contact.Email, gate.Reason),
-					Metadata: map[string]interface{}{"contact_id": contact.ID.String(), "reason": gate.Reason},
-				})
-			}
 			_ = s.taskRepo.UpdateTaskStatusWithLock(ctx, taskID, "skipped_daily_limit")
 			if cerr := s.createCampaignTask(ctx, campaign.ID, accountID, when); cerr != nil {
 				log.Warn().Err(cerr).Msg("failed to reschedule after confenge gate defer")
@@ -752,13 +732,6 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) *errx.Error {
 
 		case confenge.GateProceed:
 			confengeLease = gate.ReservationID
-			if gate.ClaimReason != "" && s.campaignLogRepo != nil {
-				_ = s.campaignLogRepo.CreateLog(ctx, &repository.CampaignLogEntry{
-					CampaignID: campaign.ID, EventType: gate.ClaimReason,
-					Message:  fmt.Sprintf("CONFENGE claim guard passed %s: %s", contact.Email, gate.ClaimReason),
-					Metadata: map[string]interface{}{"contact_id": contact.ID.String(), "reason": gate.ClaimReason},
-				})
-			}
 
 		case confenge.GateBypass:
 			// Non-CONFENGE or governor unwired: send without global lease.
@@ -1279,20 +1252,6 @@ func (s *tasksService) recordSchedulerFailure(ctx context.Context, campaignID uu
 
 // skipRetryTime paces a cycle that sent no mail. A skip must not burn the
 // mailbox min-gap, but it must not hot-loop either.
-// isClaimGuardReason reports whether a GateDeferred reason came from the
-// CONTRACT_CLAIM_ATTESTATION/1.0 guard rather than an ordinary cap/gap/pause
-// defer, so only claim-guard holds get their own decision-log entry.
-func isClaimGuardReason(reason string) bool {
-	switch reason {
-	case confenge.ClaimBlockedMissingAttestation, confenge.ClaimBlockedUnsafeClaim,
-		confenge.ClaimBlockedExpiredAttestation, confenge.ClaimBlockedCopyHashMismatch,
-		confenge.ClaimBlockedLegacyCurrentClaim:
-		return true
-	default:
-		return false
-	}
-}
-
 func skipRetryTime(nextTime time.Time) time.Time {
 	soon := time.Now().UTC().Add(30 * time.Second)
 	if !nextTime.IsZero() && nextTime.Before(soon) {

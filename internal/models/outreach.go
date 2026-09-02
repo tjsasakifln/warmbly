@@ -185,11 +185,6 @@ type OutreachAccount struct {
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 
-	// ClaimAttestationJSON is the CONTRACT_CLAIM_ATTESTATION/1.0 envelope
-	// imported from extra-cli, if the lead carried one. Additive; absence
-	// means no attestation was asserted for this lead's current send.
-	ClaimAttestationJSON []byte `json:"claim_attestation,omitempty"`
-
 	// Activation projection from extra-cli (not local commercial scoring).
 	ActivationState         string     `json:"activation_state,omitempty"`
 	ActivationScore         float64    `json:"activation_score,omitempty"`
