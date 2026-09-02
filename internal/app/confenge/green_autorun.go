@@ -48,7 +48,7 @@ func (s *service) AuthorizeCampaignPolicy(ctx context.Context, orgID, userID uui
 	if auth == nil || auth.CampaignID == uuid.Nil {
 		return nil, errx.New(errx.BadRequest, "campaign_id required")
 	}
-	if auth.PromptPolicyVersion == DelegatedFirstTouchPolicyV1 {
+	if auth.PromptPolicyVersion == DelegatedFirstTouchPolicyV3 {
 		if !s.cfg.DelegatedFirstTouchEnabled {
 			return nil, errx.New(errx.Forbidden, "delegated first-touch policy is disabled")
 		}

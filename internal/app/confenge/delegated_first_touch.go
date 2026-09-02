@@ -687,10 +687,6 @@ func (s *service) lockDelegatedAccount(ctx context.Context, orgID uuid.UUID, cnp
 
 func expectedFirstTouchPolicyHash(version string) (string, bool) {
 	switch strings.TrimSpace(version) {
-	case DelegatedFirstTouchPolicyV1:
-		return DelegatedFirstTouchPolicyHashV1, true
-	case DelegatedFirstTouchPolicyV2:
-		return DelegatedFirstTouchPolicyHashV2, true
 	case DelegatedFirstTouchPolicyV3:
 		return DelegatedFirstTouchPolicyHashV3, true
 	default:
@@ -752,7 +748,7 @@ func validateDelegatedPolicy(auth *models.CampaignPolicyAuthorization, manifest 
 		out = append(out, "delegated_policy_not_active")
 		return out
 	}
-	if auth.PromptPolicyVersion != DelegatedFirstTouchPolicyV1 || auth.ValidatorVersion != DelegatedFirstTouchValidatorV1 ||
+	if auth.PromptPolicyVersion != DelegatedFirstTouchPolicyV3 || auth.ValidatorVersion != DelegatedFirstTouchValidatorV1 ||
 		auth.ContactPolicyVersion != DelegatedFirstTouchContactPolicyV1 || auth.TemplatePolicyVersion != DelegatedFirstTouchTemplateV1 ||
 		!auth.AllowPolicyTemplateGREEN {
 		out = append(out, "delegated_policy_contract_mismatch")
@@ -1708,7 +1704,7 @@ func (s *service) prepareDelegatedTouchpoint(ctx context.Context, orgID uuid.UUI
 		}
 	} else {
 		tp = &models.OutreachTouchpoint{
-			ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte(DelegatedFirstTouchPolicyV1+"\x00touchpoint\x00"+orgID.String()+"\x00"+manifest.SourceRunID+"\x00"+acc.ID.String())),
+			ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte(DelegatedFirstTouchPolicyV3+"\x00touchpoint\x00"+orgID.String()+"\x00"+manifest.SourceRunID+"\x00"+acc.ID.String())),
 			OrganizationID: orgID, AccountID: acc.ID, Ordinal: 1, CadenceStep: "INITIAL",
 			Channel: models.OutreachChannelEmail, Purpose: models.TouchpointPurposeInitial,
 			DueAt: time.Now().UTC(), State: models.TouchpointNeedsReview,
@@ -1739,7 +1735,7 @@ func (s *service) prepareDelegatedTouchpoint(ctx context.Context, orgID uuid.UUI
 		return nil, nil, fmt.Errorf("message_context_hash_missing")
 	}
 	qaJSON, _ := json.Marshal(map[string]any{
-		"ok": true, "policy_version": DelegatedFirstTouchPolicyV1,
+		"ok": true, "policy_version": DelegatedFirstTouchPolicyV3,
 		"qa": entry.QA, "contractor_role_status": entry.ContractorRoleStatus,
 		"reconciliation_status": entry.ReconciliationStatus,
 	})
@@ -1777,7 +1773,7 @@ func (s *service) prepareDelegatedTouchpoint(ctx context.Context, orgID uuid.UUI
 
 func delegatedFirstTouchDraftID(orgID uuid.UUID, sourceRunID string, accountID uuid.UUID) uuid.UUID {
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(
-		DelegatedFirstTouchPolicyV1+"\x00draft\x00"+orgID.String()+"\x00"+sourceRunID+"\x00"+accountID.String(),
+		DelegatedFirstTouchPolicyV3+"\x00draft\x00"+orgID.String()+"\x00"+sourceRunID+"\x00"+accountID.String(),
 	))
 }
 
@@ -2148,8 +2144,8 @@ func (s *service) DelegatedFirstTouchStatus(ctx context.Context, orgID uuid.UUID
 	}
 	out := &DelegatedFirstTouchStatus{
 		SchemaVersion: "warmbly.confenge.first-touch-control.v1", RuntimeReleaseSHA: s.cfg.RepositorySHA,
-		BatchID: batchID, PolicyID: DelegatedFirstTouchPolicyV2, PolicyVersion: DelegatedFirstTouchPolicyV2,
-		PolicyHash: DelegatedFirstTouchPolicyHashV2, Counts: map[string]int{}, Items: []DelegatedFirstTouchDecisionView{},
+		BatchID: batchID, PolicyID: DelegatedFirstTouchPolicyV3, PolicyVersion: DelegatedFirstTouchPolicyV3,
+		PolicyHash: DelegatedFirstTouchPolicyHashV3, Counts: map[string]int{}, Items: []DelegatedFirstTouchDecisionView{},
 	}
 	if settings, settingsErr := s.repo.GetOrgSettings(ctx, orgID); settingsErr == nil && settings != nil && settings.CampaignID != nil && s.policyStore != nil {
 		if auth, authErr := s.policyStore.GetActiveCampaignPolicy(ctx, orgID, *settings.CampaignID, time.Now().UTC()); authErr == nil && auth != nil {

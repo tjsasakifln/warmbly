@@ -26,7 +26,7 @@ func TestDelegatedPolicyAuthorizationRequiresConfiguredFounderActor(t *testing.T
 	svc.WirePolicyAuth(newMemPolicyStore())
 	build := func() *models.CampaignPolicyAuthorization {
 		return &models.CampaignPolicyAuthorization{
-			CampaignID: uuid.New(), PromptPolicyVersion: DelegatedFirstTouchPolicyV1,
+			CampaignID: uuid.New(), PromptPolicyVersion: DelegatedFirstTouchPolicyV3,
 			ValidatorVersion: DelegatedFirstTouchValidatorV1, ContactPolicyVersion: DelegatedFirstTouchContactPolicyV1,
 			TemplatePolicyVersion: DelegatedFirstTouchTemplateV1, AllowPolicyTemplateGREEN: true,
 			SenderMailbox: "tiago@confenge.com.br", Channel: models.OutreachChannelEmail,
@@ -46,26 +46,32 @@ func TestDelegatedPolicyAuthorizationRequiresConfiguredFounderActor(t *testing.T
 	}
 }
 
-func TestDelegatedFirstTouchUnknownAndV2PolicyHold(t *testing.T) {
+func TestDelegatedFirstTouchOnlyV3Activates(t *testing.T) {
 	now := time.Now().UTC()
 	base := DelegatedFirstTouchManifest{
 		SchemaVersion: DelegatedFirstTouchManifestV1, BatchID: "batch-1", AgentID: "agent:test",
-		PolicyHash: DelegatedFirstTouchPolicyHashV1, AuthorityReference: DelegatedFirstTouchAuthorityRef,
+		PolicyHash: DelegatedFirstTouchPolicyHashV3, AuthorityReference: DelegatedFirstTouchAuthorityRef,
 		PolicyAuthorizationID: uuid.New(), SourceRunID: "run-1", SourceSnapshotHash: strings.Repeat("b", 64),
 		EvidenceVersion: DelegatedFirstTouchEvidenceV1, ComposerVersion: ComposerVersion,
 		TemplateVersion: DelegatedFirstTouchTemplateV1, PromptVersion: PromptVersion,
 		GeneratedAt: now, Entries: []DelegatedFirstTouchEntry{{IdempotencyKey: "k"}},
 	}
+	v3 := base
+	v3.PolicyVersion = DelegatedFirstTouchPolicyV3
+	if got := validateDelegatedManifestHeader(v3); delegatedTestContains(got, ReasonPolicyUnknown) || delegatedTestContains(got, ReasonPolicyHold) {
+		t.Fatalf("v3 held: %v", got)
+	}
 	v1 := base
 	v1.PolicyVersion = DelegatedFirstTouchPolicyV1
-	if got := validateDelegatedManifestHeader(v1); delegatedTestContains(got, ReasonPolicyUnknown) || delegatedTestContains(got, ReasonPolicyHold) {
-		t.Fatalf("v1 held: %v", got)
+	v1.PolicyHash = DelegatedFirstTouchPolicyHashV1
+	if got := validateDelegatedManifestHeader(v1); !delegatedTestContains(got, ReasonPolicyHold) {
+		t.Fatalf("v1 accepted: %v", got)
 	}
 	v2 := base
 	v2.PolicyVersion = DelegatedFirstTouchPolicyV2
 	v2.PolicyHash = DelegatedFirstTouchPolicyHashV2
-	if got := validateDelegatedManifestHeader(v2); delegatedTestContains(got, ReasonPolicyHold) || delegatedTestContains(got, ReasonPolicyUnknown) || delegatedTestContains(got, "policy_hash_mismatch") {
-		t.Fatalf("v2 held: %v", got)
+	if got := validateDelegatedManifestHeader(v2); !delegatedTestContains(got, ReasonPolicyHold) {
+		t.Fatalf("v2 accepted: %v", got)
 	}
 	fuzzy := base
 	fuzzy.PolicyVersion = "CFG-FIRST-TOUCH-ROUTING-v1-beta"
@@ -150,7 +156,7 @@ func TestDelegatedPolicyBindsTemplateAndExplicitGreenTemplateAuthority(t *testin
 	now := time.Now().UTC()
 	orgID, founderID := uuid.New(), uuid.New()
 	auth := &models.CampaignPolicyAuthorization{
-		ID: uuid.New(), CampaignID: uuid.New(), PromptPolicyVersion: DelegatedFirstTouchPolicyV1,
+		ID: uuid.New(), CampaignID: uuid.New(), PromptPolicyVersion: DelegatedFirstTouchPolicyV3,
 		ValidatorVersion: DelegatedFirstTouchValidatorV1, ContactPolicyVersion: DelegatedFirstTouchContactPolicyV1,
 		TemplatePolicyVersion: DelegatedFirstTouchTemplateV1, AllowPolicyTemplateGREEN: true,
 		SenderMailbox: "sender@example.test", Channel: models.OutreachChannelEmail, AllowedRiskClass: "GREEN",

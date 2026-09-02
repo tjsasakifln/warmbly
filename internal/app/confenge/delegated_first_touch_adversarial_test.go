@@ -102,7 +102,7 @@ func newDelegatedValidationFixture(t *testing.T, routeClass, email string) deleg
 	entry.SubjectHash, entry.BodyHash = hashText(entry.Subject), hashText(entry.BodyText)
 	manifest := DelegatedFirstTouchManifest{
 		SchemaVersion: DelegatedFirstTouchManifestV1, BatchID: "batch-1", AgentID: "agent:codex",
-		PolicyVersion: DelegatedFirstTouchPolicyV1, PolicyHash: DelegatedFirstTouchPolicyHashV1,
+		PolicyVersion: DelegatedFirstTouchPolicyV3, PolicyHash: DelegatedFirstTouchPolicyHashV3,
 		AuthorityReference: DelegatedFirstTouchAuthorityRef, PolicyAuthorizationID: uuid.New(),
 		SourceRunID: runID, SourceSnapshotHash: snapshot, EvidenceVersion: DelegatedFirstTouchEvidenceV1,
 		ComposerVersion: ComposerVersion, TemplateVersion: DelegatedFirstTouchTemplateV1, PromptVersion: PromptVersion,
