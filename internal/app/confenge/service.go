@@ -127,6 +127,15 @@ type Service interface {
 	// WireFastLane installs the synchronous transport that owns first-touch
 	// sending. Without it the fast lane stays inert and the legacy path runs.
 	WireFastLane(pool *pgxpool.Pool, transport FirstTouchTransport)
+	// WireIntelWatch gives the INTEL_WATCH side lane its own database handle.
+	// It installs no transport authority over first touch.
+	WireIntelWatch(pool *pgxpool.Pool)
+	// ResolveOutboundMailbox answers which mailbox CONFENGE mail leaves from,
+	// using the same rules the fast lane uses.
+	ResolveOutboundMailbox(ctx context.Context, orgID uuid.UUID) (uuid.UUID, error)
+	// NewIntelWatchReclaimWorker builds the INTEL_WATCH side lane. Nil when the
+	// lane cannot run, so a dormant lane never blocks a boot.
+	NewIntelWatchReclaimWorker(store liveintel.WatchStore, transport FirstTouchTransport, producer liveintel.EventProducer, interval time.Duration) *liveintel.WatchReclaimWorker
 	ProcessEditorialRecoveryOnce(ctx context.Context) (bool, error)
 	ProcessDraftGenerationOnce(ctx context.Context) (bool, error)
 	ProcessDelegatedFirstTouchOnce(ctx context.Context) (bool, error)
@@ -260,6 +269,9 @@ type service struct {
 	// Optional live-intelligence lookup, consulted only after the outbound gate
 	// has already decided to proceed. Nil is a supported state: no lookup.
 	liveIntel liveintel.Resolver
+	// INTEL_WATCH side-lane handle. Used only to resolve the sending mailbox
+	// when the fast lane is not wired; it never participates in first touch.
+	intelWatchDB *pgxpool.Pool
 }
 
 func (s *service) now() time.Time {

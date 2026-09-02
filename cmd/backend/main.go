@@ -1146,6 +1146,34 @@ func main() {
 			// This worker is idle while paused or outside the business window.
 			go confenge.NewDispatchQueueWorker(confengeServiceForHandler, 30*time.Second).Run(ctx)
 		}
+		// INTEL_WATCH side lane. Opt-in, and deliberately started after first
+		// touch: it shares the SMTP transport and the mailbox rules, never the
+		// send governor, the queue or the cap. A dormant or broken watch lane
+		// starts nothing and changes nothing about first-touch sending.
+		if watchEnabled, watchErr := liveintel.WatchStartupDecision(); watchEnabled && watchErr == nil {
+			confengeServiceForHandler.WireIntelWatch(primaryDB.Pool)
+			watchProducer, producerErr := liveintel.NewFixtureEventProducerFromEnv()
+			switch {
+			case producerErr != nil:
+				log.Printf("ERROR confenge INTEL_WATCH event source unusable, the watch lane will deliver nothing: %v", producerErr)
+			case watchProducer == nil:
+				log.Printf("confenge INTEL_WATCH enabled with no event source (set %s); the lane is idle", liveintel.EnvFixturePath)
+			default:
+				if orgRaw := strings.TrimSpace(os.Getenv("CONFENGE_INTEL_WATCH_ORG_ID")); orgRaw != "" {
+					if orgID, err := uuid.Parse(orgRaw); err == nil {
+						watchProducer.BindOrganization(orgID)
+					} else {
+						log.Printf("confenge INTEL_WATCH: invalid CONFENGE_INTEL_WATCH_ORG_ID %q", orgRaw)
+					}
+				}
+				if watchWorker := confengeServiceForHandler.NewIntelWatchReclaimWorker(
+					intelWatchRepoForHandler, confenge.NewSMTPFirstTouchTransport(emailRepostory),
+					watchProducer, 5*time.Minute); watchWorker != nil {
+					go watchWorker.Run(ctx)
+					log.Printf("confenge INTEL_WATCH reclaim worker started")
+				}
+			}
+		}
 		// Suboptimal and explicitly rejected copy is recoverable. AI rewrites run
 		// asynchronously and always return to human review.
 		go confenge.NewEditorialRecoveryWorker(confengeServiceForHandler, time.Minute).Run(ctx)

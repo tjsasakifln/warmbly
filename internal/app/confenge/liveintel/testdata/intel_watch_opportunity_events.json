@@ -1,0 +1,63 @@
+{
+  "schema_version": "CONFENGE_OPPORTUNITY_EVENT_FIXTURE/1.0",
+  "generated_at": "2026-09-02T00:00:00Z",
+  "synthetic": true,
+  "source": {
+    "system": "extra-cli",
+    "run_id": "intel-watch-fixture-synthetic"
+  },
+  "events": [
+    {
+      "schema": "CONFENGE_OPPORTUNITY_EVENT/1.0",
+      "event_id": "evt-watch-0001",
+      "event_type": "NEW_OPPORTUNITY",
+      "subject_key": "contrato-2026-0001",
+      "org_id": "0f1e2d3c-4b5a-4c7d-8e9f-a0b1c2d3e4f5",
+      "occurred_at": "2026-09-02T09:00:00Z",
+      "payload": {
+        "title": "Pregao Eletronico 12/2026",
+        "summary": "Nova licitacao publicada para o assunto acompanhado.",
+        "public_url": "https://exemplo.gov.br/editais/12-2026",
+        "deadline": "2026-10-01"
+      }
+    },
+    {
+      "schema": "CONFENGE_OPPORTUNITY_EVENT/1.0",
+      "event_id": "evt-watch-0002",
+      "event_type": "DEADLINE_CHANGED",
+      "subject_key": "contrato-2026-0001",
+      "org_id": "0f1e2d3c-4b5a-4c7d-8e9f-a0b1c2d3e4f5",
+      "occurred_at": "2026-09-02T11:30:00Z",
+      "payload": {
+        "title": "Pregao Eletronico 12/2026",
+        "summary": "A data limite de propostas foi prorrogada.",
+        "public_url": "https://exemplo.gov.br/editais/12-2026",
+        "deadline": "2026-10-15"
+      }
+    },
+    {
+      "schema": "CONFENGE_OPPORTUNITY_EVENT/1.0",
+      "event_id": "evt-watch-0003",
+      "event_type": "FIT_BECAME_RELEVANT",
+      "subject_key": "contrato-2026-0002",
+      "org_id": "0f1e2d3c-4b5a-4c7d-8e9f-a0b1c2d3e4f5",
+      "occurred_at": "2026-09-02T14:00:00Z",
+      "payload": {
+        "title": "Aditivo 3 ao contrato 2026-0002",
+        "summary": "O objeto passou a incluir o servico acompanhado.",
+        "public_url": "https://exemplo.gov.br/contratos/2026-0002"
+      }
+    },
+    {
+      "schema": "CONFENGE_OPPORTUNITY_EVENT/1.0",
+      "event_id": "evt-watch-0004-malformed",
+      "event_type": "NOT_A_REAL_EVENT_TYPE",
+      "subject_key": "contrato-2026-0001",
+      "org_id": "0f1e2d3c-4b5a-4c7d-8e9f-a0b1c2d3e4f5",
+      "occurred_at": "2026-09-02T15:00:00Z",
+      "payload": {
+        "title": "Evento fora do conjunto fechado"
+      }
+    }
+  ]
+}

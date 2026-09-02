@@ -39,10 +39,21 @@ func (s *service) resolveConfengeMailbox(ctx context.Context, orgID uuid.UUID) (
 	if s.fastLaneDB == nil {
 		return uuid.Nil, fmt.Errorf("fast lane database not wired")
 	}
+	return resolveConfengeMailboxIn(ctx, s.fastLaneDB, orgID)
+}
+
+// resolveConfengeMailboxIn is resolveConfengeMailbox's body against an explicit
+// pool, so a side lane can ask the same question without reaching into the fast
+// lane's own wiring. The rules are unchanged: configured address when set,
+// otherwise the single active SMTP mailbox, and never a guess between several.
+func resolveConfengeMailboxIn(ctx context.Context, pool *pgxpool.Pool, orgID uuid.UUID) (uuid.UUID, error) {
+	if pool == nil {
+		return uuid.Nil, fmt.Errorf("confenge mailbox database not wired")
+	}
 	want := strings.ToLower(strings.TrimSpace(os.Getenv("CONFENGE_MAILBOX_EMAIL")))
 	if want != "" {
 		var id uuid.UUID
-		err := s.fastLaneDB.QueryRow(ctx, `
+		err := pool.QueryRow(ctx, `
 			SELECT ea.id
 			FROM email_accounts ea
 			JOIN email_accounts_smtp_imap s ON s.email_account_id = ea.id
@@ -57,7 +68,7 @@ func (s *service) resolveConfengeMailbox(ctx context.Context, orgID uuid.UUID) (
 		}
 		return uuid.Nil, fmt.Errorf("configured CONFENGE mailbox %q is not active with SMTP configured", want)
 	}
-	rows, err := s.fastLaneDB.Query(ctx, `
+	rows, err := pool.Query(ctx, `
 		SELECT ea.id
 		FROM email_accounts ea
 		JOIN email_accounts_smtp_imap s ON s.email_account_id = ea.id
