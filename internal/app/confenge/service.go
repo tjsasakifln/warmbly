@@ -127,6 +127,10 @@ type Service interface {
 	// WireFastLane installs the synchronous transport that owns first-touch
 	// sending. Without it the fast lane stays inert and the legacy path runs.
 	WireFastLane(pool *pgxpool.Pool, transport FirstTouchTransport)
+	// GateIntelSeed admits and composes one INTEL_SEED touch. It reuses the
+	// first-touch admission predicates by composition and takes no dispatch
+	// reservation, so it cannot consume first-touch send budget.
+	GateIntelSeed(ctx context.Context, orgID, candidateID uuid.UUID) IntelSeedDecision
 	// WireIntelWatch gives the INTEL_WATCH side lane its own database handle.
 	// It installs no transport authority over first touch.
 	WireIntelWatch(pool *pgxpool.Pool)
