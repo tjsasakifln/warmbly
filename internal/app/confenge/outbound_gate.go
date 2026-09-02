@@ -12,6 +12,7 @@ import (
 
 	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
 	"github.com/warmbly/warmbly/internal/app/confenge/intel"
+	"github.com/warmbly/warmbly/internal/app/confenge/liveintel"
 	"github.com/warmbly/warmbly/internal/models"
 )
 
@@ -60,6 +61,9 @@ type CampaignGateResult struct {
 	NextSlot      time.Time
 	Reason        string
 	Err           error // only meaningful for GateTransient
+	// OptionalIntel is attached only on GateProceed, after the decision is
+	// already made. Nil means no trustworthy intelligence, never a block.
+	OptionalIntel *liveintel.LiveIntelligenceV1
 }
 
 // CampaignTransportBinding binds a reservation to the scheduler-selected mailbox and task.
@@ -316,10 +320,14 @@ func (s *service) gateCampaignEmail(ctx context.Context, orgID uuid.UUID, campai
 	if cohortAuthID != uuid.Nil && res.Reservation != nil {
 		_ = s.cohortStore.BindLeaseToken(ctx, cohortAuthID, cohortKey, res.Reservation.ID.String())
 	}
+	// The decision is final at this point. Live intelligence is looked up only
+	// here, on the single GateProceed return, so it can neither create nor
+	// remove a block; a failing lookup simply attaches nothing.
 	return CampaignGateResult{
 		Kind:          GateProceed,
 		ReservationID: res.Reservation.ID,
 		Reason:        res.Reason,
+		OptionalIntel: liveintel.Attach(ctx, s.liveIntel, orgID, acc.ID),
 	}
 }
 

@@ -121,6 +121,11 @@ func Run(
 	r.GET("/unsubscribe", h.Unsubscribe)
 	r.POST("/unsubscribe", h.Unsubscribe)
 
+	// Public INTEL_WATCH opt-out. Same shape as above; the signed token in the
+	// query is the capability, and it stops one watch subscription only.
+	r.GET("/unsubscribe/watch", h.UnsubscribeIntelWatch)
+	r.POST("/unsubscribe/watch", h.UnsubscribeIntelWatch)
+
 	// Public invitation preview for the /invite landing page. Unauthenticated:
 	// the secret token in the query is the capability.
 	r.GET("/invitations/lookup", h.PreviewInvitation)

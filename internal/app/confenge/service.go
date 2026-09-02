@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
 	"github.com/warmbly/warmbly/internal/app/confenge/intel"
+	"github.com/warmbly/warmbly/internal/app/confenge/liveintel"
 	"github.com/warmbly/warmbly/internal/app/confenge/proposal"
 	"github.com/warmbly/warmbly/internal/app/whatsapp"
 	"github.com/warmbly/warmbly/internal/errx"
@@ -256,6 +257,9 @@ type service struct {
 	// first-touch loop. Nil disables the fast lane entirely.
 	firstTouchTransport FirstTouchTransport
 	fastLaneDB          *pgxpool.Pool
+	// Optional live-intelligence lookup, consulted only after the outbound gate
+	// has already decided to proceed. Nil is a supported state: no lookup.
+	liveIntel liveintel.Resolver
 }
 
 func (s *service) now() time.Time {
@@ -289,6 +293,7 @@ func NewService(cfg Config, repo repository.OutreachRepository, audit AuditLogge
 		cohortStore:   NewMemoryCohortStore(), // tests/unit only; production boot wires NewPostgresCohortStore
 		dossierStore:  NewMemoryDossierStore(),
 		proposalFacts: proposal.NewMemoryStore(),
+		liveIntel:     liveintel.NoopResolver{},
 	}
 }
 
@@ -310,6 +315,7 @@ func NewServiceWithAI(cfg Config, repo repository.OutreachRepository, audit Audi
 		cohortStore:   NewMemoryCohortStore(), // tests/unit only; production boot wires NewPostgresCohortStore
 		dossierStore:  NewMemoryDossierStore(),
 		proposalFacts: proposal.NewMemoryStore(),
+		liveIntel:     liveintel.NoopResolver{},
 	}
 	return svc
 }

@@ -38,6 +38,7 @@ import (
 	"github.com/warmbly/warmbly/internal/app/cipher"
 	"github.com/warmbly/warmbly/internal/app/compose"
 	"github.com/warmbly/warmbly/internal/app/confenge"
+	"github.com/warmbly/warmbly/internal/app/confenge/liveintel"
 	"github.com/warmbly/warmbly/internal/app/contact"
 	"github.com/warmbly/warmbly/internal/app/credits"
 	"github.com/warmbly/warmbly/internal/app/creditwatch"
@@ -266,6 +267,7 @@ func main() {
 	var userRepoForHandler repository.UserRepository
 	var organizationRepoForHandler repository.OrganizationRepository
 	var warmupRoutingRepoForHandler repository.WarmupRoutingRepository
+	var intelWatchRepoForHandler repository.IntelWatchRepository
 	var webhookServiceForHandler webhook.Service
 	var integrationServiceForHandler integration.Service
 	var oauthService *oauth.Service
@@ -581,6 +583,19 @@ func main() {
 		idempotencyService = idempotencyapp.NewService(primaryDB.Pool)
 		crmRepository := repository.NewCRMRepository(primaryDB.Pool)
 		advancedRepository := repository.NewAdvancedOutreachRepository(primaryDB.Pool)
+		intelWatchRepoForHandler = repository.NewIntelWatchRepository(primaryDB.Pool)
+		// INTEL_WATCH is an opt-in side lane. It is checked here, loudly, so a
+		// missing opt-out signing secret is diagnosed at boot instead of at the
+		// first unusable unsubscribe link -- and it is only ever a log, never a
+		// fatal: first touch must start and keep sending whatever state this
+		// lane is in.
+		if watchEnabled, watchErr := liveintel.WatchStartupDecision(); watchErr != nil {
+			log.Printf("ERROR confenge INTEL_WATCH is enabled but misconfigured, the watch lane stays disabled and its unsubscribe links will be refused: %v", watchErr)
+		} else if watchEnabled {
+			log.Printf("confenge INTEL_WATCH lane enabled with a configured opt-out secret")
+		} else {
+			log.Printf("confenge INTEL_WATCH lane dormant (set %s to enable)", liveintel.EnvWatchEnabled)
+		}
 		templateRepository := repository.NewTemplateRepository(primaryDB.Pool)
 		warmupRepository := repository.NewWarmupRepository(primaryDB.Pool)
 		warmupRoutingRepository := repository.NewWarmupRoutingRepository(primaryDB.Pool)
@@ -1749,6 +1764,7 @@ func main() {
 
 		// Advanced outreach controls
 		AdvancedService: advancedService,
+		IntelWatchRepo:  intelWatchRepoForHandler,
 
 		// Warmup health
 		WarmupService:     warmupService,

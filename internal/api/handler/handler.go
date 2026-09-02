@@ -168,6 +168,10 @@ type Handler struct {
 	// Advanced outreach controls
 	AdvancedService advanced.Service
 
+	// INTEL_WATCH subscriptions. Backs the public watch-unsubscribe endpoint;
+	// nil makes that endpoint report a processing failure instead of panicking.
+	IntelWatchRepo repository.IntelWatchRepository
+
 	// Pre-send email verification (control-plane SMTP RCPT probe / pluggable
 	// paid backend). Drops hard-bouncing addresses before a worker sends.
 	EmailVerifyService emailverifyapp.Service

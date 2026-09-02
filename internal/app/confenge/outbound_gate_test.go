@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/warmbly/warmbly/internal/app/confenge/dispatch"
+	"github.com/warmbly/warmbly/internal/app/confenge/liveintel"
 	"github.com/warmbly/warmbly/internal/models"
 )
 
@@ -518,6 +519,143 @@ func TestGateCampaignEmailConfengeDisabledFailClosed(t *testing.T) {
 		uuid.New(), uuid.New(), uuid.New())
 	if r.Kind != GateTransient {
 		t.Fatalf("got kind=%d want Transient", r.Kind)
+	}
+}
+
+// gateIntelResolver scripts the optional live-intelligence lookup and records
+// whether the gate consulted it at all.
+type gateIntelResolver struct {
+	payload *liveintel.LiveIntelligenceV1
+	ok      bool
+	panics  bool
+	calls   int
+}
+
+func (r *gateIntelResolver) Resolve(context.Context, uuid.UUID, uuid.UUID) (*liveintel.LiveIntelligenceV1, bool) {
+	r.calls++
+	if r.panics {
+		panic("intel resolver exploded")
+	}
+	return r.payload, r.ok
+}
+
+func validGateIntel() *liveintel.LiveIntelligenceV1 {
+	return &liveintel.LiveIntelligenceV1{
+		Schema:      liveintel.SchemaLiveIntelligenceV1,
+		SubjectKey:  "contrato-2026-0001",
+		Kind:        liveintel.KindOpportunity,
+		PublicURL:   "https://pncp.gov.br/app/contratos/2026-0001",
+		ObservedAt:  time.Date(2026, 6, 15, 9, 0, 0, 0, time.UTC),
+		Attestation: "attestation-signature",
+	}
+}
+
+// newProceedingGateService builds the smallest service whose gate reaches
+// GateProceed, so an intel assertion measures only the hook.
+func newProceedingGateService(t *testing.T) (*service, uuid.UUID, uuid.UUID, uuid.UUID) {
+	t.Helper()
+	allowConfengeSendingForTest(t)
+	ctx := context.Background()
+	repo := newMemRepoWithSettings()
+	orgID, accountID, candidateID := uuid.New(), uuid.New(), uuid.New()
+	_, _ = repo.UpsertAccount(ctx, &models.OutreachAccount{
+		ID: accountID, OrganizationID: orgID, CNPJ14: "12345678000122",
+	})
+	_, _ = repo.UpsertCandidate(ctx, &models.OutreachContactCandidate{
+		ID: candidateID, OrganizationID: orgID, AccountID: accountID, Email: "intel@example.com",
+	})
+	campaignID, contactID := bindTransportableEnrollment(t, repo.memRepo, orgID, accountID, candidateID, "intel@example.com")
+	cfg := dispatch.DefaultConfig()
+	cfg.SendsPerHour, cfg.MinGap, cfg.RateMode = 100, 0, "fixed"
+	cfg.WindowStart, cfg.WindowEnd, cfg.Timezone = "00:00", "23:59", "UTC"
+	cfg.BusinessDaysOnly = false
+	governor := dispatch.NewGovernor(cfg, dispatch.NewMemoryStore(),
+		&dispatch.FixedClock{T: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)})
+	svc := &service{cfg: Config{Enabled: true}, repo: repo, governor: governor}
+	return svc, orgID, campaignID, contactID
+}
+
+// Live intelligence is attached to an already-granted GateProceed and can never
+// change the outcome: absent, failing, panicking or valid all proceed.
+func TestGateCampaignEmailLiveIntelNeverChangesTheDecision(t *testing.T) {
+	cases := []struct {
+		name       string
+		resolver   liveintel.Resolver
+		wantIntel  bool
+		wantCalled bool
+	}{
+		{name: "not wired", resolver: nil},
+		{name: "noop", resolver: liveintel.NoopResolver{}},
+		{name: "absent", resolver: &gateIntelResolver{}, wantCalled: true},
+		{name: "lookup error", resolver: liveintel.LookupFunc(func(context.Context, uuid.UUID, uuid.UUID) (*liveintel.LiveIntelligenceV1, error) {
+			return nil, errors.New("intel source unavailable")
+		})},
+		{name: "malformed payload", resolver: &gateIntelResolver{payload: &liveintel.LiveIntelligenceV1{}, ok: true}, wantCalled: true},
+		{name: "panicking", resolver: &gateIntelResolver{panics: true}, wantCalled: true},
+		{name: "valid", resolver: &gateIntelResolver{payload: validGateIntel(), ok: true}, wantIntel: true, wantCalled: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, orgID, campaignID, contactID := newProceedingGateService(t)
+			svc.liveIntel = tc.resolver
+			result := svc.GateCampaignEmail(context.Background(), orgID, DefaultCampaignName,
+				"intel@example.com", campaignID, contactID, uuid.New())
+			if result.Kind != GateProceed {
+				t.Fatalf("intel changed the decision: %+v", result)
+			}
+			if (result.OptionalIntel != nil) != tc.wantIntel {
+				t.Fatalf("OptionalIntel=%+v want present=%v", result.OptionalIntel, tc.wantIntel)
+			}
+			if scripted, ok := tc.resolver.(*gateIntelResolver); ok && (scripted.calls > 0) != tc.wantCalled {
+				t.Fatalf("resolver calls=%d want called=%v", scripted.calls, tc.wantCalled)
+			}
+		})
+	}
+}
+
+// Intelligence is looked up only on the proceed path, so it can never turn a
+// block into a send and is never consulted for a decision that is not proceed.
+func TestGateCampaignEmailLiveIntelIsNotConsultedOnBlockedPaths(t *testing.T) {
+	allowConfengeSendingForTest(t)
+	ctx := context.Background()
+	org := uuid.New()
+	accID, candID := uuid.New(), uuid.New()
+	repo := newMemRepoWithSettings()
+	_, _ = repo.UpsertAccount(ctx, &models.OutreachAccount{
+		ID: accID, OrganizationID: org, CNPJ14: "12345678000111", DoNotContact: true, Blocked: true,
+	})
+	_, _ = repo.UpsertCandidate(ctx, &models.OutreachContactCandidate{
+		ID: candID, OrganizationID: org, AccountID: accID, Email: "blocked@example.com",
+	})
+	cfg := dispatch.DefaultConfig()
+	cfg.WindowStart, cfg.WindowEnd, cfg.Timezone, cfg.MinGap = "00:00", "23:59", "UTC", 0
+	cfg.BusinessDaysOnly = false
+	resolver := &gateIntelResolver{payload: validGateIntel(), ok: true}
+
+	svc := &service{
+		cfg: Config{Enabled: true}, repo: repo, liveIntel: resolver,
+		governor: dispatch.NewGovernor(cfg, dispatch.NewMemoryStore(),
+			&dispatch.FixedClock{T: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)}),
+	}
+	hard := svc.GateCampaignEmail(ctx, org, DefaultCampaignName, "blocked@example.com",
+		uuid.New(), uuid.New(), uuid.New())
+	if hard.Kind != GateHardBlock {
+		t.Fatalf("account DNC must stay a hard block: %+v", hard)
+	}
+	if hard.OptionalIntel != nil {
+		t.Fatalf("a blocked result carried intelligence: %+v", hard.OptionalIntel)
+	}
+
+	// Fail-closed transient (no governor) and legacy bypass are equally untouched.
+	bare := &service{cfg: Config{Enabled: true}, liveIntel: resolver}
+	if r := bare.GateCampaignEmail(ctx, org, DefaultCampaignName, "x@y.com", uuid.Nil, uuid.Nil, uuid.New()); r.Kind != GateTransient || r.OptionalIntel != nil {
+		t.Fatalf("nil governor result changed: %+v", r)
+	}
+	if r := bare.GateCampaignEmail(ctx, org, "Regular campaign", "x@y.com", uuid.Nil, uuid.Nil, uuid.New()); r.Kind != GateBypass || r.OptionalIntel != nil {
+		t.Fatalf("non-CONFENGE bypass changed: %+v", r)
+	}
+	if resolver.calls != 0 {
+		t.Fatalf("intelligence was consulted %d times on non-proceed paths", resolver.calls)
 	}
 }
 
