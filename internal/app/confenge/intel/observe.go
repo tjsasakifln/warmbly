@@ -27,6 +27,10 @@ func ObserveFromInbound(lead models.OutreachInboundLead, acc *models.OutreachAcc
 			PersonID:       strings.TrimSpace(lead.PersonID),
 			EventIDs:       append([]string{}, lead.Evidence...),
 			RouteFamily:    strings.TrimSpace(lead.RouteFamily),
+			// An inbound lead is CONFENGE_WEB's own engine. This is the one
+			// place the engine is known from the record's kind rather than from
+			// an explicit stamp, because an inbound lead has no other origin.
+			EngineLane:     EngineLaneConfengeWeb,
 			LandingPath:    CanonicalLandingPath(lead.LandingURL),
 			OrganicSource:  ComposeOrganicSource(utmFieldAny(lead.UTMJSON, "organic_source"), lead.Source, utmFieldAny(lead.UTMJSON, "medium", "utm_medium")),
 			Medium:         utmFieldAny(lead.UTMJSON, "medium", "utm_medium"),
@@ -164,6 +168,10 @@ func ObserveFromAction(action models.OutreachCommercialAction, acc *models.Outre
 			OfferID:        strings.TrimSpace(action.ServiceCode),
 			Route:          firstNonEmpty(action.ReachabilityClass, action.RouteType, action.ActionType),
 			RouteFamily:    family,
+			// Engine attribution travels with the action that carries it. An
+			// action with no engine stays unattributed rather than inheriting
+			// the route family's outbound/inbound sense.
+			EngineLane: normalizeEngineLane(action.EngineLane),
 		},
 		OutcomeType:   strings.TrimSpace(action.OutcomeCode),
 		Conversation:  action.ConversationStarted,

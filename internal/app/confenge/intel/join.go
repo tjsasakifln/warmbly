@@ -144,6 +144,10 @@ func Reconcile(store Store, in ObservedFacts) JoinResult {
 	}
 
 	in.Keys.RouteFamily = normalizeFamily(in.Keys.RouteFamily)
+	// Normalized before the chain is built but after nothing that feeds
+	// identity: ChainIdentity and MetricKey do not read EngineLane, so adding
+	// attribution cannot re-split an existing chain or move an existing metric.
+	in.Keys.EngineLane = normalizeEngineLane(in.Keys.EngineLane)
 	identity := ChainIdentity(in.Keys)
 	metric := MetricKey(in.Keys)
 	existing, err := store.GetChain(in.Keys.OrganizationID, identity)
@@ -310,27 +314,30 @@ func buildChain(in ObservedFacts, identity, metric string, now time.Time, closeB
 		closeAt = in.CloseAt
 	}
 	return Chain{
-		SchemaVersion:     SchemaV1,
-		Identity:          identity,
-		MetricKey:         metric,
-		Keys:              k,
-		Source:            idOrUnknown(k.Source),
-		Query:             idOrUnknown(k.Query),
-		AssetID:           idOrUnknown(k.AssetID),
-		LeadID:            idOrUnknown(k.LeadID),
-		ReceiptID:         idOrUnknown(k.ReceiptID),
-		CorrelationID:     idOrUnknown(k.CorrelationID),
-		AccountID:         idOrUnknown(k.AccountID),
-		OpportunityID:     idOrUnknown(k.OpportunityID),
-		ProposalID:        idOrUnknown(k.ProposalID),
-		ChargeID:          idOrUnknown(k.ChargeID),
-		PaymentID:         idOrUnknown(k.PaymentID),
-		PersonID:          idOrUnknown(k.PersonID),
-		ActionID:          idOrUnknown(k.ActionID),
-		OutcomeID:         idOrUnknown(k.OutcomeID),
-		OutboxEventID:     idOrUnknown(k.OutboxEventID),
-		IdempotencyKey:    idOrUnknown(k.IdempotencyKey),
-		RouteFamily:       idOrUnknown(k.RouteFamily),
+		SchemaVersion:  SchemaV1,
+		Identity:       identity,
+		MetricKey:      metric,
+		Keys:           k,
+		Source:         idOrUnknown(k.Source),
+		Query:          idOrUnknown(k.Query),
+		AssetID:        idOrUnknown(k.AssetID),
+		LeadID:         idOrUnknown(k.LeadID),
+		ReceiptID:      idOrUnknown(k.ReceiptID),
+		CorrelationID:  idOrUnknown(k.CorrelationID),
+		AccountID:      idOrUnknown(k.AccountID),
+		OpportunityID:  idOrUnknown(k.OpportunityID),
+		ProposalID:     idOrUnknown(k.ProposalID),
+		ChargeID:       idOrUnknown(k.ChargeID),
+		PaymentID:      idOrUnknown(k.PaymentID),
+		PersonID:       idOrUnknown(k.PersonID),
+		ActionID:       idOrUnknown(k.ActionID),
+		OutcomeID:      idOrUnknown(k.OutcomeID),
+		OutboxEventID:  idOrUnknown(k.OutboxEventID),
+		IdempotencyKey: idOrUnknown(k.IdempotencyKey),
+		RouteFamily:    idOrUnknown(k.RouteFamily),
+		// Deliberately NOT idOrUnknown: an unattributed engine stays the empty
+		// string so it can never be read as an engine literally named UNKNOWN.
+		EngineLane:        normalizeEngineLane(k.EngineLane),
 		Trigger:           idOrUnknown(k.Trigger),
 		OfferID:           idOrUnknown(k.OfferID),
 		Route:             idOrUnknown(k.Route),

@@ -227,9 +227,15 @@ type JoinKeys struct {
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 
 	RouteFamily string `json:"route_family,omitempty"`
-	Trigger     string `json:"trigger,omitempty"`
-	OfferID     string `json:"offer_id,omitempty"`
-	Route       string `json:"route,omitempty"`
+	// EngineLane is the acquisition engine of origin. It is deliberately NOT
+	// part of RouteFamily's four-value vocabulary and deliberately NOT part of
+	// ChainIdentity or MetricKey: three of the four engines are outbound and
+	// one is inbound, so folding them into RouteFamily would both break
+	// isInboundAcquisitionChain and re-split every existing chain.
+	EngineLane string `json:"engine_lane,omitempty"`
+	Trigger    string `json:"trigger,omitempty"`
+	OfferID    string `json:"offer_id,omitempty"`
+	Route      string `json:"route,omitempty"`
 
 	// Envelope / asset attribution. IDs and pointers only.
 	EventID           string `json:"event_id,omitempty"`
@@ -353,9 +359,14 @@ type Chain struct {
 	IdempotencyKey string `json:"idempotency_key"`
 
 	RouteFamily string `json:"route_family"`
-	Trigger     string `json:"trigger"`
-	OfferID     string `json:"offer_id"`
-	Route       string `json:"route"`
+	// EngineLane is which acquisition engine produced this chain. Empty means
+	// unattributed: the chain predates engine attribution, or no engine claimed
+	// it. It is never inferred, and it is never a grouping dimension in the
+	// shipped outcome-feedback rollup.
+	EngineLane string `json:"engine_lane,omitempty"`
+	Trigger    string `json:"trigger"`
+	OfferID    string `json:"offer_id"`
+	Route      string `json:"route"`
 
 	CTAID             string `json:"cta_id,omitempty"`
 	AssetFamily       string `json:"asset_family,omitempty"`
