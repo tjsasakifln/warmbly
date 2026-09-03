@@ -551,6 +551,7 @@ func Run(
 				confengeGroup.GET("/intel/exceptions/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeIntelException)
 				confengeGroup.GET("/intel/commercial/:leadId", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeCommercialCanonical)
 				confengeGroup.GET("/attention", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeAttention)
+				confengeGroup.GET("/interrupt-budget", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeInterruptBudget)
 				confengeGroup.GET("/attention/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeAttention)
 				confengeGroup.GET("/accounts", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.ListConfengeAccounts)
 				confengeGroup.GET("/accounts/:id", m.RequireAccess(models.PermViewContacts, models.APIPermReadContacts), h.GetConfengeAccount)

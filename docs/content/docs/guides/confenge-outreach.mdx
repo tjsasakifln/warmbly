@@ -255,6 +255,48 @@ Execution state (`PLANNED`, `READY`, `IN_PROGRESS`, `COMPLETED`, `NEEDS_FOLLOWUP
 
 The extra-cli plug contract (additive fields the future producer can fill) is documented in `docs/confenge/commercial-actions.md`.
 
+## Additive acquisition engines
+
+First touch is one engine, not the only one. Three additive engines run alongside it. None of them takes a dispatch reservation from the shared governor, so none of them can consume first-touch send budget, and none of them changes first-touch admission, volume, cadence, or queue state.
+
+`INTEL_SEED` is cold outreach with a different ask. Instead of proposing work it offers to monitor one specific public asset, and every factual sentence comes from an attested `CONFENGE_LIVE_INTELLIGENCE/1.0` payload that names a public HTTPS source. A contact reaches this lane only after passing the same DNC, opt-out, bounce, recipient-suppression, commercial-authority, and target-fit checks first touch applies, and the lane obeys the same kill switch, durable pause, and business window. Missing or unusable intelligence means the lane has nothing to send; it never blocks or slows first touch. Message keys are namespaced `email:intel_seed:...`. The lane is dormant unless `CONFENGE_INTEL_SEED_ENABLED=true`.
+
+`INTEL_WATCH` is subscription mail, not cold outreach. A contact must have asked for it, and the consent record is separate from cold-outreach admission: neither basis substitutes for the other in either direction. Each delivery is identified by subscription, producer event id, and a semantic content hash, so re-emitting unchanged content sends nothing. Delivery uses a reserve, fence, terminal-state ledger: a failure before the irreversible handoff stays deliverable, a failure after it is parked as ambiguous and never resent, and a replay of an already-delivered notification is a no-op. Every message carries a signed one-click opt-out; without a signing secret nothing is sent at all. Message keys are namespaced `email:intel_watch:...`.
+
+`CONFENGE_WEB` is the inbound engine that already exists. It is named here because the four engines are attributed separately end to end.
+
+Both intelligence lanes reuse the same SMTP transport and the same mailbox-resolution rules as first touch. There is one send implementation in the system.
+
+| Env | Default |
+| --- | --- |
+| `CONFENGE_INTEL_SEED_ENABLED` | `false` |
+| `CONFENGE_INTEL_WATCH_ENABLED` | `false` |
+| `CONFENGE_INTEL_WATCH_SECRET` | unset (opt-out links refused) |
+| `CONFENGE_INTEL_WATCH_EVENTS_FILE` | unset (lane idle) |
+| `CONFENGE_INTEL_WATCH_ORG_ID` | unset |
+| `CONFENGE_INTEL_WATCH_BASE_URL` | platform domain |
+
+A watch reclaim pass runs every five minutes while the lane is enabled. It parks handoffs whose worker disappeared and re-drives replayable events, so a transient provider failure becomes a delivered notification without anyone replaying anything by hand. Each event gets its own budget, so one unreachable provider cannot hold up the events behind it.
+
+Recipients opt out at `/unsubscribe/watch?oid=...&sid=...&t=...` (GET for a person clicking, POST for RFC 8058 one-click). An unsubscribed row is kept, not deleted: the consent record and the opt-out are both evidence.
+
+## Hand-raiser convergence and the Founder Interrupt Budget
+
+Any engine can produce the same commercial fact: a person wants something. Six signals converge into the existing commercial-action next-action surface: a positive reply to first touch, a reply or action on an `INTEL_SEED` offer, an explicit human-review request, an explicit deep-dive request, a meeting or proposal request, and `INFERRED_EMAIL_REVIEW`. Each becomes one action row with a next-action type and a due time. This is explicit signal-to-action mapping; there is no scoring and no hidden behavioral inference.
+
+Every converged row records `engine_lane`, the acquisition engine of origin: `outbound_first_touch`, `intel_seed`, `intel_watch`, or `confenge_web`. It is deliberately separate from the cockpit `lane`, which is queue routing. An unknown value stays unattributed rather than being assigned to an engine, because a wrong attribution makes a working engine look like it produced someone else's result. Rows that predate engine attribution read back unattributed and are counted separately, never absorbed into an engine's total. The same signal from the same person through two engines is two facts about two engines, not one duplicate.
+
+`GET /confenge/interrupt-budget` is the Founder Interrupt Budget: a read-only projection over the open commercial actions the Control Center already owns. It reserves nothing, sends nothing, and mutates no row. It returns four buckets, counts per bucket and per engine, and the items themselves.
+
+| Bucket | Meaning |
+| --- | --- |
+| `hand_raiser_without_next_action` | Someone raised their hand and nobody has committed to a next step |
+| `meeting_or_proposal_request` | An explicit ask to meet or to be quoted |
+| `reply_awaiting_human` | A prospect replied and is waiting for an answer |
+| `review_request` | Something needs a person to look before it can move |
+
+The first bucket is surfaced first on purpose. A hand-raiser with no due time is invisible in every due-date-ordered view precisely because it has no due date, so it is the one that silently rots. Within a bucket, overdue items come first, then the longest wait. Accepts `limit` between 1 and 200 (default `50`); anything else returns `400`.
+
 ## Mailbox capacity and dispatch governor
 
 CONFENGE email pacing is mailbox-first. The campaign scheduler selects an existing email account, and the final transport reservation is bound to that exact account and task. The mailbox's configured `campaign_limit`, `min_wait_time`, readiness, and factual provider state are checked inside the same transaction that reserves the slot. The shared governor remains an additional ceiling across email and WhatsApp. It cannot increase a mailbox envelope.

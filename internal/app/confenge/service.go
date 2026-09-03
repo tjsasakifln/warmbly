@@ -100,6 +100,9 @@ type Service interface {
 	AcknowledgeInboundAlert(ctx context.Context, orgID, userID uuid.UUID, leadID string, now time.Time) (*OperatorAlert, *errx.Error)
 	ResolveInboundNoAction(ctx context.Context, orgID, userID uuid.UUID, leadID, reason string, now time.Time) (*OperatorAlert, *errx.Error)
 	ListAttention(ctx context.Context, orgID uuid.UUID, filter string, limit int) ([]AttentionItem, *errx.Error)
+	// FounderInterruptBudget projects everything currently waiting on a human,
+	// bucketed and attributed to the engine that produced it. Read-only.
+	FounderInterruptBudget(ctx context.Context, orgID uuid.UUID, limit int) (*InterruptBudget, *errx.Error)
 	GetAttention(ctx context.Context, orgID, accountID uuid.UUID) (*AttentionItem, *errx.Error)
 	GenerateReplyDraft(ctx context.Context, orgID, userID, accountID uuid.UUID, contactID *uuid.UUID) (*models.OutreachDraft, *errx.Error)
 	ResumeAtDate(ctx context.Context, orgID, userID, accountID uuid.UUID, resumeAt time.Time, note string) (*models.OutreachAccount, *errx.Error)

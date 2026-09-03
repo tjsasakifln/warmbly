@@ -31,7 +31,8 @@ const outreachActionSelect = `
 		COALESCE(route_quality_feedback,''), COALESCE(person_relevance_feedback,''), COALESCE(message_feedback,''),
 		COALESCE(content_json,'{}'::jsonb), COALESCE(correction_json,'[]'::jsonb),
 		blocked_person, blocked_route, COALESCE(stale_warning,''), requires_fresh, COALESCE(company_name,''),
-		created_at, updated_at, started_at, completed_at `
+		created_at, updated_at, started_at, completed_at,
+		COALESCE(engine_lane,'') `
 
 func (r *outreachRepository) UpsertCommercialAction(ctx context.Context, a *models.OutreachCommercialAction) error {
 	if a.ID == uuid.Nil {
@@ -71,7 +72,8 @@ func (r *outreachRepository) UpsertCommercialAction(ctx context.Context, a *mode
 			interest_state, next_action_type, next_action_at, route_quality_feedback,
 			person_relevance_feedback, message_feedback, content_json, correction_json,
 			blocked_person, blocked_route, stale_warning, requires_fresh, company_name,
-			created_at, updated_at, started_at, completed_at
+			created_at, updated_at, started_at, completed_at,
+			engine_lane
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,
 			$7,$8,$9,$10,$11,
@@ -84,7 +86,8 @@ func (r *outreachRepository) UpsertCommercialAction(ctx context.Context, a *mode
 			$45,$46,$47,$48,
 			$49,$50,$51,$52,
 			$53,$54,$55,$56,$57,
-			$58,$59,$60,$61
+			$58,$59,$60,$61,
+			$62
 		)
 		ON CONFLICT (id) DO UPDATE SET
 			person_name = EXCLUDED.person_name,
@@ -139,6 +142,7 @@ func (r *outreachRepository) UpsertCommercialAction(ctx context.Context, a *mode
 			followup_action_id = EXCLUDED.followup_action_id,
 			started_at = EXCLUDED.started_at,
 			completed_at = EXCLUDED.completed_at,
+			engine_lane = EXCLUDED.engine_lane,
 			updated_at = EXCLUDED.updated_at`,
 		a.ID, a.OrganizationID, a.AccountID, a.CandidateID, a.ParentActionID, a.FollowupActionID,
 		a.SourceLeadID, a.PersonName, a.PersonID, a.ObservedRole, a.TargetRole,
@@ -152,6 +156,7 @@ func (r *outreachRepository) UpsertCommercialAction(ctx context.Context, a *mode
 		a.PersonRelevanceFeedback, a.MessageFeedback, content, corr,
 		a.BlockedPerson, a.BlockedRoute, a.StaleWarning, a.RequiresFresh, a.CompanyName,
 		a.CreatedAt, a.UpdatedAt, a.StartedAt, a.CompletedAt,
+		a.EngineLane,
 	)
 	return err
 }
@@ -215,6 +220,7 @@ func commercialActionScanDest(a *models.OutreachCommercialAction, ev, warn, cont
 		&a.PersonRelevanceFeedback, &a.MessageFeedback, content, corr,
 		&a.BlockedPerson, &a.BlockedRoute, &a.StaleWarning, &a.RequiresFresh, &a.CompanyName,
 		&a.CreatedAt, &a.UpdatedAt, &a.StartedAt, &a.CompletedAt,
+		&a.EngineLane,
 	}
 }
 

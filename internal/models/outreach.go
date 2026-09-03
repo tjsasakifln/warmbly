@@ -851,8 +851,11 @@ type OutreachCommercialAction struct {
 	EvidenceIDs       []string `json:"evidence_ids,omitempty"`
 	Warnings          []string `json:"warnings,omitempty"`
 
-	State         string  `json:"state"`
-	Lane          string  `json:"lane"`
+	State string `json:"state"`
+	Lane  string `json:"lane"`
+	// EngineLane is the acquisition engine of origin. Distinct from Lane, which
+	// is cockpit queue routing. Empty means unattributed; it is never inferred.
+	EngineLane    string  `json:"engine_lane,omitempty"`
 	PriorityRank  int     `json:"priority_rank"`
 	PriorityScore float64 `json:"priority_score"`
 

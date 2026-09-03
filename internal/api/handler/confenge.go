@@ -1276,6 +1276,34 @@ func (h *Handler) ListConfengeAttention(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": list})
 }
 
+// GetConfengeInterruptBudget — GET /confenge/interrupt-budget
+//
+// The Founder Interrupt Budget: everything currently waiting on a person,
+// bucketed by why, attributed to the engine that produced it. Read-only, and
+// deliberately a projection over the commercial actions the Control Center
+// already owns rather than a second queue.
+func (h *Handler) GetConfengeInterruptBudget(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	limit := 50
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 200 {
+			errx.JSON(c, errx.New(errx.BadRequest, "limit must be between 1 and 200"))
+			return
+		}
+		limit = n
+	}
+	budget, xerr := h.ConfengeService.FounderInterruptBudget(c.Request.Context(), orgID, limit)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": budget})
+}
+
 // GetConfengeAttention — GET /confenge/attention/:id
 func (h *Handler) GetConfengeAttention(c *gin.Context) {
 	orgID, ok := h.confengeOrg(c)
