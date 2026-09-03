@@ -162,7 +162,7 @@ func newDelegatedPGFixtureWithTimeout(t *testing.T, timeout time.Duration) *dele
 
 	policyStore := repository.NewConfengePolicyRepository(pool)
 	auth := &models.CampaignPolicyAuthorization{
-		ID: uuid.New(), CampaignID: campaignID, PromptPolicyVersion: DelegatedFirstTouchPolicyV1,
+		ID: uuid.New(), CampaignID: campaignID, PromptPolicyVersion: DelegatedFirstTouchPolicyV3,
 		ValidatorVersion: DelegatedFirstTouchValidatorV1, ContactPolicyVersion: DelegatedFirstTouchContactPolicyV1,
 		TemplatePolicyVersion: DelegatedFirstTouchTemplateV1, SenderMailbox: sender, Channel: models.OutreachChannelEmail,
 		AllowedRiskClass: "GREEN", MaxRatePerHour: 10, AllowPolicyTemplateGREEN: true,
@@ -200,7 +200,7 @@ func newDelegatedPGFixtureWithTimeout(t *testing.T, timeout time.Duration) *dele
 	entry.SubjectHash, entry.BodyHash = hashText(entry.Subject), hashText(entry.BodyText)
 	f.manifest = DelegatedFirstTouchManifest{
 		SchemaVersion: DelegatedFirstTouchManifestV1, BatchID: "batch-" + uuid.NewString(), AgentID: "agent:test",
-		PolicyVersion: DelegatedFirstTouchPolicyV1, PolicyHash: DelegatedFirstTouchPolicyHashV1,
+		PolicyVersion: DelegatedFirstTouchPolicyV3, PolicyHash: DelegatedFirstTouchPolicyHashV3,
 		AuthorityReference: DelegatedFirstTouchAuthorityRef, PolicyAuthorizationID: auth.ID,
 		SourceRunID: runID, SourceSnapshotHash: snapshot, EvidenceVersion: DelegatedFirstTouchEvidenceV1,
 		ComposerVersion: ComposerVersion, TemplateVersion: DelegatedFirstTouchTemplateV1, PromptVersion: PromptVersion,

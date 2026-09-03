@@ -142,7 +142,7 @@ func cmdFirstTouchAuthorizePolicy(args []string) int {
 	actorRaw := fs.String("actor", "", "founder user UUID")
 	sender := fs.String("sender", "", "existing sender mailbox")
 	maxRate := fs.Int("max-rate-per-hour", 10, "policy cap per hour")
-	confirm := fs.String("confirm", "", "must equal CFG-FIRST-TOUCH-ROUTING-v1")
+	confirm := fs.String("confirm", "", "must equal CFG-FIRST-TOUCH-ROUTING-v3")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -152,8 +152,8 @@ func cmdFirstTouchAuthorizePolicy(args []string) int {
 		fmt.Fprintln(os.Stderr, "--org-id, --actor, and --sender are required")
 		return 2
 	}
-	if *confirm != confenge.DelegatedFirstTouchPolicyV1 {
-		fmt.Fprintln(os.Stderr, "authorization requires --confirm CFG-FIRST-TOUCH-ROUTING-v1")
+	if *confirm != confenge.DelegatedFirstTouchPolicyV3 {
+		fmt.Fprintln(os.Stderr, "authorization requires --confirm CFG-FIRST-TOUCH-ROUTING-v3")
 		return 2
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -173,7 +173,7 @@ func cmdFirstTouchAuthorizePolicy(args []string) int {
 		fmt.Fprintf(os.Stderr, "first-touch policy: %s\n", xerr.Message)
 		return 1
 	} else if active != nil {
-		if active.PromptPolicyVersion == confenge.DelegatedFirstTouchPolicyV1 && active.AuthorizedByLabel == confenge.DelegatedFirstTouchAuthority {
+		if active.PromptPolicyVersion == confenge.DelegatedFirstTouchPolicyV3 && active.AuthorizedByLabel == confenge.DelegatedFirstTouchAuthority {
 			printJSON(map[string]any{"status": "ACTIVE", "policy_authorization_id": active.ID, "policy_version": active.PromptPolicyVersion, "max_rate_per_hour": active.MaxRatePerHour})
 			return 0
 		}
@@ -182,7 +182,7 @@ func cmdFirstTouchAuthorizePolicy(args []string) int {
 	}
 	auth, xerr := svc.AuthorizeCampaignPolicy(ctx, orgID, actorID, &models.CampaignPolicyAuthorization{
 		CampaignID:               *settings.CampaignID,
-		PromptPolicyVersion:      confenge.DelegatedFirstTouchPolicyV1,
+		PromptPolicyVersion:      confenge.DelegatedFirstTouchPolicyV3,
 		ValidatorVersion:         confenge.DelegatedFirstTouchValidatorV1,
 		ContactPolicyVersion:     confenge.DelegatedFirstTouchContactPolicyV1,
 		TemplatePolicyVersion:    confenge.DelegatedFirstTouchTemplateV1,
@@ -207,7 +207,7 @@ func cmdFirstTouchApply(args []string) int {
 	orgRaw := fs.String("org-id", "", "organization UUID")
 	path := fs.String("manifest", "", "agent-authored manifest path")
 	dryRun := fs.Bool("dry-run", false, "validate without writes")
-	confirm := fs.String("confirm", "", "must equal CFG-FIRST-TOUCH-ROUTING-v1 for writes")
+	confirm := fs.String("confirm", "", "must equal CFG-FIRST-TOUCH-ROUTING-v3 for writes")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -216,8 +216,8 @@ func cmdFirstTouchApply(args []string) int {
 		fmt.Fprintln(os.Stderr, "--org-id and --manifest are required")
 		return 2
 	}
-	if !*dryRun && *confirm != confenge.DelegatedFirstTouchPolicyV1 {
-		fmt.Fprintln(os.Stderr, "writes require --confirm CFG-FIRST-TOUCH-ROUTING-v1")
+	if !*dryRun && *confirm != confenge.DelegatedFirstTouchPolicyV3 {
+		fmt.Fprintln(os.Stderr, "writes require --confirm CFG-FIRST-TOUCH-ROUTING-v3")
 		return 2
 	}
 	raw, err := os.ReadFile(*path)

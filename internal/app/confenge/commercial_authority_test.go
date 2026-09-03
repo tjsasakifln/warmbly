@@ -203,12 +203,16 @@ func TestEvaluateCommercialAuthorityMatrix(t *testing.T) {
 
 func TestRecognizeFirstTouchPolicyExact(t *testing.T) {
 	known, hold, reason := RecognizeFirstTouchPolicy(DelegatedFirstTouchPolicyV1)
-	if !known || hold || reason != "" {
-		t.Fatalf("v1: known=%v hold=%v reason=%s", known, hold, reason)
+	if !known || !hold || reason != ReasonPolicyHold {
+		t.Fatalf("v1 must be superseded: known=%v hold=%v reason=%s", known, hold, reason)
 	}
 	known, hold, reason = RecognizeFirstTouchPolicy(DelegatedFirstTouchPolicyV2)
+	if !known || !hold || reason != ReasonPolicyHold {
+		t.Fatalf("v2 must be superseded: known=%v hold=%v reason=%s", known, hold, reason)
+	}
+	known, hold, reason = RecognizeFirstTouchPolicy(DelegatedFirstTouchPolicyV3)
 	if !known || hold || reason != "" {
-		t.Fatalf("v2: known=%v hold=%v reason=%s", known, hold, reason)
+		t.Fatalf("v3: known=%v hold=%v reason=%s", known, hold, reason)
 	}
 	for _, name := range []string{"CFG-FIRST-TOUCH-ROUTING", "CFG-FIRST-TOUCH-ROUTING-v1-beta", "CFG-FIRST-TOUCH-ROUTING-v10", ""} {
 		known, hold, reason = RecognizeFirstTouchPolicy(name)

@@ -198,7 +198,7 @@ func TestDraftGenerationWorkerLeasesControlledRouteWithoutNamedPersonRollup(t *t
 	}
 	policyStore := repository.NewConfengePolicyRepository(pool)
 	auth := &models.CampaignPolicyAuthorization{
-		ID: uuid.New(), CampaignID: campaignID, PromptPolicyVersion: DelegatedFirstTouchPolicyV1,
+		ID: uuid.New(), CampaignID: campaignID, PromptPolicyVersion: DelegatedFirstTouchPolicyV3,
 		ValidatorVersion: DelegatedFirstTouchValidatorV1, ContactPolicyVersion: DelegatedFirstTouchContactPolicyV1,
 		TemplatePolicyVersion: DelegatedFirstTouchTemplateV1, SenderMailbox: "draft-worker@example.test",
 		Channel: models.OutreachChannelEmail, AllowedRiskClass: "GREEN", MaxRatePerHour: 10,
@@ -210,7 +210,7 @@ func TestDraftGenerationWorkerLeasesControlledRouteWithoutNamedPersonRollup(t *t
 	}
 	manifest := DelegatedFirstTouchManifest{
 		SchemaVersion: DelegatedFirstTouchManifestV1, BatchID: "hold-" + uuid.NewString(), AgentID: "agent:test",
-		PolicyVersion: DelegatedFirstTouchPolicyV1, PolicyHash: DelegatedFirstTouchPolicyHashV1,
+		PolicyVersion: DelegatedFirstTouchPolicyV3, PolicyHash: DelegatedFirstTouchPolicyHashV3,
 		AuthorityReference: DelegatedFirstTouchAuthorityRef, PolicyAuthorizationID: auth.ID,
 		SourceRunID: account.SourceRunID, SourceSnapshotHash: "controlled-draft-current-snapshot",
 		EvidenceVersion: DelegatedFirstTouchEvidenceV1, ComposerVersion: ComposerVersion,

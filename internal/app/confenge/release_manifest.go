@@ -166,7 +166,7 @@ func EvaluateRelease(want, got ReleaseManifest) ReleaseVerdict {
 		check(got.HumanApprovals > 0 && got.HumanApprovals == got.ReadyCount && got.ReadyCount > 0, "insufficient_human_approvals")
 	case DelegatedFirstTouchApprovalDecision:
 		check(wantSource == DelegatedFirstTouchApprovalDecision, "approval_source_drift")
-		check(got.PolicyVersion == DelegatedFirstTouchPolicyV1 && got.PolicyVersion == want.PolicyVersion, "delegated_policy_drift")
+		check(got.PolicyVersion == DelegatedFirstTouchPolicyV3 && got.PolicyVersion == want.PolicyVersion, "delegated_policy_drift")
 		check(got.DelegatedApprovals > 0 && got.DelegatedApprovals == got.ReadyCount && got.ReadyCount > 0, "insufficient_delegated_approvals")
 	default:
 		check(false, "approval_source_unknown")

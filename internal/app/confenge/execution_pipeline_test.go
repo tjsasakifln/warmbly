@@ -364,7 +364,7 @@ func TestReleaseManifestAcceptsBoundDelegatedFirstTouchAuthority(t *testing.T) {
 		Schema:                 "confenge.outreach.v1",
 		FeedHash:               "feed1",
 		CohortHash:             "coh1",
-		PolicyVersion:          DelegatedFirstTouchPolicyV1,
+		PolicyVersion:          DelegatedFirstTouchPolicyV3,
 		ComposerVersion:        ComposerVersion,
 		DoctrineVersion:        OutreachDoctrineVersion,
 		RecipientPolicyVersion: RecipientPolicyVersion,

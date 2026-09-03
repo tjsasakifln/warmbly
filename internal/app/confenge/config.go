@@ -128,7 +128,7 @@ type Config struct {
 	// GreenAutorunEnabled auto-queues GREEN messages under CAMPAIGN_POLICY_AUTHORIZATION.
 	// Default false (fail-closed). Distinct from AutoSendEnabled (legacy ambiguous).
 	GreenAutorunEnabled bool
-	// DelegatedFirstTouchEnabled allows only CFG-FIRST-TOUCH-ROUTING-v1
+	// DelegatedFirstTouchEnabled allows only CFG-FIRST-TOUCH-ROUTING-v3
 	// manifests to bind a founder-authorized campaign policy to one message.
 	DelegatedFirstTouchEnabled bool
 	// DelegatedFirstTouchAutorunEnabled continuously evaluates that narrow path.

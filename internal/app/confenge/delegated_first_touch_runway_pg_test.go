@@ -207,7 +207,7 @@ func TestDelegatedFirstTouchReadyReservoirCountsOneThousandPostgres(t *testing.T
 	prepareDelegatedRunwayCandidates(t, f, 1)
 	baseAccountID := f.manifest.Entries[0].AccountID
 	baseCandidateID := f.manifest.Entries[0].ContactCandidateID
-	baseTouchpointID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(DelegatedFirstTouchPolicyV1+"\x00touchpoint\x00"+f.orgID.String()+"\x00"+f.manifest.SourceRunID+"\x00"+baseAccountID.String()))
+	baseTouchpointID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(DelegatedFirstTouchPolicyV3+"\x00touchpoint\x00"+f.orgID.String()+"\x00"+f.manifest.SourceRunID+"\x00"+baseAccountID.String()))
 	if _, err := f.pool.Exec(f.ctx, `
 		WITH new_accounts AS (
 		  INSERT INTO outreach_accounts
@@ -483,7 +483,7 @@ func TestDelegatedFirstTouchRunwayNeverSelectsFollowupsPostgres(t *testing.T) {
 	f := newDelegatedPGFixture(t)
 	enableDelegatedRunwayFixture(t, f, 30, 50)
 	prepareDelegatedRunwayCandidates(t, f, 1)
-	baseID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(DelegatedFirstTouchPolicyV1+"\x00touchpoint\x00"+f.orgID.String()+"\x00"+f.manifest.SourceRunID+"\x00"+f.manifest.Entries[0].AccountID.String()))
+	baseID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(DelegatedFirstTouchPolicyV3+"\x00touchpoint\x00"+f.orgID.String()+"\x00"+f.manifest.SourceRunID+"\x00"+f.manifest.Entries[0].AccountID.String()))
 	base, err := f.repo.GetTouchpoint(f.ctx, f.orgID, baseID)
 	if err != nil || base == nil {
 		t.Fatalf("base first touch unavailable: %+v %v", base, err)
