@@ -426,3 +426,31 @@ func TestIntelWatchDispatcherRealSocketRefusedFenceNeverSendsData(t *testing.T) 
 		t.Fatalf("a refused fence produced %q, want TRANSIENT", outcome)
 	}
 }
+
+// The side lane's mailbox handle must actually be reachable. Without this the
+// intelWatchDB fallback would be dead code and the lane would silently resolve
+// against nil whenever the fast lane is disabled.
+func TestResolveOutboundMailboxUsesTheSideLaneHandleWhenTheFastLaneIsOff(t *testing.T) {
+	svc := &service{cfg: Config{Enabled: true}}
+	// Nothing wired at all: an error, never a usable mailbox. A false success
+	// here would let the watch lane believe it had a sender.
+	if id, err := svc.ResolveOutboundMailbox(context.Background(), uuid.New()); err == nil || id != uuid.Nil {
+		t.Fatalf("an unwired service resolved a mailbox: %s / %v", id, err)
+	}
+	// WireIntelWatch is what the backend calls when the lane is enabled. After
+	// it, resolution goes through the side-lane handle rather than failing on
+	// the fast lane's own nil pool.
+	svc.WireIntelWatch(nil)
+	if _, err := svc.ResolveOutboundMailbox(context.Background(), uuid.New()); err == nil {
+		t.Fatal("a nil side-lane pool resolved a mailbox")
+	}
+	// The resolver reads the handles per call, not at construction: a lane
+	// built before WireFastLane must still see the fast lane's pool later.
+	dispatcher := NewIntelWatchDispatcher(&stubWatchTransport{outcome: FirstTouchAccepted}, svc.ResolveOutboundMailbox)
+	t.Setenv(liveintel.EnvUnsubscribeSecret, intelWatchTestSecret)
+	outcome, err := dispatcher.DispatchWatchUpdate(context.Background(),
+		watchTestDelivery(t, func(context.Context) error { return nil }))
+	if outcome != liveintel.WatchTransient || err == nil {
+		t.Fatalf("an unresolvable mailbox produced %q / %v; the delivery must stay owed", outcome, err)
+	}
+}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -109,7 +108,7 @@ func (d *scriptedDispatcher) counts() (attempts, delivered int) {
 
 func fixtureProducer(t *testing.T, orgID uuid.UUID) *FixtureEventProducer {
 	t.Helper()
-	producer, err := NewFixtureEventProducer(filepath.Join("testdata", "intel_watch_opportunity_events.json"))
+	producer, err := NewFixtureEventProducer(ReferenceFixturePathWithin())
 	if err != nil {
 		t.Fatal(err)
 	}

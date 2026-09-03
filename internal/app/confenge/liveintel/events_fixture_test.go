@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 )
 
-func fixturePath() string { return filepath.Join("testdata", "intel_watch_opportunity_events.json") }
+func fixturePath() string { return ReferenceFixturePathWithin() }
 
 // The checked-in fixture must actually load, and must be marked synthetic so
 // nobody mistakes a rehearsal file for captured production facts.

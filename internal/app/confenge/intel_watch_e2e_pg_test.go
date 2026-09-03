@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -89,12 +88,12 @@ func newRealWatchLaneOn(t *testing.T, pool *pgxpool.Pool, orgID uuid.UUID, serve
 
 	repo := repository.NewIntelWatchRepository(pool)
 	consumer := liveintel.NewConsumer(repo, dispatcher)
-	producer, err := liveintel.NewFixtureEventProducer(
-		filepath.Join("liveintel", "testdata", "intel_watch_opportunity_events.json"))
+	// The liveintel package owns its own fixture's location; this test does
+	// not reach into another package's testdata directory.
+	producer, err := liveintel.NewReferenceFixtureProducerFromSibling(orgID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	producer.BindOrganization(orgID)
 	return &realWatchLane{
 		repo: repo, consumer: consumer, server: server, producer: producer,
 		worker: liveintel.NewWatchReclaimWorker(consumer, producer, time.Minute),

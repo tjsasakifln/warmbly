@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -97,6 +98,35 @@ func NewFixtureEventProducer(path string) (*FixtureEventProducer, error) {
 	events := append([]OpportunityEvent(nil), fixture.Events...)
 	sort.SliceStable(events, func(i, j int) bool { return events[i].EventID < events[j].EventID })
 	return &FixtureEventProducer{events: events, source: fixture.Source}, nil
+}
+
+// ReferenceFixtureName is the checked-in rehearsal event file. It lives in this
+// package's own testdata, so this package is what says where it is: a caller in
+// another package must not hard-code a path into a directory it does not own.
+const ReferenceFixtureName = "intel_watch_opportunity_events.json"
+
+// ReferenceFixturePathWithin resolves the rehearsal file from inside this
+// package's own directory.
+func ReferenceFixturePathWithin() string {
+	return filepath.Join("testdata", ReferenceFixtureName)
+}
+
+// ReferenceFixturePathFromSibling resolves the rehearsal file from a package
+// directory that sits beside this one (the confenge package, for instance).
+func ReferenceFixturePathFromSibling() string {
+	return filepath.Join("liveintel", ReferenceFixturePathWithin())
+}
+
+// NewReferenceFixtureProducerFromSibling loads the checked-in rehearsal events
+// bound to one organization, for a caller in the parent package. It exists so
+// no test outside this package hard-codes a path into a directory it does not
+// own.
+func NewReferenceFixtureProducerFromSibling(orgID uuid.UUID) (*FixtureEventProducer, error) {
+	producer, err := NewFixtureEventProducer(ReferenceFixturePathFromSibling())
+	if err != nil {
+		return nil, err
+	}
+	return producer.BindOrganization(orgID), nil
 }
 
 // NewFixtureEventProducerFromEnv builds the producer from EnvFixturePath. It
