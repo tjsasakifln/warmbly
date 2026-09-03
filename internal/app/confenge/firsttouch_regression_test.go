@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -563,5 +564,53 @@ func TestFirstTouchRegressionOnlyHardBlockSuppresses(t *testing.T) {
 		if got := (CampaignGateResult{Kind: kind}).PermanentSuppress(); got != want {
 			t.Fatalf("kind=%d PermanentSuppress=%v want %v", kind, got, want)
 		}
+	}
+}
+
+// Lane-0 volume/admission tests above stay frozen. The cases below pin first-touch
+// transport fail-closed behaviour that #204/#43 depend on.
+
+func TestFirstTouchRegressionUnknownProviderEventNeverNoResponse(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchAmbiguous, fmt.Errorf("DELIVERY_UNKNOWN: stale provider event"))
+	_, key := h.enqueue(t, "lane0-unknown@exemplo.com.br")
+	if _, err := h.svc.ProcessFastLaneOnce(context.Background()); err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	item := h.queueItem(t, key)
+	if item.Status != dispatch.QueueAttempted {
+		t.Fatalf("unknown provider event status=%q", item.Status)
+	}
+	assertNeverNoResponse(t, item.LastError, item.CancelReason)
+	if h.transport.attempts != 1 {
+		t.Fatalf("unknown event send count=%d", h.transport.attempts)
+	}
+	if progressed, err := h.svc.ProcessFastLaneOnce(context.Background()); err != nil || progressed {
+		t.Fatalf("unknown event became work again: progressed=%v err=%v", progressed, err)
+	}
+	if h.transport.attempts != 1 {
+		t.Fatalf("unknown event was resent: %d", h.transport.attempts)
+	}
+}
+
+func TestFirstTouchRegressionPolicyMismatchBlocksReadiness(t *testing.T) {
+	now := time.Date(2026, 9, 2, 15, 0, 0, 0, time.UTC)
+	snap := readyFirstWindowSnapshot(now)
+	snap.PolicyID = "CFG-FIRST-TOUCH-ROUTING-not-a-shipped-policy"
+	snap.PolicyVersion = snap.PolicyID
+	rep := EvaluateFirstWindowReadiness(snap)
+	if !strings.HasPrefix(rep.Verdict, FirstWindowBlockedPrefix) {
+		t.Fatalf("unknown policy armed the window: %s", rep.Verdict)
+	}
+	if rep.Verdict == FirstWindowGOForControlledPilot || strings.Contains(rep.Verdict, "GO_FOR_CONTROLLED_EMAIL_PILOT") {
+		t.Fatal("policy mismatch emitted GO")
+	}
+	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+	draftID, key := h.enqueue(t, "politica@exemplo.com.br")
+	h.repo.touchpoints[draftID].Subject = "Assunto que não foi o aprovado"
+	if _, err := h.svc.ProcessFastLaneOnce(context.Background()); err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if h.transport.attempts != 0 || h.queueStatus(t, key) != dispatch.QueueCancelled {
+		t.Fatalf("payload/policy hash mismatch reached provider: attempts=%d status=%s", h.transport.attempts, h.queueStatus(t, key))
 	}
 }

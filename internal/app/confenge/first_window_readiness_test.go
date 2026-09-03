@@ -281,3 +281,101 @@ func TestReadinessActiveTransportNeedsNoPauseSource(t *testing.T) {
 		t.Fatal("a paused transport with no readable source stopped failing closed")
 	}
 }
+
+func TestEvaluateFirstWindowReadinessOutboundReadbackLabels(t *testing.T) {
+	now := time.Date(2026, 8, 27, 16, 0, 0, 0, time.UTC)
+	snap := readyFirstWindowSnapshot(now)
+	snap.Queued = 421
+	snap.ReadyReservoir = 12
+	snap.SuppressionCount = 1
+	snap.DNCCount = 1
+	snap.BounceCount = 0
+	snap.ProviderMutationCount = 0
+
+	first := EvaluateFirstWindowReadiness(snap)
+	if first.Verdict != FirstWindowReadyForGOAdjudication {
+		t.Fatalf("paused complete pack: %s blockers=%v", first.Verdict, first.Blockers)
+	}
+	if !first.TransportDecisionReady || first.TransportDecisionReadyLabel != FirstWindowLabelYes {
+		t.Fatalf("TRANSPORT_DECISION_READY want true/YES got %v/%s", first.TransportDecisionReady, first.TransportDecisionReadyLabel)
+	}
+	if first.CurrentVerdict != FirstWindowCurrentVerdictNoGoSMTP || first.CurrentVerdictLabel != FirstWindowCurrentVerdictNoGoSMTP {
+		t.Fatalf("CURRENT_VERDICT=%s label=%s", first.CurrentVerdict, first.CurrentVerdictLabel)
+	}
+	if first.SMTPSent || first.SMTPSentLabel != FirstWindowLabelNo || first.ProviderMutationCount != 0 {
+		t.Fatalf("SMTP_SENT=%v/%s mutations=%d", first.SMTPSent, first.SMTPSentLabel, first.ProviderMutationCount)
+	}
+	if first.Verdict == FirstWindowGOForControlledPilot || first.CurrentVerdict == FirstWindowGOForControlledPilot {
+		t.Fatal("inferred GO_FOR_CONTROLLED_EMAIL_PILOT")
+	}
+
+	required := []string{
+		first.WarmblyReleaseSHA, first.PolicyID, first.PolicyVersion,
+		first.FeedManifestSchema, first.SourceRunID, first.SourceSnapshotHash,
+		first.MembershipHash, first.PauseState, first.PauseSource,
+		first.BusinessTimezone, first.BusinessWindowStart, first.BusinessWindowEnd,
+		first.SMTPReady, first.IMAPReplyIngestReady, first.OutcomeObservabilityReady,
+		first.CurrentVerdict, first.CurrentVerdictLabel, first.TransportDecisionReadyLabel, first.SMTPSentLabel,
+	}
+	for _, field := range required {
+		if strings.TrimSpace(field) == "" {
+			t.Fatalf("closed field empty in %+v", first)
+		}
+	}
+	if first.PolicyVersion != DelegatedFirstTouchPolicyV3 || first.PolicyID != DelegatedFirstTouchPolicyV3 {
+		t.Fatalf("policy=%s/%s", first.PolicyID, first.PolicyVersion)
+	}
+	if len(first.MailboxSet) == 0 || first.GlobalSendsPerHour <= 0 || first.MinWaitSeconds <= 0 {
+		t.Fatalf("mailbox/rate/window missing: mailboxes=%v cap=%d wait=%d", first.MailboxSet, first.GlobalSendsPerHour, first.MinWaitSeconds)
+	}
+	if !first.KillSwitchEngaged {
+		t.Fatal("paused snapshot lost kill switch")
+	}
+
+	second := EvaluateFirstWindowReadiness(snap)
+	a, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(a) != string(b) {
+		t.Fatal("evaluator is not deterministic")
+	}
+	raw := string(a)
+	if strings.Contains(raw, FirstWindowGOForControlledPilot) {
+		t.Fatalf("GO_FOR_CONTROLLED_EMAIL_PILOT in JSON: %s", raw)
+	}
+	for _, want := range []string{
+		`"transport_decision_ready":true`,
+		`"TRANSPORT_DECISION_READY":"YES"`,
+		`"current_verdict":"NO_GO_SMTP"`,
+		`"CURRENT_VERDICT":"NO_GO_SMTP"`,
+		`"smtp_sent":false`,
+		`"SMTP_SENT":"NO"`,
+		`"provider_mutation_count":0`,
+		`"policy_version":"CFG-FIRST-TOUCH-ROUTING-v3"`,
+		`"warmbly_release_sha"`,
+		`"source_snapshot_hash"`,
+		`"kill_switch_engaged":true`,
+	} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("JSON missing %s in %s", want, raw)
+		}
+	}
+
+	blocked := snap
+	blocked.WarmblyReleaseSHA = ""
+	got := EvaluateFirstWindowReadiness(blocked)
+	if got.TransportDecisionReady || got.TransportDecisionReadyLabel != FirstWindowLabelNo {
+		t.Fatalf("incomplete pack TRANSPORT_DECISION_READY=%v/%s", got.TransportDecisionReady, got.TransportDecisionReadyLabel)
+	}
+	if got.CurrentVerdict != FirstWindowCurrentVerdictNoGoSMTP {
+		t.Fatalf("blocked CURRENT_VERDICT=%s", got.CurrentVerdict)
+	}
+	if strings.Contains(string(mustJSON(got)), FirstWindowGOForControlledPilot) {
+		t.Fatal("blocked JSON inferred GO")
+	}
+}

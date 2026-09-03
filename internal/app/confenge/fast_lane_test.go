@@ -19,24 +19,44 @@ import (
 // silently returning a zero value.
 type fastLaneRepo struct {
 	repository.OutreachRepository
-	touchpoints map[uuid.UUID]*models.OutreachTouchpoint
-	accounts    map[uuid.UUID]*models.OutreachAccount
-	candidates  map[uuid.UUID]*models.OutreachContactCandidate
-	accepted    map[uuid.UUID]bool
-	acceptedErr error
-	committed   map[string]bool
-	suppressed  map[string]*models.SuppressedRecipient
-	suppressErr error
-	updates     int
-	updateErr   error
+	touchpoints      map[uuid.UUID]*models.OutreachTouchpoint
+	accounts         map[uuid.UUID]*models.OutreachAccount
+	candidates       map[uuid.UUID]*models.OutreachContactCandidate
+	accepted         map[uuid.UUID]bool
+	acceptedErr      error
+	committed        map[string]bool
+	suppressed       map[string]*models.SuppressedRecipient
+	suppressErr      error
+	updates          int
+	updateErr        error
+	onTouchpointRead func(*models.OutreachTouchpoint)
+	touchpointGets   int
+	onTouchpointGet  func(int, *models.OutreachTouchpoint)
+	accountGets      int
+	onAccountGet     func(int, *models.OutreachAccount)
+	suppressionGets  int
+	onSuppressionGet func(int)
 }
 
 func (f *fastLaneRepo) GetTouchpointByDraft(_ context.Context, _ uuid.UUID, draftID uuid.UUID) (*models.OutreachTouchpoint, error) {
-	return f.touchpoints[draftID], nil
+	tp := f.touchpoints[draftID]
+	f.touchpointGets++
+	if f.onTouchpointRead != nil {
+		f.onTouchpointRead(tp)
+	}
+	if f.onTouchpointGet != nil {
+		f.onTouchpointGet(f.touchpointGets, tp)
+	}
+	return tp, nil
 }
 
 func (f *fastLaneRepo) GetAccount(_ context.Context, _ uuid.UUID, accountID uuid.UUID) (*models.OutreachAccount, error) {
-	return f.accounts[accountID], nil
+	account := f.accounts[accountID]
+	f.accountGets++
+	if f.onAccountGet != nil {
+		f.onAccountGet(f.accountGets, account)
+	}
+	return account, nil
 }
 
 func (f *fastLaneRepo) GetCandidate(_ context.Context, _ uuid.UUID, candidateID uuid.UUID) (*models.OutreachContactCandidate, error) {
@@ -60,15 +80,39 @@ func (f *fastLaneRepo) UpdateTouchpoint(_ context.Context, tp *models.OutreachTo
 	return nil
 }
 
-func (f *fastLaneRepo) ListTouchpoints(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ string, _ int, _ int) ([]models.OutreachTouchpoint, error) {
-	return nil, nil
+func (f *fastLaneRepo) ListTouchpoints(_ context.Context, _ uuid.UUID, accountID uuid.UUID, state string, limit, offset int) ([]models.OutreachTouchpoint, error) {
+	var out []models.OutreachTouchpoint
+	for _, tp := range f.touchpoints {
+		if tp == nil || tp.AccountID != accountID {
+			continue
+		}
+		if state != "" && tp.State != state {
+			continue
+		}
+		out = append(out, *tp)
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(out) {
+		return nil, nil
+	}
+	out = out[offset:]
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func (f *fastLaneRepo) GetOutreachRecipientSuppression(_ context.Context, _ uuid.UUID, recipient string) (*models.SuppressedRecipient, error) {
+	f.suppressionGets++
+	if f.onSuppressionGet != nil {
+		f.onSuppressionGet(f.suppressionGets)
+	}
 	if f.suppressErr != nil {
 		return nil, f.suppressErr
 	}
-	return f.suppressed[recipient], nil
+	return f.suppressed[strings.ToLower(strings.TrimSpace(recipient))], nil
 }
 
 func (f *fastLaneRepo) UpsertOutreachRecipientSuppression(_ context.Context, value *models.SuppressedRecipient) error {
@@ -83,22 +127,39 @@ func (f *fastLaneRepo) UpsertOutreachRecipientSuppression(_ context.Context, val
 // scriptedTransport returns a fixed outcome and counts real send attempts, so a
 // test can prove a message was never handed to a provider twice.
 type scriptedTransport struct {
-	outcome  FirstTouchOutcome
-	err      error
-	attempts int
-	sentTo   []string
-	deadline time.Time
+	outcome        FirstTouchOutcome
+	err            error
+	attempts       int
+	sentTo         []string
+	deadline       time.Time
+	handoffCalls   int
+	lastHandoffErr error
+}
+
+func firstTouchOutcomeKnown(outcome FirstTouchOutcome) bool {
+	switch outcome {
+	case FirstTouchAccepted, FirstTouchPermanent, FirstTouchTransient, FirstTouchAmbiguous:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *scriptedTransport) SendFirstTouch(ctx context.Context, msg FirstTouchMessage) (FirstTouchAcceptance, FirstTouchOutcome, error) {
 	if deadline, ok := ctx.Deadline(); ok {
 		s.deadline = deadline
 	}
-	if s.outcome == FirstTouchAccepted || s.outcome == FirstTouchAmbiguous {
+	// Accepted, ambiguous, and unrecognized answers are post-RCPT realities: the
+	// shipped BeforeHandoff fence must run. Permanent/transient failures can
+	// happen before DATA, so those still skip the hook.
+	needsHandoff := s.outcome == FirstTouchAccepted || s.outcome == FirstTouchAmbiguous || !firstTouchOutcomeKnown(s.outcome)
+	if needsHandoff {
 		if msg.BeforeHandoff == nil {
 			return FirstTouchAcceptance{}, FirstTouchTransient, errors.New("missing handoff hook")
 		}
+		s.handoffCalls++
 		if err := msg.BeforeHandoff(context.Background()); err != nil {
+			s.lastHandoffErr = err
 			return FirstTouchAcceptance{}, FirstTouchTransient, err
 		}
 	}
@@ -245,6 +306,33 @@ func (h *fastLaneHarness) queueStatus(t *testing.T, key string) string {
 		t.Fatalf("queue row %s missing: %v", key, err)
 	}
 	return item.Status
+}
+
+func (h *fastLaneHarness) queueLastError(t *testing.T, key string) string {
+	t.Helper()
+	item, err := h.store.GetQueueByKey(context.Background(), key)
+	if err != nil || item == nil {
+		t.Fatalf("queue row %s missing: %v", key, err)
+	}
+	return item.LastError
+}
+
+func (h *fastLaneHarness) assertNoSend(t *testing.T, key, wantStatus, wantReason string) {
+	t.Helper()
+	if h.transport.attempts != 0 {
+		t.Fatalf("provider was called %d times", h.transport.attempts)
+	}
+	if _, sent, _ := h.store.GetSendByKey(context.Background(), key); sent {
+		t.Fatal("ledger recorded a send that must not have left")
+	}
+	if got := h.queueStatus(t, key); got != wantStatus {
+		t.Fatalf("queue status=%q want %q", got, wantStatus)
+	}
+	if wantReason != "" {
+		if got := h.queueLastError(t, key); got != wantReason {
+			t.Fatalf("queue reason=%q want %q", got, wantReason)
+		}
+	}
 }
 
 // A provider-accepted first touch is recorded exactly once, the queue row goes
@@ -671,6 +759,367 @@ func TestFastLaneFailedRowCannotBeReenqueued(t *testing.T) {
 	}
 }
 
+// A follow-up that reached the first-touch queue is cancelled before SMTP.
+func TestFastLaneFollowUpPurposeOrdinalNotAuthorized(t *testing.T) {
+	tests := []struct {
+		name    string
+		purpose string
+		ordinal int
+	}{
+		{"follow_up_purpose", models.TouchpointPurposeFollowUp, 1},
+		{"ordinal_two", models.TouchpointPurposeInitial, 2},
+		{"follow_up_ordinal_two", models.TouchpointPurposeFollowUp, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+			draftID, key := h.enqueue(t, "followup@exemplo.com.br")
+			tp := h.repo.touchpoints[draftID]
+			tp.Purpose = tt.purpose
+			tp.Ordinal = tt.ordinal
+			tp.ContentHash = TouchpointBindingHash(tp)
+			tp.ApprovedContentHash = tp.ContentHash
+
+			progressed, err := h.svc.ProcessFastLaneOnce(context.Background())
+			if err != nil || !progressed {
+				t.Fatalf("follow-up row was not closed: progressed=%v err=%v", progressed, err)
+			}
+			h.assertNoSend(t, key, dispatch.QueueCancelled, FastLaneFollowUpNotAuthorized)
+		})
+	}
+}
+
+// Unsubscribe suppression is a first-class stop, not a DNC-flag-only check.
+func TestFastLaneOptOutSuppressionBlocks(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+	_, key := h.enqueue(t, "optout@exemplo.com.br")
+	h.repo.suppressed["optout@exemplo.com.br"] = &models.SuppressedRecipient{
+		OrganizationID: h.orgID, Email: "optout@exemplo.com.br",
+		Source: models.DeliverabilityEventUnsubscribe, Reason: "one-click unsubscribe",
+	}
+
+	progressed, err := h.svc.ProcessFastLaneOnce(context.Background())
+	if err != nil || !progressed {
+		t.Fatalf("opt-out row was not closed: progressed=%v err=%v", progressed, err)
+	}
+	h.assertNoSend(t, key, dispatch.QueueCancelled, FastLaneRecipientOptOut)
+}
+
+// A complaint is its own stop. It must not be classified as a bounce.
+func TestFastLaneComplaintSuppressionBlocks(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+	_, key := h.enqueue(t, "complaint@exemplo.com.br")
+	h.repo.suppressed["complaint@exemplo.com.br"] = &models.SuppressedRecipient{
+		OrganizationID: h.orgID, Email: "complaint@exemplo.com.br",
+		Source: models.DeliverabilityEventComplaint, Reason: "spam complaint",
+	}
+
+	progressed, err := h.svc.ProcessFastLaneOnce(context.Background())
+	if err != nil || !progressed {
+		t.Fatalf("complaint row was not closed: progressed=%v err=%v", progressed, err)
+	}
+	h.assertNoSend(t, key, dispatch.QueueCancelled, FastLaneRecipientComplaint)
+	if suppression := h.repo.suppressed["complaint@exemplo.com.br"]; suppression == nil || suppression.Source != models.DeliverabilityEventComplaint {
+		t.Fatalf("complaint was reclassified: %+v", suppression)
+	}
+	if strings.Contains(h.queueLastError(t, key), string(models.DeliverabilityEventBounce)) {
+		t.Fatalf("complaint reason mentioned bounce: %q", h.queueLastError(t, key))
+	}
+}
+
+// A replied account cannot be handed a new first touch.
+func TestFastLaneRepliedQueueStateBlocks(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+	draftID, key := h.enqueue(t, "replied@exemplo.com.br")
+	h.repo.accounts[h.repo.touchpoints[draftID].AccountID].QueueState = models.OutreachQueueReplied
+
+	progressed, err := h.svc.ProcessFastLaneOnce(context.Background())
+	if err != nil || !progressed {
+		t.Fatalf("replied row was not closed: progressed=%v err=%v", progressed, err)
+	}
+	h.assertNoSend(t, key, dispatch.QueueCancelled, "account_terminal:"+models.OutreachQueueReplied)
+}
+
+// A reply already recorded on the account blocks even if queue_state has not
+// been projected yet.
+func TestFastLaneRecordedReplyBlocks(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+	draftID, key := h.enqueue(t, "replied@exemplo.com.br")
+	tp := h.repo.touchpoints[draftID]
+	replyDraft := uuid.New()
+	reply := *tp
+	reply.ID = uuid.New()
+	reply.DraftID = &replyDraft
+	reply.State = models.TouchpointReplied
+	h.repo.touchpoints[replyDraft] = &reply
+
+	progressed, err := h.svc.ProcessFastLaneOnce(context.Background())
+	if err != nil || !progressed {
+		t.Fatalf("recorded-reply row was not closed: progressed=%v err=%v", progressed, err)
+	}
+	h.assertNoSend(t, key, dispatch.QueueCancelled, FastLaneAccountReplied)
+}
+
+// An unrecognized provider outcome parks as unknown/ambiguous and is never retried.
+func TestFastLaneUnrecognizedOutcomeParksAttempted(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchOutcome("provider-gobbledygook"), errors.New("unclassified smtp reply"))
+	_, key := h.enqueue(t, "alvo@exemplo.com.br")
+
+	if _, err := h.svc.ProcessFastLaneOnce(context.Background()); err != nil {
+		t.Fatalf("unknown pass: %v", err)
+	}
+	if got := h.queueStatus(t, key); got != dispatch.QueueAttempted {
+		t.Fatalf("unrecognized outcome should park as 'attempted', got %q", got)
+	}
+	if _, sent, _ := h.store.GetSendByKey(context.Background(), key); sent {
+		t.Fatal("unrecognized outcome was recorded as an accepted send")
+	}
+	for i := 0; i < 3; i++ {
+		_, _ = h.svc.ProcessFastLaneOnce(context.Background())
+	}
+	if h.transport.attempts != 1 {
+		t.Fatalf("unrecognized outcome was resent: %d provider attempts", h.transport.attempts)
+	}
+	if strings.Contains(strings.ToLower(h.queueLastError(t, key)), "no_response") {
+		t.Fatalf("unrecognized outcome was classified as NO_RESPONSE: %q", h.queueLastError(t, key))
+	}
+}
+
+// A pause that arrives after capacity reservation still prevents the send.
+func TestFastLanePauseAfterReservationDoesNotSend(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+	_, key := h.enqueue(t, "alvo@exemplo.com.br")
+	reads := 0
+	h.repo.onTouchpointRead = func(*models.OutreachTouchpoint) {
+		reads++
+		if reads == 2 {
+			if err := h.svc.governor.Pause(context.Background(), "ops_hold", nil); err != nil {
+				t.Fatalf("pause: %v", err)
+			}
+		}
+	}
+
+	progressed, err := h.svc.ProcessFastLaneOnce(context.Background())
+	if err != nil || !progressed {
+		t.Fatalf("paused row was not closed: progressed=%v err=%v", progressed, err)
+	}
+	if reads < 2 {
+		t.Fatal("pause hook never ran after reservation")
+	}
+	h.assertNoSend(t, key, dispatch.QueueQueued, "transport_blocked_after_reservation")
+}
+
+// A stop that appears after claim still refuses SMTP DATA.
+func TestFastLaneStopBetweenQueueAndProviderRefusesData(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+	_, key := h.enqueue(t, "alvo@exemplo.com.br")
+	reads := 0
+	h.repo.onTouchpointRead = func(tp *models.OutreachTouchpoint) {
+		reads++
+		if reads >= 3 && tp != nil {
+			h.repo.suppressed[tp.Recipient] = &models.SuppressedRecipient{
+				OrganizationID: h.orgID, Email: tp.Recipient,
+				Source: models.DeliverabilityEventUnsubscribe, Reason: "opt-out after claim",
+			}
+		}
+	}
+
+	progressed, err := h.svc.ProcessFastLaneOnce(context.Background())
+	if err != nil || !progressed {
+		t.Fatalf("late-stop row was not closed: progressed=%v err=%v", progressed, err)
+	}
+	if reads < 3 {
+		t.Fatal("BeforeHandoff never re-read the touchpoint")
+	}
+	h.assertNoSend(t, key, dispatch.QueueCancelled, FastLaneRecipientOptOut)
+}
+
+func TestFastLaneStopBetweenClaimAndProviderRefusesBeforeHandoff(t *testing.T) {
+	for _, stop := range []string{"suppression", "dnc"} {
+		t.Run(stop, func(t *testing.T) {
+			h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+			recipient := "alvo@exemplo.com.br"
+			draftID, key := h.enqueue(t, recipient)
+			accountID := h.repo.touchpoints[draftID].AccountID
+			switch stop {
+			case "suppression":
+				h.repo.onSuppressionGet = func(n int) {
+					if n >= 3 {
+						h.repo.suppressed[recipient] = &models.SuppressedRecipient{
+							OrganizationID: h.orgID, Email: recipient,
+							Source: models.DeliverabilityEventUnsubscribe,
+						}
+					}
+				}
+			case "dnc":
+				h.repo.onAccountGet = func(n int, account *models.OutreachAccount) {
+					if n >= 3 && account != nil {
+						account.DoNotContact = true
+						h.repo.accounts[accountID] = account
+					}
+				}
+			}
+			if _, err := h.svc.ProcessFastLaneOnce(context.Background()); err != nil {
+				t.Fatalf("process: %v", err)
+			}
+			if h.transport.handoffCalls == 0 {
+				t.Fatal("BeforeHandoff was never invoked after a successful claim")
+			}
+			if h.transport.lastHandoffErr == nil {
+				t.Fatal("BeforeHandoff did not refuse a stop that arrived after claim")
+			}
+			if h.transport.attempts != 0 {
+				t.Fatalf("provider DATA ran %d times after a live stop", h.transport.attempts)
+			}
+			if h.sendRecorded(t, key) {
+				t.Fatal("a refused handoff was recorded as a send")
+			}
+			res := h.reservation(t, key)
+			if res != nil && res.AttemptedAt != nil {
+				t.Fatalf("StartHandoff ran after a live stop: %+v", res)
+			}
+		})
+	}
+}
+
+func TestFastLaneApprovedPayloadNoLongerMatchesBindingHash(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+	draftID, key := h.enqueue(t, "alvo@exemplo.com.br")
+	tp := h.repo.touchpoints[draftID]
+	tp.BodyText = "Corpo que ninguem aprovou."
+	if _, err := h.svc.ProcessFastLaneOnce(context.Background()); err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if h.transport.attempts != 0 || h.queueStatus(t, key) != dispatch.QueueCancelled {
+		t.Fatalf("mutated payload reached provider: attempts=%d status=%s", h.transport.attempts, h.queueStatus(t, key))
+	}
+	if h.sendRecorded(t, key) {
+		t.Fatal("mutated payload was recorded as a send")
+	}
+}
+
+func TestFastLaneDuplicateInitialTouchCancelsBeforeProvider(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+	draftID, firstKey := h.enqueue(t, "alvo@exemplo.com.br")
+	accountID := h.repo.touchpoints[draftID].AccountID
+	if _, err := h.svc.ProcessFastLaneOnce(context.Background()); err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+	if h.transport.attempts != 1 {
+		t.Fatalf("first initial did not send once: %d", h.transport.attempts)
+	}
+	secondDraft, secondKey := h.enqueue(t, "alvo@exemplo.com.br")
+	h.repo.touchpoints[secondDraft].AccountID = accountID
+	h.repo.accepted[accountID] = true
+
+	progressed, err := h.svc.ProcessFastLaneOnce(context.Background())
+	if err != nil || !progressed {
+		t.Fatalf("duplicate initial was not closed: progressed=%v err=%v", progressed, err)
+	}
+	if h.transport.attempts != 1 {
+		t.Fatalf("duplicate initial reached provider: attempts=%d", h.transport.attempts)
+	}
+	if got := h.queueStatus(t, secondKey); got != dispatch.QueueCancelled {
+		t.Fatalf("duplicate initial status=%q", got)
+	}
+	if h.sendRecorded(t, secondKey) {
+		t.Fatal("duplicate initial was recorded as a send")
+	}
+	if got := h.queueStatus(t, firstKey); got != dispatch.QueueSent {
+		t.Fatalf("first initial lost terminal state: %s", got)
+	}
+}
+
+func TestFastLaneUnknownProviderEventNeverBecomesNoResponse(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchAmbiguous, errors.New("DELIVERY_UNKNOWN: stale provider event"))
+	_, key := h.enqueue(t, "alvo@exemplo.com.br")
+	if _, err := h.svc.ProcessFastLaneOnce(context.Background()); err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	item := h.queueItem(t, key)
+	if item.Status != dispatch.QueueAttempted {
+		t.Fatalf("unknown provider event status=%q want attempted", item.Status)
+	}
+	assertNeverNoResponse(t, item.LastError, item.CancelReason, string(h.transport.outcome))
+	if h.transport.attempts != 1 {
+		t.Fatalf("unknown event send count=%d", h.transport.attempts)
+	}
+	h.clock.Advance(dispatch.DefaultLeaseTTL + time.Second)
+	_, _ = h.store.ExpireStaleReservations(context.Background(), h.clock.Now())
+	mailbox := h.mailbox
+	_ = h.store.Enqueue(context.Background(), &dispatch.QueueItem{
+		OrganizationID: h.orgID, EmailAccountID: &mailbox, Channel: dispatch.ChannelEmail,
+		DraftID: item.DraftID, MessageKey: key, RecipientRef: "alvo@exemplo.com.br", DueAt: h.clock.Now(),
+	})
+	progressed, err := h.svc.ProcessFastLaneOnce(context.Background())
+	if err != nil || progressed || h.transport.attempts != 1 {
+		t.Fatalf("unknown event was retried: progressed=%v attempts=%d err=%v", progressed, h.transport.attempts, err)
+	}
+	assertNeverNoResponse(t, h.queueItem(t, key).LastError)
+}
+
+func TestFastLaneUnrecognizedOutcomeParksAndDoesNotRetry(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchOutcome("UNKNOWN"), errors.New("provider returned UNKNOWN"))
+	draftID, key := h.enqueue(t, "alvo@exemplo.com.br")
+	if _, err := h.svc.ProcessFastLaneOnce(context.Background()); err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	item := h.queueItem(t, key)
+	if item.Status != dispatch.QueueAttempted {
+		t.Fatalf("unrecognized outcome status=%q want attempted", item.Status)
+	}
+	assertNeverNoResponse(t, item.LastError, item.CancelReason)
+	if h.transport.attempts != 1 {
+		t.Fatalf("unrecognized outcome send count=%d", h.transport.attempts)
+	}
+	h.clock.Advance(dispatch.DefaultLeaseTTL + time.Second)
+	if expired, err := h.store.ExpireStaleReservations(context.Background(), h.clock.Now()); err != nil || expired != 0 {
+		t.Fatalf("parked unrecognized outcome released its fence: expired=%d err=%v", expired, err)
+	}
+	mailbox := h.mailbox
+	_ = h.store.Enqueue(context.Background(), &dispatch.QueueItem{
+		OrganizationID: h.orgID, EmailAccountID: &mailbox, Channel: dispatch.ChannelEmail,
+		DraftID: draftID, MessageKey: key, RecipientRef: "alvo@exemplo.com.br", DueAt: h.clock.Now(),
+	})
+	progressed, err := h.svc.ProcessFastLaneOnce(context.Background())
+	if err != nil || progressed || h.transport.attempts != 1 {
+		t.Fatalf("unrecognized outcome was retried: progressed=%v attempts=%d err=%v", progressed, h.transport.attempts, err)
+	}
+	if h.queueStatus(t, key) == dispatch.QueueQueued {
+		t.Fatal("unrecognized outcome became claimable again")
+	}
+}
+
+func TestFastLaneStopsBeatRetryAfterTransient(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchTransient, errors.New("SERVER_UNREACHABLE: dial timeout"))
+	recipient := "alvo@exemplo.com.br"
+	_, key := h.enqueue(t, recipient)
+	if _, err := h.svc.ProcessFastLaneOnce(context.Background()); err != nil {
+		t.Fatalf("transient: %v", err)
+	}
+	if h.transport.attempts != 1 || h.queueStatus(t, key) != dispatch.QueueQueued {
+		t.Fatalf("transient did not requeue: attempts=%d status=%s", h.transport.attempts, h.queueStatus(t, key))
+	}
+	h.clock.Advance(6 * time.Minute)
+	h.repo.suppressed[recipient] = &models.SuppressedRecipient{
+		OrganizationID: h.orgID, Email: recipient, Source: models.DeliverabilityEventComplaint,
+	}
+	h.transport.outcome = FirstTouchAccepted
+	h.transport.err = nil
+	if _, err := h.svc.ProcessFastLaneOnce(context.Background()); err != nil {
+		t.Fatalf("stop pass: %v", err)
+	}
+	if h.transport.attempts != 1 {
+		t.Fatalf("a DNC/suppression after a transient resent: attempts=%d", h.transport.attempts)
+	}
+	if got := h.queueStatus(t, key); got != dispatch.QueueCancelled {
+		t.Fatalf("stop after transient status=%q want cancelled", got)
+	}
+	if h.sendRecorded(t, key) {
+		t.Fatal("suppressed retry was recorded as a send")
+	}
+}
+
 // Helpers.
 
 func (h *fastLaneHarness) mustQueueID(t *testing.T, key string) uuid.UUID {
@@ -690,5 +1139,45 @@ func (h *fastLaneHarness) forceQueued(t *testing.T, key string) {
 	}
 	if err := h.store.UpdateQueueStatus(context.Background(), item.ID, dispatch.QueueQueued, ""); err != nil {
 		t.Fatalf("force queued: %v", err)
+	}
+}
+
+func (h *fastLaneHarness) queueItem(t *testing.T, key string) *dispatch.QueueItem {
+	t.Helper()
+	item, err := h.store.GetQueueByKey(context.Background(), key)
+	if err != nil || item == nil {
+		t.Fatalf("queue row %s missing: %v", key, err)
+	}
+	return item
+}
+
+func (h *fastLaneHarness) reservation(t *testing.T, key string) *dispatch.Reservation {
+	t.Helper()
+	res, err := h.store.GetReservationByKey(context.Background(), key)
+	if err != nil {
+		t.Fatalf("reservation %s: %v", key, err)
+	}
+	return res
+}
+
+func (h *fastLaneHarness) sendRecorded(t *testing.T, key string) bool {
+	t.Helper()
+	_, sent, err := h.store.GetSendByKey(context.Background(), key)
+	if err != nil {
+		t.Fatalf("send lookup %s: %v", key, err)
+	}
+	return sent
+}
+
+func assertNeverNoResponse(t *testing.T, parts ...string) {
+	t.Helper()
+	joined := strings.ToUpper(strings.Join(parts, "\n"))
+	for _, banned := range []string{models.OutcomeNoResponse, OutcomeNoResponse, "NO_RESPONSE"} {
+		if banned == "" {
+			continue
+		}
+		if strings.Contains(joined, strings.ToUpper(banned)) {
+			t.Fatalf("unknown/ambiguous provider result was stored as %s: %q", banned, joined)
+		}
 	}
 }

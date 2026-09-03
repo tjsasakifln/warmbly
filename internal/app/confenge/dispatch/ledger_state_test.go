@@ -68,6 +68,80 @@ func TestReEnqueueNeverRevivesAnAttemptedMessage(t *testing.T) {
 	}
 }
 
+func TestHandoffStartedLeaseExpiryDoesNotRequeue(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	clock := &FixedClock{T: time.Date(2026, 9, 2, 15, 0, 0, 0, time.UTC)}
+	cfg := DefaultConfig()
+	cfg.SendsPerHour = 100
+	cfg.MinGap = 0
+	cfg.RateMode = "fixed"
+	cfg.WindowStart, cfg.WindowEnd, cfg.Timezone = "00:00", "23:59", "UTC"
+	cfg.BusinessDaysOnly = false
+	gov := NewGovernor(cfg, store, clock)
+	orgID := uuid.New()
+	mailbox := uuid.New()
+	store.SetMailboxEnvelope(MailboxEnvelope{
+		EmailAccountID: mailbox, OrganizationID: orgID, Ready: true,
+		DailyCap: 50, MinGap: 0, HourlyCap: 100, Timezone: "UTC",
+	})
+	draftID := uuid.New()
+	key := MessageKeyEmail(draftID)
+	item := &QueueItem{
+		ID: uuid.New(), OrganizationID: orgID, EmailAccountID: &mailbox,
+		Channel: ChannelEmail, DraftID: draftID, MessageKey: key,
+		RecipientRef: "alvo@exemplo.com.br", DueAt: clock.Now().Add(-time.Minute),
+		Status: QueueQueued, CreatedAt: clock.Now(),
+	}
+	if err := store.Enqueue(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := gov.ClaimNextQueued(ctx)
+	if err != nil || claimed == nil {
+		t.Fatalf("claim: item=%+v err=%v", claimed, err)
+	}
+	res, err := gov.TryReserve(ctx, ReserveRequest{
+		OrganizationID: orgID, EmailAccountID: &mailbox,
+		Channel: ChannelEmail, MessageKey: key, DraftID: &draftID,
+	})
+	if err != nil || !res.Allowed || res.Reservation == nil {
+		t.Fatalf("reserve: %+v err=%v", res, err)
+	}
+	if err := gov.StartHandoff(ctx, res.Reservation.ID, claimed.ID); err != nil {
+		t.Fatalf("start handoff: %v", err)
+	}
+	clock.Advance(DefaultLeaseTTL + time.Second)
+	expired, err := store.ExpireStaleReservations(ctx, clock.Now())
+	if err != nil || expired != 0 {
+		t.Fatalf("handoff reservation expired: count=%d err=%v", expired, err)
+	}
+	if err := store.Enqueue(ctx, &QueueItem{
+		OrganizationID: orgID, EmailAccountID: &mailbox, Channel: ChannelEmail,
+		DraftID: draftID, MessageKey: key, RecipientRef: "alvo@exemplo.com.br",
+		DueAt: clock.Now(),
+	}); err != nil {
+		t.Fatalf("re-enqueue: %v", err)
+	}
+	again, err := gov.ClaimNextQueued(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != nil {
+		t.Fatalf("a handoff-started row became claimable after lease expiry: %+v", again)
+	}
+	got, err := store.GetQueueByKey(ctx, key)
+	if err != nil || got == nil {
+		t.Fatalf("queue row missing: %v", err)
+	}
+	if got.Status != QueueAttempted {
+		t.Fatalf("handoff row status=%q want attempted", got.Status)
+	}
+	reservation, err := store.GetReservationByKey(ctx, key)
+	if err != nil || reservation == nil || reservation.AttemptedAt == nil {
+		t.Fatalf("handoff fence missing: %+v err=%v", reservation, err)
+	}
+}
+
 func TestListQueueByStatusOnlyReturnsTheRequestedState(t *testing.T) {
 	store := NewMemoryStore()
 	ctx := context.Background()

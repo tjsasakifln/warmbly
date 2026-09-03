@@ -41,6 +41,15 @@ const (
 	FirstTouchAmbiguous FirstTouchOutcome = "ambiguous"
 )
 
+// Named first-touch stop reasons. Matching rows are cancelled and never handed
+// to the provider; a retry is not a second chance to send.
+const (
+	FastLaneFollowUpNotAuthorized = "FOLLOW_UP_NOT_AUTHORIZED"
+	FastLaneRecipientOptOut       = "recipient_opt_out"
+	FastLaneRecipientComplaint    = "recipient_complaint"
+	FastLaneAccountReplied        = "account_already_replied"
+)
+
 // FirstTouchMessage is the exact approved payload handed to the provider.
 type FirstTouchMessage struct {
 	OrganizationID uuid.UUID
@@ -343,15 +352,15 @@ func (s *service) ProcessFastLaneOnce(ctx context.Context) (bool, error) {
 		return true, nil
 
 	case FirstTouchAmbiguous:
-		// We do not know what happened. Releasing the reservation would let the
-		// row be claimed again, so it stays parked for human/reconciler review.
-		log.Warn().Str("message_key", item.MessageKey).Err(sendErr).
-			Msg("confenge fast lane got an ambiguous provider result; not resending")
-		_, _ = s.governor.FinalizeHandoff(ctx, res.Reservation.ID, "ambiguous_provider_result: "+errText(sendErr))
-		_ = s.governor.MarkQueue(ctx, item.ID, dispatch.QueueAttempted, "ambiguous_provider_result: "+errText(sendErr))
-		return true, nil
+		return s.fastLaneParkUnknown(ctx, item, res.Reservation.ID, sendErr, "ambiguous_provider_result")
 
-	default: // FirstTouchTransient
+	case FirstTouchTransient:
+		// A stop that arrived around MAIL/RCPT/DATA (DNC, suppression, opt-out,
+		// complaint, reply, pause) still wins. Retrying would send after the
+		// recipient asked us to stop.
+		if s.fastLaneStopsAfterAttempt(ctx, item, res.Reservation.ID) {
+			return true, nil
+		}
 		if finalized, finalizeErr := s.governor.FinalizeHandoff(ctx, res.Reservation.ID, "transient_after_handoff: "+errText(sendErr)); finalizeErr != nil {
 			return true, finalizeErr
 		} else if finalized {
@@ -365,6 +374,11 @@ func (s *service) ProcessFastLaneOnce(ctx context.Context) (bool, error) {
 		}
 		_ = s.governor.RetryQueue(ctx, item.ID, s.fastLaneBackoff(item), errText(sendErr))
 		return true, nil
+
+	default:
+		// An unrecognized provider answer is not proof the mail stayed home.
+		// Park it the same way as ambiguous: never retry, never NO_RESPONSE.
+		return s.fastLaneParkUnknown(ctx, item, res.Reservation.ID, sendErr, "unknown_provider_result")
 	}
 }
 
@@ -383,6 +397,46 @@ func errText(err error) string {
 	return err.Error()
 }
 
+// fastLaneParkUnknown parks a row whose provider result cannot be classified.
+// The message may already be in flight, so it is never made sendable again.
+func (s *service) fastLaneParkUnknown(ctx context.Context, item *dispatch.QueueItem, reservationID uuid.UUID, sendErr error, reasonPrefix string) (bool, error) {
+	reason := reasonPrefix + ": " + errText(sendErr)
+	log.Warn().Str("message_key", item.MessageKey).Err(sendErr).
+		Msg("confenge fast lane got an unknown provider result; not resending")
+	_, _ = s.governor.FinalizeHandoff(ctx, reservationID, reason)
+	_ = s.governor.MarkQueue(ctx, item.ID, dispatch.QueueAttempted, reason)
+	return true, nil
+}
+
+// fastLaneStopsAfterAttempt re-checks live stops after a provider attempt that
+// did not accept. A newly arrived stop cancels (or defers, for pause) instead
+// of retrying.
+func (s *service) fastLaneStopsAfterAttempt(ctx context.Context, item *dispatch.QueueItem, reservationID uuid.UUID) bool {
+	if transport := s.ResolveTransportState(ctx, nil); !transport.Active {
+		reason := "transport_blocked_after_reservation"
+		_ = s.governor.Release(ctx, reservationID, reason)
+		_ = s.governor.DeferQueue(ctx, item.ID, s.now().Add(fastLaneDeferFallback), reason)
+		return true
+	}
+	liveTP, err := s.repo.GetTouchpointByDraft(ctx, item.OrganizationID, item.DraftID)
+	if err != nil || liveTP == nil {
+		reason := "touchpoint_safety_recheck_failed"
+		_ = s.governor.Release(ctx, reservationID, reason)
+		_ = s.governor.DeferQueue(ctx, item.ID, s.fastLaneBackoff(item), reason)
+		return true
+	}
+	if reason, ok, retryable := s.fastLaneBlock(ctx, item, liveTP); !ok {
+		_ = s.governor.Release(ctx, reservationID, reason)
+		if retryable {
+			_ = s.governor.DeferQueue(ctx, item.ID, s.fastLaneBackoff(item), reason)
+		} else {
+			_ = s.governor.MarkQueue(ctx, item.ID, dispatch.QueueCancelled, reason)
+		}
+		return true
+	}
+	return false
+}
+
 // fastLaneBackoff spaces transient retries without ever scheduling outside the
 // business window; the window gate re-checks on the next claim regardless.
 func (s *service) fastLaneBackoff(item *dispatch.QueueItem) time.Time {
@@ -399,6 +453,12 @@ func (s *service) fastLaneBackoff(item *dispatch.QueueItem) time.Time {
 // fastLaneBlock holds the gates that protect a recipient or a mailbox. It
 // returns false with a reason when the row must not be sent at all.
 func (s *service) fastLaneBlock(ctx context.Context, item *dispatch.QueueItem, tp *models.OutreachTouchpoint) (string, bool, bool) {
+	// The fast lane is first-touch only. A follow-up that reached this queue is
+	// never handed to the provider, even if every other gate would allow it.
+	purpose := strings.ToUpper(strings.TrimSpace(tp.Purpose))
+	if purpose != models.TouchpointPurposeInitial || tp.Ordinal != 1 {
+		return FastLaneFollowUpNotAuthorized, false, false
+	}
 	// The approved content must still be the content we are about to send.
 	liveHash := TouchpointBindingHash(tp)
 	if tp.State != models.TouchpointQueued || liveHash == "" || tp.ContentHash != liveHash || tp.ApprovedContentHash != liveHash {
@@ -430,6 +490,13 @@ func (s *service) fastLaneBlock(ctx context.Context, item *dispatch.QueueItem, t
 		models.OutreachQueueSent, models.OutreachQueueReplied, models.OutreachQueueMeeting,
 		models.OutreachQueueProposal, models.OutreachQueueWon, models.OutreachQueueLost:
 		return "account_terminal:" + account.QueueState, false, false
+	}
+	replied, replyErr := s.repo.ListTouchpoints(ctx, item.OrganizationID, tp.AccountID, models.TouchpointReplied, 1, 0)
+	if replyErr != nil {
+		return "reply_lookup_failed", false, true
+	}
+	if len(replied) > 0 {
+		return FastLaneAccountReplied, false, false
 	}
 	qualificationState := strings.ToUpper(strings.TrimSpace(account.CommercialQualificationState))
 	if account.CommercialQualificationDeactivated || qualificationState == CommercialRevoked {
@@ -485,7 +552,14 @@ func (s *service) fastLaneBlock(ctx context.Context, item *dispatch.QueueItem, t
 			return "suppression_lookup_failed", false, true
 		}
 		if suppression != nil {
-			return "recipient_suppressed:" + string(suppression.Source), false, false
+			switch suppression.Source {
+			case models.DeliverabilityEventUnsubscribe:
+				return FastLaneRecipientOptOut, false, false
+			case models.DeliverabilityEventComplaint:
+				return FastLaneRecipientComplaint, false, false
+			default:
+				return "recipient_suppressed:" + string(suppression.Source), false, false
+			}
 		}
 	} else {
 		return "suppression_lookup_unavailable", false, true
