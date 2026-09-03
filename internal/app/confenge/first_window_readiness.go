@@ -19,6 +19,9 @@ const (
 	FirstWindowTransportActiveInWindow    = "TRANSPORT_ACTIVE_IN_WINDOW"
 	FirstWindowBlockedPrefix              = "BLOCKED:"
 	FirstWindowGOForControlledPilot       = ReleaseGOForControlledEmailPilot
+	FirstWindowCurrentVerdictNoGoSMTP     = "NO_GO_SMTP"
+	FirstWindowLabelYes                   = "YES"
+	FirstWindowLabelNo                    = "NO"
 )
 
 // FirstWindowReadinessSnapshot is the closed evidence pack for a candidate
@@ -98,6 +101,13 @@ type FirstWindowReadinessReport struct {
 	OutcomeObservabilityReady string                          `json:"outcome_observability_ready"`
 	ProviderMutationCount     int                             `json:"provider_mutation_count"`
 	EvaluatedAt               time.Time                       `json:"evaluated_at"`
+	// Hash-bound outbound readback labels. This evaluator never infers GO.
+	TransportDecisionReady      bool   `json:"transport_decision_ready"`
+	CurrentVerdict              string `json:"current_verdict"`
+	SMTPSent                    bool   `json:"smtp_sent"`
+	TransportDecisionReadyLabel string `json:"TRANSPORT_DECISION_READY"`
+	CurrentVerdictLabel         string `json:"CURRENT_VERDICT"`
+	SMTPSentLabel               string `json:"SMTP_SENT"`
 }
 
 func firstWindowBlocked(reason string) string {
@@ -148,6 +158,10 @@ func EvaluateFirstWindowReadiness(snap FirstWindowReadinessSnapshot) FirstWindow
 		OutcomeObservabilityReady: snap.OutcomeObservabilityReady.Label(),
 		ProviderMutationCount:     snap.ProviderMutationCount,
 		EvaluatedAt:               snap.EvaluatedAt.UTC(),
+		CurrentVerdict:            FirstWindowCurrentVerdictNoGoSMTP,
+		CurrentVerdictLabel:       FirstWindowCurrentVerdictNoGoSMTP,
+		SMTPSent:                  snap.ProviderMutationCount > 0,
+		SMTPSentLabel:             firstWindowYesNo(snap.ProviderMutationCount > 0),
 	}
 	var blockers []string
 	add := func(ok bool, code string) {
@@ -194,6 +208,7 @@ func EvaluateFirstWindowReadiness(snap FirstWindowReadinessSnapshot) FirstWindow
 	if len(blockers) > 0 {
 		rep.Blockers = blockers
 		rep.Verdict = firstWindowBlocked(blockers[0])
+		stampFirstWindowOutboundLabels(&rep)
 		return rep
 	}
 	// READY_FOR_GO_ADJUDICATION is the pre-GO pack. After PRE-GO pauses are
@@ -201,18 +216,49 @@ func EvaluateFirstWindowReadiness(snap FirstWindowReadinessSnapshot) FirstWindow
 	// transport verdict. This function still never emits GO_FOR_CONTROLLED_EMAIL_PILOT.
 	if firstWindowPreGOPauseEngaged(snap) {
 		rep.Verdict = FirstWindowReadyForGOAdjudication
+		stampFirstWindowOutboundLabels(&rep)
 		return rep
 	}
 	if snap.Queued <= 0 && snap.Reserved <= 0 {
 		rep.Verdict = FirstWindowReadyForGOAdjudication
+		stampFirstWindowOutboundLabels(&rep)
 		return rep
 	}
 	if snap.PauseState == TransportActive {
 		rep.Verdict = FirstWindowTransportActiveInWindow
+		stampFirstWindowOutboundLabels(&rep)
 		return rep
 	}
 	rep.Verdict = FirstWindowArmedForNextBusinessWindow
+	stampFirstWindowOutboundLabels(&rep)
 	return rep
+}
+
+func firstWindowYesNo(ok bool) string {
+	if ok {
+		return FirstWindowLabelYes
+	}
+	return FirstWindowLabelNo
+}
+
+// stampFirstWindowOutboundLabels is hash-bound: same report in, same labels out.
+// CURRENT_VERDICT is always NO_GO_SMTP; this evaluator never infers GO.
+func stampFirstWindowOutboundLabels(rep *FirstWindowReadinessReport) {
+	if rep == nil {
+		return
+	}
+	rep.CurrentVerdict = FirstWindowCurrentVerdictNoGoSMTP
+	rep.CurrentVerdictLabel = FirstWindowCurrentVerdictNoGoSMTP
+	smtpSent := rep.ProviderMutationCount > 0
+	rep.SMTPSent = smtpSent
+	rep.SMTPSentLabel = firstWindowYesNo(smtpSent)
+	// YES when the pack is complete (READY_FOR_GO_ADJUDICATION, including PRE-GO pause).
+	ready := len(rep.Blockers) == 0 &&
+		(rep.Verdict == FirstWindowReadyForGOAdjudication ||
+			rep.Verdict == FirstWindowArmedForNextBusinessWindow ||
+			rep.Verdict == FirstWindowTransportActiveInWindow)
+	rep.TransportDecisionReady = ready
+	rep.TransportDecisionReadyLabel = firstWindowYesNo(ready)
 }
 
 func firstWindowPreGOPauseEngaged(snap FirstWindowReadinessSnapshot) bool {
