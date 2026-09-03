@@ -731,6 +731,7 @@ func leadToAccount(orgID uuid.UUID, lead FeedLead, feed *Feed, runID uuid.UUID, 
 	applyActivationToAccount(acc, lead)
 	applyContractorRoleToAccount(acc, lead.ContractorRole)
 	applyCommercialQualificationToAccount(acc, lead.CommercialQualification, time.Now().UTC())
+	applyClaimAttestationToAccount(acc, lead.ClaimAttestation)
 	// Imported send-fit only — never promote ACTIONABLE_NOW → A_AUTOMATIC.
 	acc.TargetFitSendTier = strings.ToUpper(SanitizeText(lead.TargetFitSendTier, 40))
 	acc.TargetFitReasons = lead.TargetFitReasons
@@ -839,6 +840,28 @@ func applyCommercialQualificationToAccount(acc *models.OutreachAccount, q *RootQ
 	acc.CommercialQualificationDeactivationReason = SanitizeText(q.DeactivationReason, 200)
 	observed := now.UTC()
 	acc.CommercialQualificationObservedAt = &observed
+}
+
+// applyClaimAttestationToAccount stores the raw CONTRACT_CLAIM_ATTESTATION/1.0
+// envelope, if present, verbatim as JSON. It never validates or interprets it
+// here — the dispatch gate (EvaluateClaimGuard) is the sole verifier, run
+// against the copy actually about to be sent. Absence clears any prior
+// attestation: each full re-import is authoritative for this envelope, same
+// as ContractsJSON.
+func applyClaimAttestationToAccount(acc *models.OutreachAccount, a *ContractClaimAttestation) {
+	if acc == nil {
+		return
+	}
+	if a == nil {
+		acc.ClaimAttestationJSON = nil
+		return
+	}
+	b, err := json.Marshal(a)
+	if err != nil {
+		acc.ClaimAttestationJSON = nil
+		return
+	}
+	acc.ClaimAttestationJSON = b
 }
 
 func leadToCandidate(orgID, accountID, runID uuid.UUID, fc FeedContact) *models.OutreachContactCandidate {
