@@ -281,6 +281,40 @@ func TestIntelSeedObeysTheSameKillSwitchAsFirstTouch(t *testing.T) {
 	}
 }
 
+// INTEL_SEED is cold outreach, so it must respect the business window that
+// first touch respects. A lane that composes deliverable cold mail at 3am is
+// not the same lane, whatever it takes no reservation.
+func TestIntelSeedObeysTheBusinessWindowLikeFirstTouch(t *testing.T) {
+	t.Setenv(EnvIntelSeedEnabled, "true")
+	f := newIntelSeedFixture(t)
+	f.withIntel(seedIntel(f.org, f.acc.ID))
+
+	// 03:00 UTC against a 09:00-18:00 window: outside business hours.
+	clock := &dispatch.FixedClock{T: time.Date(2026, 6, 15, 3, 0, 0, 0, time.UTC)}
+	cfg := dispatch.DefaultConfig()
+	cfg.WindowStart, cfg.WindowEnd, cfg.Timezone = "09:00", "18:00", "UTC"
+	cfg.BusinessDaysOnly = true
+	f.svc.governor = dispatch.NewGovernor(cfg, dispatch.NewMemoryStore(), clock)
+
+	outside := f.svc.GateIntelSeed(context.Background(), f.org, f.cand.ID)
+	if outside.Kind != IntelSeedPaused {
+		t.Fatalf("INTEL_SEED composed outside the business window: kind=%d reason=%q",
+			outside.Kind, outside.Reason)
+	}
+	if outside.Message != nil {
+		t.Fatal("INTEL_SEED produced a deliverable message outside the business window")
+	}
+
+	// The same fixture inside the window is admitted, so the test above is
+	// about the window and not about some unrelated refusal.
+	clock.T = time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	inside := f.svc.GateIntelSeed(context.Background(), f.org, f.cand.ID)
+	if inside.Kind != IntelSeedProceed {
+		t.Fatalf("INTEL_SEED refused inside the business window: kind=%d reason=%q err=%v",
+			inside.Kind, inside.Reason, inside.Err)
+	}
+}
+
 // The lane is off unless explicitly opted in, even for a fully eligible contact
 // with valid intelligence.
 func TestIntelSeedIsDormantWithoutAnExplicitOptIn(t *testing.T) {

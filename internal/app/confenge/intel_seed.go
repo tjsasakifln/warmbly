@@ -135,6 +135,15 @@ func (s *service) GateIntelSeed(ctx context.Context, orgID, candidateID uuid.UUI
 	if !s.cfg.SendingAllowed() || FileKillSwitchActive() {
 		return IntelSeedDecision{Kind: IntelSeedPaused, Reason: IntelSeedReasonSendingOff}
 	}
+	// The same resolved transport state the fast lane gates on, which is where
+	// the durable pause and the business window actually live. Without it this
+	// lane would compose deliverable cold outreach at 3am -- outside the hours
+	// first touch is allowed to send in.
+	if s.governor != nil {
+		if transport := s.ResolveTransportState(ctx, &orgID); !transport.Active {
+			return IntelSeedDecision{Kind: IntelSeedPaused, Reason: intelSeedTransportReason(transport)}
+		}
+	}
 
 	cand, err := s.repo.GetCandidate(ctx, orgID, candidateID)
 	if err != nil {
@@ -208,6 +217,16 @@ func (s *service) GateIntelSeed(ctx context.Context, orgID, candidateID uuid.UUI
 	message.To = recipient
 	message.MessageKey = MessageKeyIntelSeed(cand.ID, intel.SubjectKey)
 	return IntelSeedDecision{Kind: IntelSeedProceed, Message: message}
+}
+
+// intelSeedTransportReason names why transport is closed, so an operator can
+// tell a business-window wait from an actual pause. A window blocker outside
+// business hours is the healthy steady state, not an outage.
+func intelSeedTransportReason(transport TransportState) string {
+	if len(transport.Blockers) > 0 {
+		return strings.TrimSpace(transport.Blockers[0])
+	}
+	return IntelSeedReasonSendingOff
 }
 
 // intelSeedSuppressed consults the same durable recipient-suppression table
