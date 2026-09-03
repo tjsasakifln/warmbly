@@ -238,6 +238,51 @@ func TestEveryLaneMessageKeyNamespaceStaysDisjoint(t *testing.T) {
 	}
 }
 
+// Adversarial: INTEL_SEED's transport gate reads governor Status, and Status
+// calls ExpireStaleReservations. That is the same janitorial sweep the fast
+// lane already performs on every tick, but it IS a write, so prove directly
+// that running the seed lane cannot disturb a live first-touch reservation or
+// the send that depends on it.
+func TestIntelSeedTransportGateCannotDisturbALiveFirstTouchReservation(t *testing.T) {
+	t.Setenv(EnvIntelSeedEnabled, "true")
+	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+	_, key := h.enqueue(t, "alvo@exemplo.com.br")
+	ctx := context.Background()
+
+	// Take a real first-touch reservation and hold it.
+	item, reservation := h.claimAndReserve(t)
+	if reservation == nil {
+		t.Fatal("no first-touch reservation was granted")
+	}
+
+	// A seed-lane service sharing the SAME governor and store.
+	seed := newIntelSeedFixture(t)
+	seed.withIntel(seedIntel(seed.org, seed.acc.ID))
+	seed.svc.governor = h.svc.governor
+	seed.svc.nowFn = h.svc.nowFn
+
+	for i := 0; i < 25; i++ {
+		if d := seed.svc.GateIntelSeed(ctx, seed.org, seed.cand.ID); d.Kind != IntelSeedProceed {
+			t.Fatalf("seed pass %d refused: kind=%d reason=%q", i, d.Kind, d.Reason)
+		}
+	}
+
+	// The held reservation must still be live and still committable: the seed
+	// lane neither consumed it nor expired it.
+	if err := h.svc.governor.StartHandoff(ctx, reservation.ID, item.ID); err != nil {
+		t.Fatalf("the live first-touch reservation was lost after seed traffic: %v", err)
+	}
+	if err := h.svc.governor.CommitFirstTouch(ctx, reservation.ID, h.clock.Now(), dispatch.SendEvidence{
+		Recipient: "alvo@exemplo.com.br", Provider: "smtp",
+		ProviderMessageID: "<mid@confenge.com.br>", QueueID: &item.ID,
+	}); err != nil {
+		t.Fatalf("the first touch could not commit after seed traffic: %v", err)
+	}
+	if _, recorded, _ := h.store.GetSendByKey(ctx, key); !recorded {
+		t.Fatal("the first-touch send was not recorded after seed traffic")
+	}
+}
+
 // Cold-outreach consent and subscription consent are legally and product
 // distinct. Neither may substitute for the other in either direction.
 func TestColdOutreachAndSubscriptionConsentNeverSubstituteForEachOther(t *testing.T) {

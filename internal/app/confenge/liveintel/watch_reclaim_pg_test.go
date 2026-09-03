@@ -352,3 +352,84 @@ func TestWatchReclaimParksAbandonedHandoffsPostgres(t *testing.T) {
 		t.Fatalf("abandoned handoff is not parked AMBIGUOUS: %+v", row)
 	}
 }
+
+// Adversarial: one watcher whose dispatcher hangs must not starve the events
+// behind it. The per-event budget is the guard, so prove the pass completes and
+// the healthy watchers are still served.
+type hangingDispatcher struct {
+	mu        sync.Mutex
+	hangFor   time.Duration
+	hangUntil int
+	seen      int
+	delivered int
+}
+
+func (d *hangingDispatcher) DispatchWatchUpdate(ctx context.Context, delivery WatchDelivery) (WatchDispatchOutcome, error) {
+	d.mu.Lock()
+	d.seen++
+	hang := d.seen <= d.hangUntil
+	d.mu.Unlock()
+	if hang {
+		// Respect the context: a well-behaved dispatcher returns when its
+		// budget expires. The point of the test is that a budget EXISTS.
+		select {
+		case <-time.After(d.hangFor):
+		case <-ctx.Done():
+			return WatchTransient, ctx.Err()
+		}
+		return WatchTransient, fmt.Errorf("dispatcher hung")
+	}
+	if delivery.BeforeHandoff != nil {
+		if err := delivery.BeforeHandoff(ctx); err != nil {
+			return WatchTransient, err
+		}
+	}
+	d.mu.Lock()
+	d.delivered++
+	d.mu.Unlock()
+	return WatchDelivered, nil
+}
+
+func (d *hangingDispatcher) counts() (seen, delivered int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.seen, d.delivered
+}
+
+func TestWatchReclaimOneHangingDispatcherDoesNotStarveTheOthersPostgres(t *testing.T) {
+	pool, orgID := openWatchPG(t)
+	repo := repository.NewIntelWatchRepository(pool)
+	// Two subjects: the fixture's first two events hit subject 0001 and its
+	// third hits 0002, so a hang on the first must not lose the third.
+	seedWatchSubscription(t, repo, orgID, "contrato-2026-0001")
+	seedWatchSubscription(t, repo, orgID, "contrato-2026-0002")
+
+	dispatcher := &hangingDispatcher{hangFor: time.Hour, hangUntil: 1}
+	worker := NewWatchReclaimWorker(NewConsumer(repo, dispatcher), fixtureProducer(t, orgID), time.Minute)
+	// A short per-event budget keeps the test fast; production uses minutes.
+	worker.eventBudget = 300 * time.Millisecond
+
+	started := time.Now()
+	report, err := worker.ReclaimOnce(context.Background())
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("the hung dispatcher was not surfaced")
+	}
+	// The pass must not have waited for the hour-long hang.
+	if elapsed > 5*time.Second {
+		t.Fatalf("one hung event blocked the whole pass for %s", elapsed)
+	}
+	if report.EventsSeen < 3 {
+		t.Fatalf("the pass stopped early: %+v", report)
+	}
+	if report.Dispatched == 0 {
+		t.Fatalf("the healthy watchers behind the hang were starved: %+v", report)
+	}
+	seen, delivered := dispatcher.counts()
+	if seen < 2 {
+		t.Fatalf("the dispatcher was only reached %d times; later events were skipped", seen)
+	}
+	if delivered == 0 {
+		t.Fatal("nothing was delivered after the hang")
+	}
+}
