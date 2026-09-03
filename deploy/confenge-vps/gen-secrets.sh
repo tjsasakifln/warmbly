@@ -68,6 +68,12 @@ if need_fill INTERNAL_API_TOKEN; then
 else
   echo "keep INTERNAL_API_TOKEN"
 fi
+if need_fill CONFENGE_INTEL_WATCH_SECRET; then
+  set_key CONFENGE_INTEL_WATCH_SECRET "$(openssl rand -hex 32)"
+  echo "filled CONFENGE_INTEL_WATCH_SECRET"
+else
+  echo "keep CONFENGE_INTEL_WATCH_SECRET"
+fi
 
 # Outcome secret from confenge-plane if present and empty here
 if need_fill CONFENGE_OUTCOME_WEBHOOK_SECRET && [[ -r /opt/confenge-plane/outcome.secret ]]; then
