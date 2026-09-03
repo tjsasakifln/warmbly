@@ -209,15 +209,32 @@ type fakeMTA struct {
 	dropAfterData bool
 	mu            sync.Mutex
 	sawData       bool
+	dataCount     int
+	// transientSessions makes the first N sessions fail with a real 4xx at
+	// MAIL FROM, before the recipient stage and long before DATA. That is a
+	// genuine pre-handoff transient failure, not a stub declaring itself one.
+	transientSessions int
+	sessions          int
 }
 
 func startFakeMTA(t *testing.T, dropAfterData bool) *fakeMTA {
+	t.Helper()
+	return startFakeMTAWith(t, &fakeMTA{dropAfterData: dropAfterData})
+}
+
+// startFakeMTAWithTransientSessions fails the first n sessions with a 4xx.
+func startFakeMTAWithTransientSessions(t *testing.T, n int) *fakeMTA {
+	t.Helper()
+	return startFakeMTAWith(t, &fakeMTA{transientSessions: n})
+}
+
+func startFakeMTAWith(t *testing.T, server *fakeMTA) *fakeMTA {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &fakeMTA{listener: listener, dropAfterData: dropAfterData}
+	server.listener = listener
 	go server.serve()
 	t.Cleanup(func() { _ = listener.Close() })
 	return server
@@ -229,6 +246,14 @@ func (m *fakeMTA) reachedData() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.sawData
+}
+
+// dataAttempts counts how many times a message body was actually offered to the
+// provider. It is the ground truth for "was this resent".
+func (m *fakeMTA) dataAttempts() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.dataCount
 }
 
 func (m *fakeMTA) serve() {
@@ -243,6 +268,10 @@ func (m *fakeMTA) serve() {
 
 func (m *fakeMTA) handle(conn net.Conn) {
 	defer conn.Close()
+	m.mu.Lock()
+	m.sessions++
+	transient := m.sessions <= m.transientSessions
+	m.mu.Unlock()
 	reader := bufio.NewReader(conn)
 	write := func(s string) bool {
 		_, err := conn.Write([]byte(s))
@@ -265,12 +294,19 @@ func (m *fakeMTA) handle(conn net.Conn) {
 		case strings.HasPrefix(command, "AUTH"):
 			write("235 2.7.0 authenticated\r\n")
 		case strings.HasPrefix(command, "MAIL FROM"):
+			if transient {
+				// A real 4xx at the sender stage: retryable, and nothing was
+				// handed over, so the ledger keeps the delivery claimable.
+				write("451 4.3.0 try again later\r\n")
+				return
+			}
 			write("250 2.1.0 sender ok\r\n")
 		case strings.HasPrefix(command, "RCPT TO"):
 			write("250 2.1.5 recipient ok\r\n")
 		case command == "DATA":
 			m.mu.Lock()
 			m.sawData = true
+			m.dataCount++
 			m.mu.Unlock()
 			write("354 end with <CRLF>.<CRLF>\r\n")
 			for {
