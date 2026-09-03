@@ -105,6 +105,29 @@ type HandRaise struct {
 	Evidence   string
 	PersonName string
 	HumanNotes string
+	// SubjectKey is the canonical identity of the thing the person asked about,
+	// when the engine knows one. It is recorded as provenance, never as a
+	// routing input: nothing in the mapping reads it.
+	SubjectKey string
+}
+
+// handRaiseSubjectEvidencePrefix marks the subject key inside EvidenceIDs. The
+// action row has no subject column, and overloading one that already means
+// something else would corrupt it; provenance is where an identity the claim
+// points at legitimately belongs.
+const handRaiseSubjectEvidencePrefix = "subject_key:"
+
+// HandRaiseSubjectKeyOf reads a recorded subject key back off an action.
+func HandRaiseSubjectKeyOf(action *models.OutreachCommercialAction) string {
+	if action == nil {
+		return ""
+	}
+	for _, id := range action.EvidenceIDs {
+		if strings.HasPrefix(id, handRaiseSubjectEvidencePrefix) {
+			return strings.TrimPrefix(id, handRaiseSubjectEvidencePrefix)
+		}
+	}
+	return ""
 }
 
 // handRaiseMapping is the whole policy: signal -> (next action, cockpit lane,
@@ -203,6 +226,9 @@ func ConvergeHandRaise(raise HandRaise) *models.OutreachCommercialAction {
 		IdempotencyKey: HandRaiseIdempotencyKey(raise),
 		CreatedAt:      occurred,
 		UpdatedAt:      occurred,
+	}
+	if subject := strings.TrimSpace(raise.SubjectKey); subject != "" {
+		action.EvidenceIDs = append(action.EvidenceIDs, handRaiseSubjectEvidencePrefix+subject)
 	}
 	return action
 }

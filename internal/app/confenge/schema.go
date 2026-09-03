@@ -701,6 +701,25 @@ func NormalizeCNPJ14(s string) string {
 	return d
 }
 
+// RejectsAsCNPJ reports a value that normalizes to a CNPJ. A tax register
+// number identifies a legal entity, never one company record or one
+// opportunity, so it must never be accepted as a correlation key.
+func RejectsAsCNPJ(s string) bool {
+	return NormalizeCNPJ14(s) != ""
+}
+
+// ShareTokenPrefix marks a web-cfg share-link token. Case sensitive: the
+// prefix is minted lowercase and a case-insensitive match would reject real
+// company references that merely start with the same two letters.
+const ShareTokenPrefix = "li_"
+
+// IsShareToken reports a share-link token. A token identifies a link and the
+// grant behind it, not the subject the link points at, so it is not a
+// correlation key either.
+func IsShareToken(s string) bool {
+	return strings.HasPrefix(strings.TrimSpace(s), ShareTokenPrefix)
+}
+
 // SanitizeText strips control chars and truncates; never invents content.
 func SanitizeText(s string, maxRunes int) string {
 	s = strings.TrimSpace(s)

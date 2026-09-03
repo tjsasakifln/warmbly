@@ -268,6 +268,8 @@ func main() {
 	var organizationRepoForHandler repository.OrganizationRepository
 	var warmupRoutingRepoForHandler repository.WarmupRoutingRepository
 	var intelWatchRepoForHandler repository.IntelWatchRepository
+	var intelWatchInboxRepo repository.IntelWatchInboxRepository
+	var intelSeedRepo repository.IntelSeedRepository
 	var webhookServiceForHandler webhook.Service
 	var integrationServiceForHandler integration.Service
 	var oauthService *oauth.Service
@@ -584,6 +586,8 @@ func main() {
 		crmRepository := repository.NewCRMRepository(primaryDB.Pool)
 		advancedRepository := repository.NewAdvancedOutreachRepository(primaryDB.Pool)
 		intelWatchRepoForHandler = repository.NewIntelWatchRepository(primaryDB.Pool)
+		intelWatchInboxRepo = repository.NewIntelWatchInboxRepository(primaryDB.Pool)
+		intelSeedRepo = repository.NewIntelSeedRepository(primaryDB.Pool)
 		// INTEL_WATCH is an opt-in side lane. It is checked here, loudly, so a
 		// missing opt-out signing secret is diagnosed at boot instead of at the
 		// first unusable unsubscribe link -- and it is only ever a log, never a
@@ -1146,26 +1150,46 @@ func main() {
 			// This worker is idle while paused or outside the business window.
 			go confenge.NewDispatchQueueWorker(confengeServiceForHandler, 30*time.Second).Run(ctx)
 		}
+		// Stores that must exist whether or not their lane is running.
+		// CONFENGE_WEB records consent while INTEL_WATCH delivery is dormant,
+		// and the opportunity-event inbox must accept a post the moment the
+		// upstream makes one: an event we refuse is an event nobody can replay.
+		confengeServiceForHandler.WireIntelWatchSubscriptions(intelWatchRepoForHandler)
+		confengeServiceForHandler.WireIntelWatchInbox(intelWatchInboxRepo)
+		confengeServiceForHandler.WireIntelSeed(intelSeedRepo)
 		// INTEL_WATCH side lane. Opt-in, and deliberately started after first
 		// touch: it shares the SMTP transport and the mailbox rules, never the
 		// send governor, the queue or the cap. A dormant or broken watch lane
 		// starts nothing and changes nothing about first-touch sending.
 		if watchEnabled, watchErr := liveintel.WatchStartupDecision(); watchEnabled && watchErr == nil {
 			confengeServiceForHandler.WireIntelWatch(primaryDB.Pool)
-			watchProducer, producerErr := liveintel.NewFixtureEventProducerFromEnv()
+			// The durable inbox is the production event source. The fixture
+			// producer stays available for rehearsal and tests, and is used only
+			// when an operator explicitly points at a file.
+			var watchProducer liveintel.EventProducer
+			var producerErr error
+			if fixturePath := strings.TrimSpace(os.Getenv(liveintel.EnvFixturePath)); fixturePath != "" {
+				var fixtureProducer *liveintel.FixtureEventProducer
+				fixtureProducer, producerErr = liveintel.NewFixtureEventProducerFromEnv()
+				if fixtureProducer != nil {
+					if orgID := confengeIntelWatchOrgID(); orgID != uuid.Nil {
+						fixtureProducer.BindOrganization(orgID)
+					}
+					watchProducer = fixtureProducer
+					log.Printf("confenge INTEL_WATCH replaying the rehearsal fixture at %s instead of the durable inbox", fixturePath)
+				}
+			} else if pgProducer := liveintel.NewPostgresEventProducer(confengeServiceForHandler.IntelWatchInbox()); pgProducer != nil {
+				if orgID := confengeIntelWatchOrgID(); orgID != uuid.Nil {
+					pgProducer.BindOrganization(orgID)
+				}
+				watchProducer = pgProducer
+			}
 			switch {
 			case producerErr != nil:
 				log.Printf("ERROR confenge INTEL_WATCH event source unusable, the watch lane will deliver nothing: %v", producerErr)
 			case watchProducer == nil:
-				log.Printf("confenge INTEL_WATCH enabled with no event source (set %s); the lane is idle", liveintel.EnvFixturePath)
+				log.Printf("confenge INTEL_WATCH enabled with no event source; the lane is idle")
 			default:
-				if orgRaw := strings.TrimSpace(os.Getenv("CONFENGE_INTEL_WATCH_ORG_ID")); orgRaw != "" {
-					if orgID, err := uuid.Parse(orgRaw); err == nil {
-						watchProducer.BindOrganization(orgID)
-					} else {
-						log.Printf("confenge INTEL_WATCH: invalid CONFENGE_INTEL_WATCH_ORG_ID %q", orgRaw)
-					}
-				}
 				if watchWorker := confengeServiceForHandler.NewIntelWatchReclaimWorker(
 					intelWatchRepoForHandler, confenge.NewSMTPFirstTouchTransport(emailRepostory),
 					watchProducer, 5*time.Minute); watchWorker != nil {
@@ -1173,6 +1197,16 @@ func main() {
 					log.Printf("confenge INTEL_WATCH reclaim worker started")
 				}
 			}
+		}
+		// INTEL_SEED. Its own loop, its own cap, its own counter: it claims no
+		// queue row and takes no dispatch reservation, so first touch behaves
+		// identically whether this is dormant, running, or fully capped out.
+		if confenge.IntelSeedEnabled() && confenge.IntelSeedDailyCap() > 0 {
+			go confenge.NewIntelSeedWorker(confengeServiceForHandler, time.Minute).Run(ctx)
+			log.Printf("confenge INTEL_SEED lane enabled with a dedicated daily cap of %d", confenge.IntelSeedDailyCap())
+		} else {
+			log.Printf("confenge INTEL_SEED lane dormant (set %s and %s to enable)",
+				confenge.EnvIntelSeedEnabled, confenge.EnvIntelSeedDailyCap)
 		}
 		// Suboptimal and explicitly rejected copy is recoverable. AI rewrites run
 		// asynchronously and always return to human review.
@@ -1994,4 +2028,21 @@ func (m advisorMembers) MemberPermissions(ctx context.Context, orgID, userID uui
 		return 0, errors.New("not a member of this organization")
 	}
 	return member.Permissions, nil
+}
+
+// confengeIntelWatchOrgID scopes the INTEL_WATCH event source to one
+// organization. Unset means every organization, which is the durable inbox's
+// natural shape: each row already carries the org Warmbly's webhook auth
+// resolved.
+func confengeIntelWatchOrgID() uuid.UUID {
+	raw := strings.TrimSpace(os.Getenv("CONFENGE_INTEL_WATCH_ORG_ID"))
+	if raw == "" {
+		return uuid.Nil
+	}
+	orgID, err := uuid.Parse(raw)
+	if err != nil {
+		log.Printf("confenge INTEL_WATCH: invalid CONFENGE_INTEL_WATCH_ORG_ID %q", raw)
+		return uuid.Nil
+	}
+	return orgID
 }

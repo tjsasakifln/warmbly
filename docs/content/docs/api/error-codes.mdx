@@ -437,6 +437,65 @@ Retry-After: 60
 
 Use the `Retry-After` header to determine when to retry.
 
+## CONFENGE inbound intelligence envelopes
+
+`POST /webhooks/confenge/inbound` accepts several body schemas and branches on
+the envelope's `schema` field. Two of them are intelligence envelopes with their
+own stable rejection codes. Both fail closed on the whole envelope: a rejected
+body creates nothing, not even the part of it that was well formed.
+
+### `CONFENGE_WEB_INTENT/1.0`
+
+A person on the public site asking to be told about something, or asking for a
+human to look. `intent_kind` is a closed set: `MONITOR_COMPANY`,
+`MONITOR_OPPORTUNITY`, `REQUEST_DEEP_DIVE`, `REQUEST_HUMAN_REVIEW`. All
+rejections return `400`.
+
+| `code` | Meaning |
+| --- | --- |
+| `confenge_web_intent_schema_mismatch` | The body is not tagged `CONFENGE_WEB_INTENT/1.0` |
+| `confenge_web_intent_kind_unknown` | `intent_kind` is outside the closed set. There is no default |
+| `confenge_web_intent_lane_not_confenge_web` | `lane` is not `confenge_web`. The engine lane is verified, never chosen by the caller |
+| `confenge_web_intent_contact_email_missing` | `contact_email` is absent or not an address |
+| `confenge_web_intent_company_ref_missing` | `MONITOR_COMPANY`, `REQUEST_DEEP_DIVE` and `REQUEST_HUMAN_REVIEW` require a `company_ref` |
+| `confenge_web_intent_opportunity_id_missing` | `MONITOR_OPPORTUNITY` requires an `opportunity_id` |
+| `confenge_web_intent_correlation_key_is_cnpj` | A correlation key normalized to a CNPJ. A tax register number identifies a legal entity, not one company record or one opportunity, so it is never accepted as a correlation key |
+| `confenge_web_intent_correlation_key_is_share_token` | A correlation key is an `li_`-prefixed share token. A token identifies a link, not the subject the link points at |
+| `confenge_web_intent_consent_provenance_missing` | A `MONITOR_*` intent arrived without `consent_source`, `consent_at` and `consent_provenance_ok`. Only the monitor intents put an address on a standing mail list, so only they require consent provenance |
+| `confenge_web_intent_cadence_unknown` | `cadence` is not `immediate`, `daily` or `weekly` |
+| `confenge_web_intent_store_unavailable` | `503`. The subscription store is not wired, so consent could not be recorded |
+
+Accepted `MONITOR_*` envelopes return `201` with a `subscription_id` and a
+canonical `subject_key` of the form `company:<company_ref>` or
+`opportunity:<opportunity_id>`. No other subject-key shape is produced by this
+path. Accepted `REQUEST_*` envelopes return `201` with an `action_id`; when the
+contact does not resolve to a known account the response carries
+`matched: false` and `reason: contact_not_matched_to_account` instead, because
+a commercial action is filed against an account and inventing one would be
+worse than saying so.
+
+### `CONFENGE_OPPORTUNITY_EVENT/1.0`
+
+An upstream saying a watched subject changed. The envelope is stored durably
+before anything else happens to it. All rejections return `400` except the last,
+which is `503`.
+
+| `code` | Meaning |
+| --- | --- |
+| `confenge_opportunity_event_event_schema_mismatch` | The body is not tagged `CONFENGE_OPPORTUNITY_EVENT/1.0` |
+| `confenge_opportunity_event_event_id_missing` | `event_id` is empty. It is the replay identity, so there is no way to store the envelope without it |
+| `confenge_opportunity_event_event_type_not_in_closed_set` | `event_type` is outside `NEW_OPPORTUNITY`, `OPPORTUNITY_CHANGED`, `DEADLINE_CHANGED`, `FIT_BECAME_RELEVANT` |
+| `confenge_opportunity_event_event_organization_missing` | No organization is configured for inbound, so the event has no owner |
+| `confenge_opportunity_event_event_subject_key_missing` | `subject_key` is empty, so no watcher can be resolved |
+| `confenge_opportunity_event_event_payload_empty` | `payload` is empty. There is nothing to tell a watcher |
+| `confenge_opportunity_event_inbox_unavailable` | `503`. The durable inbox is not wired. The event is refused rather than accepted and dropped |
+
+The organization is always the one Warmbly's own webhook authentication
+resolved. An `org_id` inside the payload is overwritten and never consulted, so
+a caller cannot reach another organization's watch list by naming it in the
+body. A repeat post of the same `event_id` returns `200` and does not rewrite
+the stored envelope; a first post returns `201`.
+
 ## See also
 
 - [Authentication](/api/authentication/)
