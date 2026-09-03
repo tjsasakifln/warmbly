@@ -23,6 +23,20 @@ import (
 // content. Re-driving is safe precisely because dedup is by
 // (subscription, event identity, semantic content hash): everything already
 // delivered is a no-op, and only the rows that never made it are attempted.
+//
+// REPLAYABILITY BOUNDARY -- read this before trusting the recovery guarantee.
+// Dedup buys at-most-once. Replayability buys at-least-once. Only the first is
+// source-independent: the dedup key refuses a duplicate whatever the upstream
+// does. This worker's automatic resumption of a PENDING row is completeness,
+// and it holds ONLY because the current source (the fixture-backed
+// EventProducer) re-emits the same immutable event set on every Subscribe, so
+// a delivery identity can be re-derived. That contract has NOT been proven
+// cross-repo against the real extra-cli producer. If the real upstream is
+// at-most-once or otherwise non-replayable, a PENDING row whose event is never
+// re-emitted is permanently undelivered and this worker cannot detect it: a
+// durable event-payload inbox is required before the guarantee holds. That
+// inbox is a deliberate deferred decision pending cross-repo convergence, not
+// an oversight. See docs/confenge/acquisition-engines.md.
 
 // WatchReclaimReport is what one pass did. It exists so an operator (and a
 // test) can tell "nothing was owed" from "something was recovered".

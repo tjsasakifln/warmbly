@@ -21,8 +21,19 @@ import (
 // from this process, so the production EventProducer is a file. That is a
 // deliberate, testable choice rather than a placeholder: the consumer's whole
 // contract is "given these events, deliver each one at most once", and a
-// versioned file replays exactly as well as a broker does. Swapping in a live
-// producer later means implementing one interface, changing nothing downstream.
+// versioned file replays exactly as well as a broker does.
+//
+// REPLAYABILITY BOUNDARY. Swapping in a live producer is one interface, but it
+// is not free downstream. Dedup buys at-most-once and is source-independent:
+// the ledger's (subscription, event identity, semantic content hash) key
+// refuses a duplicate no matter what the source does. Replayability buys
+// at-least-once, and that is a property of THIS producer only. Against a
+// non-replayable or at-most-once upstream, a PENDING row whose event is never
+// re-emitted is permanently undelivered and the reclaim worker cannot know it.
+// A durable event-payload inbox is the prerequisite for that guarantee to
+// survive the swap. Deferring it pends cross-repo convergence with the real
+// extra-cli producer; it is a deliberate decision, not an oversight. See
+// docs/confenge/acquisition-engines.md.
 
 // FixtureSchemaV1 tags the event-fixture envelope, matching the repo's other
 // schema-tagged fixtures.
@@ -70,7 +81,9 @@ func (f *EventFixture) Validate() (bool, string) {
 // to more than once: each subscription gets its own channel over the same
 // immutable event set, so a re-drive after a transient failure sees exactly the
 // events it saw before. That replayability is what lets the reclaim worker
-// re-deliver without an event-payload column in the ledger.
+// re-deliver without an event-payload column in the ledger, and it is the ONLY
+// reason automatic reprocessing of a PENDING row holds. A producer that cannot
+// re-emit does not inherit that property; it needs a durable payload inbox.
 type FixtureEventProducer struct {
 	mu     sync.RWMutex
 	events []OpportunityEvent

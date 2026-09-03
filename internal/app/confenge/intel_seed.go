@@ -139,6 +139,11 @@ func (s *service) GateIntelSeed(ctx context.Context, orgID, candidateID uuid.UUI
 	// the durable pause and the business window actually live. Without it this
 	// lane would compose deliverable cold outreach at 3am -- outside the hours
 	// first touch is allowed to send in.
+	//
+	// Not a pure read: governor.Status sweeps stale reservations. That sweep
+	// only releases rows already past lease_until with attempted_at IS NULL, so
+	// it cannot shorten or consume a live first-touch reservation -- it just
+	// reaps dead leases sooner. Every Status caller already does this.
 	if s.governor != nil {
 		if transport := s.ResolveTransportState(ctx, &orgID); !transport.Active {
 			return IntelSeedDecision{Kind: IntelSeedPaused, Reason: intelSeedTransportReason(transport)}

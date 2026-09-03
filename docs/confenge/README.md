@@ -140,6 +140,15 @@ that owns first-touch sending: the claim/send/ledger loop, the gates it keeps,
 the failure model, duplicate prevention, and the cutover and rollback switch
 (`CONFENGE_FAST_LANE_ENABLED`).
 
+## Acquisition engines
+
+See [acquisition-engines.md](./acquisition-engines.md) for the four-engine
+surface: the `engine_lane` vocabulary and what it does not currently claim, the
+`GET /confenge/interrupt-budget` contract, and the INTEL_WATCH replayability
+boundary (automatic reprocessing of a PENDING delivery holds only because the
+current event source is replayable; a durable event-payload inbox is required
+before it holds against an at-most-once upstream).
+
 ## Local one-command ops
 
 See [local-ops.md](./local-ops.md) for `make confenge-local`,
