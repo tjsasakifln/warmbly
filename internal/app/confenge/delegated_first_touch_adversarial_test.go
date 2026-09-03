@@ -422,3 +422,38 @@ func TestDelegatedFirstTouchBatch500AndPartialIsolationContract(t *testing.T) {
 		t.Fatalf("duplicate-root isolation drifted: %v", dupes)
 	}
 }
+
+func TestDelegatedFirstTouchPolicyHashMismatchHoldsReadiness(t *testing.T) {
+	f := newDelegatedValidationFixture(t, RouteClassGenericCompany, "contato@empresa.example")
+	validHash := f.manifest.PolicyHash
+	f.manifest.PolicyHash = strings.Repeat("f", 64)
+	if got := validateDelegatedManifestHeader(f.manifest); len(got) == 0 {
+		t.Fatal("a drifted policy hash was admitted")
+	}
+	now := time.Date(2026, 9, 2, 15, 0, 0, 0, time.UTC)
+	snap := readyFirstWindowSnapshot(now)
+	snap.PolicyID = f.manifest.PolicyHash
+	snap.PolicyVersion = f.manifest.PolicyHash
+	rep := EvaluateFirstWindowReadiness(snap)
+	if !strings.HasPrefix(rep.Verdict, FirstWindowBlockedPrefix) {
+		t.Fatalf("drifted policy armed the first window: %s", rep.Verdict)
+	}
+	if rep.Verdict == FirstWindowGOForControlledPilot || strings.Contains(rep.Verdict, "GO_FOR_CONTROLLED_EMAIL_PILOT") {
+		t.Fatal("policy hash mismatch emitted GO")
+	}
+
+	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+	draftID, key := h.enqueue(t, "contato@empresa.example")
+	tp := h.repo.touchpoints[draftID]
+	tp.AuthorizationPolicyHash = validHash
+	tp.BodyText = tp.BodyText + "\n\n(payload drift)"
+	if _, err := h.svc.ProcessFastLaneOnce(context.Background()); err != nil {
+		t.Fatalf("fast lane: %v", err)
+	}
+	if h.transport.attempts != 0 || h.sendRecorded(t, key) {
+		t.Fatalf("approved-content/payload mismatch reached provider: attempts=%d sent=%v", h.transport.attempts, h.sendRecorded(t, key))
+	}
+	if got := h.queueStatus(t, key); got != dispatch.QueueCancelled {
+		t.Fatalf("payload mismatch status=%q", got)
+	}
+}
