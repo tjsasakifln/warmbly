@@ -63,8 +63,14 @@ daily cap, hourly cap and min-gap, mailbox enabled with SMTP configured,
 approved-content binding recomputed from the live payload, recipient present
 and syntactically usable, explicit commercial deactivation or party-role
 conflict, live account/candidate DNC and bounce flags, non-empty approved
-payload, and hard-bounce / complaint / opt-out suppression. An unreadable
-safety source defers the row fail-closed instead of cancelling durable work.
+payload, and hard-bounce / complaint / opt-out suppression. Follow-ups
+(`purpose` other than `INITIAL` or `ordinal` other than 1) are cancelled with
+`FOLLOW_UP_NOT_AUTHORIZED` and never handed to the provider. A replied account
+(queue state or a recorded `REPLIED` touchpoint) is the same class of stop.
+Unsubscribe and complaint suppression are first-class stops, not bounce
+aliases. An unreadable safety source defers the row fail-closed instead of
+cancelling durable work. A stop that arrives after reservation still wins in
+the post-reserve recheck and in `BeforeHandoff` immediately before SMTP `DATA`.
 
 ## Failure model
 
@@ -72,12 +78,15 @@ safety source defers the row fail-closed instead of cancelling durable work.
 | --- | --- | --- |
 | Accepted | provider took the message | record send, close row |
 | Permanent | 5xx at `RCPT TO` | terminal `failed`, suppress recipient, continue |
-| Transient | network, 4xx, unreachable | bounded retry with backoff (5 attempts) |
+| Transient | network, 4xx, unreachable | bounded retry with backoff (5 attempts), unless a live stop arrived |
 | Ambiguous | failure at end of `DATA` | park as `attempted`, never resend |
+| Unrecognized | provider answer is not in the closed set | park as `attempted` (same as ambiguous), never resend, never `NO_RESPONSE` |
 
-Ambiguous is the one case that stays deliberately unresolved. The message may
+Ambiguous (and unrecognized) stay deliberately unresolved. The message may
 already be in flight, so it is correlated by a deterministic `Message-ID`
-derived from the logical message key rather than retried.
+derived from the logical message key rather than retried. A newly arrived stop
+(DNC, suppression, opt-out, complaint, reply, pause) still beats a transient
+retry: the row is cancelled or deferred instead of sent.
 
 A cap, min-gap or window deferral is scheduling, not failure: `DeferQueue`
 returns the row without consuming a retry attempt.
