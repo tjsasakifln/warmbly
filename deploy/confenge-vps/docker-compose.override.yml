@@ -80,6 +80,19 @@ x-confenge-env: &confenge-env
   CONFENGE_EXTRA_CLI_ALLOWED_HOSTS: ${CONFENGE_EXTRA_CLI_ALLOWED_HOSTS:-host.docker.internal,127.0.0.1,159.195.18.88}
   CONFENGE_OUTCOME_WEBHOOK_URL: ${CONFENGE_OUTCOME_WEBHOOK_URL:-https://host.docker.internal:8443/webhooks/warmbly/outcome}
   CONFENGE_OUTCOME_WEBHOOK_SECRET: ${CONFENGE_OUTCOME_WEBHOOK_SECRET:-}
+  # INTEL_WATCH side lane. Opt-in and dormant unless both are set. Leaving
+  # CONFENGE_INTEL_WATCH_EVENTS_FILE unset (the default) selects the durable
+  # Postgres inbox as the event source instead of the rehearsal fixture.
+  CONFENGE_INTEL_WATCH_ENABLED: ${CONFENGE_INTEL_WATCH_ENABLED:-false}
+  CONFENGE_INTEL_WATCH_SECRET: ${CONFENGE_INTEL_WATCH_SECRET:-}
+  CONFENGE_INTEL_WATCH_EVENTS_FILE: ${CONFENGE_INTEL_WATCH_EVENTS_FILE:-}
+  CONFENGE_INTEL_WATCH_ORG_ID: ${CONFENGE_INTEL_WATCH_ORG_ID:-}
+  # INTEL_SEED. Opt-in and shares first touch's transport/window checks but
+  # never its cap: CONFENGE_INTEL_SEED_DAILY_CAP is its own counter, and the
+  # lane stays dormant unless both this and CONFENGE_INTEL_SEED_ENABLED are set.
+  CONFENGE_INTEL_SEED_ENABLED: ${CONFENGE_INTEL_SEED_ENABLED:-false}
+  CONFENGE_INTEL_SEED_DAILY_CAP: ${CONFENGE_INTEL_SEED_DAILY_CAP:-0}
+  CONFENGE_INTEL_SEED_ORG_ID: ${CONFENGE_INTEL_SEED_ORG_ID:-}
   # Same-host feed uses private CA; allow only when feed is loopback/host-gateway.
   WARMBLY_ALLOW_UNSAFE_WEBHOOK_URLS: ${WARMBLY_ALLOW_UNSAFE_WEBHOOK_URLS:-true}
   SSL_CERT_FILE: ${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt}
