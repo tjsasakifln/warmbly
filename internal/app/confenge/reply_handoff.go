@@ -22,6 +22,11 @@ type InboundHandoff struct {
 	OccurredAt                                             time.Time
 	WarmblyContactID                                       *uuid.UUID
 	ActorID, AccountID, TouchpointID, MailboxID            uuid.UUID
+	// EngineLane is the acquisition engine whose message was replied to, when
+	// the caller knows it. Empty is honest: the lane is then derived only from
+	// a correlated touchpoint, and otherwise left unattributed rather than
+	// guessed onto whichever engine happens to be running.
+	EngineLane string
 }
 
 type HandoffResult struct {
@@ -173,6 +178,7 @@ func (s *service) ProcessInboundHandoff(ctx context.Context, orgID uuid.UUID, in
 		return nil, xerr
 	}
 	s.applyReplyCRM(ctx, orgID, in.ActorID, contactEmail, intentToCRMClass(intent.Intent), in.WarmblyContactID, cand, acc)
+	s.convergeReplyHandRaise(ctx, orgID, in, intent, cand, acc)
 	if stopsCadence {
 		s.markAccountDraftsReplied(ctx, orgID, acc.ID)
 	}

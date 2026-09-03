@@ -11,6 +11,7 @@ import (
 
 	"github.com/warmbly/warmbly/internal/app/confenge"
 	"github.com/warmbly/warmbly/internal/app/confenge/intel"
+	"github.com/warmbly/warmbly/internal/app/confenge/liveintel"
 	"github.com/warmbly/warmbly/internal/errx"
 )
 
@@ -111,6 +112,40 @@ func (h *Handler) ConfengeInboundWebhook(c *gin.Context) {
 			status = http.StatusOK
 		}
 		c.JSON(status, gin.H{"data": res})
+		return
+	}
+	// Checked before the inbound-lead fallthrough, which would otherwise
+	// swallow both of these: neither carries a lead shape.
+	if intel.IsWebIntentEnvelope(body) {
+		env, err := intel.ParseWebIntentEnvelope(body)
+		if err != nil {
+			errx.JSON(c, errx.New(errx.BadRequest, err.Error()))
+			return
+		}
+		res, xerr := h.ConfengeService.IngestWebIntent(c.Request.Context(), orgID, env, time.Now().UTC())
+		if xerr != nil {
+			errx.JSON(c, xerr)
+			return
+		}
+		c.JSON(http.StatusCreated, gin.H{"data": res})
+		return
+	}
+	if liveintel.IsOpportunityEventEnvelope(body) {
+		event, err := liveintel.ParseOpportunityEvent(body)
+		if err != nil {
+			errx.JSON(c, errx.New(errx.BadRequest, err.Error()))
+			return
+		}
+		receipt, xerr := h.ConfengeService.IngestOpportunityEvent(c.Request.Context(), orgID, event, time.Now().UTC())
+		if xerr != nil {
+			errx.JSON(c, xerr)
+			return
+		}
+		status := http.StatusCreated
+		if receipt.Replay {
+			status = http.StatusOK
+		}
+		c.JSON(status, gin.H{"data": receipt})
 		return
 	}
 	res, xerr := h.ConfengeService.IngestInboundLead(c.Request.Context(), orgID, body, confenge.IngestOptions{

@@ -1304,6 +1304,35 @@ func (h *Handler) GetConfengeInterruptBudget(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": budget})
 }
 
+// GetConfengeSalesContext — GET /confenge/sales-context
+//
+// The CONFENGE_SALES_CONTEXT/1.0 artifact: the hand-raisers the acquisition
+// engines produced, with their facts, provenance, stated limits and
+// touchpoints, so a downstream sales tool can pick a conversation up without a
+// second data model. Read-only, and a projection over the same commercial
+// actions the interrupt budget reads.
+func (h *Handler) GetConfengeSalesContext(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	limit := 50
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 200 {
+			errx.JSON(c, errx.New(errx.BadRequest, "limit must be between 1 and 200"))
+			return
+		}
+		limit = n
+	}
+	export, xerr := h.ConfengeService.ExportSalesContext(c.Request.Context(), orgID, limit)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": export})
+}
+
 // GetConfengeAttention — GET /confenge/attention/:id
 func (h *Handler) GetConfengeAttention(c *gin.Context) {
 	orgID, ok := h.confengeOrg(c)

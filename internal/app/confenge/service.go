@@ -134,9 +134,37 @@ type Service interface {
 	// first-touch admission predicates by composition and takes no dispatch
 	// reservation, so it cannot consume first-touch send budget.
 	GateIntelSeed(ctx context.Context, orgID, candidateID uuid.UUID) IntelSeedDecision
+	// WireIntelSeed installs INTEL_SEED's own send ledger, which is the lane's
+	// dedicated daily-cap counter and its no-resend record.
+	WireIntelSeed(ledger IntelSeedLedger)
+	// IntelSeedHeadroom reports how many seed touches remain today under the
+	// lane's OWN cap. Zero while dormant, uncapped, or exhausted.
+	IntelSeedHeadroom(ctx context.Context, orgID uuid.UUID, now time.Time) int
+	// ProcessIntelSeedOnce sends at most one INTEL_SEED touch. It claims no
+	// queue row and takes no dispatch reservation.
+	ProcessIntelSeedOnce(ctx context.Context) (bool, error)
 	// WireIntelWatch gives the INTEL_WATCH side lane its own database handle.
 	// It installs no transport authority over first touch.
 	WireIntelWatch(pool *pgxpool.Pool)
+	// WireIntelWatchSubscriptions installs the subscription store CONFENGE_WEB
+	// intake writes through, independently of the delivery lane.
+	WireIntelWatchSubscriptions(store IntelWatchSubscriptionStore)
+	// WireIntelWatchInbox installs the durable opportunity-event inbox that the
+	// production EventProducer replays from.
+	WireIntelWatchInbox(inbox liveintel.EventInbox)
+	// IntelWatchInbox returns the wired inbox, or nil when the lane is dormant.
+	IntelWatchInbox() liveintel.EventInbox
+	// IngestWebIntent validates and routes one CONFENGE_WEB_INTENT/1.0 envelope.
+	IngestWebIntent(ctx context.Context, orgID uuid.UUID, env intel.WebIntentEnvelope, now time.Time) (*WebIntentResult, *errx.Error)
+	// IngestOpportunityEvent durably stores one inbound opportunity event
+	// before anything else happens to it.
+	IngestOpportunityEvent(ctx context.Context, orgID uuid.UUID, event liveintel.OpportunityEvent, now time.Time) (*OpportunityEventReceipt, *errx.Error)
+	// PersistHandRaise converges one hand-raise signal onto the commercial
+	// action surface, stamped with its engine of origin.
+	PersistHandRaise(ctx context.Context, raise HandRaise) (*models.OutreachCommercialAction, *errx.Error)
+	// ExportSalesContext projects one CONFENGE_SALES_CONTEXT/1.0 artifact from
+	// the commercial actions the engines already produced.
+	ExportSalesContext(ctx context.Context, orgID uuid.UUID, limit int) (*SalesContextExport, *errx.Error)
 	// ResolveOutboundMailbox answers which mailbox CONFENGE mail leaves from,
 	// using the same rules the fast lane uses.
 	ResolveOutboundMailbox(ctx context.Context, orgID uuid.UUID) (uuid.UUID, error)
@@ -279,6 +307,16 @@ type service struct {
 	// INTEL_WATCH side-lane handle. Used only to resolve the sending mailbox
 	// when the fast lane is not wired; it never participates in first touch.
 	intelWatchDB *pgxpool.Pool
+	// INTEL_WATCH subscription store, written by CONFENGE_WEB intake. Wired
+	// independently of the delivery lane: recording consent must work even
+	// while delivery is dormant.
+	intelWatchSubs IntelWatchSubscriptionStore
+	// Durable opportunity-event inbox. Nil means inbound opportunity events are
+	// refused rather than accepted and dropped.
+	intelWatchInbox liveintel.EventInbox
+	// INTEL_SEED's own send ledger and daily-cap counter. Nil keeps the lane
+	// dormant: an uncountable cap is not a cap.
+	intelSeedLedger IntelSeedLedger
 }
 
 func (s *service) now() time.Time {

@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/warmbly/warmbly/internal/app/confenge/intel"
+	"github.com/warmbly/warmbly/internal/app/confenge/liveintel"
 )
 
 const (
@@ -17,6 +18,14 @@ const (
 	InboundReasonSecretMissing = "inbound_secret_missing"
 	InboundReasonOrgMissing    = "inbound_org_missing"
 )
+
+// acceptedInboundEventVersions is the full capability list this endpoint
+// branches on. It is assembled here because the two intelligence schemas live
+// in sibling packages and the probe must not advertise a body the dispatch
+// cannot actually route.
+func acceptedInboundEventVersions() []string {
+	return append(intel.AcceptedEventVersions(), intel.WebIntentSchemaV1, liveintel.EventSchemaV1)
+}
 
 // InboundReceiveProbe is the PII-free, secret-free signal web-cfg uses
 // to decide whether to POST. Timeout is a client-side class (process
@@ -38,7 +47,7 @@ func EvaluateInboundReceive(cfg Config) InboundReceiveProbe {
 		AutoSendEnabled:       cfg.AutoSendEnabled,
 		Reasons:               nil,
 		DispatchAttempted:     false,
-		AcceptedEventVersions: intel.AcceptedEventVersions(),
+		AcceptedEventVersions: acceptedInboundEventVersions(),
 	}
 	if !cfg.Enabled {
 		p.Reasons = append(p.Reasons, InboundReasonOutreachOff)
