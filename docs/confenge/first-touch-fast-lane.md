@@ -67,8 +67,11 @@ payload, and hard-bounce / complaint / opt-out suppression. Follow-ups
 (`purpose` other than `INITIAL` or `ordinal` other than 1) are cancelled with
 `FOLLOW_UP_NOT_AUTHORIZED` and never handed to the provider. A replied account
 (queue state or a recorded `REPLIED` touchpoint) is the same class of stop.
-Unsubscribe and complaint suppression are first-class stops, not bounce
-aliases. An unreadable safety source defers the row fail-closed instead of
+Unsubscribe, complaint and hard-bounce suppression are first-class stops, not
+aliases of each other. An inbound-only commercial representation is cancelled
+with `account_inbound_only` and never handed to the provider. A missing or
+unclassifiable provider event parks as `UNKNOWN` (`unknown_provider_result`)
+and is never treated as accepted or delivered. An unreadable safety source defers the row fail-closed instead of
 cancelling durable work. A stop that arrives after reservation still wins in
 the post-reserve recheck and in `BeforeHandoff` immediately before SMTP `DATA`.
 

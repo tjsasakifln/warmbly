@@ -337,13 +337,33 @@ func firstWindowSnapshotFromLive(
 }
 
 func (s *service) CollectFirstWindowReadiness(ctx context.Context, orgID uuid.UUID) (*FirstWindowReadinessReport, *errx.Error) {
-	if xerr := s.requireEnabled(); xerr != nil {
+	snap, xerr := s.loadFirstWindowSnapshot(ctx, orgID)
+	if xerr != nil {
 		return nil, xerr
+	}
+	report := EvaluateFirstWindowReadiness(snap)
+	return &report, nil
+}
+
+// CollectOutboundGOPacket emits the hash-bound human-decision packet without
+// sending mail or changing cap, cadence or window.
+func (s *service) CollectOutboundGOPacket(ctx context.Context, orgID uuid.UUID) (*OutboundGOPacket, *errx.Error) {
+	snap, xerr := s.loadFirstWindowSnapshot(ctx, orgID)
+	if xerr != nil {
+		return nil, xerr
+	}
+	packet := EvaluateOutboundGOPacket(snap)
+	return &packet, nil
+}
+
+func (s *service) loadFirstWindowSnapshot(ctx context.Context, orgID uuid.UUID) (FirstWindowReadinessSnapshot, *errx.Error) {
+	if xerr := s.requireEnabled(); xerr != nil {
+		return FirstWindowReadinessSnapshot{}, xerr
 	}
 	now := s.now()
 	feed, feedErr := s.repo.GetFeedSyncState(ctx, orgID)
 	if feedErr != nil {
-		return nil, errx.New(errx.Internal, "feed sync state: "+feedErr.Error())
+		return FirstWindowReadinessSnapshot{}, errx.New(errx.Internal, "feed sync state: "+feedErr.Error())
 	}
 	sourceHealth := EvaluateStoredSourceHealth(feed, now, s.cfg.FeedMaxAge)
 	authority := FeedCommercialAuthorityState(feed)
@@ -389,8 +409,7 @@ func (s *service) CollectFirstWindowReadiness(ctx context.Context, orgID uuid.UU
 	snap.SourceHealth = sourceHealth
 	snap.PausedBy = dispatchStatus.PausedBy
 	snap.PausedAt = dispatchStatus.PausedAt
-	report := EvaluateFirstWindowReadiness(snap)
-	return &report, nil
+	return snap, nil
 }
 
 // commercialQualificationFromAccounts derives population qualification from the

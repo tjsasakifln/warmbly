@@ -353,6 +353,9 @@ func (m *memRepo) UpsertAccount(ctx context.Context, acc *models.OutreachAccount
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	k := accKey(acc.OrganizationID, acc.CNPJ14)
+	if models.AccountIsInboundOnly(acc) && strings.TrimSpace(acc.SourceLeadID) != "" {
+		k = acc.OrganizationID.String() + "|inbound_only|" + acc.SourceLeadID
+	}
 	if acc.SourceSystem == "" && acc.TargetFitClass == "" {
 		markTestAccountTargetFitReady(acc)
 	}
@@ -770,7 +773,7 @@ func (m *memRepo) FindCandidateByEmail(ctx context.Context, orgID uuid.UUID, ema
 	for _, list := range m.cands {
 		for i := range list {
 			c := list[i]
-			if c.OrganizationID == orgID && c.Email == email {
+			if c.OrganizationID == orgID && strings.EqualFold(c.Email, email) {
 				acc := m.byID[c.AccountID]
 				return &c, acc, nil
 			}

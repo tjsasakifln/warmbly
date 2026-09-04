@@ -138,7 +138,7 @@ type scriptedTransport struct {
 
 func firstTouchOutcomeKnown(outcome FirstTouchOutcome) bool {
 	switch outcome {
-	case FirstTouchAccepted, FirstTouchPermanent, FirstTouchTransient, FirstTouchAmbiguous:
+	case FirstTouchAccepted, FirstTouchPermanent, FirstTouchTransient, FirstTouchAmbiguous, FirstTouchUnknown:
 		return true
 	default:
 		return false
@@ -152,7 +152,7 @@ func (s *scriptedTransport) SendFirstTouch(ctx context.Context, msg FirstTouchMe
 	// Accepted, ambiguous, and unrecognized answers are post-RCPT realities: the
 	// shipped BeforeHandoff fence must run. Permanent/transient failures can
 	// happen before DATA, so those still skip the hook.
-	needsHandoff := s.outcome == FirstTouchAccepted || s.outcome == FirstTouchAmbiguous || !firstTouchOutcomeKnown(s.outcome)
+	needsHandoff := s.outcome == FirstTouchAccepted || s.outcome == FirstTouchAmbiguous || s.outcome == FirstTouchUnknown || s.outcome == "" || !firstTouchOutcomeKnown(s.outcome)
 	if needsHandoff {
 		if msg.BeforeHandoff == nil {
 			return FirstTouchAcceptance{}, FirstTouchTransient, errors.New("missing handoff hook")
@@ -1117,6 +1117,79 @@ func TestFastLaneStopsBeatRetryAfterTransient(t *testing.T) {
 	}
 	if h.sendRecorded(t, key) {
 		t.Fatal("suppressed retry was recorded as a send")
+	}
+}
+
+func TestFastLaneHardBounceSuppressionBlocks(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+	_, key := h.enqueue(t, "bounce@exemplo.com.br")
+	h.repo.suppressed["bounce@exemplo.com.br"] = &models.SuppressedRecipient{
+		OrganizationID: h.orgID, Email: "bounce@exemplo.com.br",
+		Source: models.DeliverabilityEventBounce, Reason: "550 mailbox unknown",
+	}
+	progressed, err := h.svc.ProcessFastLaneOnce(context.Background())
+	if err != nil || !progressed {
+		t.Fatalf("bounce row was not closed: progressed=%v err=%v", progressed, err)
+	}
+	h.assertNoSend(t, key, dispatch.QueueCancelled, FastLaneRecipientBounce)
+}
+
+func TestFastLaneInboundOnlyAccountNeverSends(t *testing.T) {
+	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+	draftID, key := h.enqueue(t, "inbound@exemplo.com.br")
+	acc := h.repo.accounts[h.repo.touchpoints[draftID].AccountID]
+	acc.SourceSystem = models.SourceSystemInboundOnly
+	acc.InboundOnly = true
+	acc.TargetFitEligible = false
+	progressed, err := h.svc.ProcessFastLaneOnce(context.Background())
+	if err != nil || !progressed {
+		t.Fatalf("inbound-only row was not closed: progressed=%v err=%v", progressed, err)
+	}
+	h.assertNoSend(t, key, dispatch.QueueCancelled, FastLaneAccountInboundOnly)
+}
+
+func TestFastLaneMissingProviderEventIsUnknownNeverSuccess(t *testing.T) {
+	h := newFastLaneHarness(t, "", errors.New("provider returned no event"))
+	_, key := h.enqueue(t, "alvo@exemplo.com.br")
+	if _, err := h.svc.ProcessFastLaneOnce(context.Background()); err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	item := h.queueItem(t, key)
+	if item.Status != dispatch.QueueAttempted {
+		t.Fatalf("missing provider event status=%q want attempted", item.Status)
+	}
+	if !strings.Contains(item.LastError, "unknown_provider_result") {
+		t.Fatalf("missing provider event reason=%q", item.LastError)
+	}
+	if h.sendRecorded(t, key) {
+		t.Fatal("missing provider event was recorded as accepted")
+	}
+	for i := 0; i < 3; i++ {
+		_, _ = h.svc.ProcessFastLaneOnce(context.Background())
+	}
+	if h.transport.attempts != 1 {
+		t.Fatalf("UNKNOWN was retried: %d attempts", h.transport.attempts)
+	}
+}
+
+func TestFastLaneKillSwitchBlocksWithoutProviderCall(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnvKillSwitchPath, dir+"/kill")
+	if err := EngageKillSwitch(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ReleaseKillSwitch() })
+	h := newFastLaneHarness(t, FirstTouchAccepted, nil)
+	_, key := h.enqueue(t, "alvo@exemplo.com.br")
+	progressed, err := h.svc.ProcessFastLaneOnce(context.Background())
+	if err != nil {
+		t.Fatalf("kill switch process: %v", err)
+	}
+	if progressed {
+		t.Fatal("kill switch still claimed work")
+	}
+	if h.transport.attempts != 0 || h.sendRecorded(t, key) {
+		t.Fatal("kill switch reached the provider")
 	}
 }
 
