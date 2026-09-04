@@ -83,6 +83,26 @@ func TestPauseDispatchProvenanceAndResumeCannotBypassFile(t *testing.T) {
 	}
 }
 
+func TestPauseProvenanceHistoricalOmissionIsUnknownNotSystem(t *testing.T) {
+	got := MergePauseProvenance(dispatch.ControlState{}, killSwitchFile{}, false, "", false)
+	if got.Paused || got.PauseSource != "" {
+		t.Fatalf("idle: %+v", got)
+	}
+	pausedNoSource := MergePauseProvenance(dispatch.ControlState{Paused: true, PauseReason: "legacy"}, killSwitchFile{}, false, "", false)
+	if !pausedNoSource.Paused {
+		t.Fatalf("paused omission failed open: %+v", pausedNoSource)
+	}
+	if pausedNoSource.PauseSource != PauseSourceUnknown {
+		t.Fatalf("historical omission pause_source=%q want unknown", pausedNoSource.PauseSource)
+	}
+	if pausedNoSource.PauseSource == "system" {
+		t.Fatal("historical omission was invented as system")
+	}
+	if pausedNoSource.PausedBy != nil {
+		t.Fatal("historical actor was invented")
+	}
+}
+
 func TestPauseDispatchRecordsAPIActorWhenFileAbsent(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv(EnvKillSwitchPath, filepath.Join(dir, "kill"))

@@ -2,6 +2,8 @@ package confenge
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"sort"
 	"strings"
 	"time"
@@ -12,11 +14,13 @@ import (
 	"github.com/warmbly/warmbly/internal/models"
 )
 
-// CONFENGE_SALES_CONTEXT/1.0.
+// CONFENGE_SALES_CONTEXT_EXPORT/1.0 is the collection identity. Each item
+// keeps CONFENGE_SALES_CONTEXT/1.0, the individual dossier MeetCFG already
+// consumes. Labelling the collection with the item schema is SCHEMA_MISMATCH_COLLECTION.
 //
-// A flat, versioned artifact describing the hand-raisers the acquisition
-// engines produced, so a downstream sales tool can pick a conversation up
-// without a second data model and without calling back into Warmbly per row.
+// A flat, versioned projection of the hand-raisers the acquisition engines
+// produced, so a downstream sales tool can pick a conversation up without a
+// second data model and without calling back into Warmbly per row.
 //
 // It is a projection, not a store. Every field is copied from an
 // OutreachCommercialAction that already exists; nothing here scores, ranks,
@@ -24,8 +28,17 @@ import (
 // field is absent, because an empty field is honest and a filled one would not
 // be.
 
-// SalesContextSchemaV1 tags the artifact.
-const SalesContextSchemaV1 = "CONFENGE_SALES_CONTEXT/1.0"
+const (
+	// SalesContextExportSchemaV1 tags the collection/index artifact.
+	SalesContextExportSchemaV1 = "CONFENGE_SALES_CONTEXT_EXPORT/1.0"
+	// SalesContextSchemaV1 tags one item/dossiê. MeetCFG admits this identity
+	// fail-closed for a single hand-raiser; it must never appear on the collection.
+	SalesContextSchemaV1 = "CONFENGE_SALES_CONTEXT/1.0"
+
+	salesContextWrapperHandraiser = "handraiser"
+	salesContextWrapperAdmission  = "admission"
+	salesContextMappedFrom        = "outreach_commercial_action"
+)
 
 // salesContextScanLimit bounds how many open actions the export reads. It
 // matches the interrupt budget's scan: both project the same working queue.
@@ -56,13 +69,31 @@ type SalesContextTouchpoint struct {
 	StopReason string     `json:"stop_reason,omitempty"`
 }
 
+// SalesContextWrapper names how this item was projected. Kind is never guessed:
+// admission is the inbound-only net-new path; handraiser is every other
+// converged commercial action.
+type SalesContextWrapper struct {
+	Kind       string `json:"kind"`
+	MappedFrom string `json:"mapped_from"`
+}
+
 // SalesContextItem is one hand-raiser, fully described.
 type SalesContextItem struct {
-	ActionID  uuid.UUID `json:"action_id"`
-	AccountID uuid.UUID `json:"account_id"`
+	Schema string `json:"schema"`
+	// HandraiserID is the commercial-action identity under an explicit name.
+	// It equals ActionID; both are copies of the same row, not two records.
+	HandraiserID string              `json:"handraiser_id"`
+	ActionID     uuid.UUID           `json:"action_id"`
+	AccountID    uuid.UUID           `json:"account_id"`
+	Wrapper      SalesContextWrapper `json:"wrapper"`
 	// AcquisitionChannel is the engine of origin. Empty means the signal
 	// predates engine attribution; it is never guessed.
 	AcquisitionChannel string     `json:"acquisition_channel"`
+	Origin             string     `json:"origin,omitempty"`
+	Lane               string     `json:"lane,omitempty"`
+	Intent             string     `json:"intent,omitempty"`
+	Receipt            string     `json:"receipt,omitempty"`
+	InboundOnly        bool       `json:"inbound_only,omitempty"`
 	CompanyRef         string     `json:"company_ref,omitempty"`
 	CompanyName        string     `json:"company_name,omitempty"`
 	PersonName         string     `json:"person_name,omitempty"`
@@ -75,6 +106,9 @@ type SalesContextItem struct {
 	IntentReason string `json:"intent_reason,omitempty"`
 	// ReplyReason is the recorded outcome, when the row carries one.
 	ReplyReason         string `json:"reply_reason,omitempty"`
+	Outcome             string `json:"outcome,omitempty"`
+	Reason              string `json:"reason,omitempty"`
+	Freshness           string `json:"freshness,omitempty"`
 	ConversationStarted bool   `json:"conversation_started"`
 	// Facts and its limits travel together; Touchpoints is what has already
 	// been said to this person and what came back.
@@ -86,12 +120,15 @@ type SalesContextItem struct {
 	CreatedAt      time.Time                `json:"created_at"`
 }
 
-// SalesContextExport is the whole artifact.
+// SalesContextExport is the collection artifact. Schema is the collection
+// identity, never the item identity.
 type SalesContextExport struct {
 	Schema         string    `json:"schema"`
 	OrganizationID uuid.UUID `json:"organization_id"`
 	GeneratedAt    time.Time `json:"generated_at"`
 	Total          int       `json:"total"`
+	Limit          int       `json:"limit"`
+	NextCursor     string    `json:"next_cursor,omitempty"`
 	// ByEngine counts the artifact's own items per engine, so a reader can see
 	// which engine produced the context they are holding.
 	ByEngine     map[string]int     `json:"by_engine"`
@@ -101,13 +138,17 @@ type SalesContextExport struct {
 
 // ExportSalesContext projects the artifact from the hand-raisers the engines
 // already produced. Read-only: it reserves nothing, sends nothing, mutates no
-// row.
-func (s *service) ExportSalesContext(ctx context.Context, orgID uuid.UUID, limit int) (*SalesContextExport, *errx.Error) {
+// row. An invalid cursor is 400, not a silent first page.
+func (s *service) ExportSalesContext(ctx context.Context, orgID uuid.UUID, limit int, cursor string) (*SalesContextExport, *errx.Error) {
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, xerr
 	}
 	if limit <= 0 || limit > 200 {
 		limit = 50
+	}
+	cursorAt, cursorID, xerr := decodeSalesContextCursor(cursor)
+	if xerr != nil {
+		return nil, xerr
 	}
 	store := s.actionStore()
 	if store == nil {
@@ -118,8 +159,8 @@ func (s *service) ExportSalesContext(ctx context.Context, orgID uuid.UUID, limit
 		return nil, errx.New(errx.Internal, "failed to export sales context: "+err.Error())
 	}
 	out := &SalesContextExport{
-		Schema: SalesContextSchemaV1, OrganizationID: orgID,
-		GeneratedAt: s.now(), ByEngine: map[string]int{},
+		Schema: SalesContextExportSchemaV1, OrganizationID: orgID,
+		GeneratedAt: s.now(), Limit: limit, ByEngine: map[string]int{},
 	}
 	for _, engine := range EngineLanes {
 		out.ByEngine[engine] = 0
@@ -145,11 +186,24 @@ func (s *service) ExportSalesContext(ctx context.Context, orgID uuid.UUID, limit
 		}
 		items = append(items, item)
 	}
+	sortSalesContextItems(items)
+	if cursor != "" {
+		filtered := items[:0]
+		for _, item := range items {
+			if salesContextAfterCursor(item, cursorAt, cursorID) {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
+	}
 	out.Total = len(items)
-	// Newest first: a sales tool reads the top of this list.
-	sort.SliceStable(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })
 	if len(items) > limit {
+		next := items[limit-1]
+		out.NextCursor = encodeSalesContextCursor(next.CreatedAt, next.ActionID)
 		items = items[:limit]
+	}
+	if items == nil {
+		items = []SalesContextItem{}
 	}
 	out.Items = items
 	return out, nil
@@ -160,15 +214,37 @@ func salesContextItem(action *models.OutreachCommercialAction) SalesContextItem 
 	if company == "" {
 		company = strings.TrimSpace(action.SourceLeadID)
 	}
+	origin := HandRaiseOriginOf(action)
+	lane := NormalizeEngineLane(action.EngineLane)
+	intent := HandRaiseIntentOf(action)
+	receipt := HandRaiseReceiptOf(action)
+	inboundOnly := HandRaiseInboundOnlyOf(action)
+	outcome := strings.TrimSpace(action.OutcomeCode)
+	wrapperKind := salesContextWrapperHandraiser
+	if inboundOnly {
+		wrapperKind = salesContextWrapperAdmission
+	}
 	return SalesContextItem{
-		ActionID: action.ID, AccountID: action.AccountID, CandidateID: action.CandidateID,
-		AcquisitionChannel:  NormalizeEngineLane(action.EngineLane),
+		Schema:       SalesContextSchemaV1,
+		HandraiserID: action.ID.String(),
+		ActionID:     action.ID, AccountID: action.AccountID, CandidateID: action.CandidateID,
+		Wrapper: SalesContextWrapper{
+			Kind: wrapperKind, MappedFrom: salesContextMappedFrom,
+		},
+		AcquisitionChannel:  lane,
+		Origin:              origin,
+		Lane:                lane,
+		Intent:              intent,
+		Receipt:             receipt,
+		InboundOnly:         inboundOnly,
 		CompanyRef:          company,
 		CompanyName:         strings.TrimSpace(action.CompanyName),
 		PersonName:          strings.TrimSpace(action.PersonName),
 		OpportunityID:       opportunity,
 		IntentReason:        HandRaiseSignalOf(action),
-		ReplyReason:         strings.TrimSpace(action.OutcomeCode),
+		ReplyReason:         outcome,
+		Outcome:             outcome,
+		Reason:              firstNonEmpty(outcome, intent),
 		ConversationStarted: action.ConversationStarted,
 		Facts: SalesContextFacts{
 			WhyNow: strings.TrimSpace(action.WhyNow), FactualHook: strings.TrimSpace(action.FactualHook),
@@ -205,6 +281,100 @@ func salesContextTouchpoints(tps []models.OutreachTouchpoint) []SalesContextTouc
 		})
 	}
 	return out
+}
+
+func sortSalesContextItems(items []SalesContextItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		if !items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		}
+		return items[i].ActionID.String() > items[j].ActionID.String()
+	})
+}
+
+func encodeSalesContextCursor(createdAt time.Time, id uuid.UUID) string {
+	raw := createdAt.UTC().Format(time.RFC3339Nano) + "|" + id.String()
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+func decodeSalesContextCursor(cursor string) (time.Time, uuid.UUID, *errx.Error) {
+	cursor = strings.TrimSpace(cursor)
+	if cursor == "" {
+		return time.Time{}, uuid.Nil, nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return time.Time{}, uuid.Nil, errx.New(errx.BadRequest, "sales-context cursor is invalid")
+	}
+	atRaw, idRaw, ok := strings.Cut(string(raw), "|")
+	if !ok {
+		return time.Time{}, uuid.Nil, errx.New(errx.BadRequest, "sales-context cursor is invalid")
+	}
+	at, err := time.Parse(time.RFC3339Nano, atRaw)
+	if err != nil {
+		return time.Time{}, uuid.Nil, errx.New(errx.BadRequest, "sales-context cursor is invalid")
+	}
+	id, err := uuid.Parse(idRaw)
+	if err != nil {
+		return time.Time{}, uuid.Nil, errx.New(errx.BadRequest, "sales-context cursor is invalid")
+	}
+	return at.UTC(), id, nil
+}
+
+func salesContextAfterCursor(item SalesContextItem, cursorAt time.Time, cursorID uuid.UUID) bool {
+	if item.CreatedAt.Before(cursorAt) {
+		return true
+	}
+	if item.CreatedAt.After(cursorAt) {
+		return false
+	}
+	return item.ActionID.String() < cursorID.String()
+}
+
+// SalesContextLogicalID is the replay identity of one item: schema plus the
+// hand-raiser it projects. GeneratedAt is excluded on purpose.
+func SalesContextLogicalID(item SalesContextItem) string {
+	return strings.Join([]string{item.Schema, item.HandraiserID, item.ActionID.String()}, "|")
+}
+
+// SalesContextExportMustNotInvent reports fields a projection is forbidden to
+// mint. Used by the contract test so a future field cannot quietly appear.
+func SalesContextExportMustNotInvent() []string {
+	return []string{"cnpj", "cargo", "decisor", "fit", "chance", "prazo", "prova"}
+}
+
+// SalesContextJSONHasInventedField scans a marshaled artifact for forbidden keys.
+func SalesContextJSONHasInventedField(raw []byte) string {
+	var walk func(v any, path string) string
+	walk = func(v any, path string) string {
+		switch typed := v.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				lower := strings.ToLower(key)
+				for _, banned := range SalesContextExportMustNotInvent() {
+					if lower == banned {
+						return path + key
+					}
+				}
+				if found := walk(child, path+key+"."); found != "" {
+					return found
+				}
+			}
+		case []any:
+			for i, child := range typed {
+				if found := walk(child, path); found != "" {
+					return found
+				}
+				_ = i
+			}
+		}
+		return ""
+	}
+	var root any
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return ""
+	}
+	return walk(root, "")
 }
 
 // HandRaiseSignalOf reads the converged signal back off an action's own

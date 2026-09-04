@@ -130,6 +130,11 @@ func (h *Handler) ConfengeInboundWebhook(c *gin.Context) {
 		c.JSON(http.StatusCreated, gin.H{"data": res})
 		return
 	}
+	if liveintel.IsOfficialLiveIntelligenceBundle(body) {
+		errx.JSON(c, errx.NewWithIdentifier(errx.BadRequest, "confenge_opportunity_event_"+liveintel.ReasonEventOfficialBundle,
+			"official live-intelligence bundle is not an opportunity event"))
+		return
+	}
 	if liveintel.IsOpportunityEventEnvelope(body) {
 		event, err := liveintel.ParseOpportunityEvent(body)
 		if err != nil {

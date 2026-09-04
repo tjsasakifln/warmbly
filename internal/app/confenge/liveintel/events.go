@@ -55,6 +55,9 @@ type OpportunityEvent struct {
 	OrgID      uuid.UUID         `json:"org_id"`
 	OccurredAt time.Time         `json:"occurred_at"`
 	Payload    map[string]string `json:"payload"`
+	// Official extra-cli#530 attributes. Absent on the current webhook binding;
+	// when present they are fail-closed, never defaulted to safe.
+	OfficialOpportunityFields
 }
 
 // Validate reports whether the event can be acted on, and why not when it

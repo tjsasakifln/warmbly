@@ -59,12 +59,15 @@ func (s *service) IngestOpportunityEvent(ctx context.Context, orgID uuid.UUID, e
 	if orgID == uuid.Nil {
 		return nil, errx.New(errx.ServiceUnavailable, "inbound org is not configured")
 	}
-	event.Schema = liveintel.EventSchemaV1
 	event.OrgID = orgID
-	if ok, reason := event.Validate(); !ok {
+	admitted, reason := liveintel.AdmitOfficialOpportunityEvent(event)
+	if reason != "" {
 		return nil, errx.NewWithIdentifier(errx.BadRequest, "confenge_opportunity_event_"+reason,
 			"opportunity event rejected: "+reason)
 	}
+	event = admitted
+	event.Schema = liveintel.EventSchemaV1
+	event.OrgID = orgID
 	if s.intelWatchInbox == nil {
 		return nil, errx.NewWithIdentifier(errx.ServiceUnavailable, "confenge_opportunity_event_inbox_unavailable",
 			"opportunity event inbox is not wired")

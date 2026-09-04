@@ -165,9 +165,9 @@ type Service interface {
 	// PersistHandRaise converges one hand-raise signal onto the commercial
 	// action surface, stamped with its engine of origin.
 	PersistHandRaise(ctx context.Context, raise HandRaise) (*models.OutreachCommercialAction, *errx.Error)
-	// ExportSalesContext projects one CONFENGE_SALES_CONTEXT/1.0 artifact from
-	// the commercial actions the engines already produced.
-	ExportSalesContext(ctx context.Context, orgID uuid.UUID, limit int) (*SalesContextExport, *errx.Error)
+	// ExportSalesContext projects one CONFENGE_SALES_CONTEXT_EXPORT/1.0 collection
+	// whose items keep CONFENGE_SALES_CONTEXT/1.0. An invalid cursor is 400.
+	ExportSalesContext(ctx context.Context, orgID uuid.UUID, limit int, cursor string) (*SalesContextExport, *errx.Error)
 	// ResolveOutboundMailbox answers which mailbox CONFENGE mail leaves from,
 	// using the same rules the fast lane uses.
 	ResolveOutboundMailbox(ctx context.Context, orgID uuid.UUID) (uuid.UUID, error)

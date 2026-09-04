@@ -15,7 +15,7 @@ import (
 //
 // G: a hand raise from each wired engine converges to the right engine_lane and
 //    shows up correctly in the interrupt budget's by_engine and in the
-//    CONFENGE_SALES_CONTEXT/1.0 export.
+//    CONFENGE_SALES_CONTEXT_EXPORT/1.0 collection.
 
 // newWebIntentService builds a service over the in-memory repository with one
 // account and one contact already in the book, so intake has something to match.
@@ -149,12 +149,12 @@ func TestInterruptBudgetAndSalesContextAttributeEachEngine(t *testing.T) {
 		t.Fatalf("unattributed = %d, want 0 now that every writer stamps a lane", budget.Unattributed)
 	}
 
-	export, xerr := svc.ExportSalesContext(ctx, orgID, 50)
+	export, xerr := svc.ExportSalesContext(ctx, orgID, 50, "")
 	if xerr != nil {
 		t.Fatal(xerr)
 	}
-	if export.Schema != SalesContextSchemaV1 {
-		t.Fatalf("schema = %q", export.Schema)
+	if export.Schema != SalesContextExportSchemaV1 {
+		t.Fatalf("collection schema = %q", export.Schema)
 	}
 	if export.Total != len(lanes) {
 		t.Fatalf("export total = %d, want %d", export.Total, len(lanes))
