@@ -63,7 +63,24 @@ const (
 	OutreachQueueDoNotContact        = "DO_NOT_CONTACT"
 	OutreachQueueSkipped             = "SKIPPED"
 	OutreachQueueTargetFitSuppressed = "TARGET_FIT_SUPPRESSED"
+
+	// SourceSystemInboundOnly is the durable marker for a net-new commercial
+	// representation admitted only to receive inbound hand-raisers.
+	SourceSystemInboundOnly = "inbound_only"
 )
+
+// AccountIsInboundOnly reports a representation that must not become outbound
+// eligible by default. SourceSystem is the durable Postgres marker; InboundOnly
+// is the in-memory/readback flag.
+func AccountIsInboundOnly(a *OutreachAccount) bool {
+	if a == nil {
+		return false
+	}
+	if a.InboundOnly {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(a.SourceSystem), SourceSystemInboundOnly)
+}
 
 // Import run statuses.
 const (
@@ -257,6 +274,10 @@ type OutreachAccount struct {
 	CommercialQualificationObservedAt         *time.Time `json:"commercial_qualification_observed_at,omitempty"`
 	CommercialQualificationDeactivated        bool       `json:"commercial_qualification_deactivated,omitempty"`
 	CommercialQualificationDeactivationReason string     `json:"commercial_qualification_deactivation_reason,omitempty"`
+
+	// InboundOnly is a commercial representation admitted for a hand-raiser
+	// that had no pre-existing account. It is never outbound-eligible by default.
+	InboundOnly bool `json:"inbound_only,omitempty"`
 
 	// Joined / computed (not always filled).
 	Contacts  []OutreachContactCandidate `json:"contacts,omitempty"`

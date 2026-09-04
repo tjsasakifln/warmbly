@@ -35,6 +35,11 @@ func (s *service) PersistHandRaise(ctx context.Context, raise HandRaise) (*model
 		return existing, nil
 	}
 	if err := store.UpsertCommercialAction(ctx, action); err != nil {
+		// Concurrent replay of the same logical key loses the insert and
+		// must return the winner, not a 500.
+		if existing, getErr := store.GetCommercialActionByIdempotency(ctx, action.OrganizationID, action.IdempotencyKey); getErr == nil && existing != nil {
+			return existing, nil
+		}
 		return nil, errx.New(errx.Internal, "persist hand raise: "+err.Error())
 	}
 	return action, nil

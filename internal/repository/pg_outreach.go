@@ -560,6 +560,7 @@ func scanAccount(row scannable) (*models.OutreachAccount, error) {
 	_ = json.Unmarshal(roleReasons, &a.ContractorRoleReasonCodes)
 	a.ContractsJSON = contracts
 	a.ScoreComponentsJSON = scoreComp
+	a.InboundOnly = models.AccountIsInboundOnly(&a)
 	return &a, nil
 }
 

@@ -39,6 +39,9 @@ const (
 	// FirstTouchAmbiguous means we do not know whether the message left. It is
 	// never retried: a duplicate cold email is worse than a delayed one.
 	FirstTouchAmbiguous FirstTouchOutcome = "ambiguous"
+	// FirstTouchUnknown means the provider emitted nothing classifiable. It is
+	// never treated as accepted or delivered.
+	FirstTouchUnknown FirstTouchOutcome = "UNKNOWN"
 )
 
 // Named first-touch stop reasons. Matching rows are cancelled and never handed
@@ -47,7 +50,9 @@ const (
 	FastLaneFollowUpNotAuthorized = "FOLLOW_UP_NOT_AUTHORIZED"
 	FastLaneRecipientOptOut       = "recipient_opt_out"
 	FastLaneRecipientComplaint    = "recipient_complaint"
+	FastLaneRecipientBounce       = "recipient_hard_bounce"
 	FastLaneAccountReplied        = "account_already_replied"
+	FastLaneAccountInboundOnly    = "account_inbound_only"
 )
 
 // FirstTouchMessage is the exact approved payload handed to the provider.
@@ -318,6 +323,9 @@ func (s *service) ProcessFastLaneOnce(ctx context.Context) (bool, error) {
 		},
 	})
 
+	if outcome == "" {
+		outcome = FirstTouchUnknown
+	}
 	switch outcome {
 	case FirstTouchAccepted:
 		if acceptance.AcceptedAt.IsZero() {
@@ -353,6 +361,9 @@ func (s *service) ProcessFastLaneOnce(ctx context.Context) (bool, error) {
 
 	case FirstTouchAmbiguous:
 		return s.fastLaneParkUnknown(ctx, item, res.Reservation.ID, sendErr, "ambiguous_provider_result")
+
+	case FirstTouchUnknown:
+		return s.fastLaneParkUnknown(ctx, item, res.Reservation.ID, sendErr, "unknown_provider_result")
 
 	case FirstTouchTransient:
 		// A stop that arrived around MAIL/RCPT/DATA (DNC, suppression, opt-out,
@@ -482,6 +493,9 @@ func (s *service) fastLaneBlock(ctx context.Context, item *dispatch.QueueItem, t
 	if err != nil || account == nil {
 		return "account_safety_lookup_failed", false, true
 	}
+	if models.AccountIsInboundOnly(account) {
+		return FastLaneAccountInboundOnly, false, false
+	}
 	if account.Blocked || account.DoNotContact {
 		return "account_blocked_or_dnc", false, false
 	}
@@ -557,6 +571,8 @@ func (s *service) fastLaneBlock(ctx context.Context, item *dispatch.QueueItem, t
 				return FastLaneRecipientOptOut, false, false
 			case models.DeliverabilityEventComplaint:
 				return FastLaneRecipientComplaint, false, false
+			case models.DeliverabilityEventBounce:
+				return FastLaneRecipientBounce, false, false
 			default:
 				return "recipient_suppressed:" + string(suppression.Source), false, false
 			}

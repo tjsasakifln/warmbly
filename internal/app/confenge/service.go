@@ -49,6 +49,9 @@ type Service interface {
 	// CollectFirstWindowReadiness evaluates READY_FOR_GO_ADJUDICATION or
 	// BLOCKED:<reason> without sending mail. It never emits GO_FOR_CONTROLLED_EMAIL_PILOT.
 	CollectFirstWindowReadiness(ctx context.Context, orgID uuid.UUID) (*FirstWindowReadinessReport, *errx.Error)
+	// CollectOutboundGOPacket emits the hash-bound human-decision packet
+	// GO_FOR_CONTROLLED_EMAIL_PILOT vs NO_GO without sending mail.
+	CollectOutboundGOPacket(ctx context.Context, orgID uuid.UUID) (*OutboundGOPacket, *errx.Error)
 
 	// ImportFromBytes validates and optionally applies a feed payload.
 	ImportFromBytes(ctx context.Context, orgID uuid.UUID, userID *uuid.UUID, raw []byte, opts ImportOptions) (*models.OutreachImportRun, *errx.Error)

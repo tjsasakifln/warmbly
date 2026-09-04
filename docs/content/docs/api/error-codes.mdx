@@ -464,15 +464,20 @@ rejections return `400`.
 | `confenge_web_intent_consent_provenance_missing` | A `MONITOR_*` intent arrived without `consent_source`, `consent_at` and `consent_provenance_ok`. Only the monitor intents put an address on a standing mail list, so only they require consent provenance |
 | `confenge_web_intent_cadence_unknown` | `cadence` is not `immediate`, `daily` or `weekly` |
 | `confenge_web_intent_store_unavailable` | `503`. The subscription store is not wired, so consent could not be recorded |
+| `inbound_only_admission_failed` | A valid-contact `REQUEST_*` could not be admitted as an inbound-only representation. Nothing was silently dropped |
+| `UNKNOWN` | Admission or queue convergence failed without a more specific reason. The request is not treated as accepted |
 
 Accepted `MONITOR_*` envelopes return `201` with a `subscription_id` and a
 canonical `subject_key` of the form `company:<company_ref>` or
 `opportunity:<opportunity_id>`. No other subject-key shape is produced by this
-path. Accepted `REQUEST_*` envelopes return `201` with an `action_id`; when the
-contact does not resolve to a known account the response carries
-`matched: false` and `reason: contact_not_matched_to_account` instead, because
-a commercial action is filed against an account and inventing one would be
-worse than saying so.
+path. Accepted `REQUEST_*` envelopes return `201` with an `action_id` on the unique
+commercial queue. When the contact does not resolve to a known account, Warmbly
+admits one inbound-only commercial representation (origin, lane, intent,
+context and receipt preserved) instead of dropping the request. `inbound_only`
+never becomes outbound-eligible by default. A reject or `UNKNOWN` carries an
+explicit `code`; a valid-contact `REQUEST_*` is never discarded because no
+account existed. Replay of the same origin, intent and contact converges to one
+logical intent.
 
 ### `CONFENGE_OPPORTUNITY_EVENT/1.0`
 

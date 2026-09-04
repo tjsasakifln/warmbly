@@ -197,7 +197,7 @@ Its callers:
 
 | Engine | Call site | Signal |
 | --- | --- | --- |
-| `confenge_web` | `IngestWebIntent`, on a `REQUEST_DEEP_DIVE` or `REQUEST_HUMAN_REVIEW` envelope | `REQUEST_DEEP_DIVE` / `REQUEST_HUMAN_REVIEW` |
+| `confenge_web` | `IngestWebIntent`, on a `REQUEST_DEEP_DIVE` or `REQUEST_HUMAN_REVIEW` envelope. A valid contact with no account is admitted inbound-only and still lands on this queue | `REQUEST_DEEP_DIVE` / `REQUEST_HUMAN_REVIEW` |
 | `outbound_first_touch` | `convergeReplyHandRaise`, from `ProcessInboundHandoff` on a positive reply correlated to a first-touch touchpoint | `POSITIVE_REPLY_FIRST_TOUCH` |
 | `intel_seed` | the same reply path, when the caller declares `InboundHandoff.EngineLane` | `INTEL_SEED_RESPONSE` |
 

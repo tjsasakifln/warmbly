@@ -109,6 +109,13 @@ type HandRaise struct {
 	// when the engine knows one. It is recorded as provenance, never as a
 	// routing input: nothing in the mapping reads it.
 	SubjectKey string
+	// Origin/Receipt/Context are Governance#65 admission provenance. They are
+	// recorded on the action so a human can read them back; they are not
+	// routing inputs.
+	Origin      string
+	Receipt     string
+	Context     string
+	InboundOnly bool
 }
 
 // handRaiseSubjectEvidencePrefix marks the subject key inside EvidenceIDs. The
@@ -230,7 +237,70 @@ func ConvergeHandRaise(raise HandRaise) *models.OutreachCommercialAction {
 	if subject := strings.TrimSpace(raise.SubjectKey); subject != "" {
 		action.EvidenceIDs = append(action.EvidenceIDs, handRaiseSubjectEvidencePrefix+subject)
 	}
+	if origin := NormalizeEngineLane(firstNonEmpty(raise.Origin, raise.EngineLane)); origin != EngineLaneUnattributed {
+		action.EvidenceIDs = append(action.EvidenceIDs, inboundOnlyOriginPrefix+origin)
+	}
+	if intent := strings.TrimSpace(string(raise.Signal)); intent != "" {
+		action.EvidenceIDs = append(action.EvidenceIDs, inboundOnlyIntentPrefix+intent)
+	}
+	if receipt := strings.TrimSpace(raise.Receipt); receipt != "" {
+		action.EvidenceIDs = append(action.EvidenceIDs, inboundOnlyReceiptPrefix+receipt)
+	}
+	if ctxText := strings.TrimSpace(raise.Context); ctxText != "" {
+		action.EvidenceIDs = append(action.EvidenceIDs, inboundOnlyContextPrefix+SanitizeText(ctxText, 200))
+	}
+	if raise.InboundOnly {
+		action.EvidenceIDs = append(action.EvidenceIDs, inboundOnlyFlagEvidence, inboundOnlyNotOutbound)
+	}
 	return action
+}
+
+// HandRaiseOriginOf reads the recorded origin back off an action.
+func HandRaiseOriginOf(action *models.OutreachCommercialAction) string {
+	return handRaiseEvidenceValue(action, inboundOnlyOriginPrefix)
+}
+
+// HandRaiseReceiptOf reads the recorded receipt back off an action.
+func HandRaiseReceiptOf(action *models.OutreachCommercialAction) string {
+	return handRaiseEvidenceValue(action, inboundOnlyReceiptPrefix)
+}
+
+// HandRaiseIntentOf reads the recorded intent kind back off an action.
+func HandRaiseIntentOf(action *models.OutreachCommercialAction) string {
+	if got := handRaiseEvidenceValue(action, inboundOnlyIntentPrefix); got != "" {
+		return got
+	}
+	return HandRaiseSignalOf(action)
+}
+
+// HandRaiseContextOf reads the recorded context back off an action.
+func HandRaiseContextOf(action *models.OutreachCommercialAction) string {
+	return handRaiseEvidenceValue(action, inboundOnlyContextPrefix)
+}
+
+// HandRaiseInboundOnlyOf reports whether the action was admitted inbound-only.
+func HandRaiseInboundOnlyOf(action *models.OutreachCommercialAction) bool {
+	if action == nil {
+		return false
+	}
+	for _, id := range action.EvidenceIDs {
+		if id == inboundOnlyFlagEvidence {
+			return true
+		}
+	}
+	return false
+}
+
+func handRaiseEvidenceValue(action *models.OutreachCommercialAction, prefix string) string {
+	if action == nil {
+		return ""
+	}
+	for _, id := range action.EvidenceIDs {
+		if strings.HasPrefix(id, prefix) {
+			return strings.TrimPrefix(id, prefix)
+		}
+	}
+	return ""
 }
 
 // handRaiseStartsAConversation reports whether the signal is itself evidence a

@@ -67,10 +67,17 @@ type WebIntentResult struct {
 	SubscriptionID *uuid.UUID `json:"subscription_id,omitempty"`
 	ActionID       *uuid.UUID `json:"action_id,omitempty"`
 	// Matched reports whether the contact email resolved to a known account.
-	// An unmatched REQUEST_* cannot converge, because a commercial action is
-	// filed against an account; saying so is better than inventing one.
-	Matched bool   `json:"matched"`
-	Reason  string `json:"reason,omitempty"`
+	Matched bool `json:"matched"`
+	// InboundOnly is true when admission created or reused a Governance#65
+	// inbound-only representation because no outbound account existed.
+	InboundOnly bool `json:"inbound_only,omitempty"`
+	// OutboundEligible is never true for an inbound-only representation.
+	OutboundEligible bool       `json:"outbound_eligible,omitempty"`
+	Origin           string     `json:"origin,omitempty"`
+	Context          string     `json:"context,omitempty"`
+	Receipt          string     `json:"receipt,omitempty"`
+	AccountID        *uuid.UUID `json:"account_id,omitempty"`
+	Reason           string     `json:"reason,omitempty"`
 }
 
 // WebIntentSubjectKey canonicalizes the subject a web intent points at. It is
@@ -231,14 +238,15 @@ func (s *service) IngestWebIntent(ctx context.Context, orgID uuid.UUID, env inte
 		EngineLane: EngineLaneConfengeWeb, SubjectKey: subject,
 	}
 
-	// The account and contact are looked up, never created. A web intent is
-	// evidence about a person; it is not authority to add them to the book.
+	// MONITOR_* looks up and never creates. REQUEST_* admits an inbound-only
+	// representation when no account exists; absence of an account is not a drop.
 	var cand *models.OutreachContactCandidate
 	var acc *models.OutreachAccount
 	if s.repo != nil {
 		found, account, err := s.repo.FindCandidateByEmail(ctx, orgID, email)
 		if err != nil {
-			return nil, errx.New(errx.Internal, "confenge web intent contact lookup: "+err.Error())
+			return nil, errx.NewWithIdentifier(errx.Internal, WebIntentReasonUnknown,
+				"confenge web intent contact lookup: "+err.Error())
 		}
 		cand, acc = found, account
 	}
@@ -293,18 +301,51 @@ func (s *service) webIntentHandRaise(ctx context.Context, orgID uuid.UUID, kind 
 		return nil, errx.NewWithIdentifier(errx.BadRequest, WebIntentReasonKindUnknown,
 			"unknown confenge web intent_kind")
 	}
+	contextText := SanitizeText(firstNonEmpty(env.Evidence, env.Topic, env.Notes), 500)
 	if acc == nil {
-		// A commercial action is filed against an account. Without one there is
-		// nothing to file, and inventing an account would be worse than saying so.
-		result.Reason = "contact_not_matched_to_account"
-		return result, nil
+		// A valid contact with no account is admitted inbound-only. Dropping it
+		// as contact_not_matched_to_account was the #47 structural defect.
+		admitted, xerr := s.AdmitInboundOnly(ctx, orgID, EngineLaneConfengeWeb, kind,
+			env.ContactEmail, env.ContactName, result.SubjectKey, contextText, now)
+		if xerr != nil {
+			if xerr.Identifier == "" {
+				xerr.Identifier = WebIntentReasonUnknown
+			}
+			return nil, xerr
+		}
+		if admitted == nil || admitted.Account == nil {
+			return nil, errx.NewWithIdentifier(errx.Internal, WebIntentReasonUnknown,
+				"inbound-only admission returned no representation")
+		}
+		acc = admitted.Account
+		cand = admitted.Candidate
+		result.InboundOnly = true
+		result.OutboundEligible = false
+		result.Origin = admitted.Origin
+		result.Context = admitted.Context
+		result.Receipt = admitted.Receipt
+		id := acc.ID
+		result.AccountID = &id
+	} else {
+		result.Origin = EngineLaneConfengeWeb
+		result.Context = contextText
+		result.Receipt = InboundReceiptID(EngineLaneConfengeWeb, kind, env.ContactEmail, result.SubjectKey)
+		id := acc.ID
+		result.AccountID = &id
+		result.InboundOnly = models.AccountIsInboundOnly(acc)
+		result.OutboundEligible = accountOutboundEligible(acc)
 	}
+	result.Matched = acc != nil
 	raise := HandRaise{
 		OrganizationID: orgID, AccountID: acc.ID,
 		Signal: signal, EngineLane: EngineLaneConfengeWeb, OccurredAt: now,
-		SubjectKey: result.SubjectKey,
-		Evidence:   SanitizeText(firstNonEmpty(env.Evidence, env.Topic), 500),
-		HumanNotes: SanitizeText(env.Notes, 1000),
+		SubjectKey:  result.SubjectKey,
+		Evidence:    contextText,
+		HumanNotes:  SanitizeText(env.Notes, 1000),
+		Origin:      EngineLaneConfengeWeb,
+		Receipt:     result.Receipt,
+		Context:     contextText,
+		InboundOnly: result.InboundOnly,
 	}
 	if env.OccurredAt != nil && !env.OccurredAt.IsZero() {
 		raise.OccurredAt = env.OccurredAt.UTC()
@@ -319,11 +360,16 @@ func (s *service) webIntentHandRaise(ctx context.Context, orgID uuid.UUID, kind 
 	}
 	action, xerr := s.PersistHandRaise(ctx, raise)
 	if xerr != nil {
+		if xerr.Identifier == "" {
+			xerr.Identifier = WebIntentReasonUnknown
+		}
 		return nil, xerr
 	}
-	if action != nil {
-		id := action.ID
-		result.ActionID = &id
+	if action == nil {
+		return nil, errx.NewWithIdentifier(errx.Internal, WebIntentReasonUnknown,
+			"hand-raise did not converge onto the commercial queue")
 	}
+	id := action.ID
+	result.ActionID = &id
 	return result, nil
 }
