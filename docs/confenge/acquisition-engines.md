@@ -227,27 +227,40 @@ caller.
 
 ## `GET /confenge/sales-context`
 
-The `CONFENGE_SALES_CONTEXT/1.0` artifact. A flat, versioned projection of the
-hand-raisers the engines produced, so a downstream sales tool can pick a
-conversation up without a second data model and without calling back per row.
+The collection identity is `CONFENGE_SALES_CONTEXT_EXPORT/1.0`. Each item keeps
+`CONFENGE_SALES_CONTEXT/1.0`, the individual dossier MeetCFG already consumes.
+Labelling the collection with the item schema is a producer bug
+(`SCHEMA_MISMATCH_COLLECTION`); MeetCFG admits fail-closed and must not be
+taught to accept the wrong payload.
+
+A flat, versioned projection of the hand-raisers the engines produced, so a
+downstream sales tool can pick a conversation up without a second data model
+and without calling back per row.
 
 Implementation: `internal/app/confenge/sales_context.go`
 (`ExportSalesContext`), handler `GetConfengeSalesContext`, same auth, gating and
-`limit` rules as the interrupt budget, and the same read-only guarantee: it
-reserves nothing, sends nothing and mutates no row.
+`limit` rules as the interrupt budget, plus an opaque `cursor` for
+deterministic newest-first pagination. Invalid cursors are 400. The endpoint is
+read-only: it reserves nothing, sends nothing and mutates no row.
 
 It reads the same open commercial actions the interrupt budget reads and keeps
 only the hand-raisers. Every field is copied from a row that already exists.
 Nothing here scores, ranks or infers intent, and where the underlying row has no
 answer the field is absent, because an empty field is honest and a filled one
-would not be.
+would not be. CNPJ, cargo, decisor, fit, chance, prazo and prova are never
+invented.
 
-Per item: `acquisition_channel` (the engine lane), `company_ref` and
-`opportunity_id`, `company_name`, `person_name`, `intent_reason` (the converged
-signal, read back off the row's own idempotency key), `reply_reason`,
-`conversation_started`, a `facts` block carrying `why_now`, `factual_hook`,
-`evidence_ids` as provenance and `confidence` plus `stated_limits` as the limits
-travelling with them, the account's `touchpoints`, and the next action.
+Per item: `schema` (`CONFENGE_SALES_CONTEXT/1.0`), an explicit `wrapper`
+(`kind` is `admission` for inbound-only net-new rows and `handraiser`
+otherwise, `mapped_from` is `outreach_commercial_action`), `handraiser_id`,
+`origin`, `lane`, `intent`, `receipt`, `inbound_only`, `acquisition_channel`,
+`company_ref` and `opportunity_id`, `company_name`, `person_name`,
+`intent_reason` (the converged signal, read back off the row's own idempotency
+key), `reply_reason` / `outcome` / `reason`, `conversation_started`, a `facts`
+block carrying `why_now`, `factual_hook`, `evidence_ids` as provenance and
+`confidence` plus `stated_limits` as the limits travelling with them, the
+account's `touchpoints`, and the next action. Replay of the same projection
+yields one logical representation per hand-raiser.
 
 There is no claim-safety field. No live claim-safety or attestation concept
 exists in the repo to source one from, and inventing one would be a claim the

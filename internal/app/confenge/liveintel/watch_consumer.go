@@ -152,9 +152,9 @@ func (c *Consumer) HandleEvent(ctx context.Context, event OpportunityEvent) (Han
 	if c == nil || c.store == nil {
 		return HandleResult{}, fmt.Errorf("intel watch consumer has no store")
 	}
-	if ok, reason := event.Validate(); !ok {
-		// A malformed event is discarded, not retried: no producer replay can
-		// make it well-formed.
+	if _, reason := AdmitOfficialOpportunityEvent(event); reason != "" {
+		// A malformed, stale, rejected or unofficial event is discarded, not
+		// retried: no producer replay can make it well-formed.
 		log.Warn().Str("event_id", event.EventID).Str("reason", reason).
 			Msg("confenge intel watch: event rejected")
 		return HandleResult{Skipped: reason}, nil

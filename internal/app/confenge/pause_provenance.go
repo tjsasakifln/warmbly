@@ -18,6 +18,8 @@ const (
 	PauseSourceEnvironment   = "environment"
 	PauseSourceDurable       = "durable_control"
 	PauseSourceConfiguration = "configuration"
+	// PauseSourceUnknown is historical omission. It is never invented as "system".
+	PauseSourceUnknown = "unknown"
 )
 
 // PauseProvenance is the additive readback for who paused dispatch, when, and
@@ -226,8 +228,8 @@ func MergePauseProvenance(ctrl dispatch.ControlState, file killSwitchFile, envPa
 	if durableSource == "" {
 		if ctrl.PausedBy != nil && *ctrl.PausedBy != uuid.Nil {
 			durableSource = PauseSourceAPI
-		} else {
-			durableSource = PauseSourceDurable
+		} else if ctrl.Paused {
+			durableSource = PauseSourceUnknown
 		}
 	}
 	consider(durableSource, durableReason, ctrl.Paused)
@@ -253,6 +255,9 @@ func MergePauseProvenance(ctrl dispatch.ControlState, file killSwitchFile, envPa
 		out.PauseSource = PauseSourceKillSwitch
 		out.PauseReason = file.Reason
 		out.PauseSources = appendUnique(out.PauseSources, PauseSourceKillSwitch)
+	}
+	if out.Paused && strings.TrimSpace(out.PauseSource) == "" {
+		out.PauseSource = PauseSourceUnknown
 	}
 	return out
 }

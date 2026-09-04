@@ -1306,11 +1306,10 @@ func (h *Handler) GetConfengeInterruptBudget(c *gin.Context) {
 
 // GetConfengeSalesContext — GET /confenge/sales-context
 //
-// The CONFENGE_SALES_CONTEXT/1.0 artifact: the hand-raisers the acquisition
-// engines produced, with their facts, provenance, stated limits and
-// touchpoints, so a downstream sales tool can pick a conversation up without a
-// second data model. Read-only, and a projection over the same commercial
-// actions the interrupt budget reads.
+// The CONFENGE_SALES_CONTEXT_EXPORT/1.0 collection: the hand-raisers the
+// acquisition engines produced, each item tagged CONFENGE_SALES_CONTEXT/1.0.
+// Read-only, and a projection over the same commercial actions the interrupt
+// budget reads. Cursor pagination is deterministic newest-first.
 func (h *Handler) GetConfengeSalesContext(c *gin.Context) {
 	orgID, ok := h.confengeOrg(c)
 	if !ok {
@@ -1325,7 +1324,8 @@ func (h *Handler) GetConfengeSalesContext(c *gin.Context) {
 		}
 		limit = n
 	}
-	export, xerr := h.ConfengeService.ExportSalesContext(c.Request.Context(), orgID, limit)
+	cursor := strings.TrimSpace(c.Query("cursor"))
+	export, xerr := h.ConfengeService.ExportSalesContext(c.Request.Context(), orgID, limit, cursor)
 	if xerr != nil {
 		errx.JSON(c, xerr)
 		return
