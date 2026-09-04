@@ -114,6 +114,19 @@ func (h *Handler) ConfengeInboundWebhook(c *gin.Context) {
 		c.JSON(status, gin.H{"data": res})
 		return
 	}
+	if confenge.IsNetNewInboundHandraiserEnvelope(body) {
+		res, xerr := h.ConfengeService.IngestNetNewInboundHandraiser(c.Request.Context(), orgID, body, time.Now().UTC())
+		if xerr != nil {
+			errx.JSON(c, xerr)
+			return
+		}
+		status := http.StatusCreated
+		if res != nil && res.Replay {
+			status = http.StatusOK
+		}
+		c.JSON(status, gin.H{"data": res})
+		return
+	}
 	// Checked before the inbound-lead fallthrough, which would otherwise
 	// swallow both of these: neither carries a lead shape.
 	if intel.IsWebIntentEnvelope(body) {
@@ -166,6 +179,25 @@ func (h *Handler) ConfengeInboundWebhook(c *gin.Context) {
 		status = http.StatusOK
 	}
 	c.JSON(status, gin.H{"data": res})
+}
+
+// GetConfengeInboundHandraiser — GET /confenge/inbound/handraisers/:logicalId
+func (h *Handler) GetConfengeInboundHandraiser(c *gin.Context) {
+	orgID, ok := h.confengeOrg(c)
+	if !ok {
+		return
+	}
+	logicalID := strings.TrimSpace(c.Param("logicalId"))
+	if logicalID == "" {
+		errx.JSON(c, errx.New(errx.BadRequest, "logical_id is required"))
+		return
+	}
+	res, xerr := h.ConfengeService.ReadbackNetNewInboundHandraiser(c.Request.Context(), orgID, logicalID)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": res})
 }
 
 // ListConfengeInboundNow — GET /confenge/inbound
