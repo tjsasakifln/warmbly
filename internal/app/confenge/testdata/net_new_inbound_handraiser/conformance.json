@@ -1,0 +1,69 @@
+{
+  "campaign_id": "07",
+  "audience": ["web-cfg#580/campaign-08", "Meetcfg#1/campaign-14"],
+  "authority": "test-only coordination fixture; goal 97 ratifies. Runtime without this pin fails closed.",
+  "pin_material": "CONFENGE_CORPORATE_TAXONOMY/1.0.0-draft.20260904\nnuclei=expert_evidence_assistance,property_valuation,building_engineering_documentation,occupational_safety,public_works_b2g\nCONFENGE_OFFER_CATALOG/2.0.0-draft.20260904\nCONFENGE_WEB_INTAKE/2.0.0-draft.20260904\nNET_NEW_INBOUND_HANDRAISER/1.0.0-draft.20260904\nCONFENGE_HANDRAISER_STATE/1.0.0-draft.20260904\nMEETCFG_HANDRAISER_CONTEXT/1.0.0-draft.20260904\nsource=CONFENGE_WEB\nlane=CONFENGE_WEB\nasset=private_project_technical_readiness_v1\noffer=private_project_technical_readiness_assessment\ninvariants=outbound_eligible=false,auto_send=false",
+  "schema_hash": "92bafd8b644b1355bcf457e2aa55a7a902030234cc65139bd1c2a24ff880a30b",
+  "contracts": {
+    "taxonomy": "CONFENGE_CORPORATE_TAXONOMY/1.0.0-draft.20260904",
+    "nuclei": [
+      "expert_evidence_assistance",
+      "property_valuation",
+      "building_engineering_documentation",
+      "occupational_safety",
+      "public_works_b2g"
+    ],
+    "catalog": "CONFENGE_OFFER_CATALOG/2.0.0-draft.20260904",
+    "intake": "CONFENGE_WEB_INTAKE/2.0.0-draft.20260904",
+    "policy": "NET_NEW_INBOUND_HANDRAISER/1.0.0-draft.20260904",
+    "state": "CONFENGE_HANDRAISER_STATE/1.0.0-draft.20260904",
+    "meetcfg": "MEETCFG_HANDRAISER_CONTEXT/1.0.0-draft.20260904",
+    "source_asset": "private_project_technical_readiness_v1",
+    "offer_candidate": "private_project_technical_readiness_assessment",
+    "source": "CONFENGE_WEB",
+    "lane": "CONFENGE_WEB",
+    "invariants": {
+      "outbound_eligible": false,
+      "auto_send": false
+    }
+  },
+  "envelope": {
+    "schema": "NET_NEW_INBOUND_HANDRAISER/1.0.0-draft.20260904",
+    "version": "NET_NEW_INBOUND_HANDRAISER/1.0.0-draft.20260904",
+    "schema_hash": "92bafd8b644b1355bcf457e2aa55a7a902030234cc65139bd1c2a24ff880a30b",
+    "policy": "NET_NEW_INBOUND_HANDRAISER/1.0.0-draft.20260904",
+    "policy_hash": "92bafd8b644b1355bcf457e2aa55a7a902030234cc65139bd1c2a24ff880a30b",
+    "intake_schema": "CONFENGE_WEB_INTAKE/2.0.0-draft.20260904",
+    "taxonomy": "CONFENGE_CORPORATE_TAXONOMY/1.0.0-draft.20260904",
+    "catalog": "CONFENGE_OFFER_CATALOG/2.0.0-draft.20260904",
+    "source": "CONFENGE_WEB",
+    "lane": "CONFENGE_WEB",
+    "logical_id": "nnhr-conformance-001",
+    "event_id": "nnhr-conformance-001",
+    "idempotency_key": "nnhr-conformance-001",
+    "correlation_id": "corr-conformance-001",
+    "nucleus": "property_valuation",
+    "offer_candidate": "private_project_technical_readiness_assessment",
+    "source_asset": "private_project_technical_readiness_v1",
+    "city_class": "capital",
+    "urgency": "this_week",
+    "why_now": "requested a technical readiness assessment from the public form",
+    "person": {
+      "email": "net-new.conformance@example.test",
+      "name": "Conformance Person"
+    },
+    "company": {
+      "name": "Conformance Engenharia LTDA"
+    },
+    "consent": {
+      "granted": true,
+      "source": "web_form:confenge.com/inbound",
+      "at": "2026-09-04T12:00:00Z"
+    },
+    "conflict": {
+      "status": "NONE",
+      "ref": "conflict:none"
+    },
+    "sensitive_data": false
+  }
+}
