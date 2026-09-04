@@ -16,19 +16,12 @@ import (
 	"github.com/warmbly/warmbly/internal/repository"
 )
 
-func inboundOnlyPGDSN() string {
-	if dsn := os.Getenv("WARMBLY_TEST_POSTGRES_DSN"); dsn != "" {
-		return dsn
-	}
-	if dsn := os.Getenv("PRIMARY_DB"); dsn != "" {
-		return dsn
-	}
-	return "postgres://warmbly:warmbly@localhost:15432/warmbly_dev?sslmode=disable"
-}
-
 func openInboundOnlyPG(t *testing.T) (*pgxpool.Pool, uuid.UUID) {
 	t.Helper()
-	dsn := inboundOnlyPGDSN()
+	dsn := postgresTestDSN()
+	if dsn == "" {
+		t.Skip("WARMBLY_TEST_POSTGRES_DSN is not set")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	t.Cleanup(cancel)
 	pool, err := pgxpool.New(ctx, dsn)
@@ -192,7 +185,10 @@ func TestPGInboundOnlyReplayAndRaceConverge(t *testing.T) {
 }
 
 func TestPGInboundOnlyMigrationForwardBackwardForward(t *testing.T) {
-	dsn := inboundOnlyPGDSN()
+	dsn := postgresTestDSN()
+	if dsn == "" {
+		t.Skip("WARMBLY_TEST_POSTGRES_DSN is not set")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	pool, err := pgxpool.New(ctx, dsn)
