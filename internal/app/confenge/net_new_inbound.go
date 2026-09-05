@@ -1,7 +1,10 @@
 package confenge
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
@@ -9,11 +12,11 @@ import (
 	"github.com/warmbly/warmbly/internal/app/confenge/liveintel"
 )
 
-// Multi-vertical NET_NEW_INBOUND_HANDRAISER consumer (REV-03).
+// Multi-vertical NET_NEW_INBOUND_HANDRAISER consumer.
 //
-// Admission is fail-closed on REV-02 contract_id + version + content hash.
-// RuntimeRev02Pin is empty until a final REV-02 SHA is recorded; fixture
-// schemas are never a production fallback. INTEL_WATCH / Live Intelligence
+// Admission is fail-closed on the published Governance authority:
+// contract_id + version + policy_hash. RuntimeInboundAuthorityPin carries that
+// authority; fixture schemas are never a production fallback. INTEL_WATCH / Live Intelligence
 // factual envelopes stay on their own schema and never create a CONFENGE_WEB
 // hand-raiser here.
 
@@ -56,6 +59,10 @@ const (
 	NetNewInboundReasonStale            = "readback_stale"
 	NetNewInboundReasonSensitiveRefOnly = "sensitive_data_ref_only"
 	NetNewInboundReasonStoreUnavailable = "inbound_store_unavailable"
+	// NetNewInboundReasonKeyConflict is returned when a logical_id is reused
+	// with material that would decide differently. Fail-closed: the stored
+	// decision is never handed to a payload that did not earn it.
+	NetNewInboundReasonKeyConflict = "idempotency_key_conflict"
 
 	netNewInboundConflictNone    = "NONE"
 	netNewInboundConflictDecline = "DECLINE"
@@ -75,11 +82,13 @@ const (
 	netNewProvIntake   = "intake_schema:"
 	netNewProvState    = "state_schema:"
 	netNewProvHash     = "schema_hash:"
+	netNewProvDigest   = "admission_digest:"
 )
 
-// NetNewInboundPinnedHash is the SHA-256 of NetNewInboundPinMaterial.
-// Tests recompute it from the test-only fixture. RuntimeRev02Pin does not
-// use this constant; a missing production pin is never ACCEPTED.
+// NetNewInboundPinnedHash is the SHA-256 of NetNewInboundPinMaterial: this
+// repository's LOCAL drift digest over its own restatement of the nuclei and
+// schemas. It is NOT the Governance policy_hash and is never an admission key.
+// RuntimeInboundAuthorityPin does not use this constant.
 const NetNewInboundPinnedHash = "92bafd8b644b1355bcf457e2aa55a7a902030234cc65139bd1c2a24ff880a30b"
 
 // NetNewInboundNuclei is the closed taxonomy set for this pin.
@@ -247,7 +256,7 @@ func netNewEnvelopeContentHash(env NetNewInboundEnvelope) string {
 // DecideNetNewInbound is the fail-closed admission function. It never persists
 // and never talks to SMTP. pin must be contract_id + version + content hash;
 // an unpinned runtime pin is never ACCEPTED.
-func DecideNetNewInbound(env NetNewInboundEnvelope, pin Rev02ContractPin) NetNewInboundDecision {
+func DecideNetNewInbound(env NetNewInboundEnvelope, pin InboundAuthorityPin) NetNewInboundDecision {
 	if !pin.Pinned() {
 		return NetNewInboundDecision{Outcome: NetNewInboundOutcomeRejected, Reason: NetNewInboundReasonHashUnpinned}
 	}
@@ -306,6 +315,35 @@ func DecideNetNewInbound(env NetNewInboundEnvelope, pin Rev02ContractPin) NetNew
 		return NetNewInboundDecision{Outcome: NetNewInboundOutcomeUnknown, Reason: NetNewInboundReasonConflictUnknown}
 	}
 	return NetNewInboundDecision{Outcome: NetNewInboundOutcomeAccepted}
+}
+
+// NetNewAdmissionDigest is a canonical digest over exactly the fields
+// DecideNetNewInbound reads. It is stable across JSON key ordering and
+// cosmetic re-serialization, and changes if and only if the admission-relevant
+// material changes. It is the idempotency-key binding: a reused logical_id
+// carrying different admission material is a conflict, not a replay.
+func NetNewAdmissionDigest(env NetNewInboundEnvelope) string {
+	consentAt := ""
+	if env.Consent.At != nil {
+		consentAt = env.Consent.At.UTC().Format(time.RFC3339)
+	}
+	parts := []string{
+		"contract_id=" + netNewEnvelopeContractID(env),
+		"version=" + netNewEnvelopeVersion(env),
+		"content_hash=" + netNewEnvelopeContentHash(env),
+		"policy=" + strings.TrimSpace(env.Policy),
+		"intake_schema=" + strings.TrimSpace(env.IntakeSchema),
+		"logical_id=" + netNewLogicalID(env),
+		"source=" + strings.ToUpper(strings.TrimSpace(env.Source)),
+		"lane=" + strings.TrimSpace(env.Lane),
+		"nucleus=" + strings.TrimSpace(env.Nucleus),
+		"consent_granted=" + strconv.FormatBool(env.Consent.Granted),
+		"consent_source=" + strings.TrimSpace(env.Consent.Source),
+		"consent_at=" + consentAt,
+		"conflict_status=" + strings.ToUpper(strings.TrimSpace(env.Conflict.Status)),
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
+	return hex.EncodeToString(sum[:])
 }
 
 func netNewLaneOK(lane string) bool {

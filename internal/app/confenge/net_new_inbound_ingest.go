@@ -79,7 +79,9 @@ func (s *service) IngestNetNewInboundHandraiser(ctx context.Context, orgID uuid.
 		return res, nil
 	}
 	logicalID := netNewLogicalID(env)
-	decision := DecideNetNewInbound(env, s.activeRev02Pin())
+	pin := s.activeAuthorityPin()
+	pinHash := normalizeContentHash(pin.ContentHash)
+	decision := DecideNetNewInbound(env, pin)
 	if logicalID == "" {
 		res := rejectedNetNew("", firstNonEmpty(decision.Reason, NetNewInboundReasonLogicalID), now)
 		res.Outcome = NetNewInboundOutcomeRejected
@@ -93,13 +95,24 @@ func (s *service) IngestNetNewInboundHandraiser(ctx context.Context, orgID uuid.
 			"inbound lead store unavailable")
 	}
 
-	row := netNewReceiptRow(orgID, env, raw, now)
+	row := netNewReceiptRow(orgID, env, raw, pinHash, now)
 	created, existing, insertErr := st.InsertInboundLead(ctx, row)
 	if insertErr != nil {
 		return nil, errx.New(errx.Internal, "persist inbound receipt: "+insertErr.Error())
 	}
 	replay := false
 	if !created && existing != nil {
+		// A reused logical_id must carry the same admission material. If it
+		// does not, the stored decision was earned by a different payload and
+		// must never be handed to this one: fail closed, leave the stored
+		// receipt untouched, and make the caller resolve the collision.
+		if stored := provenanceValue(existing.Provenance, netNewProvDigest); stored != "" && stored != NetNewAdmissionDigest(env) {
+			res := rejectedNetNew(logicalID, NetNewInboundReasonKeyConflict, now)
+			res.Receipt = existing.ReceiptID
+			res.CorrelationID = existing.CorrelationID
+			s.observeNetNewMetric(res)
+			return res, nil
+		}
 		if netNewReceiptComplete(existing) {
 			res := netNewResultFromLead(existing, true)
 			s.observeNetNewMetric(res)
@@ -118,7 +131,7 @@ func (s *service) IngestNetNewInboundHandraiser(ctx context.Context, orgID uuid.
 		}
 	}
 
-	applyNetNewDecision(row, env, decision, now)
+	applyNetNewDecision(row, env, decision, pinHash, now)
 	if decision.Outcome != NetNewInboundOutcomeAccepted {
 		_ = st.UpdateInboundLead(ctx, row)
 		res := netNewResultFromLead(row, replay)
@@ -131,7 +144,7 @@ func (s *service) IngestNetNewInboundHandraiser(ctx context.Context, orgID uuid.
 		if id := strings.TrimSpace(xerr.Identifier); id != "" && id != NetNewInboundReasonDownstream {
 			row.Warnings = appendUnique(row.Warnings, id)
 		}
-		markNetNewDownstreamUnavailable(row, env, NetNewInboundReasonDownstream, now)
+		markNetNewDownstreamUnavailable(row, env, NetNewInboundReasonDownstream, pinHash, now)
 		_ = st.UpdateInboundLead(ctx, row)
 		res := netNewResultFromLead(row, replay)
 		res.Outcome = NetNewInboundOutcomeUnknown
@@ -168,7 +181,7 @@ func (s *service) IngestNetNewInboundHandraiser(ctx context.Context, orgID uuid.
 					row.Warnings = appendUnique(row.Warnings, id)
 				}
 			}
-			markNetNewDownstreamUnavailable(row, env, NetNewInboundReasonDownstream, now)
+			markNetNewDownstreamUnavailable(row, env, NetNewInboundReasonDownstream, pinHash, now)
 			_ = st.UpdateInboundLead(ctx, row)
 			res := netNewResultFromLead(row, replay)
 			res.Outcome = NetNewInboundOutcomeUnknown
@@ -304,7 +317,7 @@ func filterEmpty(in []string) []string {
 	return out
 }
 
-func netNewReceiptRow(orgID uuid.UUID, env NetNewInboundEnvelope, raw []byte, now time.Time) *models.OutreachInboundLead {
+func netNewReceiptRow(orgID uuid.UUID, env NetNewInboundEnvelope, raw []byte, pinHash string, now time.Time) *models.OutreachInboundLead {
 	logicalID := netNewLogicalID(env)
 	payload := raw
 	if env.SensitiveData {
@@ -356,7 +369,7 @@ func netNewReceiptRow(orgID uuid.UUID, env NetNewInboundEnvelope, raw []byte, no
 	}
 	t := now
 	row.OwnerAssignedAt = &t
-	setNetNewProvenance(row, env, "", "", now)
+	setNetNewProvenance(row, env, "", "", pinHash, now)
 	return row
 }
 
@@ -380,11 +393,11 @@ func netNewUTM(env NetNewInboundEnvelope) []byte {
 	return raw
 }
 
-func applyNetNewDecision(row *models.OutreachInboundLead, env NetNewInboundEnvelope, decision NetNewInboundDecision, now time.Time) {
+func applyNetNewDecision(row *models.OutreachInboundLead, env NetNewInboundEnvelope, decision NetNewInboundDecision, pinHash string, now time.Time) {
 	if row == nil {
 		return
 	}
-	setNetNewProvenance(row, env, decision.Outcome, decision.Reason, now)
+	setNetNewProvenance(row, env, decision.Outcome, decision.Reason, pinHash, now)
 	row.UpdatedAt = now
 	switch decision.Outcome {
 	case NetNewInboundOutcomeAccepted:
@@ -406,7 +419,10 @@ func applyNetNewDecision(row *models.OutreachInboundLead, env NetNewInboundEnvel
 	}
 }
 
-func setNetNewProvenance(row *models.OutreachInboundLead, env NetNewInboundEnvelope, outcome, reason string, now time.Time) {
+// setNetNewProvenance records the authority the decision was actually made
+// against. pinHash is the admitted pin's content hash (the Governance
+// policy_hash), never this repository's local drift digest.
+func setNetNewProvenance(row *models.OutreachInboundLead, env NetNewInboundEnvelope, outcome, reason, pinHash string, now time.Time) {
 	if row == nil {
 		return
 	}
@@ -414,7 +430,8 @@ func setNetNewProvenance(row *models.OutreachInboundLead, env NetNewInboundEnvel
 		netNewProvPolicy + NetNewInboundHandraiserSchema,
 		netNewProvIntake + NetNewInboundIntakeSchema,
 		netNewProvState + NetNewInboundStateSchema,
-		netNewProvHash + NetNewInboundPinnedHash,
+		netNewProvHash + normalizeContentHash(pinHash),
+		netNewProvDigest + NetNewAdmissionDigest(env),
 		netNewProvAckBy + NetNewInboundAckActor,
 		netNewProvAckAt + now.UTC().Format(time.RFC3339),
 	}
@@ -449,7 +466,7 @@ func setNetNewProvenance(row *models.OutreachInboundLead, env NetNewInboundEnvel
 	}
 }
 
-func markNetNewDownstreamUnavailable(row *models.OutreachInboundLead, env NetNewInboundEnvelope, reason string, now time.Time) {
+func markNetNewDownstreamUnavailable(row *models.OutreachInboundLead, env NetNewInboundEnvelope, reason, pinHash string, now time.Time) {
 	if row == nil {
 		return
 	}
@@ -462,7 +479,7 @@ func markNetNewDownstreamUnavailable(row *models.OutreachInboundLead, env NetNew
 	row.Status = models.InboundStatusOpen
 	row.UpdatedAt = now
 	row.Warnings = appendUnique(row.Warnings, reason)
-	setNetNewProvenance(row, env, NetNewInboundOutcomeUnknown, reason, now)
+	setNetNewProvenance(row, env, NetNewInboundOutcomeUnknown, reason, pinHash, now)
 }
 
 func netNewDownstreamRetryable(row *models.OutreachInboundLead) bool {
@@ -522,7 +539,7 @@ func netNewResultFromLead(row *models.OutreachInboundLead, replay bool) *NetNewI
 	res := &NetNewInboundResult{
 		Schema:            NetNewInboundHandraiserSchema,
 		PolicyVersion:     firstNonEmpty(provenanceValue(row.Provenance, netNewProvPolicy), NetNewInboundHandraiserSchema),
-		Hash:              firstNonEmpty(provenanceValue(row.Provenance, netNewProvHash), NetNewInboundPinnedHash),
+		Hash:              provenanceValue(row.Provenance, netNewProvHash),
 		IntakeSchema:      firstNonEmpty(provenanceValue(row.Provenance, netNewProvIntake), NetNewInboundIntakeSchema),
 		StateSchema:       firstNonEmpty(provenanceValue(row.Provenance, netNewProvState), NetNewInboundStateSchema),
 		LogicalID:         row.LeadID,

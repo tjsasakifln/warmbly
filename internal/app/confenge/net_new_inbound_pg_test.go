@@ -18,7 +18,7 @@ func TestPGNetNewInboundHandraiserPersistReadback(t *testing.T) {
 	t.Cleanup(pool.Close)
 	repo := repository.NewOutreachRepository(pool)
 	svc := NewService(Config{Enabled: true, RequireHumanApproval: true, AutoSendEnabled: false}, repo, nil).(*service)
-	svc.rev02Pin = rev02TestOnlyPin()
+	svc.authorityPin = testOnlyAuthorityPin()
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	body := marshalNetNew(t, validNetNewMap("nnhr-pg-1"))
 	res, xerr := svc.IngestNetNewInboundHandraiser(context.Background(), orgID, body, now)

@@ -5,7 +5,7 @@
   "rev02_observed_head": "230d73a22a321112abe09b34a0d5fe743790b857",
   "rev02_final_sha": false,
   "audience": ["REV-02", "web-cfg", "Meetcfg"],
-  "authority": "test-only adapter/fixture; never production authority. RuntimeRev02Pin stays unpinned until a final REV-02 SHA is recorded and the suite is re-run. Fixture schemas are not a runtime fallback.",
+  "authority": "test-only adapter/fixture; never production authority. This file records this repository's LOCAL drift digest over its own restatement of the schemas; it is not the Governance policy_hash. RuntimeInboundAuthorityPin carries the published Governance authority instead, and never consults this fixture. Fixture schemas are not a runtime fallback.",
   "pin_material": "CONFENGE_CORPORATE_TAXONOMY/1.0.0-draft.20260904\nnuclei=expert_evidence_assistance,property_valuation,building_engineering_documentation,occupational_safety,public_works_b2g\nCONFENGE_OFFER_CATALOG/2.0.0-draft.20260904\nCONFENGE_WEB_INTAKE/2.0.0-draft.20260904\nNET_NEW_INBOUND_HANDRAISER/1.0.0-draft.20260904\nCONFENGE_HANDRAISER_STATE/1.0.0-draft.20260904\nMEETCFG_HANDRAISER_CONTEXT/1.0.0-draft.20260904\nsource=CONFENGE_WEB\nlane=CONFENGE_WEB\nasset=private_project_technical_readiness_v1\noffer=private_project_technical_readiness_assessment\ninvariants=outbound_eligible=false,auto_send=false",
   "contract_id": "NET_NEW_INBOUND_HANDRAISER",
   "version": "1.0.0-draft.20260904",

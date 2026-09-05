@@ -330,9 +330,10 @@ type service struct {
 	// or grant outbound action.
 	netNewMetricSink   func(NetNewInboundMetric)
 	netNewAfterPersist func(*models.OutreachInboundLead) error
-	// Optional REV-02 pin override. Tests inject the test-only adapter.
-	// Production uses RuntimeRev02Pin, which is unpinned until a final SHA.
-	rev02Pin Rev02ContractPin
+	// Optional authority-pin override. Tests inject the test-only adapter.
+	// Production uses RuntimeInboundAuthorityPin (the published Governance
+	// authority); an unpinned override falls through to it.
+	authorityPin InboundAuthorityPin
 }
 
 func (s *service) now() time.Time {

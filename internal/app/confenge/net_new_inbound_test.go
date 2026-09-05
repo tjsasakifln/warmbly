@@ -57,6 +57,18 @@ func validNetNewMap(logicalID string) map[string]any {
 	}
 }
 
+// governanceNetNewMap is the fixture as a REAL producer sends it: identical to
+// validNetNewMap except the hash fields carry the published Governance
+// policy_hash instead of this repository's local drift digest. It is the only
+// fixture admissible against RuntimeInboundAuthorityPin.
+func governanceNetNewMap(logicalID string) map[string]any {
+	m := validNetNewMap(logicalID)
+	m["content_hash"] = "sha256:" + GovernanceInboundPolicyHash
+	m["schema_hash"] = "sha256:" + GovernanceInboundPolicyHash
+	m["policy_hash"] = "sha256:" + GovernanceInboundPolicyHash
+	return m
+}
+
 func marshalNetNew(t *testing.T, body map[string]any) []byte {
 	t.Helper()
 	raw, err := json.Marshal(body)
@@ -93,7 +105,7 @@ func TestDecideNetNewInboundFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d := DecideNetNewInbound(env, rev02TestOnlyPin()); d.Outcome != NetNewInboundOutcomeAccepted {
+	if d := DecideNetNewInbound(env, testOnlyAuthorityPin()); d.Outcome != NetNewInboundOutcomeAccepted {
 		t.Fatalf("valid envelope not accepted: %+v", d)
 	}
 	cases := []struct {
@@ -128,7 +140,7 @@ func TestDecideNetNewInboundFailClosed(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			d := DecideNetNewInbound(parsed, rev02TestOnlyPin())
+			d := DecideNetNewInbound(parsed, testOnlyAuthorityPin())
 			if d.Outcome != tc.outcome || d.Reason != tc.reason {
 				t.Fatalf("got %+v want %s/%s", d, tc.outcome, tc.reason)
 			}
