@@ -24,7 +24,7 @@ const (
 // in sibling packages and the probe must not advertise a body the dispatch
 // cannot actually route.
 func acceptedInboundEventVersions() []string {
-	return append(intel.AcceptedEventVersions(), intel.WebIntentSchemaV1, liveintel.EventSchemaV1)
+	return append(intel.AcceptedEventVersions(), intel.WebIntentSchemaV1, liveintel.EventSchemaV1, NetNewInboundHandraiserSchema)
 }
 
 // InboundReceiveProbe is the PII-free, secret-free signal web-cfg uses
