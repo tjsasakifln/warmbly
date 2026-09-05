@@ -11,6 +11,12 @@ import (
 // factual dimensions, never through a target percentage of cosmetic variety.
 const DelegatedFirstTouchCopyRulesV1 = "confenge.first-touch-copy-rules.v1"
 
+// V2 preserves the V1 copy and adds one governed, claim-matched public
+// reference. V1 remains valid for already-sealed first touches.
+const DelegatedFirstTouchCopyRulesV2 = "confenge.first-touch-copy-rules.v2"
+
+const DelegatedFirstTouchCopyRulesCurrent = DelegatedFirstTouchCopyRulesV2
+
 const delegatedContactExit = "Se preferir não receber meus contatos, é só me avisar."
 
 type delegatedRoutingCopy struct {
@@ -29,6 +35,9 @@ type delegatedRoutingCopy struct {
 	RouteClass          string
 	RecipientPurposeKey string
 	PersonUsed          string
+	ClaimKey            string
+	LandingID           string
+	DestinationURL      string
 	SemanticSignature   string
 }
 
@@ -47,6 +56,14 @@ func composeDelegatedRoutingCopy(acc *models.OutreachAccount, cand *models.Outre
 }
 
 func buildDelegatedRoutingCopy(acc *models.OutreachAccount, cand *models.OutreachContactCandidate, evidence []models.OutreachEvidence) delegatedRoutingCopy {
+	return buildDelegatedRoutingCopyVersion(acc, cand, evidence, DelegatedFirstTouchCopyRulesCurrent)
+}
+
+func buildDelegatedRoutingCopyV1(acc *models.OutreachAccount, cand *models.OutreachContactCandidate, evidence []models.OutreachEvidence) delegatedRoutingCopy {
+	return buildDelegatedRoutingCopyVersion(acc, cand, evidence, DelegatedFirstTouchCopyRulesV1)
+}
+
+func buildDelegatedRoutingCopyVersion(acc *models.OutreachAccount, cand *models.OutreachContactCandidate, evidence []models.OutreachEvidence, copyRulesVersion string) delegatedRoutingCopy {
 	if acc == nil || cand == nil {
 		return delegatedRoutingCopy{}
 	}
@@ -87,18 +104,30 @@ func buildDelegatedRoutingCopy(acc *models.OutreachAccount, cand *models.Outreac
 	if cta == "" {
 		return delegatedRoutingCopy{}
 	}
+	claimKey, landingID, destinationURL, destinationLine := "", "", "", ""
+	if copyRulesVersion == DelegatedFirstTouchCopyRulesV2 {
+		route, err := ResolveCommercialMessageRoute(acc.ServiceCode, acc.MomentCode, CommercialCampaignFirstTouchEmail)
+		if err != nil {
+			return delegatedRoutingCopy{}
+		}
+		claimKey = route.ClaimKey
+		landingID = route.Destination.ID
+		destinationURL = route.URL
+		destinationLine = "\nVeja como tratamos esse tipo de situação: " + destinationURL
+	}
 	body := greeting + ",\n\n" +
 		"Sou Tiago Sasaki, da CONFENGE. " + opening + "\n\n" +
-		practice + ". " + cta + "\n\n" +
+		practice + ". " + cta + destinationLine + "\n\n" +
 		delegatedContactExit + "\n\n" +
 		"Obrigado,\nTiago Sasaki\nCONFENGE\ntiago.sasaki@confenge.com.br"
 
 	semantic := strings.Join([]string{
-		DelegatedFirstTouchCopyRulesV1,
+		copyRulesVersion,
 		factKey,
 		normalizeForCorpus(practice),
 		routeClass,
 		purposeKey,
+		landingID,
 	}, "|")
 	return delegatedRoutingCopy{
 		Subject: subject, Body: body,
@@ -108,8 +137,18 @@ func buildDelegatedRoutingCopy(acc *models.OutreachAccount, cand *models.Outreac
 		SubjectKey: subjectKey,
 		FactUsed:   factUsed, FactKey: factKey, FactEvidenceIDs: append([]string{}, fact.EvidenceIDs...),
 		RouteClass: routeClass, RecipientPurposeKey: purposeKey, PersonUsed: person,
+		ClaimKey: claimKey, LandingID: landingID, DestinationURL: destinationURL,
 		SemanticSignature: hashText(semantic),
 	}
+}
+
+func delegatedCopyQABlob(subject, body, destinationURL string) string {
+	blob := subject + "\n" + body
+	destinationURL = strings.TrimSpace(destinationURL)
+	if destinationURL == "" {
+		return blob
+	}
+	return strings.ReplaceAll(blob, destinationURL, "")
 }
 
 func delegatedFactSubject(company, factSubject string) string {
