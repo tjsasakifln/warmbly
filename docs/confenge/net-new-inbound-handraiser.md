@@ -13,7 +13,8 @@ manual action and outcome. This is not a second CRM or an outbound authority.
 - Policy hash:
   `sha256:405ac86064a90641b843352d21cd21703744115de9592558e100671d92276df7`
 - Source: `CONFENGE_WEB`; acquisition lane: `NET_NEW_INBOUND`
-- Runtime admission requires an exact contract/version/hash match. Local
+- Runtime admission requires an exact contract/version/hash match. The routing
+  aliases `hash`, `content_hash`, `schema_hash` and `policy_hash` are accepted. Local
   conformance fixtures are drift checks only and are never runtime authority.
 
 HTTP 2xx is not acceptance. The producer must inspect `outcome` and retain the
@@ -26,12 +27,18 @@ aliases. MV-03 adds `technical_triage_review`, `technical_triage_v1` and
 `other_technical_need` without removing the private-readiness offer/asset or
 the five existing nuclei.
 
+In the official request, `origin: "CONFENGE_WEB"` is the admitted producer
+origin while `source: {"system":"web-cfg"}` identifies the producer system.
+The legacy `source: "CONFENGE_WEB"` form remains accepted during migration.
+
 The actionable contact is carried only in the authenticated HMAC body as
 `protected_contact`. Either a valid email or a valid WhatsApp/phone is enough;
 Warmbly never invents a placeholder email. `preferred_channel` is persisted on
-the receipt and candidate. The protected contact is removed from raw payload,
-readback and metrics; operational contact fields remain in Warmbly's existing
-access-controlled contact record.
+the receipt and candidate. `PHONE` remains distinct from `WHATSAPP` and never
+creates WhatsApp opt-in. Optional `protected_contact.organization` is preserved
+in the access-controlled operational account/receipt fields. The protected
+contact is removed from raw payload, readback and metrics; operational contact
+fields remain in Warmbly's existing access-controlled contact record.
 
 ## Admission and qualification
 
@@ -56,10 +63,15 @@ The manual action is non-sendable and non-dispatchable. Operator visibility is
 kept in cockpit/browser channels, while SMTP is disabled for this contract.
 No inbound submission creates follow-up or outbound eligibility.
 
-`GET /confenge/inbound/handraisers/:logicalId` returns the same receipt,
-logical ID, decision, qualification, preferred channel and safety flags without
-contact PII. Reusing an idempotency key with different admission material is
-rejected; exact retry returns the original durable receipt.
+`GET /api/v1/webhooks/confenge/inbound/handraisers/:logicalId` is the producer
+readback. It uses the same HMAC header as POST, computed over the exact bytes
+`GET\n/api/v1/webhooks/confenge/inbound/handraisers/<logicalId>` with the
+existing five-minute timestamp skew. The signature is therefore bound to one
+receipt. The response returns the same receipt, logical ID, decision,
+qualification, preferred channel and safety flags without contact PII. The
+session-authenticated operator route remains available separately. Reusing an
+idempotency key with different admission material is rejected; exact retry
+returns the original durable receipt.
 
 Metrics contain only nucleus, state and reason. Contact name, email, phone,
 conflict corpus and protected payload are excluded.

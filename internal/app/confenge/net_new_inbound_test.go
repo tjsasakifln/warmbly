@@ -77,7 +77,7 @@ func officialNetNewMap(logicalID string) map[string]any {
 		"policy_id":                       NetNewInboundContractID,
 		"version":                         NetNewInboundPinVersion,
 		"policy_version":                  NetNewInboundPinVersion,
-		"content_hash":                    NetNewInboundPinnedHash,
+		"hash":                            NetNewInboundPinnedHash,
 		"canonical_name":                  NetNewInboundHandraiserSchema,
 		"origin":                          NetNewInboundSource,
 		"acquisition_lane":                "NET_NEW_INBOUND",
@@ -144,6 +144,19 @@ func TestNetNewInboundPinMatchesPublishedFixture(t *testing.T) {
 	runtimePin := RuntimeInboundAuthorityPin()
 	if runtimePin.ContentHash != GovernanceInboundPolicyHash || runtimePin.SourceSHA != GovernanceInboundSourceSHA || runtimePin.TestOnly {
 		t.Fatalf("runtime Governance authority pin diverged: %+v", runtimePin)
+	}
+}
+
+func TestNetNewReadbackHMACPayloadBindsOneSafeLogicalID(t *testing.T) {
+	first := NetNewInboundReadbackHMACPayload("nnhr-safe:1")
+	second := NetNewInboundReadbackHMACPayload("nnhr-safe:2")
+	if len(first) == 0 || string(first) == string(second) || !strings.HasPrefix(string(first), "GET\n/api/v1/webhooks/confenge/inbound/handraisers/") {
+		t.Fatalf("readback HMAC material is not route-bound: %q %q", first, second)
+	}
+	for _, invalid := range []string{"", "lead@example.test", "has/slash", strings.Repeat("a", 161)} {
+		if got := NetNewInboundReadbackHMACPayload(invalid); len(got) != 0 {
+			t.Fatalf("unsafe logical ID %q produced HMAC material %q", invalid, got)
+		}
 	}
 }
 
@@ -397,6 +410,52 @@ func TestNetNewOtherTechnicalNeedStaysNeedsContextWhenNotScreened(t *testing.T) 
 	}
 	if res.ConflictStatus != netNewInboundConflictNotScreened {
 		t.Fatalf("conflict status=%s", res.ConflictStatus)
+	}
+}
+
+func TestNetNewOfficialPhoneChannelDoesNotInventWhatsAppConsent(t *testing.T) {
+	svc, repo, org := netNewTestService(t)
+	body := officialNetNewMap("nnhr-phone-channel")
+	body["source"] = NetNewInboundSource
+	body["contact_evidence"] = map[string]any{
+		"present": true, "channel": "PHONE", "evidence_ref": "contact:nnhr-phone-channel",
+		"identity_match_method": "EXPLICIT_CONTACT",
+	}
+	body["protected_contact"] = map[string]any{
+		"name": "Pessoa Phone", "organization": "Organizacao Protegida",
+		"phone": "+5541999887766", "preferred_channel": "PHONE",
+	}
+	res, xerr := svc.IngestNetNewInboundHandraiser(context.Background(), org, marshalNetNew(t, body), *netNewConsentAt())
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if res.Outcome != NetNewInboundOutcomeAccepted || res.PreferredChannel != NetNewInboundPreferredPhone || res.AccountID == nil {
+		t.Fatalf("phone intake not admitted distinctly: %+v", res)
+	}
+	lead, err := svc.inboundStore().GetInboundLeadByLeadID(context.Background(), org, "nnhr-phone-channel")
+	if err != nil || lead == nil {
+		t.Fatalf("phone receipt: %v", err)
+	}
+	if lead.Channel != "phone" || lead.CompanyName != "Organizacao Protegida" {
+		t.Fatalf("protected organization/channel not persisted: %+v", lead)
+	}
+	if strings.Contains(strings.ToLower(string(lead.RawPayload)), "organizacao protegida") {
+		t.Fatalf("protected organization leaked into raw receipt: %s", lead.RawPayload)
+	}
+	candidates, err := repo.ListCandidates(context.Background(), org, *res.AccountID)
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("phone candidate: %v count=%d", err, len(candidates))
+	}
+	if candidates[0].WhatsAppConsentStatus == "OPTED_IN" {
+		t.Fatalf("PHONE preference invented WhatsApp consent: %+v", candidates[0])
+	}
+	rb, xerr := svc.ReadbackNetNewInboundHandraiser(context.Background(), org, "nnhr-phone-channel")
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	rawReadback, _ := json.Marshal(rb)
+	if strings.Contains(strings.ToLower(string(rawReadback)), "organizacao protegida") {
+		t.Fatalf("protected organization leaked into readback: %s", rawReadback)
 	}
 }
 

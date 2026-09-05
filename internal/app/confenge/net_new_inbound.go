@@ -91,6 +91,7 @@ const (
 	NetNewInboundQualificationQCO                   = "QCO"
 
 	NetNewInboundPreferredEmail    = "EMAIL"
+	NetNewInboundPreferredPhone    = "PHONE"
 	NetNewInboundPreferredWhatsApp = "WHATSAPP"
 
 	netNewProvPolicy         = "policy:"
@@ -149,6 +150,7 @@ type NetNewInboundEnvelope struct {
 	Version                string                        `json:"version"`
 	PolicyVersion          string                        `json:"policy_version"`
 	ContentHash            string                        `json:"content_hash"`
+	Hash                   string                        `json:"hash"`
 	SchemaHash             string                        `json:"schema_hash"`
 	Policy                 string                        `json:"policy"`
 	PolicyHash             string                        `json:"policy_hash"`
@@ -156,6 +158,7 @@ type NetNewInboundEnvelope struct {
 	Taxonomy               string                        `json:"taxonomy"`
 	Catalog                string                        `json:"catalog"`
 	Source                 string                        `json:"source"`
+	ProducerSystem         string                        `json:"-"`
 	Lane                   string                        `json:"lane"`
 	IntentKind             string                        `json:"intent_kind"`
 	LogicalID              string                        `json:"logical_id"`
@@ -207,6 +210,7 @@ type NetNewInboundParty struct {
 // the public receipt/readback.
 type NetNewInboundProtectedContact struct {
 	Name             string `json:"name"`
+	Organization     string `json:"organization"`
 	Email            string `json:"email"`
 	Phone            string `json:"phone"`
 	WhatsApp         string `json:"whatsapp"`
@@ -354,6 +358,7 @@ func ParseNetNewInboundEnvelope(raw []byte) (NetNewInboundEnvelope, error) {
 		ProtectedPayload struct {
 			Contact          NetNewInboundProtectedContact `json:"contact"`
 			Name             string                        `json:"name"`
+			Organization     string                        `json:"organization"`
 			Email            string                        `json:"email"`
 			Phone            string                        `json:"phone"`
 			WhatsApp         string                        `json:"whatsapp"`
@@ -370,6 +375,7 @@ func ParseNetNewInboundEnvelope(raw []byte) (NetNewInboundEnvelope, error) {
 	if strings.TrimSpace(env.Source) == "" {
 		env.Source = firstNonEmpty(extra.Origin, extra.SourceObject.System)
 	}
+	env.ProducerSystem = strings.TrimSpace(extra.SourceObject.System)
 	if strings.TrimSpace(env.Lane) == "" {
 		env.Lane = extra.AcquisitionLane
 	}
@@ -400,6 +406,7 @@ func ParseNetNewInboundEnvelope(raw []byte) (NetNewInboundEnvelope, error) {
 		protected = extra.ProtectedPayload.Contact
 	}
 	protected.Name = firstNonEmpty(protected.Name, extra.ProtectedPayload.Name)
+	protected.Organization = firstNonEmpty(protected.Organization, extra.ProtectedPayload.Organization)
 	protected.Email = firstNonEmpty(protected.Email, extra.ProtectedPayload.Email)
 	protected.Phone = firstNonEmpty(protected.Phone, extra.ProtectedPayload.Phone)
 	protected.WhatsApp = firstNonEmpty(protected.WhatsApp, extra.ProtectedPayload.WhatsApp)
@@ -414,8 +421,8 @@ func ParseNetNewInboundEnvelope(raw []byte) (NetNewInboundEnvelope, error) {
 	if strings.TrimSpace(env.Person.Phone) == "" {
 		env.Person.Phone = firstNonEmpty(protected.Phone, protected.WhatsApp, extra.Phone)
 	}
-	if strings.TrimSpace(env.Company.Name) == "" && extra.Company != "" {
-		env.Company.Name = extra.Company
+	if strings.TrimSpace(env.Company.Name) == "" {
+		env.Company.Name = firstNonEmpty(protected.Organization, extra.Company)
 	}
 	env.PreferredChannel = firstNonEmpty(env.PreferredChannel, protected.PreferredChannel, extra.PreferredChannel, extra.ContactEvidence.Channel)
 	env.City = firstNonEmpty(env.City, extra.SiteLocation.City)
@@ -427,7 +434,7 @@ func ParseNetNewInboundEnvelope(raw []byte) (NetNewInboundEnvelope, error) {
 	env.LogicalID = firstNonEmpty(strings.TrimSpace(env.LogicalID), strings.TrimSpace(env.EventID), strings.TrimSpace(env.IdempotencyKey))
 	env.ContractID = firstNonEmpty(strings.TrimSpace(env.ContractID), strings.TrimSpace(env.PolicyID))
 	env.Version = firstNonEmpty(strings.TrimSpace(env.Version), strings.TrimSpace(env.PolicyVersion))
-	env.ContentHash = firstNonEmpty(strings.TrimSpace(env.ContentHash), strings.TrimSpace(env.SchemaHash), strings.TrimSpace(env.PolicyHash))
+	env.ContentHash = firstNonEmpty(strings.TrimSpace(env.ContentHash), strings.TrimSpace(env.Hash), strings.TrimSpace(env.SchemaHash), strings.TrimSpace(env.PolicyHash))
 	return env, nil
 }
 
@@ -524,7 +531,7 @@ func DecideNetNewInbound(env NetNewInboundEnvelope, pin InboundAuthorityPin) Net
 		if normalizeWebIntentEmail(env.Person.Email) == "" {
 			return NetNewInboundDecision{Outcome: NetNewInboundOutcomeRejected, Reason: NetNewInboundReasonContact}
 		}
-	case NetNewInboundPreferredWhatsApp:
+	case NetNewInboundPreferredWhatsApp, NetNewInboundPreferredPhone:
 		if normalizeNetNewPhone(env.Person.Phone) == "" {
 			return NetNewInboundDecision{Outcome: NetNewInboundOutcomeRejected, Reason: NetNewInboundReasonContact}
 		}
@@ -560,6 +567,7 @@ func NetNewAdmissionDigest(env NetNewInboundEnvelope) string {
 		"intake_schema=" + strings.TrimSpace(env.IntakeSchema),
 		"logical_id=" + netNewLogicalID(env),
 		"source=" + strings.ToUpper(strings.TrimSpace(env.Source)),
+		"producer_system=" + strings.ToLower(strings.TrimSpace(env.ProducerSystem)),
 		"lane=" + strings.TrimSpace(env.Lane),
 		"intent_kind=" + strings.ToUpper(strings.TrimSpace(env.IntentKind)),
 		"nucleus=" + strings.TrimSpace(env.Nucleus),
@@ -568,6 +576,7 @@ func NetNewAdmissionDigest(env NetNewInboundEnvelope) string {
 		"preferred_channel=" + netNewPreferredChannel(env),
 		"contact_email=" + normalizeWebIntentEmail(env.Person.Email),
 		"contact_phone=" + normalizeNetNewPhone(env.Person.Phone),
+		"contact_organization=" + SanitizeText(env.Company.Name, 120),
 		"qualification_state=" + NetNewQualificationState(env),
 		"outbound_eligible=" + strconv.FormatBool(env.OutboundEligible),
 		"auto_send=" + strconv.FormatBool(env.AutoSend),
@@ -629,8 +638,10 @@ func netNewPreferredChannel(env NetNewInboundEnvelope) string {
 	switch strings.ToUpper(strings.TrimSpace(env.PreferredChannel)) {
 	case NetNewInboundPreferredEmail, "E-MAIL":
 		return NetNewInboundPreferredEmail
-	case NetNewInboundPreferredWhatsApp, "PHONE", "TELEFONE":
+	case NetNewInboundPreferredWhatsApp:
 		return NetNewInboundPreferredWhatsApp
+	case NetNewInboundPreferredPhone, "TELEFONE":
+		return NetNewInboundPreferredPhone
 	case "":
 		hasEmail := normalizeWebIntentEmail(env.Person.Email) != ""
 		hasPhone := normalizeNetNewPhone(env.Person.Phone) != ""
@@ -729,4 +740,24 @@ func netNewCanonicalEntityID(env NetNewInboundEnvelope) string {
 
 func netNewLogicalID(env NetNewInboundEnvelope) string {
 	return SanitizeText(firstNonEmpty(env.LogicalID, env.EventID, env.IdempotencyKey), 160)
+}
+
+const netNewInboundReadbackSignaturePrefix = "GET\n/api/v1/webhooks/confenge/inbound/handraisers/"
+
+// NetNewInboundReadbackHMACPayload is the canonical material signed for
+// producer readback. Binding the method, route and logical ID prevents a fresh
+// empty-body signature from being replayed against another receipt.
+func NetNewInboundReadbackHMACPayload(logicalID string) []byte {
+	logicalID = strings.TrimSpace(logicalID)
+	if logicalID == "" || len(logicalID) > 160 {
+		return nil
+	}
+	for _, r := range logicalID {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || strings.ContainsRune("._:-", r) {
+			continue
+		}
+		return nil
+	}
+	return []byte(netNewInboundReadbackSignaturePrefix + logicalID)
 }
