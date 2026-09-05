@@ -31,11 +31,11 @@ func (p InboundAuthorityPin) Pinned() bool {
 // commercial/inbound/CONSUMER-PIN.1.0.0-draft.20260904.md at the merge commit
 // named by GovernanceInboundSourceSHA. It is the authority Warmbly consumes;
 // it is NOT derived from anything in this repository.
-const GovernanceInboundPolicyHash = "984f442690f7c74f309173b31008518631170d63733b5cc04c32abaf88c67e28"
+const GovernanceInboundPolicyHash = "405ac86064a90641b843352d21cd21703744115de9592558e100671d92276df7"
 
 // GovernanceInboundSourceSHA is the Governance merge commit that published the
-// authority above (PR #171 on origin/main).
-const GovernanceInboundSourceSHA = "22ad810a8c1d46d9a787efcfac825d6ba0336bff"
+// authority above (Governance PR #172).
+const GovernanceInboundSourceSHA = "990c6ae237c3f7188728e97283bc69c130f6028d"
 
 // RuntimeInboundAuthorityPin is the production pin. It names the published
 // Governance authority: contract_id, version, and the producer's policy_hash.
@@ -113,8 +113,8 @@ func NetNewInboundPinMaterial() string {
 		NetNewInboundMeetcfgSchema,
 		"source=" + NetNewInboundSource,
 		"lane=" + NetNewInboundLane,
-		"asset=" + NetNewInboundSourceAsset,
-		"offer=" + NetNewInboundOfferCandidate,
+		"assets=" + strings.Join(NetNewInboundSourceAssets, ","),
+		"offers=" + strings.Join(NetNewInboundOfferCandidates, ","),
 		"invariants=outbound_eligible=false,auto_send=false",
 	}, "\n")
 }

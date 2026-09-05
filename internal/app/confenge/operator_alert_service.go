@@ -51,6 +51,17 @@ func cloneOperatorAlert(a *models.OutreachOperatorAlert) *models.OutreachOperato
 }
 
 func (s *service) ensureOperatorAlert(ctx context.Context, orgID uuid.UUID, row *models.OutreachInboundLead, now time.Time) {
+	s.ensureOperatorAlertWithSMTPPolicy(ctx, orgID, row, now, true)
+}
+
+// ensureNetNewOperatorAlert preserves the internal cockpit/browser handoff but
+// never authorizes SMTP for NET_NEW_INBOUND_HANDRAISER. An inbound submission
+// is not outbound authority, including for internal notification transport.
+func (s *service) ensureNetNewOperatorAlert(ctx context.Context, orgID uuid.UUID, row *models.OutreachInboundLead, now time.Time) {
+	s.ensureOperatorAlertWithSMTPPolicy(ctx, orgID, row, now, false)
+}
+
+func (s *service) ensureOperatorAlertWithSMTPPolicy(ctx context.Context, orgID uuid.UUID, row *models.OutreachInboundLead, now time.Time, smtpAllowed bool) {
 	if row == nil || strings.TrimSpace(row.LeadID) == "" {
 		return
 	}
@@ -97,10 +108,10 @@ func (s *service) ensureOperatorAlert(ctx context.Context, orgID uuid.UUID, row 
 	if stored == nil {
 		stored = alert
 	}
-	s.emitOperatorChannels(ctx, orgID, row, stored, now, created)
+	s.emitOperatorChannels(ctx, orgID, row, stored, now, created, smtpAllowed)
 }
 
-func (s *service) emitOperatorChannels(ctx context.Context, orgID uuid.UUID, row *models.OutreachInboundLead, alert *models.OutreachOperatorAlert, now time.Time, newlyCreated bool) {
+func (s *service) emitOperatorChannels(ctx context.Context, orgID uuid.UUID, row *models.OutreachInboundLead, alert *models.OutreachOperatorAlert, now time.Time, newlyCreated, smtpAllowed bool) {
 	if alert == nil {
 		return
 	}
@@ -112,7 +123,9 @@ func (s *service) emitOperatorChannels(ctx context.Context, orgID uuid.UUID, row
 	if emailReason == "" {
 		emailReason = AlertEmailBlockedNoTransport
 	}
-	if alert.Synthetic {
+	if !smtpAllowed {
+		emailReason = AlertEmailDisabled
+	} else if alert.Synthetic {
 		emailReason = AlertEmailSyntheticSkipped
 	} else if s.operatorMail != nil && emailReason == AlertEmailBlockedNoTransport {
 		origin := firstNonEmpty(utmField(row.UTMJSON, "organic_source"), row.Source)

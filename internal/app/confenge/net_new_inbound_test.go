@@ -69,6 +69,49 @@ func governanceNetNewMap(logicalID string) map[string]any {
 	return m
 }
 
+func officialNetNewMap(logicalID string) map[string]any {
+	return map[string]any{
+		"schema":                          NetNewInboundHandraiserSchema,
+		"schema_version":                  "net-new-inbound-handraiser-request.1.0.0-draft.20260904",
+		"contract_id":                     NetNewInboundContractID,
+		"policy_id":                       NetNewInboundContractID,
+		"version":                         NetNewInboundPinVersion,
+		"policy_version":                  NetNewInboundPinVersion,
+		"content_hash":                    NetNewInboundPinnedHash,
+		"canonical_name":                  NetNewInboundHandraiserSchema,
+		"origin":                          NetNewInboundSource,
+		"acquisition_lane":                "NET_NEW_INBOUND",
+		"intent_kind":                     "HUMAN_REVIEW",
+		"idempotency_key":                 logicalID,
+		"correlation_id":                  "corr-" + logicalID,
+		"receipt_id":                      "web-receipt-" + logicalID,
+		"intake_source":                   NetNewInboundSource,
+		"landing_asset":                   map[string]any{"id": NetNewInboundTriageSourceAsset, "kind": "TRIAGE"},
+		"nucleus_id":                      "property_valuation",
+		"offer_candidate_id":              NetNewInboundTriageOfferCandidate,
+		"party_kind":                      "PERSON",
+		"decision_role":                   "UNKNOWN",
+		"site_location":                   map[string]any{"material": false},
+		"urgency":                         "UNKNOWN",
+		"why_now_class":                   "UNKNOWN",
+		"desired_decision_or_deliverable": "UNKNOWN",
+		"document_availability_class":     "UNKNOWN",
+		"contact_evidence": map[string]any{
+			"present": true, "channel": "WHATSAPP", "evidence_ref": "contact:" + logicalID,
+			"identity_match_method": "EXPLICIT_CONTACT",
+		},
+		"consent_evidence": map[string]any{
+			"captured": true, "basis": "EXPLICIT_FORM_SUBMIT", "evidence_ref": "consent:" + logicalID,
+		},
+		"sensitive_data":     map[string]any{"present": false, "class": "NONE"},
+		"conflict_screening": map[string]any{"status": "NOT_SCREENED", "protected_ref": "conflict:" + logicalID},
+		"source":             map[string]any{"system": "web-cfg"},
+		"protected_contact": map[string]any{
+			"name": "Pessoa " + logicalID, "phone": "+5541999887766", "preferred_channel": "WHATSAPP",
+		},
+	}
+}
+
 func marshalNetNew(t *testing.T, body map[string]any) []byte {
 	t.Helper()
 	raw, err := json.Marshal(body)
@@ -97,6 +140,10 @@ func TestNetNewInboundPinMatchesPublishedFixture(t *testing.T) {
 	got := hex.EncodeToString(sum[:])
 	if got != NetNewInboundPinnedHash || got != doc.SchemaHash || got != NetNewInboundPinHash() {
 		t.Fatalf("pin hash fixture=%s const=%s recomputed=%s", doc.SchemaHash, NetNewInboundPinnedHash, got)
+	}
+	runtimePin := RuntimeInboundAuthorityPin()
+	if runtimePin.ContentHash != GovernanceInboundPolicyHash || runtimePin.SourceSHA != GovernanceInboundSourceSHA || runtimePin.TestOnly {
+		t.Fatalf("runtime Governance authority pin diverged: %+v", runtimePin)
 	}
 }
 
@@ -128,7 +175,10 @@ func TestDecideNetNewInboundFailClosed(t *testing.T) {
 		}, NetNewInboundOutcomeRejected, NetNewInboundReasonHashMismatch},
 		{"missing consent", func(m map[string]any) { m["consent"] = map[string]any{"granted": false} }, NetNewInboundOutcomeRejected, NetNewInboundReasonConsent},
 		{"conflict decline", func(m map[string]any) { m["conflict"] = map[string]any{"status": "DECLINE", "ref": "conflict:abc"} }, NetNewInboundOutcomeRejected, NetNewInboundReasonConflictDecline},
-		{"conflict unknown", func(m map[string]any) { m["conflict"] = map[string]any{"status": "UNKNOWN", "ref": "conflict:xyz"} }, NetNewInboundOutcomeUnknown, NetNewInboundReasonConflictUnknown},
+		{"conflict hit", func(m map[string]any) { m["conflict"] = map[string]any{"status": "HIT", "ref": "conflict:xyz"} }, NetNewInboundOutcomeRejected, NetNewInboundReasonConflictHit},
+		{"outbound claim", func(m map[string]any) { m["outbound_eligible"] = true }, NetNewInboundOutcomeRejected, NetNewInboundReasonOutboundClaim},
+		{"auto send claim", func(m map[string]any) { m["auto_send"] = true }, NetNewInboundOutcomeRejected, NetNewInboundReasonAutoSendClaim},
+		{"dispatch claim", func(m map[string]any) { m["dispatch_attempted"] = true }, NetNewInboundOutcomeRejected, NetNewInboundReasonAutoSendClaim},
 		{"intel watch source", func(m map[string]any) { m["source"] = "INTEL_WATCH" }, NetNewInboundOutcomeRejected, NetNewInboundReasonIntelWatch},
 		{"unknown nucleus", func(m map[string]any) { m["nucleus"] = "not_a_nucleus" }, NetNewInboundOutcomeRejected, NetNewInboundReasonNucleus},
 	}
@@ -148,6 +198,20 @@ func TestDecideNetNewInboundFailClosed(t *testing.T) {
 				t.Fatal("negative case was accepted")
 			}
 		})
+	}
+	for _, status := range []string{"UNKNOWN", "NOT_SCREENED"} {
+		body := validNetNewMap("nnhr-conflict-" + strings.ToLower(status))
+		body["conflict"] = map[string]any{"status": status, "ref": "conflict:protected"}
+		parsed, err := ParseNetNewInboundEnvelope(marshalNetNew(t, body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d := DecideNetNewInbound(parsed, testOnlyAuthorityPin()); d.Outcome != NetNewInboundOutcomeAccepted {
+			t.Fatalf("%s should be admitted for human conflict check: %+v", status, d)
+		}
+		if got := NetNewQualificationState(parsed); got != NetNewInboundQualificationConflictCheckRequired {
+			t.Fatalf("%s qualification=%s", status, got)
+		}
 	}
 }
 
@@ -173,6 +237,13 @@ func TestNetNewAcceptedInboundOnlyNoSMTP(t *testing.T) {
 	svc, repo, org := netNewTestService(t)
 	now := *netNewConsentAt()
 	sends := 0
+	svc.cfg.OperatorAlertEmailEnabled = true
+	svc.cfg.OperatorAlertEmailKillSwitch = false
+	svc.cfg.OperatorAlertEmail = "ops@confenge.com.br"
+	svc.operatorMail = func(to, subject, body string) error {
+		sends++
+		return nil
+	}
 	body := marshalNetNew(t, validNetNewMap("nnhr-accepted"))
 	res, xerr := svc.IngestNetNewInboundHandraiser(context.Background(), org, body, now)
 	if xerr != nil {
@@ -180,6 +251,9 @@ func TestNetNewAcceptedInboundOnlyNoSMTP(t *testing.T) {
 	}
 	if res.Outcome != NetNewInboundOutcomeAccepted {
 		t.Fatalf("outcome=%s reason=%s", res.Outcome, res.Reason)
+	}
+	if sends != 0 {
+		t.Fatalf("NET_NEW inbound invoked SMTP %d time(s)", sends)
 	}
 	if res.Receipt == "" || res.LogicalID != "nnhr-accepted" {
 		t.Fatalf("receipt missing: %+v", res)
@@ -258,6 +332,106 @@ func TestNetNewAcceptedInboundOnlyNoSMTP(t *testing.T) {
 	}
 }
 
+func TestNetNewOfficialPhoneOnlyPersistsProtectedContactPIIFreeReadback(t *testing.T) {
+	svc, repo, org := netNewTestService(t)
+	now := *netNewConsentAt()
+	body := officialNetNewMap("nnhr-official-phone")
+	res, xerr := svc.IngestNetNewInboundHandraiser(context.Background(), org, marshalNetNew(t, body), now)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if res.Outcome != NetNewInboundOutcomeAccepted || res.AccountID == nil || res.ActionID == nil {
+		t.Fatalf("official phone-only ingest: %+v", res)
+	}
+	if res.PreferredChannel != NetNewInboundPreferredWhatsApp || res.QualificationState != NetNewInboundQualificationConflictCheckRequired {
+		t.Fatalf("channel/qualification not preserved: %+v", res)
+	}
+	if res.OutboundEligible || res.AutoSend || res.DispatchAttempted || !res.InboundOnly {
+		t.Fatalf("inbound authority leaked outbound: %+v", res)
+	}
+	lead, err := svc.inboundStore().GetInboundLeadByLeadID(context.Background(), org, "nnhr-official-phone")
+	if err != nil || lead == nil {
+		t.Fatalf("receipt: %v", err)
+	}
+	if lead.LeadPhone != "+5541999887766" || lead.LeadEmail != "" || lead.Channel != "whatsapp" {
+		t.Fatalf("phone-only contact not persisted: %+v", lead)
+	}
+	raw := strings.ToLower(string(lead.RawPayload))
+	if strings.Contains(raw, "5541999887766") || strings.Contains(raw, "pessoa nnhr-official-phone") || strings.Contains(raw, "protected_contact") {
+		t.Fatalf("protected contact leaked into raw payload: %s", raw)
+	}
+	candidates, err := repo.ListCandidates(context.Background(), org, *res.AccountID)
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("candidate persistence: %v count=%d", err, len(candidates))
+	}
+	if candidates[0].Email != "" || candidates[0].PhoneE164 != "+5541999887766" || candidates[0].WhatsAppConsentStatus != "OPTED_IN" || !candidates[0].WhatsAppConsentProvenanceOK {
+		t.Fatalf("phone-only candidate invented or lost contact: %+v", candidates[0])
+	}
+	rb, xerr := svc.ReadbackNetNewInboundHandraiser(context.Background(), org, "nnhr-official-phone")
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	readbackJSON, err := json.Marshal(rb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readbackText := strings.ToLower(string(readbackJSON))
+	if strings.Contains(readbackText, "5541999887766") || strings.Contains(readbackText, "pessoa nnhr-official-phone") {
+		t.Fatalf("readback leaked PII: %s", readbackText)
+	}
+	if rb.Receipt != res.Receipt || rb.LogicalID != res.LogicalID || rb.Outcome != NetNewInboundOutcomeAccepted {
+		t.Fatalf("readback lost receipt identity: %+v", rb)
+	}
+}
+
+func TestNetNewOtherTechnicalNeedStaysNeedsContextWhenNotScreened(t *testing.T) {
+	svc, _, org := netNewTestService(t)
+	body := officialNetNewMap("nnhr-other-need")
+	body["nucleus_id"] = "other_technical_need"
+	res, xerr := svc.IngestNetNewInboundHandraiser(context.Background(), org, marshalNetNew(t, body), *netNewConsentAt())
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if res.Outcome != NetNewInboundOutcomeAccepted || res.QualificationState != NetNewInboundQualificationNeedsContext {
+		t.Fatalf("other technical need was not safely admitted for context: %+v", res)
+	}
+	if res.ConflictStatus != netNewInboundConflictNotScreened {
+		t.Fatalf("conflict status=%s", res.ConflictStatus)
+	}
+}
+
+func TestNetNewPhoneOnlyRejectsInvalidOrMissingPreferredContact(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(map[string]any)
+		reason string
+	}{
+		{"invalid phone", func(m map[string]any) {
+			m["protected_contact"] = map[string]any{"name": "Pessoa", "phone": "123", "preferred_channel": "WHATSAPP"}
+		}, NetNewInboundReasonContact},
+		{"email preferred without email", func(m map[string]any) {
+			m["protected_contact"] = map[string]any{"name": "Pessoa", "phone": "+5541999887766", "preferred_channel": "EMAIL"}
+		}, NetNewInboundReasonContact},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, repo, org := netNewTestService(t)
+			body := officialNetNewMap("nnhr-bad-contact-" + strings.ReplaceAll(tc.name, " ", "-"))
+			tc.mutate(body)
+			res, xerr := svc.IngestNetNewInboundHandraiser(context.Background(), org, marshalNetNew(t, body), *netNewConsentAt())
+			if xerr != nil {
+				t.Fatal(xerr)
+			}
+			if res.Outcome != NetNewInboundOutcomeRejected || res.Reason != tc.reason || res.ActionID != nil {
+				t.Fatalf("unsafe contact accepted: %+v", res)
+			}
+			accounts, _ := repo.ListAccounts(context.Background(), org, repository.OutreachAccountFilter{Limit: 20})
+			if len(accounts) != 0 {
+				t.Fatalf("rejected contact created %d accounts", len(accounts))
+			}
+		})
+	}
+}
+
 func TestNetNewCanonicalIDReconcileDoesNotNameMerge(t *testing.T) {
 	svc, repo, org := netNewTestService(t)
 	now := *netNewConsentAt()
@@ -266,7 +440,7 @@ func TestNetNewCanonicalIDReconcileDoesNotNameMerge(t *testing.T) {
 		OrganizationID: org, SourceLeadID: canonical, SourceSystem: "extra-cli",
 		CNPJ14: "55444333000122", RazaoSocial: "Same Display Name LTDA",
 		QueueState: models.OutreachQueueNeedsContact, InboundOnly: false,
-		TargetFitEligible: false, EmailSendReady: false,
+		TargetFitEligible: true, EmailSendReady: true,
 	}
 	if _, err := repo.UpsertAccount(context.Background(), existing); err != nil {
 		t.Fatal(err)
@@ -287,6 +461,9 @@ func TestNetNewCanonicalIDReconcileDoesNotNameMerge(t *testing.T) {
 	}
 	if !res.Reconciled {
 		t.Fatal("canonical match was not marked reconciled")
+	}
+	if res.OutboundEligible || !res.InboundOnly || res.AutoSend || res.DispatchAttempted {
+		t.Fatalf("inbound receipt inherited outbound authority: %+v", res)
 	}
 
 	a := validNetNewMap("nnhr-name-a")
@@ -368,7 +545,7 @@ func TestNetNewRejectsDoNotCreateHandraiserOrMeetcfg(t *testing.T) {
 		{"decline", func(m map[string]any) {
 			m["conflict"] = map[string]any{"status": "DECLINE", "ref": "conflict:only-ref"}
 		}, NetNewInboundReasonConflictDecline},
-		{"conflict unknown", func(m map[string]any) { m["conflict"] = map[string]any{"status": "UNKNOWN", "ref": "conflict:unk"} }, NetNewInboundReasonConflictUnknown},
+		{"conflict hit", func(m map[string]any) { m["conflict"] = map[string]any{"status": "HIT", "ref": "conflict:hit"} }, NetNewInboundReasonConflictHit},
 		{"no consent", func(m map[string]any) { delete(m, "consent") }, NetNewInboundReasonConsent},
 		{"unpinned", func(m map[string]any) { m["schema_hash"] = ""; m["policy_hash"] = ""; m["content_hash"] = "" }, NetNewInboundReasonHashUnpinned},
 	}
@@ -589,11 +766,11 @@ func TestIntelWatchFactualEventDoesNotCreateHandraiser(t *testing.T) {
 	}
 }
 
-func TestNetNewFiveNucleiAcceptedInboundOnly(t *testing.T) {
+func TestNetNewSixNucleiAcceptedInboundOnly(t *testing.T) {
 	svc, repo, org := netNewTestService(t)
 	now := *netNewConsentAt()
-	if len(NetNewInboundNuclei) != 5 {
-		t.Fatalf("closed nuclei want 5 got %d", len(NetNewInboundNuclei))
+	if len(NetNewInboundNuclei) != 6 {
+		t.Fatalf("closed nuclei want 6 got %d", len(NetNewInboundNuclei))
 	}
 	ids := map[uuid.UUID]string{}
 	for _, nucleus := range NetNewInboundNuclei {
