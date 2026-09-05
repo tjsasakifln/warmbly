@@ -128,15 +128,14 @@ func (s *service) IngestNetNewInboundHandraiser(ctx context.Context, orgID uuid.
 
 	admitted, xerr := s.admitNetNewHandraiser(ctx, orgID, env, now)
 	if xerr != nil {
-		row.EnrichmentStatus = models.InboundEnrichmentFailed
-		row.NextAction = models.InboundNextNeedsEnrichment
-		row.Status = models.InboundStatusOpen
-		row.Warnings = appendUnique(row.Warnings, firstNonEmpty(xerr.Identifier, NetNewInboundReasonDownstream))
-		setNetNewProvenance(row, env, NetNewInboundOutcomeUnknown, firstNonEmpty(xerr.Identifier, NetNewInboundReasonDownstream), now)
+		if id := strings.TrimSpace(xerr.Identifier); id != "" && id != NetNewInboundReasonDownstream {
+			row.Warnings = appendUnique(row.Warnings, id)
+		}
+		markNetNewDownstreamUnavailable(row, env, NetNewInboundReasonDownstream, now)
 		_ = st.UpdateInboundLead(ctx, row)
 		res := netNewResultFromLead(row, replay)
 		res.Outcome = NetNewInboundOutcomeUnknown
-		res.Reason = firstNonEmpty(xerr.Identifier, NetNewInboundReasonDownstream)
+		res.Reason = NetNewInboundReasonDownstream
 		s.observeNetNewMetric(res)
 		return res, nil
 	}
@@ -164,16 +163,16 @@ func (s *service) IngestNetNewInboundHandraiser(ctx context.Context, orgID uuid.
 		}
 		action, persistErr := s.PersistHandRaise(ctx, raise)
 		if persistErr != nil || action == nil {
-			reason := NetNewInboundReasonDownstream
-			if persistErr != nil && persistErr.Identifier != "" {
-				reason = persistErr.Identifier
+			if persistErr != nil {
+				if id := strings.TrimSpace(persistErr.Identifier); id != "" && id != NetNewInboundReasonDownstream {
+					row.Warnings = appendUnique(row.Warnings, id)
+				}
 			}
-			setNetNewProvenance(row, env, NetNewInboundOutcomeUnknown, reason, now)
-			row.Warnings = appendUnique(row.Warnings, reason)
+			markNetNewDownstreamUnavailable(row, env, NetNewInboundReasonDownstream, now)
 			_ = st.UpdateInboundLead(ctx, row)
 			res := netNewResultFromLead(row, replay)
 			res.Outcome = NetNewInboundOutcomeUnknown
-			res.Reason = reason
+			res.Reason = NetNewInboundReasonDownstream
 			if admitted.Account != nil {
 				res.AccountID = &admitted.Account.ID
 				res.Reconciled = admitted.Reused
@@ -232,7 +231,9 @@ func (s *service) ReadbackNetNewInboundHandraiser(ctx context.Context, orgID uui
 	res := netNewResultFromLead(row, false)
 	if !netNewReceiptComplete(row) {
 		res.Outcome = NetNewInboundOutcomeUnknown
-		res.Reason = NetNewInboundReasonStale
+		if !netNewDownstreamRetryable(row) {
+			res.Reason = NetNewInboundReasonStale
+		}
 	}
 	if ast := s.alertStore(); ast != nil {
 		if alert, aerr := ast.GetOperatorAlertByLead(ctx, orgID, logicalID); aerr == nil && alert != nil {
@@ -448,12 +449,49 @@ func setNetNewProvenance(row *models.OutreachInboundLead, env NetNewInboundEnvel
 	}
 }
 
+func markNetNewDownstreamUnavailable(row *models.OutreachInboundLead, env NetNewInboundEnvelope, reason string, now time.Time) {
+	if row == nil {
+		return
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = NetNewInboundReasonDownstream
+	}
+	// Leave enrichment and next-action unset so a later replay can finish.
+	row.EnrichmentStatus = models.InboundEnrichmentUnknown
+	row.NextAction = ""
+	row.Status = models.InboundStatusOpen
+	row.UpdatedAt = now
+	row.Warnings = appendUnique(row.Warnings, reason)
+	setNetNewProvenance(row, env, NetNewInboundOutcomeUnknown, reason, now)
+}
+
+func netNewDownstreamRetryable(row *models.OutreachInboundLead) bool {
+	if row == nil {
+		return false
+	}
+	reason := firstNonEmpty(provenanceValue(row.Provenance, netNewProvReason), row.SuppressReason)
+	switch reason {
+	case NetNewInboundReasonDownstream, NetNewInboundReasonStoreUnavailable, NetNewInboundReasonStale:
+		return true
+	}
+	if provenanceValue(row.Provenance, netNewProvOutcome) == NetNewInboundOutcomeAccepted && row.ActionID == nil {
+		return true
+	}
+	return false
+}
+
 func netNewReceiptComplete(row *models.OutreachInboundLead) bool {
 	if row == nil {
 		return false
 	}
-	if outcome := provenanceValue(row.Provenance, netNewProvOutcome); outcome == NetNewInboundOutcomeAccepted ||
-		outcome == NetNewInboundOutcomeRejected || outcome == NetNewInboundOutcomeUnknown {
+	if netNewDownstreamRetryable(row) {
+		return false
+	}
+	outcome := provenanceValue(row.Provenance, netNewProvOutcome)
+	switch outcome {
+	case NetNewInboundOutcomeAccepted:
+		return row.ActionID != nil
+	case NetNewInboundOutcomeRejected, NetNewInboundOutcomeUnknown:
 		return true
 	}
 	return inboundReceiptComplete(row)

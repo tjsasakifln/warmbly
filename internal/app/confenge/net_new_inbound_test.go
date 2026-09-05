@@ -426,42 +426,92 @@ func TestNetNewSensitiveDataStoresRefsOnly(t *testing.T) {
 }
 
 func TestNetNewDownstreamUnavailableThenReplay(t *testing.T) {
-	svc, _, org := netNewTestService(t)
-	now := *netNewConsentAt()
-	body := marshalNetNew(t, validNetNewMap("nnhr-rollback"))
-	svc.netNewAfterPersist = func(*models.OutreachInboundLead) error { return errors.New("downstream down") }
-	first, xerr := svc.IngestNetNewInboundHandraiser(context.Background(), org, body, now)
-	if xerr != nil {
-		t.Fatal(xerr)
-	}
-	if first.Outcome != NetNewInboundOutcomeUnknown || first.ActionID != nil {
-		t.Fatalf("downstream failure accepted: %+v", first)
-	}
-	rb, xerr := svc.ReadbackNetNewInboundHandraiser(context.Background(), org, "nnhr-rollback")
-	if xerr != nil {
-		t.Fatal(xerr)
-	}
-	if rb.Outcome == NetNewInboundOutcomeAccepted {
-		t.Fatal("stale readback reported ACCEPTED")
-	}
-	if rb.Reason != NetNewInboundReasonStale && rb.Reason != NetNewInboundReasonDownstream {
-		t.Fatalf("stale reason=%s", rb.Reason)
-	}
-	svc.netNewAfterPersist = nil
-	second, xerr := svc.IngestNetNewInboundHandraiser(context.Background(), org, body, now.Add(time.Minute))
-	if xerr != nil {
-		t.Fatal(xerr)
-	}
-	if second.Outcome != NetNewInboundOutcomeAccepted || second.ActionID == nil {
-		t.Fatalf("replay after rollback: %+v", second)
-	}
-	actions, err := svc.actionStore().ListCommercialActions(context.Background(), org, *second.AccountID, false, 50)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(actions) != 1 {
-		t.Fatalf("rollback/replay produced %d actions", len(actions))
-	}
+	t.Run("action store", func(t *testing.T) {
+		svc, repo, org := netNewTestService(t)
+		now := *netNewConsentAt()
+		body := marshalNetNew(t, validNetNewMap("nnhr-rollback-action"))
+		repo.actionUpsertErr = errors.New("commercial action store down")
+		first, xerr := svc.IngestNetNewInboundHandraiser(context.Background(), org, body, now)
+		if xerr != nil {
+			t.Fatal(xerr)
+		}
+		if first.Outcome != NetNewInboundOutcomeUnknown || first.ActionID != nil {
+			t.Fatalf("action-store failure accepted: %+v", first)
+		}
+		if first.Reason != NetNewInboundReasonDownstream {
+			t.Fatalf("action-store reason=%s", first.Reason)
+		}
+		lead, err := svc.inboundStore().GetInboundLeadByLeadID(context.Background(), org, "nnhr-rollback-action")
+		if err != nil || lead == nil {
+			t.Fatalf("receipt: %v", err)
+		}
+		if netNewReceiptComplete(lead) {
+			t.Fatal("downstream UNKNOWN marked complete; replay would skip PersistHandRaise")
+		}
+		rb, xerr := svc.ReadbackNetNewInboundHandraiser(context.Background(), org, "nnhr-rollback-action")
+		if xerr != nil {
+			t.Fatal(xerr)
+		}
+		if rb.Outcome == NetNewInboundOutcomeAccepted {
+			t.Fatal("stale readback reported ACCEPTED")
+		}
+		if rb.Reason != NetNewInboundReasonStale && rb.Reason != NetNewInboundReasonDownstream {
+			t.Fatalf("stale reason=%s", rb.Reason)
+		}
+		repo.actionUpsertErr = nil
+		second, xerr := svc.IngestNetNewInboundHandraiser(context.Background(), org, body, now.Add(time.Minute))
+		if xerr != nil {
+			t.Fatal(xerr)
+		}
+		if second.Outcome != NetNewInboundOutcomeAccepted || second.ActionID == nil {
+			t.Fatalf("replay after action-store failure: %+v", second)
+		}
+		actions, err := svc.actionStore().ListCommercialActions(context.Background(), org, *second.AccountID, false, 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(actions) != 1 {
+			t.Fatalf("action-store rollback/replay produced %d actions", len(actions))
+		}
+	})
+	t.Run("account store", func(t *testing.T) {
+		svc, repo, org := netNewTestService(t)
+		now := *netNewConsentAt()
+		body := marshalNetNew(t, validNetNewMap("nnhr-rollback-account"))
+		repo.accountUpsertErr = errors.New("account store down")
+		first, xerr := svc.IngestNetNewInboundHandraiser(context.Background(), org, body, now)
+		if xerr != nil {
+			t.Fatal(xerr)
+		}
+		if first.Outcome != NetNewInboundOutcomeUnknown || first.ActionID != nil || first.AccountID != nil {
+			t.Fatalf("account-store failure accepted: %+v", first)
+		}
+		if first.Reason != NetNewInboundReasonDownstream {
+			t.Fatalf("account-store reason=%s", first.Reason)
+		}
+		lead, err := svc.inboundStore().GetInboundLeadByLeadID(context.Background(), org, "nnhr-rollback-account")
+		if err != nil || lead == nil {
+			t.Fatalf("receipt: %v", err)
+		}
+		if netNewReceiptComplete(lead) {
+			t.Fatal("admit failure marked complete; replay would skip AdmitInboundOnly")
+		}
+		repo.accountUpsertErr = nil
+		second, xerr := svc.IngestNetNewInboundHandraiser(context.Background(), org, body, now.Add(time.Minute))
+		if xerr != nil {
+			t.Fatal(xerr)
+		}
+		if second.Outcome != NetNewInboundOutcomeAccepted || second.ActionID == nil {
+			t.Fatalf("replay after account-store failure: %+v", second)
+		}
+		actions, err := svc.actionStore().ListCommercialActions(context.Background(), org, *second.AccountID, false, 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(actions) != 1 {
+			t.Fatalf("account-store rollback/replay produced %d actions", len(actions))
+		}
+	})
 }
 
 func TestNetNewTelemetryFailureDoesNotDropOrGrantOutbound(t *testing.T) {
