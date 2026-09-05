@@ -162,6 +162,12 @@ type Service interface {
 	// IngestOpportunityEvent durably stores one inbound opportunity event
 	// before anything else happens to it.
 	IngestOpportunityEvent(ctx context.Context, orgID uuid.UUID, event liveintel.OpportunityEvent, now time.Time) (*OpportunityEventReceipt, *errx.Error)
+	// IngestNetNewInboundHandraiser consumes one NET_NEW_INBOUND_HANDRAISER
+	// envelope fail-closed. HTTP 2xx is not acceptance; Outcome is.
+	IngestNetNewInboundHandraiser(ctx context.Context, orgID uuid.UUID, raw []byte, now time.Time) (*NetNewInboundResult, *errx.Error)
+	// ReadbackNetNewInboundHandraiser returns the persisted receipt for the
+	// same logical ID, including ack actor/time, policy, hash, receipt and reason.
+	ReadbackNetNewInboundHandraiser(ctx context.Context, orgID uuid.UUID, logicalID string) (*NetNewInboundReadback, *errx.Error)
 	// PersistHandRaise converges one hand-raise signal onto the commercial
 	// action surface, stamped with its engine of origin.
 	PersistHandRaise(ctx context.Context, raise HandRaise) (*models.OutreachCommercialAction, *errx.Error)
@@ -320,6 +326,14 @@ type service struct {
 	// INTEL_SEED's own send ledger and daily-cap counter. Nil keeps the lane
 	// dormant: an uncountable cap is not a cap.
 	intelSeedLedger IntelSeedLedger
+	// PII-free net-new inbound metrics. A failing sink must not drop the event
+	// or grant outbound action.
+	netNewMetricSink   func(NetNewInboundMetric)
+	netNewAfterPersist func(*models.OutreachInboundLead) error
+	// Optional authority-pin override. Tests inject the test-only adapter.
+	// Production uses RuntimeInboundAuthorityPin (the published Governance
+	// authority); an unpinned override falls through to it.
+	authorityPin InboundAuthorityPin
 }
 
 func (s *service) now() time.Time {

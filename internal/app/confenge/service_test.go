@@ -40,6 +40,8 @@ type memRepo struct {
 	inboundInsertErr   error
 	inboundUpdateErr   error
 	alertInsertErr     error
+	accountUpsertErr   error
+	actionUpsertErr    error
 	actions            map[uuid.UUID]*models.OutreachCommercialAction
 	actionByIdem       map[string]*models.OutreachCommercialAction
 	inbound            map[string]*models.OutreachInboundLead
@@ -352,6 +354,9 @@ func (m *memRepo) GetAccount(ctx context.Context, orgID, id uuid.UUID) (*models.
 func (m *memRepo) UpsertAccount(ctx context.Context, acc *models.OutreachAccount) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.accountUpsertErr != nil {
+		return false, m.accountUpsertErr
+	}
 	k := accKey(acc.OrganizationID, acc.CNPJ14)
 	if models.AccountIsInboundOnly(acc) && strings.TrimSpace(acc.SourceLeadID) != "" {
 		k = acc.OrganizationID.String() + "|inbound_only|" + acc.SourceLeadID
@@ -1622,6 +1627,9 @@ func (m *memRepo) ensureActions() {
 func (m *memRepo) UpsertCommercialAction(_ context.Context, a *models.OutreachCommercialAction) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.actionUpsertErr != nil {
+		return m.actionUpsertErr
+	}
 	m.ensureActions()
 	if a.ID == uuid.Nil {
 		a.ID = uuid.New()

@@ -16,15 +16,19 @@ import (
 
 	"github.com/warmbly/warmbly/internal/app/confenge"
 	"github.com/warmbly/warmbly/internal/app/confenge/intel"
+	"github.com/warmbly/warmbly/internal/app/confenge/liveintel"
 	"github.com/warmbly/warmbly/internal/errx"
 )
 
 type inboundHTTPStub struct {
 	confenge.Service
-	cfg      confenge.Config
-	gotRaw   []byte
-	ingest   func(raw []byte, opts confenge.IngestOptions) (*confenge.InboundIngestResult, *errx.Error)
-	obsStore *intel.MemoryStore
+	cfg       confenge.Config
+	gotRaw    []byte
+	gotNetNew []byte
+	gotOpp    bool
+	ingest    func(raw []byte, opts confenge.IngestOptions) (*confenge.InboundIngestResult, *errx.Error)
+	netNew    func(raw []byte) (*confenge.NetNewInboundResult, *errx.Error)
+	obsStore  *intel.MemoryStore
 }
 
 func (s *inboundHTTPStub) Enabled() bool           { return true }
@@ -76,6 +80,40 @@ func (s *inboundHTTPStub) IngestInboundLead(_ context.Context, _ uuid.UUID, raw 
 		NextAction:        "CALL",
 		DispatchAttempted: false,
 	}, nil
+}
+
+func (s *inboundHTTPStub) IngestNetNewInboundHandraiser(_ context.Context, _ uuid.UUID, raw []byte, _ time.Time) (*confenge.NetNewInboundResult, *errx.Error) {
+	s.gotNetNew = append([]byte(nil), raw...)
+	if s.netNew != nil {
+		return s.netNew(raw)
+	}
+	return &confenge.NetNewInboundResult{
+		Schema:            confenge.NetNewInboundHandraiserSchema,
+		LogicalID:         "stub-logical",
+		Outcome:           confenge.NetNewInboundOutcomeAccepted,
+		Receipt:           "stub-receipt",
+		InboundOnly:       true,
+		DispatchAttempted: false,
+	}, nil
+}
+
+func (s *inboundHTTPStub) ReadbackNetNewInboundHandraiser(_ context.Context, _ uuid.UUID, logicalID string) (*confenge.NetNewInboundReadback, *errx.Error) {
+	at := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	return &confenge.NetNewInboundReadback{NetNewInboundResult: confenge.NetNewInboundResult{
+		Schema:         confenge.NetNewInboundHandraiserSchema,
+		PolicyVersion:  confenge.NetNewInboundHandraiserSchema,
+		Hash:           confenge.NetNewInboundPinnedHash,
+		LogicalID:      logicalID,
+		Receipt:        "stub-receipt",
+		Outcome:        confenge.NetNewInboundOutcomeAccepted,
+		AcknowledgedBy: confenge.NetNewInboundAckActor,
+		AcknowledgedAt: &at,
+	}}, nil
+}
+
+func (s *inboundHTTPStub) IngestOpportunityEvent(_ context.Context, _ uuid.UUID, event liveintel.OpportunityEvent, _ time.Time) (*confenge.OpportunityEventReceipt, *errx.Error) {
+	s.gotOpp = true
+	return &confenge.OpportunityEventReceipt{EventID: event.EventID}, nil
 }
 
 func TestConfengeInboundWebhookRejectsQueryPIIAndAcceptsSignedBody(t *testing.T) {
@@ -495,4 +533,165 @@ func cloneMap(in map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+func TestConfengeInboundWebhookNetNewHandraiserRoutesAndReadback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	org := uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+	secret := "inbound-http-secret"
+	var gotOutcome string
+	stub := &inboundHTTPStub{cfg: confenge.Config{
+		Enabled: true, InboundWebhookSecret: secret, InboundOrgID: org, AutoSendEnabled: false,
+	}}
+	stub.netNew = func(raw []byte) (*confenge.NetNewInboundResult, *errx.Error) {
+		at := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+		res := &confenge.NetNewInboundResult{
+			Schema:         confenge.NetNewInboundHandraiserSchema,
+			PolicyVersion:  confenge.NetNewInboundHandraiserSchema,
+			Hash:           confenge.NetNewInboundPinnedHash,
+			LogicalID:      "nnhr-http-1",
+			Receipt:        "receipt-http-1",
+			Outcome:        confenge.NetNewInboundOutcomeAccepted,
+			InboundOnly:    true,
+			AcknowledgedBy: confenge.NetNewInboundAckActor,
+			AcknowledgedAt: &at,
+		}
+		gotOutcome = res.Outcome
+		return res, nil
+	}
+	h := &Handler{ConfengeService: stub}
+	body, _ := json.Marshal(map[string]any{
+		"schema":       confenge.NetNewInboundHandraiserSchema,
+		"contract_id":  confenge.NetNewInboundContractID,
+		"version":      confenge.NetNewInboundPinVersion,
+		"content_hash": confenge.NetNewInboundPinnedHash,
+		"schema_hash":  confenge.NetNewInboundPinnedHash,
+		"source":       "CONFENGE_WEB",
+		"lane":         "CONFENGE_WEB",
+		"logical_id":   "nnhr-http-1",
+	})
+	sig := confenge.SignOutcomeHMAC(secret, time.Now().UTC(), body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/confenge/inbound", bytes.NewReader(body))
+	req.Header.Set("X-Warmbly-Signature", sig)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	h.ConfengeInboundWebhook(c)
+	if w.Code != http.StatusCreated && w.Code != http.StatusOK {
+		t.Fatalf("net-new status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(stub.gotNetNew, []byte("nnhr-http-1")) {
+		t.Fatal("handler did not route net-new envelope")
+	}
+	if stub.gotOpp {
+		t.Fatal("net-new envelope routed to INTEL_WATCH")
+	}
+	var wrap struct {
+		Data confenge.NetNewInboundResult `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &wrap); err != nil {
+		t.Fatal(err)
+	}
+	if wrap.Data.Outcome != confenge.NetNewInboundOutcomeAccepted {
+		t.Fatalf("HTTP %d is not acceptance; outcome=%q", w.Code, wrap.Data.Outcome)
+	}
+	if gotOutcome != wrap.Data.Outcome {
+		t.Fatal("handler invented an outcome")
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/confenge/inbound/handraisers/nnhr-http-1", nil)
+	w2 := httptest.NewRecorder()
+	c2, _ := gin.CreateTestContext(w2)
+	c2.Request = req2
+	c2.Params = gin.Params{{Key: "logicalId", Value: "nnhr-http-1"}}
+	c2.Set("organization_id", org)
+	h.GetConfengeInboundHandraiser(c2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("readback status=%d body=%s", w2.Code, w2.Body.String())
+	}
+	var rb struct {
+		Data confenge.NetNewInboundReadback `json:"data"`
+	}
+	if err := json.Unmarshal(w2.Body.Bytes(), &rb); err != nil {
+		t.Fatal(err)
+	}
+	if rb.Data.AcknowledgedBy == "" || rb.Data.Receipt == "" || rb.Data.PolicyVersion == "" || rb.Data.Hash == "" {
+		t.Fatalf("readback missing fields: %+v", rb.Data)
+	}
+}
+
+func TestConfengeInboundWebhookIntelWatchDoesNotCallNetNew(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	org := uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+	secret := "inbound-http-secret"
+	stub := &inboundHTTPStub{cfg: confenge.Config{
+		Enabled: true, InboundWebhookSecret: secret, InboundOrgID: org, AutoSendEnabled: false,
+	}}
+	h := &Handler{ConfengeService: stub}
+	body, _ := json.Marshal(map[string]any{
+		"schema":      liveintel.EventSchemaV1,
+		"event_id":    "intel-watch-http-1",
+		"event_type":  "NEW_OPPORTUNITY",
+		"subject_key": "company:watched",
+		"payload":     map[string]string{"change": "factual"},
+	})
+	sig := confenge.SignOutcomeHMAC(secret, time.Now().UTC(), body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/confenge/inbound", bytes.NewReader(body))
+	req.Header.Set("X-Warmbly-Signature", sig)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	h.ConfengeInboundWebhook(c)
+	if len(stub.gotNetNew) != 0 {
+		t.Fatalf("INTEL_WATCH routed to net-new consumer: %s", stub.gotNetNew)
+	}
+	if !stub.gotOpp {
+		t.Fatalf("INTEL_WATCH not routed to opportunity ingest status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestConfengeInboundWebhookHTTP2xxIsNotAcceptance(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	org := uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+	secret := "inbound-http-secret"
+	stub := &inboundHTTPStub{cfg: confenge.Config{
+		Enabled: true, InboundWebhookSecret: secret, InboundOrgID: org, AutoSendEnabled: false,
+	}}
+	stub.netNew = func(raw []byte) (*confenge.NetNewInboundResult, *errx.Error) {
+		return &confenge.NetNewInboundResult{
+			Schema:    confenge.NetNewInboundHandraiserSchema,
+			LogicalID: "nnhr-http-reject",
+			Outcome:   confenge.NetNewInboundOutcomeRejected,
+			Reason:    confenge.NetNewInboundReasonHashUnpinned,
+			Receipt:   "receipt-reject",
+		}, nil
+	}
+	h := &Handler{ConfengeService: stub}
+	body, _ := json.Marshal(map[string]any{
+		"schema":     confenge.NetNewInboundHandraiserSchema,
+		"logical_id": "nnhr-http-reject",
+		"source":     "CONFENGE_WEB",
+	})
+	sig := confenge.SignOutcomeHMAC(secret, time.Now().UTC(), body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/confenge/inbound", bytes.NewReader(body))
+	req.Header.Set("X-Warmbly-Signature", sig)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	h.ConfengeInboundWebhook(c)
+	if w.Code != http.StatusCreated && w.Code != http.StatusOK {
+		t.Fatalf("rejected envelope HTTP status=%d body=%s", w.Code, w.Body.String())
+	}
+	var wrap struct {
+		Data confenge.NetNewInboundResult `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &wrap); err != nil {
+		t.Fatal(err)
+	}
+	if wrap.Data.Outcome == confenge.NetNewInboundOutcomeAccepted {
+		t.Fatal("HTTP 2xx was treated as acceptance")
+	}
+	if wrap.Data.Outcome != confenge.NetNewInboundOutcomeRejected {
+		t.Fatalf("outcome=%q", wrap.Data.Outcome)
+	}
 }
