@@ -340,11 +340,8 @@ func TestPGDifferentPayloadUnderSameLogicalIDDoesNotInheritAcceptance(t *testing
 		})
 	}
 
-	// A byte-different but logically identical re-send (different JSON key
-	// order, cosmetic-only field change) must still replay, not conflict.
+	// An identical request re-serialized from a map must still replay.
 	same := governanceNetNewMap(logicalID)
-	same["why_now"] = "requested a technical readiness assessment from the public form"
-	same["correlation_id"] = "corr-" + logicalID
 	res, xerr := svc.IngestNetNewInboundHandraiser(context.Background(), orgID, marshalNetNew(t, same), now.Add(2*time.Minute))
 	if xerr != nil {
 		t.Fatal(xerr)

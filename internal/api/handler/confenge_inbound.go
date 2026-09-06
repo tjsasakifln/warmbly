@@ -183,6 +183,10 @@ func (h *Handler) ConfengeInboundWebhook(c *gin.Context) {
 
 // GetConfengeInboundHandraiser — GET /confenge/inbound/handraisers/:logicalId
 func (h *Handler) GetConfengeInboundHandraiser(c *gin.Context) {
+	if xerr := confenge.RejectInboundReadbackQuery(c.Request.URL.Query()); xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
 	orgID, ok := h.confengeOrg(c)
 	if !ok {
 		return
@@ -190,6 +194,50 @@ func (h *Handler) GetConfengeInboundHandraiser(c *gin.Context) {
 	logicalID := strings.TrimSpace(c.Param("logicalId"))
 	if logicalID == "" {
 		errx.JSON(c, errx.New(errx.BadRequest, "logical_id is required"))
+		return
+	}
+	res, xerr := h.ConfengeService.ReadbackNetNewInboundHandraiser(c.Request.Context(), orgID, logicalID)
+	if xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": res})
+}
+
+// ConfengeInboundHandraiserReadbackWebhook exposes the PII-free receipt to the
+// web producer using the same rotating HMAC secret as POST. The signature is
+// bound to method + route + logical ID, so it cannot read a different receipt.
+func (h *Handler) ConfengeInboundHandraiserReadbackWebhook(c *gin.Context) {
+	if h.ConfengeService == nil || !h.ConfengeService.Enabled() {
+		errx.JSON(c, errx.New(errx.NotFound, "CONFENGE outreach is not enabled on this server"))
+		return
+	}
+	if xerr := confenge.RejectInboundReadbackQuery(c.Request.URL.Query()); xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
+	cfg := h.ConfengeService.Config()
+	if strings.TrimSpace(cfg.InboundWebhookSecret) == "" {
+		errx.JSON(c, errx.New(errx.Unauthorized, "inbound webhook secret is not configured"))
+		return
+	}
+	orgID := cfg.InboundOrgID
+	if orgID == uuid.Nil {
+		orgID = cfg.OperatorOrgID
+	}
+	if orgID == uuid.Nil {
+		errx.JSON(c, errx.New(errx.ServiceUnavailable, "inbound org is not configured"))
+		return
+	}
+	logicalID := strings.TrimSpace(c.Param("logicalId"))
+	signedPayload := confenge.NetNewInboundReadbackHMACPayload(logicalID)
+	if len(signedPayload) == 0 {
+		errx.JSON(c, errx.New(errx.BadRequest, "logical_id is invalid"))
+		return
+	}
+	sig := firstNonEmptyHeader(c, "X-Warmbly-Signature", "X-Confenge-Signature")
+	if !confenge.VerifyOutcomeHMAC(cfg.InboundWebhookSecret, sig, signedPayload, time.Now().UTC(), inboundHMACSkew) {
+		errx.JSON(c, errx.New(errx.Unauthorized, "invalid inbound signature"))
 		return
 	}
 	res, xerr := h.ConfengeService.ReadbackNetNewInboundHandraiser(c.Request.Context(), orgID, logicalID)

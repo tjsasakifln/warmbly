@@ -2,6 +2,8 @@ package confenge
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"time"
@@ -16,35 +18,59 @@ import (
 // NetNewInboundResult is one persist-first consume. HTTP 2xx is not acceptance;
 // Outcome is. Readback of LogicalID is the proof.
 type NetNewInboundResult struct {
-	Schema            string     `json:"schema"`
-	PolicyVersion     string     `json:"policy_version"`
-	Hash              string     `json:"hash,omitempty"`
-	IntakeSchema      string     `json:"intake_schema,omitempty"`
-	StateSchema       string     `json:"state_schema,omitempty"`
-	LogicalID         string     `json:"logical_id"`
-	Receipt           string     `json:"receipt"`
-	CorrelationID     string     `json:"correlation_id,omitempty"`
-	Outcome           string     `json:"outcome"`
-	Reason            string     `json:"reason,omitempty"`
-	Nucleus           string     `json:"nucleus,omitempty"`
-	OfferCandidate    string     `json:"offer_candidate,omitempty"`
-	SourceAsset       string     `json:"source_asset,omitempty"`
-	CityClass         string     `json:"city_class,omitempty"`
-	Urgency           string     `json:"urgency,omitempty"`
-	WhyNow            string     `json:"why_now,omitempty"`
-	ConflictRef       string     `json:"conflict_ref,omitempty"`
-	InboundOnly       bool       `json:"inbound_only"`
-	OutboundEligible  bool       `json:"outbound_eligible"`
-	AutoSend          bool       `json:"auto_send"`
-	DispatchAttempted bool       `json:"dispatch_attempted"`
-	MeetcfgHandoff    bool       `json:"meetcfg_handoff_allowed"`
-	Replay            bool       `json:"replay"`
-	AcknowledgedBy    string     `json:"acknowledged_by,omitempty"`
-	AcknowledgedAt    *time.Time `json:"acknowledged_at,omitempty"`
-	AccountID         *uuid.UUID `json:"account_id,omitempty"`
-	ActionID          *uuid.UUID `json:"action_id,omitempty"`
-	CanonicalEntityID string     `json:"canonical_entity_id,omitempty"`
-	Reconciled        bool       `json:"reconciled,omitempty"`
+	Schema             string     `json:"schema"`
+	SchemaVersion      string     `json:"schema_version"`
+	PolicyID           string     `json:"policy_id"`
+	PolicyVersion      string     `json:"policy_version"`
+	CanonicalName      string     `json:"canonical_name"`
+	DecisionID         string     `json:"decision_id"`
+	LogicalAdmissionID string     `json:"logical_admission_id"`
+	Decision           string     `json:"decision"`
+	ReasonCodes        []string   `json:"reason_codes"`
+	IdempotencyKey     string     `json:"idempotency_key"`
+	Hash               string     `json:"hash,omitempty"`
+	IntakeSchema       string     `json:"intake_schema,omitempty"`
+	StateSchema        string     `json:"state_schema,omitempty"`
+	LogicalID          string     `json:"logical_id"`
+	Receipt            string     `json:"receipt"`
+	ReceiptID          string     `json:"receipt_id,omitempty"`
+	CorrelationID      string     `json:"correlation_id,omitempty"`
+	Outcome            string     `json:"outcome"`
+	Reason             string     `json:"reason,omitempty"`
+	Replayed           bool       `json:"replayed"`
+	Origin             string     `json:"origin"`
+	AcquisitionLane    string     `json:"acquisition_lane"`
+	IntentKind         string     `json:"intent_kind"`
+	IntakeSource       string     `json:"intake_source"`
+	Nucleus            string     `json:"nucleus,omitempty"`
+	NucleusID          string     `json:"nucleus_id,omitempty"`
+	OfferCandidate     string     `json:"offer_candidate,omitempty"`
+	OfferCandidateID   string     `json:"offer_candidate_id,omitempty"`
+	SourceAsset        string     `json:"source_asset,omitempty"`
+	CityClass          string     `json:"-"`
+	Urgency            string     `json:"-"`
+	WhyNow             string     `json:"-"`
+	ConflictRef        string     `json:"-"`
+	ConflictStatus     string     `json:"conflict_status,omitempty"`
+	QualificationState string     `json:"qualification_state,omitempty"`
+	PreferredChannel   string     `json:"preferred_channel,omitempty"`
+	InboundOnly        bool       `json:"inbound_only"`
+	OutboundEligible   bool       `json:"outbound_eligible"`
+	AutoSend           bool       `json:"auto_send"`
+	SMTPAuthorized     bool       `json:"smtp_authorized"`
+	FollowupAuthorized bool       `json:"followup_authorized"`
+	AccountRequired    bool       `json:"account_required_for_acceptance"`
+	IdentityAuth       string     `json:"identity_authorization"`
+	DispatchAttempted  bool       `json:"dispatch_attempted"`
+	MeetcfgHandoff     bool       `json:"meetcfg_handoff_allowed"`
+	Replay             bool       `json:"replay"`
+	AcknowledgedBy     string     `json:"acknowledged_by,omitempty"`
+	AcknowledgedAt     *time.Time `json:"acknowledged_at,omitempty"`
+	EvaluatedAt        *time.Time `json:"evaluated_at,omitempty"`
+	AccountID          *uuid.UUID `json:"account_id,omitempty"`
+	ActionID           *uuid.UUID `json:"action_id,omitempty"`
+	CanonicalEntityID  string     `json:"-"`
+	Reconciled         bool       `json:"reconciled,omitempty"`
 }
 
 // NetNewInboundReadback is the same logical ID after persist.
@@ -95,7 +121,7 @@ func (s *service) IngestNetNewInboundHandraiser(ctx context.Context, orgID uuid.
 			"inbound lead store unavailable")
 	}
 
-	row := netNewReceiptRow(orgID, env, raw, pinHash, now)
+	row := netNewReceiptRow(orgID, env, pinHash, now)
 	created, existing, insertErr := st.InsertInboundLead(ctx, row)
 	if insertErr != nil {
 		return nil, errx.New(errx.Internal, "persist inbound receipt: "+insertErr.Error())
@@ -159,9 +185,13 @@ func (s *service) IngestNetNewInboundHandraiser(ctx context.Context, orgID uuid.
 			cid := admitted.Candidate.ID
 			row.CandidateID = &cid
 		}
+		signal := SignalRequestHumanReview
+		if strings.EqualFold(strings.TrimSpace(env.IntentKind), "DEEP_DIVE") || strings.EqualFold(strings.TrimSpace(env.IntentKind), "REQUEST_DEEP_DIVE") {
+			signal = SignalRequestDeepDive
+		}
 		raise := HandRaise{
 			OrganizationID: orgID, AccountID: admitted.Account.ID,
-			Signal: SignalRequestHumanReview, EngineLane: EngineLaneConfengeWeb, OccurredAt: now,
+			Signal: signal, EngineLane: EngineLaneConfengeWeb, OccurredAt: now,
 			SubjectKey:  "company:" + firstNonEmpty(SanitizeText(env.Company.Name, 120), logicalID),
 			Evidence:    SanitizeText(env.WhyNow, 500),
 			PersonName:  SanitizeText(env.Person.Name, 120),
@@ -196,15 +226,15 @@ func (s *service) IngestNetNewInboundHandraiser(ctx context.Context, orgID uuid.
 		aid := action.ID
 		row.ActionID = &aid
 		row.NextAction = models.InboundNextManualOutreach
-		row.Channel = "human_review"
-		row.WhyNow = SanitizeText(env.WhyNow, 500)
+		row.Channel = strings.ToLower(netNewPreferredChannel(env))
+		row.WhyNow = SanitizeText(firstNonEmpty(env.WhyNow, env.WhyNowClass), 500)
 	}
 
 	row.UpdatedAt = now
 	if err := st.UpdateInboundLead(ctx, row); err != nil {
 		return nil, errx.New(errx.Internal, "update inbound lead: "+err.Error())
 	}
-	s.ensureOperatorAlert(ctx, orgID, row, now)
+	s.ensureNetNewOperatorAlert(ctx, orgID, row, now)
 	res := netNewResultFromLead(row, replay)
 	if admitted != nil {
 		res.Reconciled = admitted.Reused
@@ -212,8 +242,10 @@ func (s *service) IngestNetNewInboundHandraiser(ctx context.Context, orgID uuid.
 		res.InboundOnly = true
 		res.OutboundEligible = false
 		if admitted.Account != nil {
-			res.OutboundEligible = accountOutboundEligible(admitted.Account)
-			res.InboundOnly = models.AccountIsInboundOnly(admitted.Account) || admitted.InboundOnly
+			// This receipt never inherits outbound authority from a pre-existing
+			// account. It authorizes only this inbound human action.
+			res.OutboundEligible = false
+			res.InboundOnly = true
 		}
 	}
 	s.observeNetNewMetric(res)
@@ -225,7 +257,7 @@ func (s *service) ReadbackNetNewInboundHandraiser(ctx context.Context, orgID uui
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, xerr
 	}
-	logicalID = SanitizeText(logicalID, 160)
+	logicalID = normalizeNetNewOpaqueRef(logicalID)
 	if logicalID == "" {
 		return nil, errx.NewWithIdentifier(errx.BadRequest, NetNewInboundReasonLogicalID, "logical_id is required")
 	}
@@ -264,7 +296,17 @@ func (s *service) ReadbackNetNewInboundHandraiser(ctx context.Context, orgID uui
 func (s *service) admitNetNewHandraiser(ctx context.Context, orgID uuid.UUID, env NetNewInboundEnvelope, now time.Time) (*InboundAdmission, *errx.Error) {
 	logicalID := netNewLogicalID(env)
 	canonical := netNewCanonicalEntityID(env)
-	email := normalizeWebIntentEmail(env.Person.Email)
+	channel := netNewPreferredChannel(env)
+	email := ""
+	phone := ""
+	switch channel {
+	case NetNewInboundPreferredEmail:
+		email = netNewSelectedEmail(env)
+	case NetNewInboundPreferredPhone:
+		phone = netNewSelectedPhone(env)
+	case NetNewInboundPreferredWhatsApp:
+		phone = netNewSelectedWhatsApp(env)
+	}
 	name := firstNonEmpty(SanitizeText(env.Person.Name, 120), SanitizeText(env.Company.Name, 120))
 	contextText := netNewContext(env)
 
@@ -275,35 +317,175 @@ func (s *service) admitNetNewHandraiser(ctx context.Context, orgID uuid.UUID, en
 		} else if acc != nil {
 			out := &InboundAdmission{
 				Account: acc, Origin: EngineLaneConfengeWeb, Lane: EngineLaneConfengeWeb,
-				IntentKind: intelWebIntentHumanReview(), Context: contextText,
-				Receipt: InboundReceiptID(EngineLaneConfengeWeb, intelWebIntentHumanReview(), firstNonEmpty(email, logicalID), canonical),
+				IntentKind: netNewIntentKind(env), Context: contextText,
+				Receipt: InboundReceiptID(EngineLaneConfengeWeb, netNewIntentKind(env), firstNonEmpty(email, phone, logicalID), canonical),
 				Reused:  true, InboundOnly: models.AccountIsInboundOnly(acc),
 				OutboundEligible: accountOutboundEligible(acc),
 			}
-			if email != "" {
-				created, xerr := s.upsertInboundCandidate(ctx, orgID, acc.ID, email, name, now)
-				if xerr != nil {
-					return nil, xerr
-				}
-				out.Candidate = created
+			created, xerr := s.upsertNetNewInboundCandidate(ctx, orgID, acc.ID, logicalID, email, phone, name, channel, env.Consent, now)
+			if xerr != nil {
+				return nil, xerr
 			}
+			out.Candidate = created
 			return out, nil
 		}
 	}
 
-	// Never merge on display name. Identity is logical_id (and canonical ID).
+	// An explicit contact may already belong to an account. Display name never
+	// participates in identity, and no placeholder email is invented.
+	var candidate *models.OutreachContactCandidate
+	var account *models.OutreachAccount
+	var err error
+	if email != "" {
+		candidate, account, err = s.repo.FindCandidateByEmail(ctx, orgID, email)
+	} else if phone != "" {
+		candidate, account, err = s.repo.FindCandidateByPhone(ctx, orgID, phone)
+	}
+	if err != nil {
+		return nil, errx.NewWithIdentifier(errx.Internal, NetNewInboundReasonDownstream,
+			"inbound-only contact lookup: "+err.Error())
+	}
+	if account != nil {
+		updated, xerr := s.upsertNetNewInboundCandidate(ctx, orgID, account.ID, logicalID, email, phone, name, channel, env.Consent, now)
+		if xerr != nil {
+			return nil, xerr
+		}
+		if updated != nil {
+			candidate = updated
+		}
+		return &InboundAdmission{
+			Account: account, Candidate: candidate, Origin: EngineLaneConfengeWeb, Lane: EngineLaneConfengeWeb,
+			IntentKind: netNewIntentKind(env), Context: contextText,
+			Receipt: InboundReceiptID(EngineLaneConfengeWeb, netNewIntentKind(env), firstNonEmpty(email, phone, logicalID), logicalID),
+			Reused:  true, InboundOnly: models.AccountIsInboundOnly(account),
+			OutboundEligible: accountOutboundEligible(account),
+		}, nil
+	}
+
 	key := inboundOnlyLeadIDPrefix + "confenge_web:NET_NEW:" + logicalID
-	return s.AdmitInboundOnly(ctx, orgID, EngineLaneConfengeWeb, "NET_NEW_INBOUND_HANDRAISER",
-		firstNonEmpty(email, logicalID+"@inbound.invalid"), name, key, contextText, now)
+	account, err = s.repo.GetAccountBySourceLeadID(ctx, orgID, key)
+	if err != nil {
+		return nil, errx.NewWithIdentifier(errx.Internal, NetNewInboundReasonDownstream,
+			"inbound-only account lookup: "+err.Error())
+	}
+	reused := account != nil
+	if account == nil {
+		placeholderCNPJ := inboundOnlyPlaceholderCNPJ(key)
+		account = &models.OutreachAccount{
+			ID: uuid.New(), OrganizationID: orgID, SourceLeadID: key,
+			SourceSystem: models.SourceSystemInboundOnly, InboundOnly: true,
+			CNPJ14: placeholderCNPJ, CNPJRoot: placeholderCNPJ[:8],
+			RazaoSocial:  firstNonEmpty(SanitizeText(env.Company.Name, 120), name, "Demanda técnica inbound"),
+			NomeFantasia: SanitizeText(env.Company.Name, 120),
+			Municipio:    SanitizeText(env.City, 120), UF: strings.ToUpper(SanitizeText(env.UF, 2)),
+			QueueState: models.OutreachQueueNeedsReview, TargetFitEligible: false, EmailSendReady: false,
+			CreatedAt: now, UpdatedAt: now,
+		}
+		if _, err = s.repo.UpsertAccount(ctx, account); err != nil {
+			if stored, _ := s.repo.GetAccountBySourceLeadID(ctx, orgID, key); stored != nil {
+				account = stored
+				reused = true
+			} else {
+				return nil, errx.NewWithIdentifier(errx.Internal, NetNewInboundReasonDownstream,
+					"inbound-only account write: "+err.Error())
+			}
+		}
+	}
+	created, xerr := s.upsertNetNewInboundCandidate(ctx, orgID, account.ID, logicalID, email, phone, name, channel, env.Consent, now)
+	if xerr != nil {
+		return nil, xerr
+	}
+	return &InboundAdmission{
+		Account: account, Candidate: created, Origin: EngineLaneConfengeWeb, Lane: EngineLaneConfengeWeb,
+		IntentKind: netNewIntentKind(env), Context: contextText,
+		Receipt:     InboundReceiptID(EngineLaneConfengeWeb, netNewIntentKind(env), firstNonEmpty(email, phone, logicalID), logicalID),
+		InboundOnly: true, OutboundEligible: false, Reused: reused,
+	}, nil
+}
+
+func (s *service) upsertNetNewInboundCandidate(ctx context.Context, orgID, accountID uuid.UUID, logicalID, email, phone, name, channel string, consent NetNewInboundConsent, now time.Time) (*models.OutreachContactCandidate, *errx.Error) {
+	if email == "" && phone == "" {
+		return nil, errx.NewWithIdentifier(errx.BadRequest, NetNewInboundReasonContact, "a return channel is required")
+	}
+	var existing *models.OutreachContactCandidate
+	if email != "" {
+		if found, acc, err := s.repo.FindCandidateByEmail(ctx, orgID, email); err != nil {
+			return nil, errx.NewWithIdentifier(errx.Internal, NetNewInboundReasonDownstream, "contact lookup: "+err.Error())
+		} else if found != nil && acc != nil && acc.ID == accountID {
+			existing = found
+		}
+	}
+	if existing == nil && phone != "" {
+		if found, acc, err := s.repo.FindCandidateByPhone(ctx, orgID, phone); err != nil {
+			return nil, errx.NewWithIdentifier(errx.Internal, NetNewInboundReasonDownstream, "contact lookup: "+err.Error())
+		} else if found != nil && acc != nil && acc.ID == accountID {
+			existing = found
+		}
+	}
+	candidate := &models.OutreachContactCandidate{
+		ID: uuid.New(), OrganizationID: orgID, AccountID: accountID,
+		SourceContactID: inboundOnlyLeadIDPrefix + "net_new:" + logicalID,
+		Name:            SanitizeText(name, 120), Email: email, Phone: phone, PhoneE164: phone,
+		PhoneSource: "CONFENGE_WEB_EXPLICIT_FORM", VerificationStatus: models.OutreachVerifyCandidateUnverified,
+		Confidence: "LEAD_SUPPLIED", Recommended: true, EmailSendReady: false,
+	}
+	if existing != nil {
+		candidate.ID = existing.ID
+		candidate.SourceContactID = firstNonEmpty(existing.SourceContactID, candidate.SourceContactID)
+		candidate.Name = firstNonEmpty(candidate.Name, existing.Name)
+		candidate.Email = firstNonEmpty(candidate.Email, existing.Email)
+		candidate.Phone = firstNonEmpty(candidate.Phone, existing.Phone)
+		candidate.PhoneE164 = firstNonEmpty(candidate.PhoneE164, existing.PhoneE164)
+		candidate.DoNotContact = existing.DoNotContact
+		candidate.Blocked = existing.Blocked
+		candidate.BlockReason = existing.BlockReason
+		candidate.Bounced = existing.Bounced
+	}
+	if channel == NetNewInboundPreferredWhatsApp && consent.Granted {
+		candidate.WhatsAppConsentStatus = "OPTED_IN"
+		candidate.WhatsAppConsentSource = SanitizeText(consent.Source, 120)
+		candidate.WhatsAppConsentAt = consent.At
+		if candidate.WhatsAppConsentAt == nil {
+			t := now
+			candidate.WhatsAppConsentAt = &t
+		}
+		candidate.WhatsAppConsentProvenanceOK = strings.TrimSpace(consent.Source) != "" &&
+			(strings.TrimSpace(consent.EvidenceRef) != "" || consent.At != nil)
+	} else {
+		candidate.WhatsAppConsentStatus = "UNKNOWN"
+	}
+	if existing != nil && (existing.WhatsAppConsentStatus == "OPTED_OUT" || existing.WhatsAppConsentStatus == "DO_NOT_CONTACT" || existing.DoNotContact) {
+		candidate.WhatsAppConsentStatus = existing.WhatsAppConsentStatus
+		candidate.WhatsAppConsentSource = existing.WhatsAppConsentSource
+		candidate.WhatsAppConsentAt = existing.WhatsAppConsentAt
+		candidate.WhatsAppConsentProvenanceOK = existing.WhatsAppConsentProvenanceOK
+	}
+	if _, err := s.repo.UpsertCandidate(ctx, candidate); err != nil {
+		return nil, errx.NewWithIdentifier(errx.Internal, NetNewInboundReasonDownstream, "inbound-only candidate write: "+err.Error())
+	}
+	return candidate, nil
 }
 
 func intelWebIntentHumanReview() string {
 	return "REQUEST_HUMAN_REVIEW"
 }
 
+func netNewIntentKind(env NetNewInboundEnvelope) string {
+	switch strings.ToUpper(strings.TrimSpace(env.IntentKind)) {
+	case "DEEP_DIVE", "REQUEST_DEEP_DIVE":
+		return "REQUEST_DEEP_DIVE"
+	case "HUMAN_REVIEW", "REQUEST_HUMAN_REVIEW", "":
+		return intelWebIntentHumanReview()
+	default:
+		return intelWebIntentHumanReview()
+	}
+}
+
 func netNewContext(env NetNewInboundEnvelope) string {
 	return SanitizeText(strings.Join(filterEmpty([]string{
 		env.Nucleus, env.OfferCandidate, env.SourceAsset, env.CityClass, env.Urgency, env.WhyNow,
+		env.WhyNowClass, env.DesiredDecision, env.DocumentAvailability,
+		NetNewQualificationState(env), netNewPreferredChannel(env),
 	}), " "), 500)
 }
 
@@ -317,26 +499,30 @@ func filterEmpty(in []string) []string {
 	return out
 }
 
-func netNewReceiptRow(orgID uuid.UUID, env NetNewInboundEnvelope, raw []byte, pinHash string, now time.Time) *models.OutreachInboundLead {
+func netNewReceiptRow(orgID uuid.UUID, env NetNewInboundEnvelope, pinHash string, now time.Time) *models.OutreachInboundLead {
 	logicalID := netNewLogicalID(env)
-	payload := raw
-	if env.SensitiveData {
-		redacted, _ := json.Marshal(map[string]any{
-			"redacted": true, "logical_id": logicalID, "schema": NetNewInboundHandraiserSchema,
-		})
-		payload = redacted
-	}
+	payload := netNewPIIFreeRawPayload(env, pinHash)
 	if len(payload) == 0 {
 		payload = []byte("{}")
 	}
+	selectedEmail := ""
+	selectedPhone := ""
+	switch netNewPreferredChannel(env) {
+	case NetNewInboundPreferredEmail:
+		selectedEmail = netNewSelectedEmail(env)
+	case NetNewInboundPreferredPhone:
+		selectedPhone = netNewSelectedPhone(env)
+	case NetNewInboundPreferredWhatsApp:
+		selectedPhone = netNewSelectedWhatsApp(env)
+	}
 	receipt := InboundReceiptID(EngineLaneConfengeWeb, "NET_NEW_INBOUND_HANDRAISER",
-		firstNonEmpty(normalizeWebIntentEmail(env.Person.Email), logicalID), logicalID)
+		firstNonEmpty(selectedEmail, selectedPhone, logicalID), logicalID)
 	row := &models.OutreachInboundLead{
 		ID:                uuid.New(),
 		OrganizationID:    orgID,
 		LeadID:            logicalID,
 		ReceiptID:         receipt,
-		IdentityKey:       inboundIdentityKey("", normalizeWebIntentEmail(env.Person.Email), ""),
+		IdentityKey:       inboundIdentityKey("", selectedEmail, selectedPhone),
 		LeadCreatedAt:     now,
 		WarmblyIngestedAt: now,
 		Source:            NetNewInboundSource,
@@ -346,21 +532,24 @@ func netNewReceiptRow(orgID uuid.UUID, env NetNewInboundEnvelope, raw []byte, pi
 		EntityID:          SanitizeText(netNewCanonicalEntityID(env), 120),
 		CompanyName:       SanitizeText(env.Company.Name, 200),
 		LeadName:          SanitizeText(env.Person.Name, 160),
-		LeadEmail:         normalizeWebIntentEmail(env.Person.Email),
-		CorrelationID:     SanitizeText(env.CorrelationID, 160),
+		LeadEmail:         selectedEmail,
+		LeadPhone:         selectedPhone,
+		CorrelationID:     normalizeNetNewOpaqueRef(env.CorrelationID),
 		ConsentJSON:       []byte(`{"granted":true}`),
 		UTMJSON:           netNewUTM(env),
 		RawPayload:        payload,
 		EnrichmentStatus:  models.InboundEnrichmentUnknown,
 		Owner:             NetNewInboundAckActor,
 		Status:            models.InboundStatusOpen,
-		WhyNow:            SanitizeText(env.WhyNow, 500),
+		Channel:           strings.ToLower(netNewPreferredChannel(env)),
+		WhyNow:            SanitizeText(firstNonEmpty(env.WhyNow, env.WhyNowClass), 500),
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
-	if env.SensitiveData {
+	if env.SensitiveData.Present {
 		row.LeadName = ""
 		row.LeadEmail = ""
+		row.LeadPhone = ""
 		row.CompanyName = SanitizeText(env.Company.Name, 200)
 		row.Message = ""
 	}
@@ -373,18 +562,58 @@ func netNewReceiptRow(orgID uuid.UUID, env NetNewInboundEnvelope, raw []byte, pi
 	return row
 }
 
+func netNewPIIFreeRawPayload(env NetNewInboundEnvelope, pinHash string) []byte {
+	// Positive allowlist only. Free text, contact data, opaque references,
+	// attribution and unknown producer extensions never enter RawPayload.
+	payload := map[string]any{
+		"schema":              NetNewInboundHandraiserSchema,
+		"policy_hash":         normalizeContentHash(pinHash),
+		"qualification_state": NetNewQualificationState(env),
+		"sensitive_present":   env.SensitiveData.Present,
+		"outbound_eligible":   false,
+		"auto_send":           false,
+		"dispatch_attempted":  false,
+	}
+	if env.FinalContractClaim && env.FinalContractConformant {
+		payload["schema_version"] = "net-new-inbound-handraiser-request.1.0.0-draft.20260904"
+	}
+	if netNewNucleusOK(env.Nucleus) {
+		payload["nucleus"] = env.Nucleus
+	}
+	if strings.TrimSpace(env.OfferCandidate) != "" && netNewOfferCandidateOK(env.OfferCandidate) {
+		payload["offer_candidate"] = env.OfferCandidate
+	}
+	if strings.TrimSpace(env.SourceAsset) != "" && netNewSourceAssetOK(env.SourceAsset) {
+		payload["source_asset"] = env.SourceAsset
+	}
+	if channel := netNewPreferredChannel(env); channel != "" {
+		payload["preferred_channel"] = channel
+	}
+	status := strings.ToUpper(strings.TrimSpace(env.Conflict.Status))
+	switch status {
+	case netNewInboundConflictNone, netNewInboundConflictClear, netNewInboundConflictDecline,
+		netNewInboundConflictHit, netNewInboundConflictUnknown, netNewInboundConflictNotScreened:
+		payload["conflict_status"] = status
+	}
+	clean, err := json.Marshal(payload)
+	if err != nil || len(clean) == 0 {
+		return []byte("{}")
+	}
+	return clean
+}
+
 func netNewUTM(env NetNewInboundEnvelope) []byte {
 	m := map[string]string{
-		"nucleus":         SanitizeText(env.Nucleus, 80),
-		"offer_candidate": SanitizeText(firstNonEmpty(env.OfferCandidate, NetNewInboundOfferCandidate), 120),
-		"source_asset":    SanitizeText(firstNonEmpty(env.SourceAsset, NetNewInboundSourceAsset), 120),
-		"city_class":      SanitizeText(env.CityClass, 40),
-		"urgency":         SanitizeText(env.Urgency, 40),
-		"policy":          NetNewInboundHandraiserSchema,
-		"intake_schema":   NetNewInboundIntakeSchema,
-	}
-	if ref := NetNewConflictRef(env.Conflict); ref != "" {
-		m["conflict_ref"] = ref
+		"nucleus":             SanitizeText(env.Nucleus, 80),
+		"offer_candidate":     SanitizeText(firstNonEmpty(env.OfferCandidate, NetNewInboundOfferCandidate), 120),
+		"source_asset":        SanitizeText(firstNonEmpty(env.SourceAsset, NetNewInboundSourceAsset), 120),
+		"city_class":          SanitizeText(env.CityClass, 40),
+		"urgency":             SanitizeText(env.Urgency, 40),
+		"policy":              NetNewInboundHandraiserSchema,
+		"intake_schema":       firstNonEmpty(env.IntakeSchema, NetNewInboundIntakeSchema),
+		"qualification_state": NetNewQualificationState(env),
+		"preferred_channel":   netNewPreferredChannel(env),
+		"conflict_status":     strings.ToUpper(SanitizeText(env.Conflict.Status, 40)),
 	}
 	raw, _ := json.Marshal(m)
 	if len(raw) == 0 {
@@ -428,12 +657,19 @@ func setNetNewProvenance(row *models.OutreachInboundLead, env NetNewInboundEnvel
 	}
 	prov := []string{
 		netNewProvPolicy + NetNewInboundHandraiserSchema,
-		netNewProvIntake + NetNewInboundIntakeSchema,
+		netNewProvIntake + firstNonEmpty(env.IntakeSchema, NetNewInboundIntakeSchema),
 		netNewProvState + NetNewInboundStateSchema,
 		netNewProvHash + normalizeContentHash(pinHash),
 		netNewProvDigest + NetNewAdmissionDigest(env),
 		netNewProvAckBy + NetNewInboundAckActor,
 		netNewProvAckAt + now.UTC().Format(time.RFC3339),
+		netNewProvOrigin + strings.TrimSpace(env.Source),
+		netNewProvLane + strings.TrimSpace(env.Lane),
+		netNewProvIntent + strings.TrimSpace(env.IntentKind),
+		netNewProvIntakeSource + strings.TrimSpace(env.IntakeSource),
+	}
+	if receiptID := normalizeNetNewOpaqueRef(env.ReceiptID); receiptID != "" {
+		prov = append(prov, netNewProvRequestReceipt+receiptID)
 	}
 	if env.Nucleus != "" {
 		prov = append(prov, netNewProvNucleus+SanitizeText(env.Nucleus, 80))
@@ -450,9 +686,11 @@ func setNetNewProvenance(row *models.OutreachInboundLead, env NetNewInboundEnvel
 	if env.Urgency != "" {
 		prov = append(prov, netNewProvUrgency+SanitizeText(env.Urgency, 40))
 	}
-	if ref := NetNewConflictRef(env.Conflict); ref != "" {
-		prov = append(prov, netNewProvConflict+ref)
-	}
+	prov = append(prov,
+		netNewProvQualification+NetNewQualificationState(env),
+		netNewProvChannel+netNewPreferredChannel(env),
+		netNewProvConflictStatus+strings.ToUpper(SanitizeText(env.Conflict.Status, 40)),
+	)
 	if outcome != "" {
 		prov = append(prov, netNewProvOutcome+outcome)
 	}
@@ -460,7 +698,7 @@ func setNetNewProvenance(row *models.OutreachInboundLead, env NetNewInboundEnvel
 		prov = append(prov, netNewProvReason+reason)
 	}
 	row.Provenance = prov
-	if env.SensitiveData {
+	if env.SensitiveData.Present {
 		row.Evidence = []string{NetNewInboundReasonSensitiveRefOnly}
 		row.Message = ""
 	}
@@ -537,57 +775,149 @@ func netNewResultFromLead(row *models.OutreachInboundLead, replay bool) *NetNewI
 		}
 	}
 	res := &NetNewInboundResult{
-		Schema:            NetNewInboundHandraiserSchema,
-		PolicyVersion:     firstNonEmpty(provenanceValue(row.Provenance, netNewProvPolicy), NetNewInboundHandraiserSchema),
-		Hash:              provenanceValue(row.Provenance, netNewProvHash),
-		IntakeSchema:      firstNonEmpty(provenanceValue(row.Provenance, netNewProvIntake), NetNewInboundIntakeSchema),
-		StateSchema:       firstNonEmpty(provenanceValue(row.Provenance, netNewProvState), NetNewInboundStateSchema),
-		LogicalID:         row.LeadID,
-		Receipt:           row.ReceiptID,
-		CorrelationID:     row.CorrelationID,
-		Outcome:           outcome,
-		Reason:            reason,
-		Nucleus:           firstNonEmpty(provenanceValue(row.Provenance, netNewProvNucleus), utmField(row.UTMJSON, "nucleus")),
-		OfferCandidate:    firstNonEmpty(provenanceValue(row.Provenance, netNewProvOffer), utmField(row.UTMJSON, "offer_candidate")),
-		SourceAsset:       firstNonEmpty(provenanceValue(row.Provenance, netNewProvAsset), row.AssetID),
-		CityClass:         firstNonEmpty(provenanceValue(row.Provenance, netNewProvCity), utmField(row.UTMJSON, "city_class")),
-		Urgency:           firstNonEmpty(provenanceValue(row.Provenance, netNewProvUrgency), utmField(row.UTMJSON, "urgency")),
-		WhyNow:            row.WhyNow,
-		ConflictRef:       provenanceValue(row.Provenance, netNewProvConflict),
-		InboundOnly:       true,
-		OutboundEligible:  false,
-		AutoSend:          false,
-		DispatchAttempted: false,
-		MeetcfgHandoff:    MeetcfgHandoffAllowed(outcome),
-		Replay:            replay,
-		AcknowledgedBy:    firstNonEmpty(provenanceValue(row.Provenance, netNewProvAckBy), row.Owner, NetNewInboundAckActor),
-		AcknowledgedAt:    ackAt,
-		AccountID:         row.AccountID,
-		ActionID:          row.ActionID,
-		CanonicalEntityID: row.EntityID,
+		Schema:             NetNewInboundHandraiserSchema,
+		SchemaVersion:      NetNewInboundDecisionSchema,
+		PolicyID:           NetNewInboundContractID,
+		PolicyVersion:      NetNewInboundPinVersion,
+		CanonicalName:      NetNewInboundHandraiserSchema,
+		Hash:               provenanceValue(row.Provenance, netNewProvHash),
+		IntakeSchema:       firstNonEmpty(provenanceValue(row.Provenance, netNewProvIntake), NetNewInboundIntakeSchema),
+		StateSchema:        firstNonEmpty(provenanceValue(row.Provenance, netNewProvState), NetNewInboundStateSchema),
+		LogicalID:          row.LeadID,
+		IdempotencyKey:     row.LeadID,
+		Receipt:            row.ReceiptID,
+		ReceiptID:          provenanceValue(row.Provenance, netNewProvRequestReceipt),
+		CorrelationID:      row.CorrelationID,
+		Outcome:            outcome,
+		Decision:           outcome,
+		Reason:             reason,
+		ReasonCodes:        netNewGovernanceReasonCodes(outcome, reason),
+		Replayed:           replay,
+		Origin:             firstNonEmpty(provenanceValue(row.Provenance, netNewProvOrigin), NetNewInboundSource),
+		AcquisitionLane:    firstNonEmpty(provenanceValue(row.Provenance, netNewProvLane), "NET_NEW_INBOUND"),
+		IntentKind:         firstNonEmpty(provenanceValue(row.Provenance, netNewProvIntent), "HUMAN_REVIEW"),
+		IntakeSource:       firstNonEmpty(provenanceValue(row.Provenance, netNewProvIntakeSource), NetNewInboundSource),
+		Nucleus:            firstNonEmpty(provenanceValue(row.Provenance, netNewProvNucleus), utmField(row.UTMJSON, "nucleus")),
+		OfferCandidate:     firstNonEmpty(provenanceValue(row.Provenance, netNewProvOffer), utmField(row.UTMJSON, "offer_candidate")),
+		SourceAsset:        firstNonEmpty(provenanceValue(row.Provenance, netNewProvAsset), row.AssetID),
+		CityClass:          firstNonEmpty(provenanceValue(row.Provenance, netNewProvCity), utmField(row.UTMJSON, "city_class")),
+		Urgency:            firstNonEmpty(provenanceValue(row.Provenance, netNewProvUrgency), utmField(row.UTMJSON, "urgency")),
+		WhyNow:             row.WhyNow,
+		ConflictRef:        provenanceValue(row.Provenance, netNewProvConflict),
+		ConflictStatus:     firstNonEmpty(provenanceValue(row.Provenance, netNewProvConflictStatus), utmField(row.UTMJSON, "conflict_status")),
+		QualificationState: firstNonEmpty(provenanceValue(row.Provenance, netNewProvQualification), utmField(row.UTMJSON, "qualification_state")),
+		PreferredChannel:   firstNonEmpty(provenanceValue(row.Provenance, netNewProvChannel), strings.ToUpper(row.Channel)),
+		InboundOnly:        outcome == NetNewInboundOutcomeAccepted,
+		OutboundEligible:   false,
+		AutoSend:           false,
+		SMTPAuthorized:     false,
+		FollowupAuthorized: false,
+		AccountRequired:    false,
+		IdentityAuth:       map[bool]string{true: "INBOUND_ONLY", false: "NONE"}[outcome == NetNewInboundOutcomeAccepted],
+		DispatchAttempted:  false,
+		MeetcfgHandoff:     MeetcfgHandoffAllowed(outcome),
+		Replay:             replay,
+		AcknowledgedBy:     firstNonEmpty(provenanceValue(row.Provenance, netNewProvAckBy), row.Owner, NetNewInboundAckActor),
+		AcknowledgedAt:     ackAt,
+		EvaluatedAt:        ackAt,
+		AccountID:          row.AccountID,
+		ActionID:           row.ActionID,
+		CanonicalEntityID:  row.EntityID,
 	}
+	res.NucleusID = res.Nucleus
+	res.OfferCandidateID = res.OfferCandidate
+	res.DecisionID = netNewGovernanceDecisionID(row.LeadID, provenanceValue(row.Provenance, netNewProvDigest))
+	res.LogicalAdmissionID = res.DecisionID
 	return res
 }
 
 func rejectedNetNew(logicalID, reason string, now time.Time) *NetNewInboundResult {
 	res := &NetNewInboundResult{
-		Schema:            NetNewInboundHandraiserSchema,
-		PolicyVersion:     NetNewInboundHandraiserSchema,
-		LogicalID:         logicalID,
-		Outcome:           NetNewInboundOutcomeRejected,
-		Reason:            reason,
-		InboundOnly:       false,
-		OutboundEligible:  false,
-		AutoSend:          false,
-		DispatchAttempted: false,
-		MeetcfgHandoff:    false,
-		AcknowledgedBy:    NetNewInboundAckActor,
+		Schema:             NetNewInboundHandraiserSchema,
+		SchemaVersion:      NetNewInboundDecisionSchema,
+		PolicyID:           NetNewInboundContractID,
+		PolicyVersion:      NetNewInboundPinVersion,
+		CanonicalName:      NetNewInboundHandraiserSchema,
+		LogicalID:          logicalID,
+		IdempotencyKey:     logicalID,
+		Outcome:            NetNewInboundOutcomeRejected,
+		Decision:           NetNewInboundOutcomeRejected,
+		Reason:             reason,
+		ReasonCodes:        netNewGovernanceReasonCodes(NetNewInboundOutcomeRejected, reason),
+		Origin:             NetNewInboundSource,
+		AcquisitionLane:    "NET_NEW_INBOUND",
+		IntentKind:         "HUMAN_REVIEW",
+		IntakeSource:       NetNewInboundSource,
+		InboundOnly:        false,
+		OutboundEligible:   false,
+		AutoSend:           false,
+		SMTPAuthorized:     false,
+		FollowupAuthorized: false,
+		AccountRequired:    false,
+		IdentityAuth:       "NONE",
+		DispatchAttempted:  false,
+		MeetcfgHandoff:     false,
+		AcknowledgedBy:     NetNewInboundAckActor,
 	}
 	if !now.IsZero() {
 		t := now.UTC()
 		res.AcknowledgedAt = &t
+		res.EvaluatedAt = &t
 	}
 	return res
+}
+
+func netNewGovernanceDecisionID(logicalID, materialHash string) string {
+	if logicalID == "" || materialHash == "" {
+		return ""
+	}
+	basis := map[string]string{
+		"policy_id":       NetNewInboundContractID,
+		"policy_version":  NetNewInboundPinVersion,
+		"idempotency_key": logicalID,
+		"material_hash":   materialHash,
+	}
+	raw, _ := marshalCanonicalNetNewJSON(basis)
+	sum := sha256.Sum256(raw)
+	return "nihr_" + hex.EncodeToString(sum[:])[:32]
+}
+
+func netNewGovernanceReasonCodes(outcome, reason string) []string {
+	if outcome == NetNewInboundOutcomeAccepted {
+		return []string{"ADMISSION_GATES_SATISFIED"}
+	}
+	code := map[string]string{
+		NetNewInboundReasonConsent:          "CONSENT_REFUSED",
+		NetNewInboundReasonOptOut:           "OPT_OUT_PRESENT",
+		NetNewInboundReasonFuzzyIdentity:    "FUZZY_IDENTITY_FORBIDDEN",
+		NetNewInboundReasonIntent:           "INTENT_KIND_NOT_ADMITTED",
+		NetNewInboundReasonLocation:         "LOCATION_NOT_MINIMIZED",
+		NetNewInboundReasonSensitiveContent: "SENSITIVE_CONTENT_FORBIDDEN",
+		NetNewInboundReasonConflictCoercion: "CONFLICT_CLEAR_COERCION_FORBIDDEN",
+		NetNewInboundReasonKeyConflict:      "IDEMPOTENCY_PAYLOAD_CONFLICT",
+		NetNewInboundReasonConflictDecline:  "CONFLICT_HIT",
+		NetNewInboundReasonConflictHit:      "CONFLICT_HIT",
+		NetNewInboundReasonOutboundClaim:    "OUTBOUND_INHERITANCE_FORBIDDEN",
+		NetNewInboundReasonAutoSendClaim:    "AUTO_SEND_FORBIDDEN",
+		NetNewInboundReasonContactUnknown:   "CONTACT_EVIDENCE_UNKNOWN",
+		NetNewInboundReasonContact:          "CONTACT_EVIDENCE_UNKNOWN",
+		NetNewInboundReasonPreferredChannel: "CONTACT_EVIDENCE_UNKNOWN",
+		NetNewInboundReasonNucleus:          "NUCLEUS_NOT_ADMITTED",
+		NetNewInboundReasonOfferCandidate:   "OFFER_CANDIDATE_NOT_ADMITTED",
+		NetNewInboundReasonLane:             "ACQUISITION_LANE_NOT_ADMITTED",
+		NetNewInboundReasonSource:           "ORIGIN_NOT_ADMITTED",
+		NetNewInboundReasonIntelWatch:       "LIVE_INTELLIGENCE_NOT_INBOUND",
+		NetNewInboundReasonSchemaMismatch:   "POLICY_VERSION_NOT_ADMITTED",
+		NetNewInboundReasonContractMismatch: "POLICY_ID_UNKNOWN",
+		NetNewInboundReasonHashMismatch:     "POLICY_VERSION_NOT_ADMITTED",
+		NetNewInboundReasonHashUnpinned:     "AUTHORITY_UNAVAILABLE",
+		NetNewInboundReasonDownstream:       "AUTHORITY_UNAVAILABLE",
+		NetNewInboundReasonRequestInvalid:   "REQUEST_INVALID",
+	}
+	if value := code[reason]; value != "" {
+		return []string{value}
+	}
+	return []string{"REQUEST_INVALID"}
 }
 
 func (s *service) observeNetNewMetric(res *NetNewInboundResult) {

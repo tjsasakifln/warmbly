@@ -19,7 +19,9 @@ const inboundDedupeWindow = 24 * time.Hour
 var inboundQueryPIIKeys = []string{
 	"email", "e-mail", "mail", "phone", "telefone", "tel", "whatsapp",
 	"name", "nome", "cnpj", "cnpj14", "message", "mensagem", "consent",
-	"consentimento", "lead_name", "lead_email", "lead_phone",
+	"consentimento", "lead_name", "lead_email", "lead_phone", "person",
+	"company", "organization", "contact", "protected_contact", "protected_payload",
+	"raw_message", "message_body", "address", "street", "cpf", "ip_address",
 }
 
 // InboundLeadV1 is the sanitized web-cfg handoff after body parse.
@@ -93,9 +95,61 @@ func RejectInboundQueryPII(q url.Values) *errx.Error {
 	if q == nil {
 		return nil
 	}
-	for _, key := range inboundQueryPIIKeys {
-		if strings.TrimSpace(q.Get(key)) != "" {
-			return errx.New(errx.BadRequest, "PII is not accepted on the query string; send it in the POST body")
+	for queryKey, values := range q {
+		for _, value := range values {
+			if strings.TrimSpace(value) != "" && (inboundQueryKeyIsPII(queryKey) || inboundQueryValueLooksPII(value)) {
+				return errx.New(errx.BadRequest, "PII is not accepted on the query string; send it in the POST body")
+			}
+		}
+	}
+	return nil
+}
+
+func inboundQueryKeyIsPII(queryKey string) bool {
+	key := strings.ToLower(strings.TrimSpace(queryKey))
+	parts := strings.FieldsFunc(key, func(r rune) bool {
+		switch r {
+		case '.', '[', ']', '(', ')', '/', '\\':
+			return true
+		default:
+			return false
+		}
+	})
+	parts = append(parts, key)
+	for _, part := range parts {
+		for _, forbidden := range inboundQueryPIIKeys {
+			needle := strings.ToLower(forbidden)
+			if part == needle || (len(needle) >= 4 && strings.Contains(part, needle)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func inboundQueryValueLooksPII(value string) bool {
+	value = strings.TrimSpace(value)
+	if strings.Contains(value, "@") {
+		return true
+	}
+	digits := 0
+	for _, r := range value {
+		if r >= '0' && r <= '9' {
+			digits++
+		}
+	}
+	return digits >= 7
+}
+
+// RejectInboundReadbackQuery rejects every valued query parameter. Producer
+// readback is fully addressed and authenticated by the signed path, so a query
+// has no legitimate contract role and would only create an access-log leak.
+func RejectInboundReadbackQuery(q url.Values) *errx.Error {
+	for _, values := range q {
+		for _, value := range values {
+			if strings.TrimSpace(value) != "" {
+				return errx.New(errx.BadRequest, "query parameters are not accepted on inbound readback")
+			}
 		}
 	}
 	return nil

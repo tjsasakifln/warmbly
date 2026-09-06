@@ -40,6 +40,23 @@ func TestRejectInboundQueryPII(t *testing.T) {
 	if err := RejectInboundQueryPII(bad); err == nil {
 		t.Fatal("expected PII query rejection")
 	}
+	for _, key := range []string{
+		"EMAIL", "Phone", "wHaTsApP", "Lead_Email", "NoMe", "protected_contact",
+		"protected_contact[email]", "protected_payload.phone", "person[name]", "organization", "company",
+		"filter[email_address]", "contactEmail",
+	} {
+		if err := RejectInboundQueryPII(url.Values{key: []string{"sensitive"}}); err == nil {
+			t.Fatalf("mixed-case PII query key %q bypassed rejection", key)
+		}
+	}
+	for _, value := range []string{"pessoa@empresa.com.br", "+55 (41) 99988-7766"} {
+		if err := RejectInboundQueryPII(url.Values{"x": []string{value}}); err == nil {
+			t.Fatalf("PII query value %q bypassed rejection", value)
+		}
+	}
+	if err := RejectInboundReadbackQuery(url.Values{"utm_source": []string{"google"}}); err == nil {
+		t.Fatal("readback accepted an unsigned query dimension")
+	}
 	fmt.Println("QUERY_PII rejected=true field=email")
 }
 

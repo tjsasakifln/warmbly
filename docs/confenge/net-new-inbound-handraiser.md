@@ -1,50 +1,80 @@
-# NET_NEW_INBOUND_HANDRAISER consumer (REV-03)
+# NET_NEW_INBOUND_HANDRAISER consumer (MV-03)
 
-Warmbly consumes a multi-vertical `NET_NEW_INBOUND_HANDRAISER` hand-raiser
-on the existing inbound HMAC route. This is not a second CRM. Receipts
-land on `outreach_inbound_leads`, net-new people/companies reuse
-`AdmitInboundOnly`, and accepted events converge onto one commercial
-action through `ConvergeHandRaise` / `PersistHandRaise`.
+Warmbly consumes the versioned multi-vertical hand-raiser on the existing
+authenticated inbound route. Governance owns policy and admission; web-cfg is
+the `CONFENGE_WEB` producer and receipt origin; Warmbly owns the opportunity,
+manual action and outcome. This is not a second CRM or an outbound authority.
 
-Admission is fail-closed on REV-02 `contract_id + version + content hash`.
-Until a final REV-02 SHA is recorded in `RuntimeRev02Pin`, the matching
-adapter is test-only. Fixture schemas are never production authority.
-HTTP 2xx is not acceptance; `outcome` plus readback of the same
-`logical_id` is.
+## Runtime authority
 
-## Pin
+- Contract: `NET_NEW_INBOUND_HANDRAISER/1.0.0-draft.20260904`
+- Governance source: PR #172, commit
+  `0074722ce66f16af06dd4799ee88064ea8a12fc1`
+- Policy hash:
+  `sha256:405ac86064a90641b843352d21cd21703744115de9592558e100671d92276df7`
+- Source: `CONFENGE_WEB`; acquisition lane: `NET_NEW_INBOUND`
+- Runtime admission requires an exact contract/version/hash match. The routing
+  aliases `hash`, `content_hash`, `schema_hash` and `policy_hash` are accepted. Local
+  conformance fixtures are drift checks only and are never runtime authority.
 
-- Contract ID: `NET_NEW_INBOUND_HANDRAISER`
-- Version: `1.0.0-draft.20260904`
-- Canonical: `NET_NEW_INBOUND_HANDRAISER/1.0.0-draft.20260904`
-- Content hash (test-only adapter): `92bafd8b644b1355bcf457e2aa55a7a902030234cc65139bd1c2a24ff880a30b`
-- Observed REV-02 HEAD (not a final pin): `230d73a22a321112abe09b34a0d5fe743790b857` (`tjsasakifln/Governance`)
-- Runtime pin: unpinned (`WAITING_GOVERNANCE_PIN`)
-- Source / lane: `CONFENGE_WEB`
-- Invariants: `outbound_eligible=false`, `auto_send=false`
+HTTP 2xx is not acceptance. The producer must inspect `outcome` and retain the
+receipt, then use readback of the same `logical_id` as durable confirmation.
 
-Test-only fixture: `internal/app/confenge/testdata/net_new_inbound_handraiser/conformance.json`
+## Compatible intake
 
-## Outcomes
+The parser accepts the official Governance request names and the existing B2G
+aliases. MV-03 adds `technical_triage_review`, `technical_triage_v1` and
+`other_technical_need` without removing the private-readiness offer/asset or
+the five existing nuclei.
 
-Closed set: `ACCEPTED | REJECTED_WITH_REASON | UNKNOWN`.
+In the official request, `origin: "CONFENGE_WEB"` is the admitted producer
+origin while `source: {"system":"web-cfg"}` identifies the producer system.
+The legacy `source: "CONFENGE_WEB"` form remains accepted during migration.
 
-- Persist the receipt before admit or queue writes.
-- `ACCEPTED` creates or updates one inbound-only hand-raiser. Meetcfg
-  handoff is allowed only then.
-- Canonical entity ID reuses the existing account. The same display name
-  without that ID does not merge.
-- Conflict storage is a protected `conflict_ref` only.
-- INTEL_WATCH / Live Intelligence factual envelopes stay on their own
-  schema and never create a CONFENGE_WEB hand-raiser here.
+The actionable contact is carried only in the authenticated HMAC body as
+`protected_contact`. Either a valid email or a valid WhatsApp/phone is enough;
+Warmbly never invents a placeholder email. `preferred_channel` is persisted on
+the receipt and candidate. `PHONE` remains distinct from `WHATSAPP` and never
+creates WhatsApp opt-in. Optional `protected_contact.organization` is preserved
+in the access-controlled operational account/receipt fields. The protected
+contact is removed from raw payload, readback and metrics; operational contact
+fields remain in Warmbly's existing access-controlled contact record.
 
-## Readback
+## Admission and qualification
 
-`GET /confenge/inbound/handraisers/:logicalId` returns `acknowledged_by`,
-`acknowledged_at`, policy version, hash, receipt, reason, and outcome for
-the same logical ID.
+- `CLEAR`/legacy `NONE`: eligible for normal qualification.
+- `UNKNOWN` or `NOT_SCREENED`: accepted for manual review as
+  `CONFLICT_CHECK_REQUIRED`; they are never coerced to clear.
+- `HIT` or legacy `DECLINE`: `REJECTED_WITH_REASON`, without account, action or
+  provider mutation.
+- `other_technical_need`: always `NEEDS_CONTEXT`, including when conflict is
+  `NOT_SCREENED`.
+- A request claiming `outbound_eligible`, `auto_send` or dispatch is rejected.
 
-## Metrics
+Accepted intake creates or reuses one inbound representation and one manual
+commercial action. A pre-existing outbound-eligible account does not transfer
+that authority to the inbound receipt. All returned and persisted contract
+flags remain `outbound_eligible=false`, `auto_send=false` and
+`dispatch_attempted=false`.
 
-Nucleus, state, and reason only. No protected payload, email, name, or
-conflict corpus.
+## Handoff, readback and telemetry
+
+The manual action is non-sendable and non-dispatchable. Operator visibility is
+kept in cockpit/browser channels, while SMTP is disabled for this contract.
+No inbound submission creates follow-up or outbound eligibility.
+
+`GET /api/v1/webhooks/confenge/inbound/handraisers/:logicalId` is the producer
+readback. It uses the same HMAC header as POST, computed over the exact bytes
+`GET\n/api/v1/webhooks/confenge/inbound/handraisers/<logicalId>` with the
+existing five-minute timestamp skew. The signature is therefore bound to one
+receipt. The response returns the same receipt, logical ID, decision,
+qualification, preferred channel and safety flags without contact PII. The
+session-authenticated operator route remains available separately. Reusing an
+idempotency key with different admission material is rejected; exact retry
+returns the original durable receipt.
+
+Metrics contain only nucleus, state and reason. Contact name, email, phone,
+conflict corpus and protected payload are excluded.
+
+Rollback is to stop producer submissions or revert the consumer pin/code while
+retaining receipts. No producer in MV-03 merges or deploys this change.

@@ -618,6 +618,43 @@ func TestConfengeInboundWebhookNetNewHandraiserRoutesAndReadback(t *testing.T) {
 	if rb.Data.AcknowledgedBy == "" || rb.Data.Receipt == "" || rb.Data.PolicyVersion == "" || rb.Data.Hash == "" {
 		t.Fatalf("readback missing fields: %+v", rb.Data)
 	}
+
+	producerPath := "/api/v1/webhooks/confenge/inbound/handraisers/nnhr-http-1"
+	signedPayload := confenge.NetNewInboundReadbackHMACPayload("nnhr-http-1")
+	producerReq := httptest.NewRequest(http.MethodGet, producerPath, nil)
+	producerReq.Header.Set("X-Warmbly-Signature", confenge.SignOutcomeHMAC(secret, time.Now().UTC(), signedPayload))
+	producerW := httptest.NewRecorder()
+	producerC, _ := gin.CreateTestContext(producerW)
+	producerC.Request = producerReq
+	producerC.Params = gin.Params{{Key: "logicalId", Value: "nnhr-http-1"}}
+	h.ConfengeInboundHandraiserReadbackWebhook(producerC)
+	if producerW.Code != http.StatusOK {
+		t.Fatalf("producer readback status=%d body=%s", producerW.Code, producerW.Body.String())
+	}
+	if bytes.Contains(producerW.Body.Bytes(), []byte("@")) {
+		t.Fatalf("producer readback leaked PII: %s", producerW.Body.String())
+	}
+	mixedCasePIIReq := httptest.NewRequest(http.MethodGet, producerPath+"?PhOnE=5541999999999", nil)
+	mixedCasePIIReq.Header.Set("X-Warmbly-Signature", confenge.SignOutcomeHMAC(secret, time.Now().UTC(), signedPayload))
+	mixedCasePIIW := httptest.NewRecorder()
+	mixedCasePIIC, _ := gin.CreateTestContext(mixedCasePIIW)
+	mixedCasePIIC.Request = mixedCasePIIReq
+	mixedCasePIIC.Params = gin.Params{{Key: "logicalId", Value: "nnhr-http-1"}}
+	h.ConfengeInboundHandraiserReadbackWebhook(mixedCasePIIC)
+	if mixedCasePIIW.Code != http.StatusBadRequest {
+		t.Fatalf("mixed-case query PII status=%d body=%s", mixedCasePIIW.Code, mixedCasePIIW.Body.String())
+	}
+
+	wrongReq := httptest.NewRequest(http.MethodGet, producerPath, nil)
+	wrongReq.Header.Set("X-Warmbly-Signature", confenge.SignOutcomeHMAC(secret, time.Now().UTC(), confenge.NetNewInboundReadbackHMACPayload("another-id")))
+	wrongW := httptest.NewRecorder()
+	wrongC, _ := gin.CreateTestContext(wrongW)
+	wrongC.Request = wrongReq
+	wrongC.Params = gin.Params{{Key: "logicalId", Value: "nnhr-http-1"}}
+	h.ConfengeInboundHandraiserReadbackWebhook(wrongC)
+	if wrongW.Code != http.StatusUnauthorized {
+		t.Fatalf("cross-receipt signature status=%d body=%s", wrongW.Code, wrongW.Body.String())
+	}
 }
 
 func TestConfengeInboundWebhookIntelWatchDoesNotCallNetNew(t *testing.T) {
