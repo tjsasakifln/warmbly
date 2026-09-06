@@ -47,10 +47,11 @@ const (
 )
 
 var (
-	ErrCommercialDestinationNotFound = errors.New("commercial destination not found")
-	ErrCommercialDestinationWithheld = errors.New("commercial destination withheld")
-	ErrCommercialCampaignNotAllowed  = errors.New("commercial campaign kind not allowed")
-	ErrCommercialDestinationUnsafe   = errors.New("commercial destination URL is unsafe")
+	ErrCommercialDestinationNotFound  = errors.New("commercial destination not found")
+	ErrCommercialDestinationWithheld  = errors.New("commercial destination withheld")
+	ErrCommercialCampaignNotAllowed   = errors.New("commercial campaign kind not allowed")
+	ErrCommercialDestinationUnsafe    = errors.New("commercial destination URL is unsafe")
+	ErrCommercialDestinationAmbiguous = errors.New("commercial destination is ambiguous for this vertical")
 )
 
 // CommercialDestination is the finite, public-safe destination contract.
@@ -196,12 +197,28 @@ func CommercialDestinations() []CommercialDestination {
 // CommercialDestinationForVertical returns metadata even when it is withheld.
 // URL emission remains the responsibility of CommercialDestinationURL.
 func CommercialDestinationForVertical(vertical CommercialVertical) (CommercialDestination, error) {
-	for _, d := range commercialDestinationRegistry {
+	return selectCommercialDestinationForVertical(commercialDestinationRegistry, vertical)
+}
+
+// selectCommercialDestinationForVertical is a pure function over the passed
+// slice so the selection can be proven invariant under registry reordering.
+// A vertical carrying more than one destination is ambiguous: the commercial
+// decision belongs to the situation (service/moment), never to array order.
+func selectCommercialDestinationForVertical(destinations []CommercialDestination, vertical CommercialVertical) (CommercialDestination, error) {
+	var found []CommercialDestination
+	for _, d := range destinations {
 		if d.Vertical == vertical {
-			return d, nil
+			found = append(found, d)
 		}
 	}
-	return CommercialDestination{}, ErrCommercialDestinationNotFound
+	switch len(found) {
+	case 0:
+		return CommercialDestination{}, ErrCommercialDestinationNotFound
+	case 1:
+		return found[0], nil
+	default:
+		return CommercialDestination{}, fmt.Errorf("%w: vertical %s has %d destinations; select by situation via ResolveCommercialMessageRoute or by id via CommercialDestinationURL", ErrCommercialDestinationAmbiguous, vertical, len(found))
+	}
 }
 
 func commercialDestinationByID(id string) (CommercialDestination, error) {
@@ -239,8 +256,13 @@ func commercialRouteRule(serviceCode, momentCode string) (claimKey, situation, l
 		return "REAJUSTE_OU_REEQUILIBRIO", "A empresa precisa distinguir o mecanismo e organizar nexo, cálculo e documentos.", landingB2GRebalancing
 	case "PLANILHAS":
 		return "ORCAMENTO_OU_BDI", "O edital ou a planilha pode comprometer preço e margem antes da proposta.", landingB2GBudget
-	case "APOIO_LICITACAO", "INTELIGENCIA_PNCP":
+	case "APOIO_LICITACAO":
 		return "EDITAL_OU_PROPOSTA", "A empresa precisa decidir se disputa o edital e como organizar a proposta.", landingB2GTender
+	case "INTELIGENCIA_PNCP":
+		// Market intelligence is not proposal preparation. The B2G situation is
+		// confirmed, but no specific contractual pain is, so this goes to the
+		// overview instead of claiming a tender the company may not be running.
+		return "MERCADO_PUBLICO_OU_RECORTE_PNCP", "A empresa acompanha oportunidades e recortes do mercado público, sem edital ou disputa confirmada.", landingB2GOverview
 	case "ENCERRAMENTO_CONTRATUAL":
 		return "ATRASO_PRORROGACAO_OU_ENCERRAMENTO", "Prazo, atraso, prorrogação ou encerramento exigem cronologia e decisão.", landingB2GDelay
 	case "MONITORAMENTO_CONTRATUAL", "BACKOFFICE":
