@@ -35,7 +35,7 @@ const GovernanceInboundPolicyHash = "405ac86064a90641b843352d21cd21703744115de95
 
 // GovernanceInboundSourceSHA is the Governance merge commit that published the
 // authority above (Governance PR #172).
-const GovernanceInboundSourceSHA = "990c6ae237c3f7188728e97283bc69c130f6028d"
+const GovernanceInboundSourceSHA = "0074722ce66f16af06dd4799ee88064ea8a12fc1"
 
 // RuntimeInboundAuthorityPin is the production pin. It names the published
 // Governance authority: contract_id, version, and the producer's policy_hash.

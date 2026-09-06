@@ -4,7 +4,7 @@
 
 Dependency: Governance PR
 [`#172`](https://github.com/tjsasakifln/Governance/pull/172), commit
-`990c6ae237c3f7188728e97283bc69c130f6028d`, policy hash
+`0074722ce66f16af06dd4799ee88064ea8a12fc1`, policy hash
 `sha256:405ac86064a90641b843352d21cd21703744115de9592558e100671d92276df7`.
 
 The web producer may send the official Governance request field names plus

@@ -9,7 +9,7 @@ manual action and outcome. This is not a second CRM or an outbound authority.
 
 - Contract: `NET_NEW_INBOUND_HANDRAISER/1.0.0-draft.20260904`
 - Governance source: PR #172, commit
-  `990c6ae237c3f7188728e97283bc69c130f6028d`
+  `0074722ce66f16af06dd4799ee88064ea8a12fc1`
 - Policy hash:
   `sha256:405ac86064a90641b843352d21cd21703744115de9592558e100671d92276df7`
 - Source: `CONFENGE_WEB`; acquisition lane: `NET_NEW_INBOUND`
