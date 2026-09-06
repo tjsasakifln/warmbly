@@ -2,6 +2,8 @@ package confenge
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"time"
@@ -17,36 +19,57 @@ import (
 // Outcome is. Readback of LogicalID is the proof.
 type NetNewInboundResult struct {
 	Schema             string     `json:"schema"`
+	SchemaVersion      string     `json:"schema_version"`
+	PolicyID           string     `json:"policy_id"`
 	PolicyVersion      string     `json:"policy_version"`
+	CanonicalName      string     `json:"canonical_name"`
+	DecisionID         string     `json:"decision_id"`
+	LogicalAdmissionID string     `json:"logical_admission_id"`
+	Decision           string     `json:"decision"`
+	ReasonCodes        []string   `json:"reason_codes"`
+	IdempotencyKey     string     `json:"idempotency_key"`
 	Hash               string     `json:"hash,omitempty"`
 	IntakeSchema       string     `json:"intake_schema,omitempty"`
 	StateSchema        string     `json:"state_schema,omitempty"`
 	LogicalID          string     `json:"logical_id"`
 	Receipt            string     `json:"receipt"`
+	ReceiptID          string     `json:"receipt_id,omitempty"`
 	CorrelationID      string     `json:"correlation_id,omitempty"`
 	Outcome            string     `json:"outcome"`
 	Reason             string     `json:"reason,omitempty"`
+	Replayed           bool       `json:"replayed"`
+	Origin             string     `json:"origin"`
+	AcquisitionLane    string     `json:"acquisition_lane"`
+	IntentKind         string     `json:"intent_kind"`
+	IntakeSource       string     `json:"intake_source"`
 	Nucleus            string     `json:"nucleus,omitempty"`
+	NucleusID          string     `json:"nucleus_id,omitempty"`
 	OfferCandidate     string     `json:"offer_candidate,omitempty"`
+	OfferCandidateID   string     `json:"offer_candidate_id,omitempty"`
 	SourceAsset        string     `json:"source_asset,omitempty"`
-	CityClass          string     `json:"city_class,omitempty"`
-	Urgency            string     `json:"urgency,omitempty"`
-	WhyNow             string     `json:"why_now,omitempty"`
-	ConflictRef        string     `json:"conflict_ref,omitempty"`
+	CityClass          string     `json:"-"`
+	Urgency            string     `json:"-"`
+	WhyNow             string     `json:"-"`
+	ConflictRef        string     `json:"-"`
 	ConflictStatus     string     `json:"conflict_status,omitempty"`
 	QualificationState string     `json:"qualification_state,omitempty"`
 	PreferredChannel   string     `json:"preferred_channel,omitempty"`
 	InboundOnly        bool       `json:"inbound_only"`
 	OutboundEligible   bool       `json:"outbound_eligible"`
 	AutoSend           bool       `json:"auto_send"`
+	SMTPAuthorized     bool       `json:"smtp_authorized"`
+	FollowupAuthorized bool       `json:"followup_authorized"`
+	AccountRequired    bool       `json:"account_required_for_acceptance"`
+	IdentityAuth       string     `json:"identity_authorization"`
 	DispatchAttempted  bool       `json:"dispatch_attempted"`
 	MeetcfgHandoff     bool       `json:"meetcfg_handoff_allowed"`
 	Replay             bool       `json:"replay"`
 	AcknowledgedBy     string     `json:"acknowledged_by,omitempty"`
 	AcknowledgedAt     *time.Time `json:"acknowledged_at,omitempty"`
+	EvaluatedAt        *time.Time `json:"evaluated_at,omitempty"`
 	AccountID          *uuid.UUID `json:"account_id,omitempty"`
 	ActionID           *uuid.UUID `json:"action_id,omitempty"`
-	CanonicalEntityID  string     `json:"canonical_entity_id,omitempty"`
+	CanonicalEntityID  string     `json:"-"`
 	Reconciled         bool       `json:"reconciled,omitempty"`
 }
 
@@ -98,7 +121,7 @@ func (s *service) IngestNetNewInboundHandraiser(ctx context.Context, orgID uuid.
 			"inbound lead store unavailable")
 	}
 
-	row := netNewReceiptRow(orgID, env, raw, pinHash, now)
+	row := netNewReceiptRow(orgID, env, pinHash, now)
 	created, existing, insertErr := st.InsertInboundLead(ctx, row)
 	if insertErr != nil {
 		return nil, errx.New(errx.Internal, "persist inbound receipt: "+insertErr.Error())
@@ -234,7 +257,7 @@ func (s *service) ReadbackNetNewInboundHandraiser(ctx context.Context, orgID uui
 	if xerr := s.requireEnabled(); xerr != nil {
 		return nil, xerr
 	}
-	logicalID = SanitizeText(logicalID, 160)
+	logicalID = normalizeNetNewOpaqueRef(logicalID)
 	if logicalID == "" {
 		return nil, errx.NewWithIdentifier(errx.BadRequest, NetNewInboundReasonLogicalID, "logical_id is required")
 	}
@@ -273,9 +296,17 @@ func (s *service) ReadbackNetNewInboundHandraiser(ctx context.Context, orgID uui
 func (s *service) admitNetNewHandraiser(ctx context.Context, orgID uuid.UUID, env NetNewInboundEnvelope, now time.Time) (*InboundAdmission, *errx.Error) {
 	logicalID := netNewLogicalID(env)
 	canonical := netNewCanonicalEntityID(env)
-	email := normalizeWebIntentEmail(env.Person.Email)
-	phone := normalizeNetNewPhone(env.Person.Phone)
 	channel := netNewPreferredChannel(env)
+	email := ""
+	phone := ""
+	switch channel {
+	case NetNewInboundPreferredEmail:
+		email = netNewSelectedEmail(env)
+	case NetNewInboundPreferredPhone:
+		phone = netNewSelectedPhone(env)
+	case NetNewInboundPreferredWhatsApp:
+		phone = netNewSelectedWhatsApp(env)
+	}
 	name := firstNonEmpty(SanitizeText(env.Person.Name, 120), SanitizeText(env.Company.Name, 120))
 	contextText := netNewContext(env)
 
@@ -468,26 +499,30 @@ func filterEmpty(in []string) []string {
 	return out
 }
 
-func netNewReceiptRow(orgID uuid.UUID, env NetNewInboundEnvelope, raw []byte, pinHash string, now time.Time) *models.OutreachInboundLead {
+func netNewReceiptRow(orgID uuid.UUID, env NetNewInboundEnvelope, pinHash string, now time.Time) *models.OutreachInboundLead {
 	logicalID := netNewLogicalID(env)
-	payload := redactNetNewProtectedContact(raw)
-	if env.SensitiveData.Present {
-		redacted, _ := json.Marshal(map[string]any{
-			"redacted": true, "logical_id": logicalID, "schema": NetNewInboundHandraiserSchema,
-		})
-		payload = redacted
-	}
+	payload := netNewPIIFreeRawPayload(env, pinHash)
 	if len(payload) == 0 {
 		payload = []byte("{}")
 	}
+	selectedEmail := ""
+	selectedPhone := ""
+	switch netNewPreferredChannel(env) {
+	case NetNewInboundPreferredEmail:
+		selectedEmail = netNewSelectedEmail(env)
+	case NetNewInboundPreferredPhone:
+		selectedPhone = netNewSelectedPhone(env)
+	case NetNewInboundPreferredWhatsApp:
+		selectedPhone = netNewSelectedWhatsApp(env)
+	}
 	receipt := InboundReceiptID(EngineLaneConfengeWeb, "NET_NEW_INBOUND_HANDRAISER",
-		firstNonEmpty(normalizeWebIntentEmail(env.Person.Email), normalizeNetNewPhone(env.Person.Phone), logicalID), logicalID)
+		firstNonEmpty(selectedEmail, selectedPhone, logicalID), logicalID)
 	row := &models.OutreachInboundLead{
 		ID:                uuid.New(),
 		OrganizationID:    orgID,
 		LeadID:            logicalID,
 		ReceiptID:         receipt,
-		IdentityKey:       inboundIdentityKey("", normalizeWebIntentEmail(env.Person.Email), normalizeNetNewPhone(env.Person.Phone)),
+		IdentityKey:       inboundIdentityKey("", selectedEmail, selectedPhone),
 		LeadCreatedAt:     now,
 		WarmblyIngestedAt: now,
 		Source:            NetNewInboundSource,
@@ -497,9 +532,9 @@ func netNewReceiptRow(orgID uuid.UUID, env NetNewInboundEnvelope, raw []byte, pi
 		EntityID:          SanitizeText(netNewCanonicalEntityID(env), 120),
 		CompanyName:       SanitizeText(env.Company.Name, 200),
 		LeadName:          SanitizeText(env.Person.Name, 160),
-		LeadEmail:         normalizeWebIntentEmail(env.Person.Email),
-		LeadPhone:         normalizeNetNewPhone(env.Person.Phone),
-		CorrelationID:     SanitizeText(env.CorrelationID, 160),
+		LeadEmail:         selectedEmail,
+		LeadPhone:         selectedPhone,
+		CorrelationID:     normalizeNetNewOpaqueRef(env.CorrelationID),
 		ConsentJSON:       []byte(`{"granted":true}`),
 		UTMJSON:           netNewUTM(env),
 		RawPayload:        payload,
@@ -527,24 +562,38 @@ func netNewReceiptRow(orgID uuid.UUID, env NetNewInboundEnvelope, raw []byte, pi
 	return row
 }
 
-func redactNetNewProtectedContact(raw []byte) []byte {
-	if len(raw) == 0 {
-		return []byte("{}")
+func netNewPIIFreeRawPayload(env NetNewInboundEnvelope, pinHash string) []byte {
+	// Positive allowlist only. Free text, contact data, opaque references,
+	// attribution and unknown producer extensions never enter RawPayload.
+	payload := map[string]any{
+		"schema":              NetNewInboundHandraiserSchema,
+		"policy_hash":         normalizeContentHash(pinHash),
+		"qualification_state": NetNewQualificationState(env),
+		"sensitive_present":   env.SensitiveData.Present,
+		"outbound_eligible":   false,
+		"auto_send":           false,
+		"dispatch_attempted":  false,
 	}
-	var payload map[string]any
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return []byte("{}")
+	if env.FinalContractClaim && env.FinalContractConformant {
+		payload["schema_version"] = "net-new-inbound-handraiser-request.1.0.0-draft.20260904"
 	}
-	for _, key := range []string{"protected_contact", "protected_payload", "email", "name", "phone", "whatsapp"} {
-		delete(payload, key)
+	if netNewNucleusOK(env.Nucleus) {
+		payload["nucleus"] = env.Nucleus
 	}
-	if person, ok := payload["person"].(map[string]any); ok {
-		for _, key := range []string{"email", "name", "phone", "whatsapp"} {
-			delete(person, key)
-		}
-		if len(person) == 0 {
-			delete(payload, "person")
-		}
+	if strings.TrimSpace(env.OfferCandidate) != "" && netNewOfferCandidateOK(env.OfferCandidate) {
+		payload["offer_candidate"] = env.OfferCandidate
+	}
+	if strings.TrimSpace(env.SourceAsset) != "" && netNewSourceAssetOK(env.SourceAsset) {
+		payload["source_asset"] = env.SourceAsset
+	}
+	if channel := netNewPreferredChannel(env); channel != "" {
+		payload["preferred_channel"] = channel
+	}
+	status := strings.ToUpper(strings.TrimSpace(env.Conflict.Status))
+	switch status {
+	case netNewInboundConflictNone, netNewInboundConflictClear, netNewInboundConflictDecline,
+		netNewInboundConflictHit, netNewInboundConflictUnknown, netNewInboundConflictNotScreened:
+		payload["conflict_status"] = status
 	}
 	clean, err := json.Marshal(payload)
 	if err != nil || len(clean) == 0 {
@@ -561,13 +610,10 @@ func netNewUTM(env NetNewInboundEnvelope) []byte {
 		"city_class":          SanitizeText(env.CityClass, 40),
 		"urgency":             SanitizeText(env.Urgency, 40),
 		"policy":              NetNewInboundHandraiserSchema,
-		"intake_schema":       NetNewInboundIntakeSchema,
+		"intake_schema":       firstNonEmpty(env.IntakeSchema, NetNewInboundIntakeSchema),
 		"qualification_state": NetNewQualificationState(env),
 		"preferred_channel":   netNewPreferredChannel(env),
 		"conflict_status":     strings.ToUpper(SanitizeText(env.Conflict.Status, 40)),
-	}
-	if ref := NetNewConflictRef(env.Conflict); ref != "" {
-		m["conflict_ref"] = ref
 	}
 	raw, _ := json.Marshal(m)
 	if len(raw) == 0 {
@@ -611,12 +657,19 @@ func setNetNewProvenance(row *models.OutreachInboundLead, env NetNewInboundEnvel
 	}
 	prov := []string{
 		netNewProvPolicy + NetNewInboundHandraiserSchema,
-		netNewProvIntake + NetNewInboundIntakeSchema,
+		netNewProvIntake + firstNonEmpty(env.IntakeSchema, NetNewInboundIntakeSchema),
 		netNewProvState + NetNewInboundStateSchema,
 		netNewProvHash + normalizeContentHash(pinHash),
 		netNewProvDigest + NetNewAdmissionDigest(env),
 		netNewProvAckBy + NetNewInboundAckActor,
 		netNewProvAckAt + now.UTC().Format(time.RFC3339),
+		netNewProvOrigin + strings.TrimSpace(env.Source),
+		netNewProvLane + strings.TrimSpace(env.Lane),
+		netNewProvIntent + strings.TrimSpace(env.IntentKind),
+		netNewProvIntakeSource + strings.TrimSpace(env.IntakeSource),
+	}
+	if receiptID := normalizeNetNewOpaqueRef(env.ReceiptID); receiptID != "" {
+		prov = append(prov, netNewProvRequestReceipt+receiptID)
 	}
 	if env.Nucleus != "" {
 		prov = append(prov, netNewProvNucleus+SanitizeText(env.Nucleus, 80))
@@ -638,9 +691,6 @@ func setNetNewProvenance(row *models.OutreachInboundLead, env NetNewInboundEnvel
 		netNewProvChannel+netNewPreferredChannel(env),
 		netNewProvConflictStatus+strings.ToUpper(SanitizeText(env.Conflict.Status, 40)),
 	)
-	if ref := NetNewConflictRef(env.Conflict); ref != "" {
-		prov = append(prov, netNewProvConflict+ref)
-	}
 	if outcome != "" {
 		prov = append(prov, netNewProvOutcome+outcome)
 	}
@@ -726,15 +776,27 @@ func netNewResultFromLead(row *models.OutreachInboundLead, replay bool) *NetNewI
 	}
 	res := &NetNewInboundResult{
 		Schema:             NetNewInboundHandraiserSchema,
-		PolicyVersion:      firstNonEmpty(provenanceValue(row.Provenance, netNewProvPolicy), NetNewInboundHandraiserSchema),
+		SchemaVersion:      NetNewInboundDecisionSchema,
+		PolicyID:           NetNewInboundContractID,
+		PolicyVersion:      NetNewInboundPinVersion,
+		CanonicalName:      NetNewInboundHandraiserSchema,
 		Hash:               provenanceValue(row.Provenance, netNewProvHash),
 		IntakeSchema:       firstNonEmpty(provenanceValue(row.Provenance, netNewProvIntake), NetNewInboundIntakeSchema),
 		StateSchema:        firstNonEmpty(provenanceValue(row.Provenance, netNewProvState), NetNewInboundStateSchema),
 		LogicalID:          row.LeadID,
+		IdempotencyKey:     row.LeadID,
 		Receipt:            row.ReceiptID,
+		ReceiptID:          provenanceValue(row.Provenance, netNewProvRequestReceipt),
 		CorrelationID:      row.CorrelationID,
 		Outcome:            outcome,
+		Decision:           outcome,
 		Reason:             reason,
+		ReasonCodes:        netNewGovernanceReasonCodes(outcome, reason),
+		Replayed:           replay,
+		Origin:             firstNonEmpty(provenanceValue(row.Provenance, netNewProvOrigin), NetNewInboundSource),
+		AcquisitionLane:    firstNonEmpty(provenanceValue(row.Provenance, netNewProvLane), "NET_NEW_INBOUND"),
+		IntentKind:         firstNonEmpty(provenanceValue(row.Provenance, netNewProvIntent), "HUMAN_REVIEW"),
+		IntakeSource:       firstNonEmpty(provenanceValue(row.Provenance, netNewProvIntakeSource), NetNewInboundSource),
 		Nucleus:            firstNonEmpty(provenanceValue(row.Provenance, netNewProvNucleus), utmField(row.UTMJSON, "nucleus")),
 		OfferCandidate:     firstNonEmpty(provenanceValue(row.Provenance, netNewProvOffer), utmField(row.UTMJSON, "offer_candidate")),
 		SourceAsset:        firstNonEmpty(provenanceValue(row.Provenance, netNewProvAsset), row.AssetID),
@@ -745,40 +807,117 @@ func netNewResultFromLead(row *models.OutreachInboundLead, replay bool) *NetNewI
 		ConflictStatus:     firstNonEmpty(provenanceValue(row.Provenance, netNewProvConflictStatus), utmField(row.UTMJSON, "conflict_status")),
 		QualificationState: firstNonEmpty(provenanceValue(row.Provenance, netNewProvQualification), utmField(row.UTMJSON, "qualification_state")),
 		PreferredChannel:   firstNonEmpty(provenanceValue(row.Provenance, netNewProvChannel), strings.ToUpper(row.Channel)),
-		InboundOnly:        true,
+		InboundOnly:        outcome == NetNewInboundOutcomeAccepted,
 		OutboundEligible:   false,
 		AutoSend:           false,
+		SMTPAuthorized:     false,
+		FollowupAuthorized: false,
+		AccountRequired:    false,
+		IdentityAuth:       map[bool]string{true: "INBOUND_ONLY", false: "NONE"}[outcome == NetNewInboundOutcomeAccepted],
 		DispatchAttempted:  false,
 		MeetcfgHandoff:     MeetcfgHandoffAllowed(outcome),
 		Replay:             replay,
 		AcknowledgedBy:     firstNonEmpty(provenanceValue(row.Provenance, netNewProvAckBy), row.Owner, NetNewInboundAckActor),
 		AcknowledgedAt:     ackAt,
+		EvaluatedAt:        ackAt,
 		AccountID:          row.AccountID,
 		ActionID:           row.ActionID,
 		CanonicalEntityID:  row.EntityID,
 	}
+	res.NucleusID = res.Nucleus
+	res.OfferCandidateID = res.OfferCandidate
+	res.DecisionID = netNewGovernanceDecisionID(row.LeadID, provenanceValue(row.Provenance, netNewProvDigest))
+	res.LogicalAdmissionID = res.DecisionID
 	return res
 }
 
 func rejectedNetNew(logicalID, reason string, now time.Time) *NetNewInboundResult {
 	res := &NetNewInboundResult{
-		Schema:            NetNewInboundHandraiserSchema,
-		PolicyVersion:     NetNewInboundHandraiserSchema,
-		LogicalID:         logicalID,
-		Outcome:           NetNewInboundOutcomeRejected,
-		Reason:            reason,
-		InboundOnly:       false,
-		OutboundEligible:  false,
-		AutoSend:          false,
-		DispatchAttempted: false,
-		MeetcfgHandoff:    false,
-		AcknowledgedBy:    NetNewInboundAckActor,
+		Schema:             NetNewInboundHandraiserSchema,
+		SchemaVersion:      NetNewInboundDecisionSchema,
+		PolicyID:           NetNewInboundContractID,
+		PolicyVersion:      NetNewInboundPinVersion,
+		CanonicalName:      NetNewInboundHandraiserSchema,
+		LogicalID:          logicalID,
+		IdempotencyKey:     logicalID,
+		Outcome:            NetNewInboundOutcomeRejected,
+		Decision:           NetNewInboundOutcomeRejected,
+		Reason:             reason,
+		ReasonCodes:        netNewGovernanceReasonCodes(NetNewInboundOutcomeRejected, reason),
+		Origin:             NetNewInboundSource,
+		AcquisitionLane:    "NET_NEW_INBOUND",
+		IntentKind:         "HUMAN_REVIEW",
+		IntakeSource:       NetNewInboundSource,
+		InboundOnly:        false,
+		OutboundEligible:   false,
+		AutoSend:           false,
+		SMTPAuthorized:     false,
+		FollowupAuthorized: false,
+		AccountRequired:    false,
+		IdentityAuth:       "NONE",
+		DispatchAttempted:  false,
+		MeetcfgHandoff:     false,
+		AcknowledgedBy:     NetNewInboundAckActor,
 	}
 	if !now.IsZero() {
 		t := now.UTC()
 		res.AcknowledgedAt = &t
+		res.EvaluatedAt = &t
 	}
 	return res
+}
+
+func netNewGovernanceDecisionID(logicalID, materialHash string) string {
+	if logicalID == "" || materialHash == "" {
+		return ""
+	}
+	basis := map[string]string{
+		"policy_id":       NetNewInboundContractID,
+		"policy_version":  NetNewInboundPinVersion,
+		"idempotency_key": logicalID,
+		"material_hash":   materialHash,
+	}
+	raw, _ := marshalCanonicalNetNewJSON(basis)
+	sum := sha256.Sum256(raw)
+	return "nihr_" + hex.EncodeToString(sum[:])[:32]
+}
+
+func netNewGovernanceReasonCodes(outcome, reason string) []string {
+	if outcome == NetNewInboundOutcomeAccepted {
+		return []string{"ADMISSION_GATES_SATISFIED"}
+	}
+	code := map[string]string{
+		NetNewInboundReasonConsent:          "CONSENT_REFUSED",
+		NetNewInboundReasonOptOut:           "OPT_OUT_PRESENT",
+		NetNewInboundReasonFuzzyIdentity:    "FUZZY_IDENTITY_FORBIDDEN",
+		NetNewInboundReasonIntent:           "INTENT_KIND_NOT_ADMITTED",
+		NetNewInboundReasonLocation:         "LOCATION_NOT_MINIMIZED",
+		NetNewInboundReasonSensitiveContent: "SENSITIVE_CONTENT_FORBIDDEN",
+		NetNewInboundReasonConflictCoercion: "CONFLICT_CLEAR_COERCION_FORBIDDEN",
+		NetNewInboundReasonKeyConflict:      "IDEMPOTENCY_PAYLOAD_CONFLICT",
+		NetNewInboundReasonConflictDecline:  "CONFLICT_HIT",
+		NetNewInboundReasonConflictHit:      "CONFLICT_HIT",
+		NetNewInboundReasonOutboundClaim:    "OUTBOUND_INHERITANCE_FORBIDDEN",
+		NetNewInboundReasonAutoSendClaim:    "AUTO_SEND_FORBIDDEN",
+		NetNewInboundReasonContactUnknown:   "CONTACT_EVIDENCE_UNKNOWN",
+		NetNewInboundReasonContact:          "CONTACT_EVIDENCE_UNKNOWN",
+		NetNewInboundReasonPreferredChannel: "CONTACT_EVIDENCE_UNKNOWN",
+		NetNewInboundReasonNucleus:          "NUCLEUS_NOT_ADMITTED",
+		NetNewInboundReasonOfferCandidate:   "OFFER_CANDIDATE_NOT_ADMITTED",
+		NetNewInboundReasonLane:             "ACQUISITION_LANE_NOT_ADMITTED",
+		NetNewInboundReasonSource:           "ORIGIN_NOT_ADMITTED",
+		NetNewInboundReasonIntelWatch:       "LIVE_INTELLIGENCE_NOT_INBOUND",
+		NetNewInboundReasonSchemaMismatch:   "POLICY_VERSION_NOT_ADMITTED",
+		NetNewInboundReasonContractMismatch: "POLICY_ID_UNKNOWN",
+		NetNewInboundReasonHashMismatch:     "POLICY_VERSION_NOT_ADMITTED",
+		NetNewInboundReasonHashUnpinned:     "AUTHORITY_UNAVAILABLE",
+		NetNewInboundReasonDownstream:       "AUTHORITY_UNAVAILABLE",
+		NetNewInboundReasonRequestInvalid:   "REQUEST_INVALID",
+	}
+	if value := code[reason]; value != "" {
+		return []string{value}
+	}
+	return []string{"REQUEST_INVALID"}
 }
 
 func (s *service) observeNetNewMetric(res *NetNewInboundResult) {

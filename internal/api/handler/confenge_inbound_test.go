@@ -634,6 +634,16 @@ func TestConfengeInboundWebhookNetNewHandraiserRoutesAndReadback(t *testing.T) {
 	if bytes.Contains(producerW.Body.Bytes(), []byte("@")) {
 		t.Fatalf("producer readback leaked PII: %s", producerW.Body.String())
 	}
+	mixedCasePIIReq := httptest.NewRequest(http.MethodGet, producerPath+"?PhOnE=5541999999999", nil)
+	mixedCasePIIReq.Header.Set("X-Warmbly-Signature", confenge.SignOutcomeHMAC(secret, time.Now().UTC(), signedPayload))
+	mixedCasePIIW := httptest.NewRecorder()
+	mixedCasePIIC, _ := gin.CreateTestContext(mixedCasePIIW)
+	mixedCasePIIC.Request = mixedCasePIIReq
+	mixedCasePIIC.Params = gin.Params{{Key: "logicalId", Value: "nnhr-http-1"}}
+	h.ConfengeInboundHandraiserReadbackWebhook(mixedCasePIIC)
+	if mixedCasePIIW.Code != http.StatusBadRequest {
+		t.Fatalf("mixed-case query PII status=%d body=%s", mixedCasePIIW.Code, mixedCasePIIW.Body.String())
+	}
 
 	wrongReq := httptest.NewRequest(http.MethodGet, producerPath, nil)
 	wrongReq.Header.Set("X-Warmbly-Signature", confenge.SignOutcomeHMAC(secret, time.Now().UTC(), confenge.NetNewInboundReadbackHMACPayload("another-id")))

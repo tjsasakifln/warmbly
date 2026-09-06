@@ -183,6 +183,10 @@ func (h *Handler) ConfengeInboundWebhook(c *gin.Context) {
 
 // GetConfengeInboundHandraiser — GET /confenge/inbound/handraisers/:logicalId
 func (h *Handler) GetConfengeInboundHandraiser(c *gin.Context) {
+	if xerr := confenge.RejectInboundReadbackQuery(c.Request.URL.Query()); xerr != nil {
+		errx.JSON(c, xerr)
+		return
+	}
 	orgID, ok := h.confengeOrg(c)
 	if !ok {
 		return
@@ -208,7 +212,7 @@ func (h *Handler) ConfengeInboundHandraiserReadbackWebhook(c *gin.Context) {
 		errx.JSON(c, errx.New(errx.NotFound, "CONFENGE outreach is not enabled on this server"))
 		return
 	}
-	if xerr := confenge.RejectInboundQueryPII(c.Request.URL.Query()); xerr != nil {
+	if xerr := confenge.RejectInboundReadbackQuery(c.Request.URL.Query()); xerr != nil {
 		errx.JSON(c, xerr)
 		return
 	}
