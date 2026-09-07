@@ -320,8 +320,11 @@ printf '%s' 'fetch https://feed.example/x token=abc lead@example.com' | redact_s
         )
         self.assertIn("proxy_pass http://warmbly_loopback;", block)
 
-        # No collection-level route: `/handraisers` without a trailing slash does not
-        # match this prefix, so unauthenticated listing stays impossible by construction.
+        # No collection-level route is allowlisted here. Measured against the deployed
+        # edge: `/handraisers` (no trailing slash) gets a 301 from nginx itself
+        # (access log shows `upstream=-`) to the slash form, which the app then 404s
+        # because routes.go registers no collection handler. So listing is impossible
+        # because the route does not exist, not because this prefix fails to match.
         self.assertNotIn("location ^~ /api/v1/webhooks/confenge/inbound/handraisers {", https)
         self.assertNotIn("location = /api/v1/webhooks/confenge/inbound/handraisers ", https)
         # The signature must never be logged or reflected by the edge. `$args` appears
