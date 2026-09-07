@@ -48,6 +48,7 @@ O contrato `copy-rules.v1` continua aceito para mensagens já seladas. `copy-rul
 | Edital ou proposta | Decidir se vale disputar e organizar a proposta | `/bid-room-licitacoes-obras/#quando-nao-contratar` | Critério de GO/NO-GO e limites da operação | Captura do contexto do edital |
 | Atraso, prorrogação ou encerramento | Prazo exige cronologia e posição | `/atrasos-prorrogacao-obras-publicas/#metodo` | Avisos, prova e decisão temporal | Captura da situação contratual |
 | Carteira ou rotina | Priorizar eventos e responsáveis | `/acompanhamento-contratos-obras/#metodo` | Método e rotina de acompanhamento | Captura da necessidade de acompanhamento |
+| Mercado público ou recorte PNCP | Acompanha oportunidades e recortes, sem edital ou disputa confirmada | `/problemas-que-resolvemos/` | Mapa de problemas, sem afirmar que há proposta em preparação | Escolher a situação específica |
 | Contrato sem dor confirmada | Há atuação B2G, mas nenhuma dor factual autorizada | `/problemas-que-resolvemos/` | Mapa de problemas, sem inventar especialidade | Escolher a situação específica |
 
 Todos os URLs recebem somente `utm_source=warmbly`, um `utm_medium` finito, um `utm_campaign` finito e `utm_content=<stable_landing_id>`. O código não recebe nome, e-mail, telefone, CNPJ, contrato, processo, texto da mensagem ou identificador do lead para construir o URL.
@@ -79,6 +80,7 @@ Isto é orientação de destino, não script de telemarketing:
 | Edital e proposta | `https://confenge.com.br/bid-room-licitacoes-obras/#quando-nao-contratar` |
 | Atraso, prorrogação ou encerramento | `https://confenge.com.br/atrasos-prorrogacao-obras-publicas/#metodo` |
 | Carteira e acompanhamento contratual | `https://confenge.com.br/acompanhamento-contratos-obras/#metodo` |
+| Inteligência de mercado ou recorte do PNCP | `https://confenge.com.br/problemas-que-resolvemos/` |
 | Problema ainda indefinido em contrato público | `https://confenge.com.br/problemas-que-resolvemos/` |
 | Qualquer nova vertical acima | Não envie landing. Registre o assunto para revisão; continua `NOT_ACTIVATED`. |
 
@@ -91,3 +93,17 @@ Cem repetições melhoram o sistema quando o mesmo registry evita cem decisões 
 Monitorar por `stable_landing_id`, campaign kind e outcomes comerciais observados. Clique é sinal de distribuição, não oportunidade qualificada nem causalidade. Rollback de código restaura o compositor anterior; mensagens v1 já seladas não dependem do v2. Para retirar um destino sem reescrever mensagens históricas, mudar seu estado para `WITHHELD_PENDING_WEB_RELEASE`; novas composições falham fechadas.
 
 `extra-cli` não foi alterado. O mapeamento usa somente a taxonomia `service_code`/`moment_code` já consumida por Warmbly e rotas públicas verificadas no owner `web-cfg`.
+
+## Duas decisões que o código não toma por conveniência
+
+`INTELIGENCIA_PNCP` não compartilha destino com `APOIO_LICITACAO`. Acompanhar
+oportunidades no PNCP não é preparar proposta: enviar o recipiente para a Bid
+Room afirmaria uma disputa que pode não existir. O caso tem claim próprio
+(`MERCADO_PUBLICO_OU_RECORTE_PNCP`) e vai para a superfície de visão geral, que
+já está publicada e ativa. A situação B2G está confirmada; a dor específica não.
+
+A seleção por vertical não decide por ordem de array. B2G tem várias landings, e
+devolver a primeira entregava aditivos a qualquer chamador que pedisse apenas a
+vertical. `CommercialDestinationForVertical` agora falha fechado com
+`ErrCommercialDestinationAmbiguous` quando a vertical tem mais de um destino: a
+escolha comercial pertence à situação (serviço/momento) ou ao id explícito.

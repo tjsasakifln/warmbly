@@ -218,3 +218,88 @@ func TestCommercialRoutingIsPureAndReachesNoSendPath(t *testing.T) {
 		t.Fatal("routing mutated account or candidate")
 	}
 }
+
+// TestPNCPIntelligenceIsNotPresentedAsProposalPreparation pins the split between
+// market intelligence and tender/proposal support. Before the split both codes
+// resolved to /bid-room-licitacoes-obras/, which told a PNCP recipient the
+// CONFENGE was preparing a proposal for a dispute that may not exist.
+func TestPNCPIntelligenceIsNotPresentedAsProposalPreparation(t *testing.T) {
+	pncp, err := ResolveCommercialMessageRoute("INTELIGENCIA_PNCP", "", CommercialCampaignFirstTouchEmail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(pncp.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Path != "/problemas-que-resolvemos/" {
+		t.Fatalf("INTELIGENCIA_PNCP path=%s want /problemas-que-resolvemos/", parsed.Path)
+	}
+	if pncp.ClaimKey == "EDITAL_OU_PROPOSTA" {
+		t.Fatalf("PNCP intelligence must not claim the tender/proposal job")
+	}
+
+	tender, err := ResolveCommercialMessageRoute("APOIO_LICITACAO", "", CommercialCampaignFirstTouchEmail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenderParsed, err := url.Parse(tender.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tenderParsed.Path != "/bid-room-licitacoes-obras/" || tender.ClaimKey != "EDITAL_OU_PROPOSTA" {
+		t.Fatalf("APOIO_LICITACAO must keep its destination: path=%s claim=%s", tenderParsed.Path, tender.ClaimKey)
+	}
+
+	// A confirmed B2G vertical without a specific situation is a DIFFERENT case
+	// from PNCP intelligence, even though both land on the overview. Reusing one
+	// claim key would let the copy say "no confirmed pain" to a recipient whose
+	// situation is in fact confirmed.
+	generic, err := ResolveCommercialMessageRoute("DIAGNOSTICO", "PORTFOLIO_REVIEW", CommercialCampaignFirstTouchEmail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pncp.ClaimKey == "" || generic.ClaimKey == "" {
+		t.Fatalf("both claims must be non-empty: pncp=%q generic=%q", pncp.ClaimKey, generic.ClaimKey)
+	}
+	if pncp.ClaimKey == generic.ClaimKey {
+		t.Fatalf("PNCP and no-situation B2G must not share claim key %q", pncp.ClaimKey)
+	}
+	if pncp.VisitorSituation == generic.VisitorSituation {
+		t.Fatalf("PNCP and no-situation B2G must not share the visitor situation")
+	}
+}
+
+// TestVerticalSelectionIsNotDecidedByRegistryOrder proves the commercial decision
+// never falls out of array order: B2G carries several destinations, so selecting
+// by vertical alone is ambiguous and must fail closed rather than guess aditivos.
+func TestVerticalSelectionIsNotDecidedByRegistryOrder(t *testing.T) {
+	if _, err := CommercialDestinationForVertical(CommercialVerticalB2G); !errors.Is(err, ErrCommercialDestinationAmbiguous) {
+		t.Fatalf("ambiguous B2G vertical must fail closed, got err=%v", err)
+	}
+
+	if _, err := selectCommercialDestinationForVertical(CommercialDestinations(), CommercialVertical("NOT_A_VERTICAL")); !errors.Is(err, ErrCommercialDestinationNotFound) {
+		t.Fatalf("unknown vertical must be not-found, got err=%v", err)
+	}
+
+	// Same answer over a reversed registry, for every vertical.
+	forward := CommercialDestinations()
+	reversed := CommercialDestinations()
+	for i, j := 0, len(reversed)-1; i < j; i, j = i+1, j-1 {
+		reversed[i], reversed[j] = reversed[j], reversed[i]
+	}
+	seen := map[CommercialVertical]bool{}
+	for _, d := range forward {
+		seen[d.Vertical] = true
+	}
+	for vertical := range seen {
+		gotF, errF := selectCommercialDestinationForVertical(forward, vertical)
+		gotR, errR := selectCommercialDestinationForVertical(reversed, vertical)
+		if (errF == nil) != (errR == nil) || (errF != nil && errR != nil && errF.Error() != errR.Error()) {
+			t.Fatalf("vertical %s changed outcome under reordering: %v vs %v", vertical, errF, errR)
+		}
+		if errF == nil && gotF.ID != gotR.ID {
+			t.Fatalf("vertical %s selected %s forward but %s reversed", vertical, gotF.ID, gotR.ID)
+		}
+	}
+}
