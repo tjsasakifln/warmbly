@@ -287,6 +287,49 @@ printf '%s' 'fetch https://feed.example/x token=abc lead@example.com' | redact_s
         self.assertIn("CONFENGE_REPOSITORY_SHA", text)
         self.assertIn('if [ "$auditsha" != "$EXPECTED" ]', text)
 
+    def test_public_handraiser_readback_route_is_allowlisted_and_narrow(self) -> None:
+        """warmbly#268: the correlated HMAC readback must be reachable on the public
+        edge, and reachable ONLY as an authenticated single-item GET.
+
+        Counter-case this pins: before the allowlist existed, the backend served
+        GET /api/v1/webhooks/confenge/inbound/handraisers/:logicalId on loopback
+        while the public edge fell through to `location /` and returned 404, which
+        kept web-cfg's adaptive intake fail-closed (WITHHELD).
+        """
+        https = (PACK / "nginx/site-https.conf").read_text(encoding="utf-8")
+
+        prefix = "/api/v1/webhooks/confenge/inbound/handraisers/"
+        header = "location ^~ %s {" % prefix
+        # Prefix match, not exact: the logical id is the trailing path segment.
+        self.assertIn(header, https)
+
+        start = https.index(header)
+        block = https[start : https.index("\n    }", start)]
+
+        # Read-only: no POST/PUT/PATCH/DELETE may reach the producer through here.
+        self.assertIn("limit_except GET HEAD {", block)
+        self.assertIn("deny all;", block)
+        # No query string: the logical id and the signature are the whole credential,
+        # and PII must never land in the query string or the access log.
+        self.assertIn('if ($args != "") { return 400; }', block)
+        # Same abuse protection and same hardened proxy snippet as the inbound POST.
+        self.assertIn("limit_req zone=confenge_inbound", block)
+        self.assertIn("limit_req_status 429;", block)
+        self.assertIn(
+            "include /etc/nginx/snippets/confenge-inbound-proxy.conf;", block
+        )
+        self.assertIn("proxy_pass http://warmbly_loopback;", block)
+
+        # No collection-level route: `/handraisers` without a trailing slash does not
+        # match this prefix, so unauthenticated listing stays impossible by construction.
+        self.assertNotIn("location ^~ /api/v1/webhooks/confenge/inbound/handraisers {", https)
+        self.assertNotIn("location = /api/v1/webhooks/confenge/inbound/handraisers ", https)
+        # The signature must never be logged or reflected by the edge. `$args` appears
+        # only inside the reject guard above, never proxied or logged, so it is excluded
+        # from this assertion deliberately.
+        self.assertNotRegex(block, r"\$http_x_warmbly_signature|\$query_string")
+        self.assertNotIn("proxy_set_header", block)
+
     def test_inbound_edge_nginx_allowlist_is_the_shipped_config(self) -> None:
         """Drive the real nginx files that install.sh copies onto the VPS."""
         https = (PACK / "nginx/site-https.conf").read_text(encoding="utf-8")
