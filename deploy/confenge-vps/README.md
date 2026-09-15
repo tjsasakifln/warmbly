@@ -28,16 +28,23 @@ deploy/confenge-vps/release-deploy.sh <full-sha> # roll onto a specific release
 4. verify each image carries `org.opencontainers.image.revision=<sha>`
 5. write the `deploy_preflight` kill switch (outbound cannot fail open), unless
    a switch with another reason already exists: that is an operator pause and
-   is left untouched (`DISPATCH_PAUSE=preexisting`)
+   is left untouched (`DISPATCH_PAUSE=preexisting`). The presence probe has
+   three answers, present / absent / indeterminate; if Docker cannot run it,
+   the deploy refuses (exit 6) rather than write over a pause it could not see
 6. `compose up -d --no-build --remove-orphans`
 7. backend health, `pg_isready`, and `verify-release.sh` per service
 8. clear the deploy kill switch automatically
 9. bounded retention sweep
 
 Step 8 clears only a switch whose reason is `deploy_preflight`. An operator
-pause from `pause.sh` has a different reason and survives a deploy. After a
-successful deploy the business send window is the only outbound gate, at any
-hour.
+pause from `pause.sh` has a different reason and survives a deploy. If the
+step-8 probe is indeterminate the switch is left alone and the deploy prints
+`DISPATCH_PAUSE=indeterminate` with a WARNING (still exit 0: the release is
+up); inspect with `status.sh` and clear with `resume.sh`. Only a confirmed
+absence after the clear counts as `DISPATCH_PAUSE=cleared`. The host mirror
+(`CONFENGE_KILL_SWITCH_HOST_PATH`) belongs to `pause.sh`/`resume.sh`; `up.sh`
+never reads, writes or removes it. After a successful deploy the business send
+window is the only outbound gate, at any hour.
 
 Set `CONFENGE_RELEASE_MODE=build` only if GHCR is unreachable. Local production
 builds are what filled the root filesystem.
