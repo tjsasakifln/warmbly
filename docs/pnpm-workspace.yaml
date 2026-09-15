@@ -10,11 +10,13 @@ overrides:
   browserslist: 4.28.7
   picomatch: ^4.0.4
   path-to-regexp: ^8.4.0
-  # Clear CVE-2026-59869 (DoS via crafted YAML) and GHSA-5p4m-2wfm-xmqj
-  # (quadratic CPU use resolving !!omap) in the transitive js-yaml.
-  js-yaml: ^4.3.1
-  # Clear the libvips CVEs inherited by sharp (fixed in 0.35.0).
-  sharp: ^0.35.0
+  # Clear CVE-2026-59869 (DoS via crafted YAML), GHSA-5p4m-2wfm-xmqj
+  # (quadratic CPU use resolving !!omap) and CVE-2026-84375 (fixed in 4.3.2)
+  # in the transitive js-yaml.
+  js-yaml: 4.3.2
+  # Clear the libvips CVEs inherited by sharp (fixed in 0.35.0) and the libheif
+  # ones (GHSA-rgj7-g3m4-5g8c, fixed in 0.35.4).
+  sharp: 0.35.4
   # next pins postcss to an exact 8.4.31, which carries the sourceMappingURL
   # file-read / path-traversal advisories (CVE-2026-45623, GHSA-r28c-9q8g-f849).
   postcss: ^8.5.23
