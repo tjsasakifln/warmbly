@@ -12,6 +12,9 @@ overrides:
   # (quadratic CPU use resolving !!omap) and CVE-2026-84375 (fixed in 4.3.2) in
   # the transitive js-yaml.
   js-yaml: 4.3.2
+  # Clear the remaining Trivy HIGH findings in the transitive postcss
+  # (pinned alongside docs/ in 6a830f2b).
+  postcss: 8.5.23
   # Clear GHSA-2p49-hgcm-8545 (SVGO removeScripts can leave some scripts) and
   # CVE-2026-84370 (fixed in 4.1.0) in the transitive svgo used for build-time
   # SVG optimization.
@@ -26,4 +29,4 @@ overrides:
   # uses to parse TOML at build time.
   smol-toml: 1.7.1
   # Clear CVE-2026-67213 (DoS via infinite loop) in the transitive nanoid.
-  nanoid: ^3.3.17
+  nanoid: 3.3.18
