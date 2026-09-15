@@ -20,11 +20,22 @@ ROOT = PACK.parent.parent
 # under $STUB_VOLUMES and `docker run --rm -v NAME:/data[:ro] alpine <cmd...>`
 # executes <cmd> on the host with /data rewritten to that directory. Everything
 # else is logged and succeeds, so the real script text drives the test.
+# Docker itself can fail: $DOCKER_FAIL_PROBE=<n> makes the n-th presence probe
+# (any `run --rm` whose command carries `echo present`) exit 125 with no stdout,
+# the way a daemon, image or mount error looks from the calling script.
 KILL_SWITCH_DOCKER_STUB = r"""#!/usr/bin/env bash
 echo "$*" >> "$DOCKER_LOG"
 case "$1 $2" in
   "volume create") mkdir -p "$STUB_VOLUMES/$3"; exit 0 ;;
-  "run --rm") shift 2 ;;
+  "run --rm")
+    if [[ "$*" == *"echo present"* ]]; then
+      n="$(grep -c 'echo present' "$DOCKER_LOG")"
+      if [[ -n "${DOCKER_FAIL_PROBE:-}" && "$n" == "$DOCKER_FAIL_PROBE" ]]; then
+        echo "docker: Cannot connect to the Docker daemon (stub)" >&2
+        exit 125
+      fi
+    fi
+    shift 2 ;;
   *) exit 0 ;;
 esac
 vol=""
@@ -56,12 +67,14 @@ def run_up_kill_switch_steps(
     tmp: Path,
     volume_switch: str | None,
     host_mirror: str | None,
+    docker_fail_probe: int | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
     """Execute up.sh step 4 (engage the deploy pause) and step 8 (clear it) as
     shipped, against a fake ops volume seeded with `volume_switch` and a host
     mirror seeded with `host_mirror`. Steps 5-7 (compose up, health, release
     verification) are the part a deploy cannot fake and are irrelevant to who
-    owns the switch, so they are skipped."""
+    owns the switch, so they are skipped. `docker_fail_probe=n` makes the n-th
+    presence probe fail at the Docker level (exit 125, no output)."""
     bindir = tmp / "bin"
     bindir.mkdir(exist_ok=True)
     (bindir / "docker").write_text(KILL_SWITCH_DOCKER_STUB)
@@ -95,6 +108,8 @@ def run_up_kill_switch_steps(
     env["CONFENGE_KILL_SWITCH_HOST_PATH"] = str(mirror)
     # Step 4's text carries the first-boot seed block; never let it run here.
     env["CONFENGE_VPS_SEED"] = "false"
+    if docker_fail_probe is not None:
+        env["DOCKER_FAIL_PROBE"] = str(docker_fail_probe)
     (tmp / "docker.log").write_text("")
     proc = subprocess.run(
         ["bash"], input=probe, capture_output=True, text=True, env=env,
@@ -179,53 +194,111 @@ class TestConfengeVpsPack(unittest.TestCase):
                 self.assertIn("reason=deploy_preflight", log)
                 self.assertIn("chmod 600", log)
 
-    def test_up_removes_only_a_deploy_preflight_host_mirror(self) -> None:
-        """The host mirror is inspection metadata written by pause.sh. It goes
-        away only alongside the deploy's own switch and only when it carries
-        the deploy_preflight reason; an operator mirror is never touched."""
+    def test_up_never_removes_a_host_mirror(self) -> None:
+        """The host mirror is inspection metadata owned by pause.sh/resume.sh.
+        up.sh never writes one, so it has no mirror of its own to clean up:
+        whatever reason a mirror carries, a deploy leaves it exactly as found."""
+        for body in (
+            OPERATOR_SWITCH + "at=2026-09-15T00:00:00Z\n",
+            DEPLOY_PREFLIGHT_SWITCH + "at=2026-09-15T00:00:00Z\n",
+        ):
+            with self.subTest(mirror=body), tempfile.TemporaryDirectory() as d:
+                tmp = Path(d)
+                proc, switch, mirror = run_up_kill_switch_steps(
+                    tmp, volume_switch=None, host_mirror=body
+                )
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertIn("DISPATCH_PAUSE=cleared", proc.stdout)
+                self.assertFalse(switch.exists())
+                self.assertEqual(mirror.read_bytes(), body.encode(), "mirror must survive")
+        up = (PACK / "up.sh").read_text(encoding="utf-8")
+        self.assertNotIn("HOST_KS", up)
+        for line in up.splitlines():
+            if "rm -f" in line:
+                self.assertIn("docker run", line, f"host-side rm in up.sh: {line!r}")
+
+    def test_up_refuses_to_write_the_deploy_pause_when_the_probe_is_indeterminate(self) -> None:
+        """A Docker-level failure of the step-4 presence probe (exit 125: daemon,
+        image or mount error) is not `absent`. Writing deploy_preflight blind
+        would overwrite an operator pause that step 8 then clears, so the deploy
+        refuses before writing anything."""
+        for seed in (OPERATOR_SWITCH, "", None, DEPLOY_PREFLIGHT_SWITCH):
+            with self.subTest(seed=seed), tempfile.TemporaryDirectory() as d:
+                tmp = Path(d)
+                proc, switch, _ = run_up_kill_switch_steps(
+                    tmp, volume_switch=seed, host_mirror=None, docker_fail_probe=1
+                )
+                self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertIn("REFUSE: could not determine whether a kill switch is present", proc.stderr)
+                self.assertNotIn("DISPATCH_PAUSE=", proc.stdout)
+                if seed is None:
+                    self.assertFalse(switch.exists(), "nothing may be written blind")
+                else:
+                    self.assertEqual(switch.read_text(), seed)
+                log = (tmp / "docker.log").read_text()
+                self.assertNotIn("reason=deploy_preflight", log)
+                self.assertNotIn("rm -f", log)
+
+    def test_up_leaves_the_switch_alone_when_the_step8_probe_is_indeterminate(self) -> None:
+        """Healthy step 4 (deploy_preflight written), then the step-8 presence
+        probe fails at the Docker level. The old `if docker run ... test -f`
+        collapsed that into `absent` and the deploy exited 0 with the pause
+        still on disk, which is the incident resume.sh documents. Now the deploy
+        still completes (exit 0) but says DISPATCH_PAUSE=indeterminate, warns on
+        stderr and does not touch the switch."""
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
-            proc, switch, mirror = run_up_kill_switch_steps(
-                tmp,
-                volume_switch=None,
-                host_mirror=DEPLOY_PREFLIGHT_SWITCH + "at=2026-09-15T00:00:00Z\n",
+            proc, switch, _ = run_up_kill_switch_steps(
+                tmp, volume_switch=None, host_mirror=None, docker_fail_probe=2
             )
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-            self.assertIn("DISPATCH_PAUSE=cleared", proc.stdout)
-            self.assertFalse(switch.exists())
-            self.assertFalse(mirror.exists(), "deploy_preflight mirror must be removed")
+            self.assertIn("DISPATCH_PAUSE=indeterminate", proc.stdout)
+            self.assertNotIn("DISPATCH_PAUSE=absent", proc.stdout)
+            self.assertNotIn("DISPATCH_PAUSE=cleared", proc.stdout)
+            self.assertIn("WARNING:", proc.stderr)
+            self.assertIn("NOT cleared", proc.stderr)
+            self.assertEqual(switch.read_text(), DEPLOY_PREFLIGHT_SWITCH)
+            log = (tmp / "docker.log").read_text()
+            self.assertNotIn("rm -f", log)
+
+    def test_up_refuses_when_the_post_clear_probe_is_indeterminate(self) -> None:
+        """After `rm -f`, only a confirmed absence counts as cleared. A probe
+        that cannot answer must not be reported as `cleared`."""
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
-            operator_mirror = OPERATOR_SWITCH + "at=2026-09-15T00:00:00Z\n"
-            proc, switch, mirror = run_up_kill_switch_steps(
-                tmp, volume_switch=None, host_mirror=operator_mirror
+            proc, _, _ = run_up_kill_switch_steps(
+                tmp, volume_switch=None, host_mirror=None, docker_fail_probe=3
             )
-            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-            self.assertIn("DISPATCH_PAUSE=cleared", proc.stdout)
-            self.assertFalse(switch.exists())
-            self.assertEqual(
-                mirror.read_text(), operator_mirror, "operator mirror must survive"
-            )
+            self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("REFUSE: deploy pause could not be confirmed cleared", proc.stderr)
+            self.assertNotIn("DISPATCH_PAUSE=cleared", proc.stdout)
 
     def test_up_reads_the_switch_before_writing_it(self) -> None:
-        """Static guard for the same invariant: the read and the reason check
-        precede the only deploy_preflight write, and step 8 keeps the `held`
-        branch reachable for a non-deploy reason."""
+        """Static guard for the same invariant: the three-state read, the
+        indeterminate refusal and the reason check precede the only
+        deploy_preflight write; step 8 keeps the `held` branch reachable for a
+        non-deploy reason and never touches the host mirror."""
         up = (PACK / "up.sh").read_text(encoding="utf-8")
+        probe = "sh -c 'test -f /data/kill-switch && echo present || echo absent'"
         step4 = up_step(up, 4)
-        read = step4.index('alpine test -f /data/kill-switch')
+        read = step4.index(probe)
+        refuse = step4.index('[[ "$KS_BEFORE_STATE" == "indeterminate" ]]')
         guard = step4.index(
-            '"$KS_BEFORE_EXISTS" == "yes" && "$KS_BEFORE_REASON" != "deploy_preflight"'
+            '"$KS_BEFORE_STATE" == "present" && "$KS_BEFORE_REASON" != "deploy_preflight"'
         )
         write = step4.index('printf "paused\\nreason=deploy_preflight\\n" > /data/kill-switch')
-        self.assertLess(read, guard)
+        self.assertLess(read, refuse)
+        self.assertLess(refuse, guard)
         self.assertLess(guard, write)
         self.assertIn("DISPATCH_PAUSE=preexisting", step4)
+        self.assertNotIn("alpine test -f", step4, "two-state probe must not come back")
         step8 = up_step(up, 8)
+        self.assertEqual(step8.count(probe), 2, "presence probe and post-clear probe")
+        self.assertIn('[[ "$KS_STATE" == "indeterminate" ]]', step8)
+        self.assertIn("DISPATCH_PAUSE=indeterminate", step8)
         self.assertIn("DISPATCH_PAUSE=held", step8)
-        self.assertIn(
-            '[[ -f "$HOST_KS" && "$HOST_KS_REASON" == "deploy_preflight" ]]', step8
-        )
+        self.assertNotIn("alpine test -f", step8, "two-state probe must not come back")
+        self.assertNotIn("HOST_KS", step8)
 
     def test_required_scripts_exist_and_executable_intent(self) -> None:
         required = [

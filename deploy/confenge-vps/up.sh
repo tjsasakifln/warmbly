@@ -122,15 +122,28 @@ fi
 # alone, so it already fails closed, and it is left byte-for-byte untouched.
 # Only a missing switch, or a stale deploy_preflight switch left by an aborted
 # deploy, is (re)written here.
+# The presence probe has three outcomes, not two: `test -f` exiting 1 (absent)
+# is indistinguishable from Docker failing to run the probe at all (125/126/
+# 127), so the answer travels on stdout and anything but present/absent is
+# indeterminate. An indeterminate probe refuses the deploy: writing the
+# deploy_preflight switch over a pause this script could not see would
+# destroy an operator pause in step 8.
 OPS_VOLUME="${COMPOSE_PROJECT_NAME:-warmbly-confenge}_confenge_ops"
 docker volume create "$OPS_VOLUME" >/dev/null
-KS_BEFORE_EXISTS=no
-if docker run --rm -v "$OPS_VOLUME:/data:ro" alpine test -f /data/kill-switch >/dev/null 2>&1; then
-  KS_BEFORE_EXISTS=yes
+KS_BEFORE_STATE=indeterminate
+if KS_PROBE="$(docker run --rm -v "$OPS_VOLUME:/data:ro" alpine \
+    sh -c 'test -f /data/kill-switch && echo present || echo absent' 2>/dev/null)"; then
+  case "$KS_PROBE" in present|absent) KS_BEFORE_STATE="$KS_PROBE" ;; esac
+fi
+if [[ "$KS_BEFORE_STATE" == "indeterminate" ]]; then
+  echo "REFUSE: could not determine whether a kill switch is present on $OPS_VOLUME (docker probe failed)" >&2
+  echo "  Writing the deploy_preflight switch blind could overwrite an operator pause; nothing was written." >&2
+  echo "  Production was not touched and the current release is still running. Check docker and retry." >&2
+  exit 6
 fi
 KS_BEFORE="$(docker run --rm -v "$OPS_VOLUME:/data:ro" alpine cat /data/kill-switch 2>/dev/null || true)"
 KS_BEFORE_REASON="$(grep -m1 '^reason=' <<<"$KS_BEFORE" | cut -d= -f2- || true)"
-if [[ "$KS_BEFORE_EXISTS" == "yes" && "$KS_BEFORE_REASON" != "deploy_preflight" ]]; then
+if [[ "$KS_BEFORE_STATE" == "present" && "$KS_BEFORE_REASON" != "deploy_preflight" ]]; then
   echo "DISPATCH_PAUSE=preexisting reason=${KS_BEFORE_REASON:-<none>} (operator pause, left untouched; clear with resume.sh)"
 else
   docker run --rm -v "$OPS_VOLUME:/data" alpine \
@@ -200,29 +213,39 @@ done
 # different reason, was left untouched by step 4 and survives, so a deploy can
 # never silently re-arm sending that a human deliberately stopped. Outbound is
 # then gated by the business send window alone, which is the intended steady
-# state at any hour. The host mirror (written by pause.sh for offline
-# inspection) is removed only alongside this deploy's own switch and only when
-# it carries the deploy_preflight reason; an operator mirror is never touched.
-KS_EXISTS=no
-if docker run --rm -v "$OPS_VOLUME:/data:ro" alpine test -f /data/kill-switch >/dev/null 2>&1; then
-  KS_EXISTS=yes
+# state at any hour. The host mirror (CONFENGE_KILL_SWITCH_HOST_PATH, written
+# by pause.sh for offline inspection) belongs to pause.sh/resume.sh and is
+# never read, written or removed by a deploy.
+# Same three-state probe as step 4. An indeterminate probe leaves the switch
+# alone: the deploy is otherwise complete, so it exits 0, but it says loudly
+# that outbound may still be paused instead of reporting absent over a live
+# switch.
+KS_STATE=indeterminate
+if KS_PROBE="$(docker run --rm -v "$OPS_VOLUME:/data:ro" alpine \
+    sh -c 'test -f /data/kill-switch && echo present || echo absent' 2>/dev/null)"; then
+  case "$KS_PROBE" in present|absent) KS_STATE="$KS_PROBE" ;; esac
 fi
 KS="$(docker run --rm -v "$OPS_VOLUME:/data:ro" alpine cat /data/kill-switch 2>/dev/null || true)"
 # Same first-reason rule as step 4, so the two steps can never disagree about
 # who owns the switch.
 KS_REASON="$(grep -m1 '^reason=' <<<"$KS" | cut -d= -f2- || true)"
-HOST_KS="${CONFENGE_KILL_SWITCH_HOST_PATH:-$ROOT/data/confenge-kill-switch}"
-if [[ "$KS_EXISTS" == "no" ]]; then
+if [[ "$KS_STATE" == "indeterminate" ]]; then
+  echo "WARNING: could not determine whether a kill switch is present on $OPS_VOLUME (docker probe failed); the deploy_preflight pause was NOT cleared and outbound may still be paused. Inspect with status.sh and clear with resume.sh." >&2
+  echo "DISPATCH_PAUSE=indeterminate (not cleared; inspect with status.sh, clear with resume.sh)"
+elif [[ "$KS_STATE" == "absent" ]]; then
   echo "DISPATCH_PAUSE=absent"
 elif [[ "$KS_REASON" == "deploy_preflight" ]]; then
   docker run --rm -v "$OPS_VOLUME:/data" alpine sh -c 'rm -f /data/kill-switch' >/dev/null
-  if docker run --rm -v "$OPS_VOLUME:/data:ro" alpine test -f /data/kill-switch; then
-    echo "REFUSE: deploy pause could not be cleared" >&2
-    exit 1
+  # Only a confirmed absence counts as cleared; a probe that cannot answer is
+  # refused the same way as a switch that is still there.
+  KS_AFTER=indeterminate
+  if KS_PROBE="$(docker run --rm -v "$OPS_VOLUME:/data:ro" alpine \
+      sh -c 'test -f /data/kill-switch && echo present || echo absent' 2>/dev/null)"; then
+    case "$KS_PROBE" in present|absent) KS_AFTER="$KS_PROBE" ;; esac
   fi
-  HOST_KS_REASON="$(grep -m1 '^reason=' "$HOST_KS" 2>/dev/null | cut -d= -f2- || true)"
-  if [[ -f "$HOST_KS" && "$HOST_KS_REASON" == "deploy_preflight" ]]; then
-    rm -f "$HOST_KS"
+  if [[ "$KS_AFTER" != "absent" ]]; then
+    echo "REFUSE: deploy pause could not be confirmed cleared (probe: $KS_AFTER)" >&2
+    exit 1
   fi
   echo "DISPATCH_PAUSE=cleared (deploy_preflight)"
 else
