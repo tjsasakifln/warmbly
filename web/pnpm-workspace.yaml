@@ -17,3 +17,6 @@ overrides:
   # Clear CVE-2026-59887 (quadratic-complexity ReDoS via `mailto:`) in the
   # transitive linkify-it.
   linkify-it: ^5.0.2
+  # Clear CVE-2026-84375 (fixed in 4.3.2) in the transitive js-yaml pulled in
+  # by eslint's flat-config loader.
+  js-yaml: 4.3.2
