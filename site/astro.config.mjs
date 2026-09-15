@@ -7,6 +7,10 @@ import mdx from '@astrojs/mdx';
 // https://astro.build/config
 export default defineConfig({
   site: 'https://warmbly.com',
+  // Astro 7 changed the default to 'jsx', which also drops the whitespace
+  // between inline elements. Keep the HTML-aware compression the site was
+  // built with on Astro 6 so rendered pages stay byte-for-byte equivalent.
+  compressHTML: true,
   integrations: [
     mdx(),
     sitemap({

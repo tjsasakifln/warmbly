@@ -14,12 +14,19 @@
  *
  * Run with: node scripts/gen-icons.mjs
  */
-import sharp from '../node_modules/.pnpm/sharp@0.34.5/node_modules/sharp/lib/index.js';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// sharp is astro's optional dependency, not one of ours, so pnpm does not
+// expose it at node_modules/sharp. Resolve it from astro's own location
+// instead of hardcoding a pnpm store path (which changes with every sharp
+// or peer bump; sharp 0.35 also moved its entry from lib/ to dist/).
+const requireFromAstro = createRequire(createRequire(import.meta.url).resolve('astro'));
+const sharp = requireFromAstro('sharp');
 const ROOT = resolve(__dirname, '..');
 const SRC = resolve(ROOT, 'public/brand/social-avatar.jpg');
 const PUB = resolve(ROOT, 'public');
