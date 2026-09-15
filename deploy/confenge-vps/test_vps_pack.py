@@ -93,6 +93,8 @@ def run_up_kill_switch_steps(
     env["DOCKER_LOG"] = str(tmp / "docker.log")
     env["STUB_VOLUMES"] = str(volumes)
     env["CONFENGE_KILL_SWITCH_HOST_PATH"] = str(mirror)
+    # Step 4's text carries the first-boot seed block; never let it run here.
+    env["CONFENGE_VPS_SEED"] = "false"
     (tmp / "docker.log").write_text("")
     proc = subprocess.run(
         ["bash"], input=probe, capture_output=True, text=True, env=env,
@@ -143,17 +145,21 @@ class TestConfengeVpsPack(unittest.TestCase):
             self.assertNotIn("rm -f", log)
 
     def test_up_leaves_a_switch_without_a_reason_untouched(self) -> None:
-        """The backend pauses on file presence alone, so a switch with no
-        reason line is still a pause the deploy did not write."""
-        with tempfile.TemporaryDirectory() as d:
-            tmp = Path(d)
-            proc, switch, _ = run_up_kill_switch_steps(
-                tmp, volume_switch="paused\n", host_mirror=None
-            )
-            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-            self.assertIn("DISPATCH_PAUSE=preexisting reason=<none>", proc.stdout)
-            self.assertIn("DISPATCH_PAUSE=held", proc.stdout)
-            self.assertEqual(switch.read_text(), "paused\n")
+        """The backend pauses on file presence alone (parseKillSwitchContent
+        sets Present for any readable body), so a switch with no reason line,
+        even a zero-byte one, is still a pause the deploy did not write."""
+        for seed in ("paused\n", ""):
+            with self.subTest(seed=seed), tempfile.TemporaryDirectory() as d:
+                tmp = Path(d)
+                proc, switch, _ = run_up_kill_switch_steps(
+                    tmp, volume_switch=seed, host_mirror=None
+                )
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertIn("DISPATCH_PAUSE=preexisting reason=<none>", proc.stdout)
+                self.assertIn("DISPATCH_PAUSE=held", proc.stdout)
+                self.assertNotIn("DISPATCH_PAUSE=cleared", proc.stdout)
+                self.assertTrue(switch.exists())
+                self.assertEqual(switch.read_text(), seed)
 
     def test_up_engages_and_clears_its_own_deploy_pause(self) -> None:
         """No pre-existing switch (or a stale deploy_preflight one left by an
@@ -207,15 +213,19 @@ class TestConfengeVpsPack(unittest.TestCase):
         branch reachable for a non-deploy reason."""
         up = (PACK / "up.sh").read_text(encoding="utf-8")
         step4 = up_step(up, 4)
-        read = step4.index('alpine cat /data/kill-switch')
-        guard = step4.index('"$KS_BEFORE_REASON" != "deploy_preflight"')
+        read = step4.index('alpine test -f /data/kill-switch')
+        guard = step4.index(
+            '"$KS_BEFORE_EXISTS" == "yes" && "$KS_BEFORE_REASON" != "deploy_preflight"'
+        )
         write = step4.index('printf "paused\\nreason=deploy_preflight\\n" > /data/kill-switch')
         self.assertLess(read, guard)
         self.assertLess(guard, write)
         self.assertIn("DISPATCH_PAUSE=preexisting", step4)
         step8 = up_step(up, 8)
         self.assertIn("DISPATCH_PAUSE=held", step8)
-        self.assertRegex(step8, r'grep -q \'\^reason=deploy_preflight\$\' "\$HOST_KS"')
+        self.assertIn(
+            '[[ -f "$HOST_KS" && "$HOST_KS_REASON" == "deploy_preflight" ]]', step8
+        )
 
     def test_required_scripts_exist_and_executable_intent(self) -> None:
         required = [

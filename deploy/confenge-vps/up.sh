@@ -117,15 +117,20 @@ fi
 # Written before any app or worker container starts, so a new/empty Docker
 # volume cannot fail open. Cleared automatically once the release verifies.
 # A switch that already exists and was not written by a deploy (pause.sh, the
-# governor API, or any file without a deploy_preflight reason) is an operator
-# pause: the backend pauses on file presence alone, so it already fails closed,
-# and it is left byte-for-byte untouched. Only a missing switch, or a stale
-# deploy_preflight switch left by an aborted deploy, is (re)written here.
+# governor API, or any file whose first reason is not deploy_preflight, even
+# an empty one) is an operator pause: the backend pauses on file presence
+# alone, so it already fails closed, and it is left byte-for-byte untouched.
+# Only a missing switch, or a stale deploy_preflight switch left by an aborted
+# deploy, is (re)written here.
 OPS_VOLUME="${COMPOSE_PROJECT_NAME:-warmbly-confenge}_confenge_ops"
 docker volume create "$OPS_VOLUME" >/dev/null
+KS_BEFORE_EXISTS=no
+if docker run --rm -v "$OPS_VOLUME:/data:ro" alpine test -f /data/kill-switch >/dev/null 2>&1; then
+  KS_BEFORE_EXISTS=yes
+fi
 KS_BEFORE="$(docker run --rm -v "$OPS_VOLUME:/data:ro" alpine cat /data/kill-switch 2>/dev/null || true)"
 KS_BEFORE_REASON="$(grep -m1 '^reason=' <<<"$KS_BEFORE" | cut -d= -f2- || true)"
-if [[ -n "$KS_BEFORE" && "$KS_BEFORE_REASON" != "deploy_preflight" ]]; then
+if [[ "$KS_BEFORE_EXISTS" == "yes" && "$KS_BEFORE_REASON" != "deploy_preflight" ]]; then
   echo "DISPATCH_PAUSE=preexisting reason=${KS_BEFORE_REASON:-<none>} (operator pause, left untouched; clear with resume.sh)"
 else
   docker run --rm -v "$OPS_VOLUME:/data" alpine \
@@ -198,17 +203,25 @@ done
 # state at any hour. The host mirror (written by pause.sh for offline
 # inspection) is removed only alongside this deploy's own switch and only when
 # it carries the deploy_preflight reason; an operator mirror is never touched.
+KS_EXISTS=no
+if docker run --rm -v "$OPS_VOLUME:/data:ro" alpine test -f /data/kill-switch >/dev/null 2>&1; then
+  KS_EXISTS=yes
+fi
 KS="$(docker run --rm -v "$OPS_VOLUME:/data:ro" alpine cat /data/kill-switch 2>/dev/null || true)"
+# Same first-reason rule as step 4, so the two steps can never disagree about
+# who owns the switch.
+KS_REASON="$(grep -m1 '^reason=' <<<"$KS" | cut -d= -f2- || true)"
 HOST_KS="${CONFENGE_KILL_SWITCH_HOST_PATH:-$ROOT/data/confenge-kill-switch}"
-if [[ -z "$KS" ]]; then
+if [[ "$KS_EXISTS" == "no" ]]; then
   echo "DISPATCH_PAUSE=absent"
-elif grep -q '^reason=deploy_preflight$' <<<"$KS"; then
+elif [[ "$KS_REASON" == "deploy_preflight" ]]; then
   docker run --rm -v "$OPS_VOLUME:/data" alpine sh -c 'rm -f /data/kill-switch' >/dev/null
   if docker run --rm -v "$OPS_VOLUME:/data:ro" alpine test -f /data/kill-switch; then
     echo "REFUSE: deploy pause could not be cleared" >&2
     exit 1
   fi
-  if [[ -f "$HOST_KS" ]] && grep -q '^reason=deploy_preflight$' "$HOST_KS"; then
+  HOST_KS_REASON="$(grep -m1 '^reason=' "$HOST_KS" 2>/dev/null | cut -d= -f2- || true)"
+  if [[ -f "$HOST_KS" && "$HOST_KS_REASON" == "deploy_preflight" ]]; then
     rm -f "$HOST_KS"
   fi
   echo "DISPATCH_PAUSE=cleared (deploy_preflight)"
