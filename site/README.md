@@ -1,6 +1,6 @@
 # site
 
-Warmbly's public marketing site. Astro 5 + Tailwind v4, separate from the
+Warmbly's public marketing site. Astro 7 + Tailwind v4, separate from the
 in-product dashboard at `web/` and the admin app at `admin/`.
 
 ## Run it locally
