@@ -116,10 +116,21 @@ fi
 # ── 4. engage the deploy safety pause ───────────────────────────────────────
 # Written before any app or worker container starts, so a new/empty Docker
 # volume cannot fail open. Cleared automatically once the release verifies.
+# A switch that already exists and was not written by a deploy (pause.sh, the
+# governor API, or any file without a deploy_preflight reason) is an operator
+# pause: the backend pauses on file presence alone, so it already fails closed,
+# and it is left byte-for-byte untouched. Only a missing switch, or a stale
+# deploy_preflight switch left by an aborted deploy, is (re)written here.
 OPS_VOLUME="${COMPOSE_PROJECT_NAME:-warmbly-confenge}_confenge_ops"
 docker volume create "$OPS_VOLUME" >/dev/null
-docker run --rm -v "$OPS_VOLUME:/data" alpine \
-  sh -c 'printf "paused\nreason=deploy_preflight\n" > /data/kill-switch && chown 1000:1000 /data/kill-switch && chmod 600 /data/kill-switch' >/dev/null
+KS_BEFORE="$(docker run --rm -v "$OPS_VOLUME:/data:ro" alpine cat /data/kill-switch 2>/dev/null || true)"
+KS_BEFORE_REASON="$(grep -m1 '^reason=' <<<"$KS_BEFORE" | cut -d= -f2- || true)"
+if [[ -n "$KS_BEFORE" && "$KS_BEFORE_REASON" != "deploy_preflight" ]]; then
+  echo "DISPATCH_PAUSE=preexisting reason=${KS_BEFORE_REASON:-<none>} (operator pause, left untouched; clear with resume.sh)"
+else
+  docker run --rm -v "$OPS_VOLUME:/data" alpine \
+    sh -c 'printf "paused\nreason=deploy_preflight\n" > /data/kill-switch && chown 1000:1000 /data/kill-switch && chmod 600 /data/kill-switch' >/dev/null
+fi
 
 if [[ "${CONFENGE_VPS_SEED:-false}" == "true" ]]; then
   echo "Preparing first boot with operator mode temporarily disabled..."
@@ -181,10 +192,14 @@ done
 
 # ── 8. clear the deploy pause immediately ───────────────────────────────────
 # Only a switch this deploy wrote is cleared. An operator emergency pause has a
-# different reason and survives, so a deploy can never silently re-arm sending
-# that a human deliberately stopped. Outbound is then gated by the business
-# send window alone, which is the intended steady state at any hour.
+# different reason, was left untouched by step 4 and survives, so a deploy can
+# never silently re-arm sending that a human deliberately stopped. Outbound is
+# then gated by the business send window alone, which is the intended steady
+# state at any hour. The host mirror (written by pause.sh for offline
+# inspection) is removed only alongside this deploy's own switch and only when
+# it carries the deploy_preflight reason; an operator mirror is never touched.
 KS="$(docker run --rm -v "$OPS_VOLUME:/data:ro" alpine cat /data/kill-switch 2>/dev/null || true)"
+HOST_KS="${CONFENGE_KILL_SWITCH_HOST_PATH:-$ROOT/data/confenge-kill-switch}"
 if [[ -z "$KS" ]]; then
   echo "DISPATCH_PAUSE=absent"
 elif grep -q '^reason=deploy_preflight$' <<<"$KS"; then
@@ -192,6 +207,9 @@ elif grep -q '^reason=deploy_preflight$' <<<"$KS"; then
   if docker run --rm -v "$OPS_VOLUME:/data:ro" alpine test -f /data/kill-switch; then
     echo "REFUSE: deploy pause could not be cleared" >&2
     exit 1
+  fi
+  if [[ -f "$HOST_KS" ]] && grep -q '^reason=deploy_preflight$' "$HOST_KS"; then
+    rm -f "$HOST_KS"
   fi
   echo "DISPATCH_PAUSE=cleared (deploy_preflight)"
 else

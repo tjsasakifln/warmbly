@@ -26,7 +26,9 @@ deploy/confenge-vps/release-deploy.sh <full-sha> # roll onto a specific release
 2. bounded cleanup of reconstructible artifacts if headroom is short
 3. pull the images pinned to the release SHA
 4. verify each image carries `org.opencontainers.image.revision=<sha>`
-5. write the `deploy_preflight` kill switch (outbound cannot fail open)
+5. write the `deploy_preflight` kill switch (outbound cannot fail open), unless
+   a switch with another reason already exists: that is an operator pause and
+   is left untouched (`DISPATCH_PAUSE=preexisting`)
 6. `compose up -d --no-build --remove-orphans`
 7. backend health, `pg_isready`, and `verify-release.sh` per service
 8. clear the deploy kill switch automatically
