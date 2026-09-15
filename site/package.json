@@ -10,12 +10,12 @@
     "astro": "astro"
   },
   "dependencies": {
-    "@astrojs/mdx": "^6.0.3",
-    "@astrojs/rss": "^4.0.18",
-    "@astrojs/sitemap": "^3.7.3",
+    "@astrojs/mdx": "^8.0.1",
+    "@astrojs/rss": "^4.0.19",
+    "@astrojs/sitemap": "^3.7.4",
     "@fontsource/inter": "^5.2.6",
     "@tailwindcss/vite": "^4.1.10",
-    "astro": "^6.4.8",
+    "astro": "^7.3.2",
     "motion": "^12.34.0",
     "reading-time": "^1.5.0",
     "tailwindcss": "^4.1.10"
@@ -24,7 +24,9 @@
     "overrides": {
       "js-yaml": "4.3.2",
       "postcss": "8.5.23",
-      "svgo": "^4.0.2",
+      "svgo": "4.1.0",
+      "sharp": "0.35.4",
+      "smol-toml": "1.7.1",
       "nanoid": "3.3.18"
     }
   },

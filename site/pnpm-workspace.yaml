@@ -5,17 +5,25 @@ allowBuilds:
   esbuild: true
   sharp: true
 
-# Clear CVE-2026-59869 (DoS via crafted YAML) and GHSA-5p4m-2wfm-xmqj
-# (quadratic CPU use resolving !!omap) and CVE-2026-84375 (fixed in 4.3.2) in
-# the transitive js-yaml.
+# Must match package.json pnpm.overrides (pnpm 10 frozen install) and stay a
+# single mapping per key (YAML last-key-wins is not portable).
 overrides:
+  # Clear CVE-2026-59869 (DoS via crafted YAML) and GHSA-5p4m-2wfm-xmqj
+  # (quadratic CPU use resolving !!omap) and CVE-2026-84375 (fixed in 4.3.2) in
+  # the transitive js-yaml.
   js-yaml: 4.3.2
-  # Clear GHSA-2p49-hgcm-8545 (SVGO removeScripts can leave some scripts) in the
-  # transitive svgo used for build-time SVG optimization.
-  svgo: ^4.0.2
-  # NOTE: sharp is intentionally NOT bumped here. Its 0.35 line clears the
-  # libvips CVEs but breaks the marketing site's Cloudflare Pages build, so site
-  # stays on 0.34.5 and that one HIGH is suppressed in .trivyignore (build-time
-  # image optimization of our own assets, no untrusted input).
+  # Clear GHSA-2p49-hgcm-8545 (SVGO removeScripts can leave some scripts) and
+  # CVE-2026-84370 (fixed in 4.1.0) in the transitive svgo used for build-time
+  # SVG optimization.
+  svgo: 4.1.0
+  # Clear GHSA-rgj7-g3m4-5g8c (fixed in 0.35.4) and the libvips CVEs
+  # (GHSA-f88m-g3jw-g9cj, fixed in 0.35.0) in sharp, astro's build-time image
+  # optimizer. astro 7 only accepts sharp ^0.35.4, so the 0.34.5 hold from
+  # cca3bd5b (Cloudflare Pages build) no longer applies; the site's own scripts
+  # (scripts/gen-icons.mjs) follow the same version.
+  sharp: 0.35.4
+  # Clear CVE-2026-85730 (fixed in 1.7.1) in the transitive smol-toml astro
+  # uses to parse TOML at build time.
+  smol-toml: 1.7.1
   # Clear CVE-2026-67213 (DoS via infinite loop) in the transitive nanoid.
   nanoid: ^3.3.17
