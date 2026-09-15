@@ -50,13 +50,21 @@ deployment authority.
 
 `up.sh` order: disk preflight, bounded cleanup if needed, pull, verify each
 image's `org.opencontainers.image.revision`, write the `deploy_preflight` kill
-switch, `up -d --no-build`, backend health, `pg_isready`, `verify-release.sh`
-per service, clear the deploy kill switch, retention sweep. It refuses before
-recreating anything if any step fails, so a bad release leaves the healthy one
-running.
+switch unless a switch with another reason already exists (an operator pause,
+left untouched: `DISPATCH_PAUSE=preexisting`), `up -d --no-build`, backend
+health, `pg_isready`, `verify-release.sh` per service, clear the deploy kill
+switch, retention sweep. It refuses before recreating anything if any step
+fails, so a bad release leaves the healthy one running. The kill-switch
+presence probe distinguishes present, absent and indeterminate (Docker could
+not run the probe): indeterminate in step 4 refuses the deploy before writing
+anything, since a blind `deploy_preflight` write could overwrite an operator
+pause.
 
 Step 8 clears only a `deploy_preflight` switch. An operator pause from
-`pause.sh` survives a deploy and still needs `resume.sh`.
+`pause.sh` survives a deploy and still needs `resume.sh`. An indeterminate
+probe in step 8 leaves the switch alone and reports
+`DISPATCH_PAUSE=indeterminate` with a WARNING. The host mirror is owned by
+`pause.sh`/`resume.sh`; `up.sh` never touches it.
 
 ## Disk safety
 
