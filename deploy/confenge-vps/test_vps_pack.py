@@ -6,13 +6,99 @@ Drives real files under deploy/confenge-vps/ (shipped artifacts), not reimplemen
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
 PACK = Path(__file__).resolve().parent
 ROOT = PACK.parent.parent
+
+# Fake `docker` for the kill-switch steps of up.sh: a named volume is a directory
+# under $STUB_VOLUMES and `docker run --rm -v NAME:/data[:ro] alpine <cmd...>`
+# executes <cmd> on the host with /data rewritten to that directory. Everything
+# else is logged and succeeds, so the real script text drives the test.
+KILL_SWITCH_DOCKER_STUB = r"""#!/usr/bin/env bash
+echo "$*" >> "$DOCKER_LOG"
+case "$1 $2" in
+  "volume create") mkdir -p "$STUB_VOLUMES/$3"; exit 0 ;;
+  "run --rm") shift 2 ;;
+  *) exit 0 ;;
+esac
+vol=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -v) vol="${2%%:*}"; shift 2 ;;
+    alpine) shift; break ;;
+    *) shift ;;
+  esac
+done
+dir="$STUB_VOLUMES/$vol"
+args=()
+for a in "$@"; do args+=("${a//\/data/$dir}"); done
+exec "${args[@]}"
+"""
+
+DEPLOY_PREFLIGHT_SWITCH = "paused\nreason=deploy_preflight\n"
+OPERATOR_SWITCH = "paused\nreason=operator_keep_paused_for_261\n"
+
+
+def up_step(text: str, number: int) -> str:
+    """The real text of one numbered `# ── N.` block of up.sh."""
+    start = text.index(f"# ── {number}.")
+    end = text.index(f"# ── {number + 1}.")
+    return text[start:end]
+
+
+def run_up_kill_switch_steps(
+    tmp: Path,
+    volume_switch: str | None,
+    host_mirror: str | None,
+) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+    """Execute up.sh step 4 (engage the deploy pause) and step 8 (clear it) as
+    shipped, against a fake ops volume seeded with `volume_switch` and a host
+    mirror seeded with `host_mirror`. Steps 5-7 (compose up, health, release
+    verification) are the part a deploy cannot fake and are irrelevant to who
+    owns the switch, so they are skipped."""
+    bindir = tmp / "bin"
+    bindir.mkdir(exist_ok=True)
+    (bindir / "docker").write_text(KILL_SWITCH_DOCKER_STUB)
+    # The real payload chowns the switch to uid 1000; on the host that is a no-op.
+    (bindir / "chown").write_text("#!/usr/bin/env bash\nexit 0\n")
+    for name in ("docker", "chown"):
+        (bindir / name).chmod(0o755)
+    volumes = tmp / "volumes"
+    volume_dir = volumes / "warmbly-confenge_confenge_ops"
+    volume_dir.mkdir(parents=True)
+    switch = volume_dir / "kill-switch"
+    if volume_switch is not None:
+        switch.write_text(volume_switch)
+    mirror = tmp / "host" / "confenge-kill-switch"
+    mirror.parent.mkdir()
+    if host_mirror is not None:
+        mirror.write_text(host_mirror)
+
+    up = (PACK / "up.sh").read_text(encoding="utf-8")
+    probe = (
+        "set -euo pipefail\n"
+        f'ROOT="{tmp}"\n'
+        "COMPOSE_PROJECT_NAME=warmbly-confenge\n"
+        + up_step(up, 4)
+        + up_step(up, 8)
+    )
+    env = dict(os.environ)
+    env["PATH"] = f"{bindir}:{env['PATH']}"
+    env["DOCKER_LOG"] = str(tmp / "docker.log")
+    env["STUB_VOLUMES"] = str(volumes)
+    env["CONFENGE_KILL_SWITCH_HOST_PATH"] = str(mirror)
+    (tmp / "docker.log").write_text("")
+    proc = subprocess.run(
+        ["bash"], input=probe, capture_output=True, text=True, env=env,
+        timeout=60, check=False,
+    )
+    return proc, switch, mirror
 
 
 class TestConfengeVpsPack(unittest.TestCase):
@@ -28,6 +114,108 @@ class TestConfengeVpsPack(unittest.TestCase):
             r"if docker run .*\$OPS_VOLUME:/data:ro.* test -f /data/kill-switch",
         )
         self.assertIn("REFUSE: transport kill switch still engaged after resume", resume)
+
+    def test_up_leaves_a_preexisting_operator_pause_untouched(self) -> None:
+        """Workstream H invariant: a deploy must never destroy an operator pause.
+
+        Counter-case this pins: step 4 unconditionally overwrote the ops-volume
+        switch with reason=deploy_preflight, so step 8 always saw its own reason
+        and cleared it. The `held` branch was unreachable and an operator pause
+        written by pause.sh (reason=operator_keep_paused_for_261) was silently
+        destroyed by every deploy."""
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            mirror_body = OPERATOR_SWITCH + "at=2026-09-15T00:00:00Z\n"
+            proc, switch, mirror = run_up_kill_switch_steps(
+                tmp, volume_switch=OPERATOR_SWITCH, host_mirror=mirror_body
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn(
+                "DISPATCH_PAUSE=preexisting reason=operator_keep_paused_for_261",
+                proc.stdout,
+            )
+            self.assertIn("DISPATCH_PAUSE=held", proc.stdout)
+            self.assertNotIn("DISPATCH_PAUSE=cleared", proc.stdout)
+            self.assertEqual(switch.read_text(), OPERATOR_SWITCH)
+            self.assertEqual(mirror.read_text(), mirror_body)
+            log = (tmp / "docker.log").read_text()
+            self.assertNotIn("deploy_preflight", log)
+            self.assertNotIn("rm -f", log)
+
+    def test_up_leaves_a_switch_without_a_reason_untouched(self) -> None:
+        """The backend pauses on file presence alone, so a switch with no
+        reason line is still a pause the deploy did not write."""
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            proc, switch, _ = run_up_kill_switch_steps(
+                tmp, volume_switch="paused\n", host_mirror=None
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("DISPATCH_PAUSE=preexisting reason=<none>", proc.stdout)
+            self.assertIn("DISPATCH_PAUSE=held", proc.stdout)
+            self.assertEqual(switch.read_text(), "paused\n")
+
+    def test_up_engages_and_clears_its_own_deploy_pause(self) -> None:
+        """No pre-existing switch (or a stale deploy_preflight one left by an
+        aborted deploy): step 4 writes deploy_preflight, step 8 clears it."""
+        for seed in (None, DEPLOY_PREFLIGHT_SWITCH):
+            with self.subTest(seed=seed), tempfile.TemporaryDirectory() as d:
+                tmp = Path(d)
+                proc, switch, mirror = run_up_kill_switch_steps(
+                    tmp, volume_switch=seed, host_mirror=None
+                )
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertNotIn("DISPATCH_PAUSE=preexisting", proc.stdout)
+                self.assertIn("DISPATCH_PAUSE=cleared (deploy_preflight)", proc.stdout)
+                self.assertFalse(switch.exists())
+                self.assertFalse(mirror.exists())
+                log = (tmp / "docker.log").read_text()
+                self.assertIn("reason=deploy_preflight", log)
+                self.assertIn("chmod 600", log)
+
+    def test_up_removes_only_a_deploy_preflight_host_mirror(self) -> None:
+        """The host mirror is inspection metadata written by pause.sh. It goes
+        away only alongside the deploy's own switch and only when it carries
+        the deploy_preflight reason; an operator mirror is never touched."""
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            proc, switch, mirror = run_up_kill_switch_steps(
+                tmp,
+                volume_switch=None,
+                host_mirror=DEPLOY_PREFLIGHT_SWITCH + "at=2026-09-15T00:00:00Z\n",
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("DISPATCH_PAUSE=cleared", proc.stdout)
+            self.assertFalse(switch.exists())
+            self.assertFalse(mirror.exists(), "deploy_preflight mirror must be removed")
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            operator_mirror = OPERATOR_SWITCH + "at=2026-09-15T00:00:00Z\n"
+            proc, switch, mirror = run_up_kill_switch_steps(
+                tmp, volume_switch=None, host_mirror=operator_mirror
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("DISPATCH_PAUSE=cleared", proc.stdout)
+            self.assertFalse(switch.exists())
+            self.assertEqual(
+                mirror.read_text(), operator_mirror, "operator mirror must survive"
+            )
+
+    def test_up_reads_the_switch_before_writing_it(self) -> None:
+        """Static guard for the same invariant: the read and the reason check
+        precede the only deploy_preflight write, and step 8 keeps the `held`
+        branch reachable for a non-deploy reason."""
+        up = (PACK / "up.sh").read_text(encoding="utf-8")
+        step4 = up_step(up, 4)
+        read = step4.index('alpine cat /data/kill-switch')
+        guard = step4.index('"$KS_BEFORE_REASON" != "deploy_preflight"')
+        write = step4.index('printf "paused\\nreason=deploy_preflight\\n" > /data/kill-switch')
+        self.assertLess(read, guard)
+        self.assertLess(guard, write)
+        self.assertIn("DISPATCH_PAUSE=preexisting", step4)
+        step8 = up_step(up, 8)
+        self.assertIn("DISPATCH_PAUSE=held", step8)
+        self.assertRegex(step8, r'grep -q \'\^reason=deploy_preflight\$\' "\$HOST_KS"')
 
     def test_required_scripts_exist_and_executable_intent(self) -> None:
         required = [
