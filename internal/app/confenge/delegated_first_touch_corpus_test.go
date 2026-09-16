@@ -42,8 +42,8 @@ func TestDelegatedFirstTouchCorpusAtScale(t *testing.T) {
 					if delegatedCorpusGuessedPerson(messages[i].Copy, expected, messages[i].Candidate) {
 						t.Logf("guessed-person diagnostic id=%s route=%s used=%q expected=%q body=%q", messages[i].ID, messages[i].Copy.RouteClass, messages[i].Copy.PersonUsed, expected.PersonUsed, strings.SplitN(messages[i].Copy.Body, "\n", 2)[0])
 					}
-					blob := messages[i].Copy.Subject + "\n" + messages[i].Copy.Body
-					if LooksLikeInternalReasoning(blob) || looksLikeMetadataDump(blob) || containsDumpLabel(blob) || qaEnumRe.MatchString(blob) || qaKeyValueRe.MatchString(blob) || qaScoreRe.MatchString(blob) {
+					qaBlob := delegatedCopyQABlob(messages[i].Copy.Subject, messages[i].Copy.Body, messages[i].Copy.DestinationURL)
+					if LooksLikeInternalReasoning(qaBlob) || looksLikeMetadataDump(qaBlob) || containsDumpLabel(qaBlob) || qaEnumRe.MatchString(qaBlob) || qaKeyValueRe.MatchString(qaBlob) || qaScoreRe.MatchString(qaBlob) {
 						t.Logf("metadata diagnostic id=%s subject=%q body=%q", messages[i].ID, messages[i].Copy.Subject, messages[i].Copy.Body)
 					}
 				}

@@ -143,6 +143,9 @@ type DelegatedFirstTouchEntry struct {
 	FactEvidenceIDs           []string              `json:"fact_evidence_ids"`
 	Practice                  string                `json:"practice"`
 	CTA                       string                `json:"cta"`
+	ClaimKey                  string                `json:"claim_key,omitempty"`
+	LandingID                 string                `json:"landing_id,omitempty"`
+	DestinationURL            string                `json:"destination_url,omitempty"`
 	SemanticSignature         string                `json:"semantic_signature"`
 	SubjectHash               string                `json:"subject_hash"`
 	BodyHash                  string                `json:"body_hash"`
@@ -1239,16 +1242,21 @@ func (s *service) validateDelegatedDeterministicQA(ctx context.Context, orgID uu
 	}
 	var blockers []string
 	add := func(code string) { blockers = appendUnique(blockers, code) }
-	if entry.CopyRulesVersion != DelegatedFirstTouchCopyRulesV1 {
+	if !delegatedCopyRulesVersionSupported(entry.CopyRulesVersion) {
 		add("copy_rules_version_mismatch")
 	}
 	expected := buildDelegatedRoutingCopy(acc, cand, evidence)
+	if entry.CopyRulesVersion == DelegatedFirstTouchCopyRulesV1 {
+		expected = buildDelegatedRoutingCopyV1(acc, cand, evidence)
+	}
 	if expected.Subject == "" || expected.Body == "" {
 		add("deterministic_copy_unavailable")
 	} else {
 		if entry.Subject != expected.Subject || entry.BodyText != expected.Body ||
 			entry.FactUsed != expected.FactUsed || entry.Practice != expected.Practice ||
-			entry.CTA != expected.CTA || entry.SemanticSignature != expected.SemanticSignature {
+			entry.CTA != expected.CTA || entry.ClaimKey != expected.ClaimKey ||
+			entry.LandingID != expected.LandingID || entry.DestinationURL != expected.DestinationURL ||
+			entry.SemanticSignature != expected.SemanticSignature {
 			add("deterministic_copy_projection_mismatch")
 		}
 		if canonicalStringSet(entry.FactEvidenceIDs) != canonicalStringSet(expected.FactEvidenceIDs) {
@@ -1529,10 +1537,21 @@ func validateDelegatedCopy(entry DelegatedFirstTouchEntry, acc *models.OutreachA
 	if len([]rune(subject)) > 100 || words < 45 || words > 150 {
 		add("copy_length_invalid")
 	}
-	if entry.CopyRulesVersion != DelegatedFirstTouchCopyRulesV1 {
+	if !delegatedCopyRulesVersionSupported(entry.CopyRulesVersion) {
 		add("copy_rules_version_mismatch")
 	}
+	if entry.CopyRulesVersion == DelegatedFirstTouchCopyRulesV2 {
+		route, err := ResolveCommercialMessageRoute(acc.ServiceCode, acc.MomentCode, CommercialCampaignFirstTouchEmail)
+		if err != nil || entry.ClaimKey != route.ClaimKey || entry.LandingID != route.Destination.ID ||
+			entry.DestinationURL != route.URL || strings.Count(body, route.URL) != 1 {
+			add("commercial_destination_mismatch")
+		}
+	} else if entry.ClaimKey != "" || entry.LandingID != "" || entry.DestinationURL != "" {
+		add("legacy_commercial_destination_present")
+	}
 	low := strings.ToLower(subject + "\n" + body)
+	qaBlob := delegatedCopyQABlob(subject, body, entry.DestinationURL)
+	qaLow := strings.ToLower(qaBlob)
 	if !strings.Contains(low, "tiago sasaki") || !strings.Contains(low, "confenge") || !strings.Contains(low, "confenge.com.br") {
 		add("sender_identity_missing")
 	}
@@ -1568,7 +1587,7 @@ func validateDelegatedCopy(entry DelegatedFirstTouchEntry, acc *models.OutreachA
 	if delegatedContainsAny(low, "marcar uma reunião", "agendar uma reunião", "agendar uma reuniao", "proposta comercial", "diagnóstico", "diagnostico", "r$", "contrato nº", "processo nº", "pregão nº", "pregao nº") {
 		add("copy_exceeds_first_touch_scope")
 	}
-	if delegatedContainsAny(low,
+	if delegatedContainsAny(qaLow,
 		"grande volume", "alto volume", "muitos contratos", "diversos contratos", "vários contratos", "varios contratos",
 		"dezenas de", "centenas de", "milhares de", "ampla atuação", "ampla atuacao", "líder", "lider",
 		"faturamento", "receita", "lucro", "margem", "crédito", "credito", "dívida", "divida",
@@ -1578,7 +1597,7 @@ func validateDelegatedCopy(entry DelegatedFirstTouchEntry, acc *models.OutreachA
 	}
 	// Numeric amounts, dates, quantities and identifiers require a separate
 	// typed projection. Hold them instead of trusting a factual-PASS assertion.
-	if delegatedDigitPattern.MatchString(subject + "\n" + body) {
+	if delegatedDigitPattern.MatchString(qaBlob) {
 		add("unsupported_specific_fact")
 	}
 	if delegatedContainsAny(low, "soluções inovadoras", "solucoes inovadoras", "potencializar resultados", "sinergia", "transformar desafios") {
@@ -1589,11 +1608,11 @@ func validateDelegatedCopy(entry DelegatedFirstTouchEntry, acc *models.OutreachA
 		"responda agora", "última chance", "ultima chance", "não perca", "nao perca", "você precisa", "voce precisa") {
 		add("offensive_or_manipulative_language")
 	}
-	if strings.Contains(low, "—") || LooksLikeInternalReasoning(subject+"\n"+body) {
+	if strings.Contains(qaLow, "—") || LooksLikeInternalReasoning(qaBlob) {
 		add("copy_artifact")
 	}
-	if looksLikeMetadataDump(subject+"\n"+body) || qaKeyValueRe.MatchString(subject+"\n"+body) ||
-		qaScoreRe.MatchString(subject+"\n"+body) || qaEnumRe.MatchString(subject+"\n"+body) {
+	if looksLikeMetadataDump(qaBlob) || qaKeyValueRe.MatchString(qaBlob) ||
+		qaScoreRe.MatchString(qaBlob) || qaEnumRe.MatchString(qaBlob) {
 		add("internal_metadata_leak")
 	}
 	company := strings.ToLower(editorialCompanyName(acc))
@@ -1630,6 +1649,10 @@ func delegatedContainsAny(value string, needles ...string) bool {
 		}
 	}
 	return false
+}
+
+func delegatedCopyRulesVersionSupported(version string) bool {
+	return version == DelegatedFirstTouchCopyRulesV1 || version == DelegatedFirstTouchCopyRulesV2
 }
 
 func uniqueStrings(values []string) []string {
