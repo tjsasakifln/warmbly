@@ -51,21 +51,22 @@ type OutreachInboundLead struct {
 	ProposalAt            *time.Time `json:"proposal_at,omitempty"`
 	CloseAt               *time.Time `json:"close_at,omitempty"`
 
-	Source        string `json:"source,omitempty"`
-	RouteFamily   string `json:"route_family,omitempty"`
-	AssetID       string `json:"asset_id,omitempty"`
-	CTAID         string `json:"cta_id,omitempty"`
-	LandingURL    string `json:"landing_url,omitempty"`
-	ContractID    string `json:"contract_public_id,omitempty"`
-	EntityID      string `json:"entity_public_id,omitempty"`
-	CNPJ14        string `json:"cnpj14,omitempty"`
-	CompanyName   string `json:"company_name,omitempty"`
-	LeadName      string `json:"lead_name,omitempty"`
-	LeadEmail     string `json:"lead_email,omitempty"`
-	LeadPhone     string `json:"lead_phone,omitempty"`
-	Referrer      string `json:"referrer,omitempty"`
-	Message       string `json:"message,omitempty"`
-	CorrelationID string `json:"correlation_id,omitempty"`
+	Source         string `json:"source,omitempty"`
+	RouteFamily    string `json:"route_family,omitempty"`
+	AssetID        string `json:"asset_id,omitempty"`
+	CTAID          string `json:"cta_id,omitempty"`
+	WebOriginClass string `json:"web_origin_class,omitempty"`
+	LandingURL     string `json:"landing_url,omitempty"`
+	ContractID     string `json:"contract_public_id,omitempty"`
+	EntityID       string `json:"entity_public_id,omitempty"`
+	CNPJ14         string `json:"cnpj14,omitempty"`
+	CompanyName    string `json:"company_name,omitempty"`
+	LeadName       string `json:"lead_name,omitempty"`
+	LeadEmail      string `json:"lead_email,omitempty"`
+	LeadPhone      string `json:"lead_phone,omitempty"`
+	Referrer       string `json:"referrer,omitempty"`
+	Message        string `json:"message,omitempty"`
+	CorrelationID  string `json:"correlation_id,omitempty"`
 
 	ConsentJSON []byte `json:"consent,omitempty"`
 	UTMJSON     []byte `json:"utm,omitempty"`

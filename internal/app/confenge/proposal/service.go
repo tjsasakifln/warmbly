@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -16,6 +17,7 @@ import (
 )
 
 var proposalNamespace = uuid.MustParse("206b7b3f-fbdf-5238-a45e-6ca74061baf2")
+var originEvidencePattern = regexp.MustCompile(`^[a-z0-9_.:-]{1,64}$`)
 
 const (
 	contractIDMaxLength        = 200
@@ -309,7 +311,10 @@ func proposalFromDraft(orgID, proposalID uuid.UUID, proposalVersion int, actor s
 		SourceLeadID: strings.TrimSpace(draft.SourceLeadID), CorrelationID: strings.TrimSpace(draft.CorrelationID),
 		OfferID: strings.TrimSpace(draft.OfferID), OfferVersion: strings.TrimSpace(draft.OfferVersion),
 		DeliverableID: strings.TrimSpace(draft.DeliverableID), DeliverableVersion: strings.TrimSpace(draft.DeliverableVersion),
-		ScopeVersion: strings.TrimSpace(draft.ScopeVersion), PriceVersion: strings.TrimSpace(draft.PriceVersion),
+		ScopeVersion: strings.TrimSpace(draft.ScopeVersion), ScopeID: strings.TrimSpace(draft.ScopeID),
+		AlternativeGroupID: strings.TrimSpace(draft.AlternativeGroupID), CanonicalAlternative: draft.CanonicalAlternative,
+		OriginClass: draft.OriginClass, OriginEvidence: strings.TrimSpace(draft.OriginEvidence),
+		PriceVersion: strings.TrimSpace(draft.PriceVersion),
 		TermsVersion: strings.TrimSpace(draft.TermsVersion), Amount: draft.Amount, Currency: strings.ToUpper(strings.TrimSpace(draft.Currency)),
 		Credits: sortedCopy(draft.Credits), Addons: sortedCopy(draft.Addons), Inputs: sortedCopy(draft.Inputs),
 		Exclusions: sortedCopy(draft.Exclusions), Deadline: draft.Deadline.UTC(), ValidUntil: draft.ValidUntil.UTC(),
@@ -347,6 +352,25 @@ func validateDraft(draft Draft) error {
 	if err := validateOptionalString("source_lead_id", draft.SourceLeadID, proposalOnlyIDMaxLength); err != nil {
 		return err
 	}
+	if err := validateOptionalString("scope_id", draft.ScopeID, contractIDMaxLength); err != nil {
+		return err
+	}
+	if err := validateOptionalString("alternative_group_id", draft.AlternativeGroupID, contractIDMaxLength); err != nil {
+		return err
+	}
+	if strings.TrimSpace(draft.AlternativeGroupID) == "" && draft.CanonicalAlternative {
+		return fmt.Errorf("canonical alternative requires alternative_group_id")
+	}
+	if !validOriginClass(draft.OriginClass) {
+		return fmt.Errorf("invalid origin_class")
+	}
+	originEvidence := strings.TrimSpace(draft.OriginEvidence)
+	if originEvidence != "" && !originEvidencePattern.MatchString(originEvidence) {
+		return fmt.Errorf("invalid origin_evidence")
+	}
+	if draft.OriginClass != "" && draft.OriginClass != OriginMixedOrUnknown && originEvidence == "" {
+		return fmt.Errorf("origin_evidence required for explicit origin_class")
+	}
 	currency := strings.ToUpper(strings.TrimSpace(draft.Currency))
 	if len(currency) != 3 || currency[0] < 'A' || currency[0] > 'Z' ||
 		currency[1] < 'A' || currency[1] > 'Z' || currency[2] < 'A' || currency[2] > 'Z' {
@@ -364,6 +388,15 @@ func validateDraft(draft Draft) error {
 		}
 	}
 	return nil
+}
+
+func validOriginClass(value OriginClass) bool {
+	switch value {
+	case "", OriginDemonstratedInbound, OriginOutboundAssisted, OriginMixedOrUnknown, OriginExistingExpansion, OriginPaidOrPartner:
+		return true
+	default:
+		return false
+	}
 }
 
 func validateRequiredString(field, value string, maxLength int) error {

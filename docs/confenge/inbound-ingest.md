@@ -49,6 +49,7 @@ commercial receipt (not a lead). Dedupe is `provider_event_id` or
   "route_family": "inbound",
   "asset_id": "landing-segunda-leitura",
   "cta_id": "segunda-leitura-contrato",
+  "web_origin_class": "search_organic",
   "landing_url": "https://confenge.com.br/contratos/norte",
   "contract_public_id": "CTR-NORTE-88",
   "entity_public_id": "extra-cli-account-id",
@@ -75,6 +76,16 @@ or `receipt_id` is required. `public_contract_id` is accepted as the
 web-cfg store name and stored as `contract_public_id`. `entity_public_id`
 is the canonical extra-cli account id. Missing facts stay `UNKNOWN`.
 Warmbly does not invent a name, role, email, or phone.
+`web_origin_class` accepts only `campaign`, `search_organic`, `referral`, or
+`direct_or_unknown`. It is acquisition evidence from the web capture. It never
+becomes the canonical commercial proposal `origin_class`; that decision remains
+owned by Warmbly, and an absent or unknown class never becomes demonstrated inbound.
+
+The Warmbly proposal model owns the commercial origin classes. Its counting read
+model uses only the latest emitted revision of a proposal, counts exactly one
+canonical member of an exclusive alternative group, and fails closed when that
+group has zero or multiple canonical members. Emitted and accepted are separate
+counts. Received revenue remains `UNKNOWN`; it is never inferred from either state.
 
 ## Dedupe
 

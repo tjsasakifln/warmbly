@@ -372,6 +372,7 @@ func inboundRowFromParsed(orgID uuid.UUID, lead InboundLeadV1, raw []byte, now t
 		RouteFamily:       lead.RouteFamily,
 		AssetID:           lead.AssetID,
 		CTAID:             lead.CTAID,
+		WebOriginClass:    lead.WebOriginClass,
 		LandingURL:        firstNonEmpty(lead.LandingURL, lead.LandingPath),
 		ContractID:        lead.ContractID,
 		EntityID:          lead.EntityID,
