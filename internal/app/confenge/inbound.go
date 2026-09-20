@@ -33,6 +33,7 @@ type InboundLeadV1 struct {
 	RouteFamily    string
 	AssetID        string
 	CTAID          string
+	WebOriginClass string
 	LandingURL     string
 	ContractID     string
 	EntityID       string
@@ -175,6 +176,7 @@ func ParseInboundLead(raw []byte, now time.Time) (InboundLeadV1, *errx.Error) {
 		RouteFamily:    SanitizeText(strAny(m, "route_family", "route"), 80),
 		AssetID:        SanitizeText(strAny(m, "asset_id", "asset"), 120),
 		CTAID:          SanitizeText(strAny(m, "cta_id", "cta"), 120),
+		WebOriginClass: normalizeWebOriginClass(strAny(m, "web_origin_class")),
 		LandingURL:     sanitizeInboundURL(strAny(m, "landing_url", "url", "page_url")),
 		ContractID:     SanitizeText(strAny(m, "contract_public_id", "contract_id", "contrato_id"), 120),
 		EntityID:       SanitizeText(strAny(m, "entity_public_id", "entity_id", "account_public_id"), 120),
@@ -232,6 +234,15 @@ func ParseInboundLead(raw []byte, now time.Time) (InboundLeadV1, *errx.Error) {
 		return InboundLeadV1{}, errx.New(errx.BadRequest, "lead_id or receipt_id is required")
 	}
 	return lead, nil
+}
+
+func normalizeWebOriginClass(raw string) string {
+	switch strings.TrimSpace(raw) {
+	case "campaign", "search_organic", "referral", "direct_or_unknown":
+		return strings.TrimSpace(raw)
+	default:
+		return ""
+	}
 }
 
 func parseConsent(m map[string]any) InboundConsent {

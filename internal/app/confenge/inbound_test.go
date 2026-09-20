@@ -270,6 +270,24 @@ func TestParseInboundLeadAcceptsConfengeWebOmittedOptionals(t *testing.T) {
 	fmt.Printf("CONTRACT source=CONFENGE_WEB lead_id=%s omitted_ok=true\n", lead.LeadID)
 }
 
+func TestParseInboundLeadKeepsWebOriginAsEvidenceOnly(t *testing.T) {
+	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	lead, xerr := ParseInboundLead([]byte(`{"lead_id":"origin-1","web_origin_class":"search_organic"}`), now)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if lead.WebOriginClass != "search_organic" {
+		t.Fatalf("web origin evidence lost: %q", lead.WebOriginClass)
+	}
+	unknown, xerr := ParseInboundLead([]byte(`{"lead_id":"origin-2","web_origin_class":"demonstrated_inbound"}`), now)
+	if xerr != nil {
+		t.Fatal(xerr)
+	}
+	if unknown.WebOriginClass != "" {
+		t.Fatalf("commercial origin was accepted from web: %q", unknown.WebOriginClass)
+	}
+}
+
 func TestCollectInboundNowKeepsStaleEnrichment(t *testing.T) {
 	svc, _, org := inboundTestService(t)
 	now := time.Date(2026, 8, 15, 14, 0, 0, 0, time.UTC)
