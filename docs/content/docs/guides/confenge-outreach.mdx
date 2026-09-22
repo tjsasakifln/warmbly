@@ -29,8 +29,19 @@ An upstream controlled route never overrides mailbox-purpose suppression. Addres
 
 For a manual batch, the agent first writes a research manifest containing candidate IDs, public evidence and copy, but no mailbox address. `confenge first-touch seal` reads the selected mailbox from the operational database, derives its route class, binds the subject and body hashes, and creates a new mode `0600` manifest without printing the address. `confenge first-touch apply --dry-run` validates that sealed artifact before the confirmed write path records approval and canonical queue readback. Autorun constructs the same manifest from current persisted supplier, recipient, feed, and evidence records, then sends it through the same validator and apply path.
 
-Delegated copy uses `confenge.composer.v7` and the versioned
-`confenge.first-touch-copy-rules.v1` contract. It does not rotate synonyms or
+Delegated copy uses `confenge.composer.v7` and versioned copy rules. Already
+sealed `confenge.first-touch-copy-rules.v1` messages remain valid. Newly
+composed messages use `confenge.first-touch-copy-rules.v2`, preserving the v1
+prose and adding one governed public reference that matches the service or
+contractual moment. The destination registry accepts only active
+`confenge.com.br` pages, a finite campaign-kind set, and the four generated UTM
+keys `utm_source`, `utm_medium`, `utm_campaign`, and `utm_content`. It accepts
+no lead data. A withheld landing emits no URL. Unknown B2G situations go to the
+specific problem map, never the corporate home. New verticals remain
+`NOT_ACTIVATED` and `WITHHELD_PENDING_WEB_RELEASE` until their web surface,
+proof, source/consent basis, and policy are approved.
+
+The composer does not rotate synonyms or
 choose prose from a UUID. The deterministic brief may use only the company,
 confirmed supplier role, a public fact bound to current `CONFIRMED_FACT`
 evidence, service code, route class and recipient purpose. If a specific fact

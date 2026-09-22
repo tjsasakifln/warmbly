@@ -81,7 +81,7 @@ type DelegatedCorpusReport struct {
 // output and percentiles. It never does an all-pairs 10k comparison.
 func AuditDelegatedFirstTouchCorpus(messages []DelegatedCorpusMessage) DelegatedCorpusReport {
 	report := DelegatedCorpusReport{
-		RulesVersion: DelegatedFirstTouchCopyRulesV1,
+		RulesVersion: DelegatedFirstTouchCopyRulesCurrent,
 		Messages:     len(messages), SourceMix: map[string]int{}, Violations: map[string]int{},
 		NearDuplicateDefinition: "same factual focus + service practice + route class + recipient purpose after removing company and person identity",
 	}
@@ -107,6 +107,7 @@ func AuditDelegatedFirstTouchCorpus(messages []DelegatedCorpusMessage) Delegated
 
 		expected := buildDelegatedRoutingCopy(message.Account, message.Candidate, message.Evidence)
 		blob := copy.Subject + "\n" + copy.Body
+		qaBlob := delegatedCopyQABlob(copy.Subject, copy.Body, copy.DestinationURL)
 		folded := foldASCII(strings.ToLower(blob))
 		if strings.TrimSpace(copy.Subject) == "" || strings.TrimSpace(copy.Body) == "" {
 			report.EmptySubjectOrBody++
@@ -120,8 +121,8 @@ func AuditDelegatedFirstTouchCorpus(messages []DelegatedCorpusMessage) Delegated
 		if delegatedCorpusGuessedPerson(copy, expected, message.Candidate) {
 			report.GuessedPeople++
 		}
-		if LooksLikeInternalReasoning(blob) || looksLikeMetadataDump(blob) || containsDumpLabel(blob) ||
-			qaEnumRe.MatchString(blob) || qaKeyValueRe.MatchString(blob) || qaScoreRe.MatchString(blob) {
+		if LooksLikeInternalReasoning(qaBlob) || looksLikeMetadataDump(qaBlob) || containsDumpLabel(qaBlob) ||
+			qaEnumRe.MatchString(qaBlob) || qaKeyValueRe.MatchString(qaBlob) || qaScoreRe.MatchString(qaBlob) {
 			report.InternalMetadataLeaks++
 		}
 		if delegatedContainsAny(folded,

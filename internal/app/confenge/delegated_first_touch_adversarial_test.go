@@ -207,9 +207,10 @@ func TestDelegatedFirstTouchSupportedSpecificFactPassesAllDeterministicGates(t *
 		t.Fatalf("specific fact was not bound to evidence: %+v", copy)
 	}
 	f.entry.Subject, f.entry.BodyText = copy.Subject, copy.Body
-	f.entry.CopyRulesVersion, f.entry.FactUsed = DelegatedFirstTouchCopyRulesV1, copy.FactUsed
+	f.entry.CopyRulesVersion, f.entry.FactUsed = DelegatedFirstTouchCopyRulesCurrent, copy.FactUsed
 	f.entry.FactEvidenceIDs = append([]string{}, copy.FactEvidenceIDs...)
 	f.entry.Practice, f.entry.CTA, f.entry.SemanticSignature = copy.Practice, copy.CTA, copy.SemanticSignature
+	f.entry.ClaimKey, f.entry.LandingID, f.entry.DestinationURL = copy.ClaimKey, copy.LandingID, copy.DestinationURL
 	f.entry.EvidenceIDs = uniqueStrings(append(append([]string{}, f.entry.ContractEvidenceIDs...), copy.FactEvidenceIDs...))
 	f.entry.SubjectHash, f.entry.BodyHash = hashText(f.entry.Subject), hashText(f.entry.BodyText)
 	if blockers := f.validate(); len(blockers) != 0 {
